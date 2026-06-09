@@ -924,6 +924,7 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
     } catch (e) {
       const detail =
         e instanceof HttpError
@@ -1019,6 +1020,8 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       toast.success("Item removed from broadcast queue.");
     },
     onError: (err) => {
@@ -1049,6 +1052,8 @@ function BroadcastV2PageInner() {
       // after a retry so the panel doesn't show a stale "failed" badge while
       // encoding is already in progress.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       toast.success("HLS transcoding re-queued — encoding will start shortly.");
       void api.post("/broadcast-v2/reload", { idempotencyKey: safeRandomUUID() }).catch(() => {});
     },
@@ -1102,6 +1107,9 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     } catch (err) {
       toast.error(err instanceof HttpError ? err.message : "Failed to reset video for re-upload — please try again.");
     }
@@ -1120,6 +1128,9 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       toast.success(`Download started — HLS transcoding queued (id: ${data.videoId.slice(0, 8)}…)`);
     },
     onError: (err) => {
@@ -1139,6 +1150,8 @@ function BroadcastV2PageInner() {
       // so the "Now / Next" header reflects the updated queue state immediately.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       toast.success("Item re-enabled and will resume playback on the next cycle.");
     },
     onError: (err) => {
@@ -1163,6 +1176,8 @@ function BroadcastV2PageInner() {
       // playing now reorders items so missing-count may change.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       toast.success("Switched — item is now on air.");
     },
     onError: (err) => {
@@ -1191,6 +1206,8 @@ function BroadcastV2PageInner() {
       // playback-window guard) — refresh both so the console reflects the change.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       const diff = result.newDurSecs - result.oldDurSecs;
       toast.success(
         `Duration updated: ${result.oldDurSecs}s → ${result.newDurSecs}s (${diff > 0 ? "+" : ""}${diff}s).`,
@@ -1220,6 +1237,9 @@ function BroadcastV2PageInner() {
       // visible in diagnostics and the remediation report — refresh both.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       if (result.enqueued > 0) {
         toast.success(
           `Synced ${result.enqueued} video${result.enqueued !== 1 ? "s" : ""} into the broadcast queue (scanned ${result.scanned}).`,
@@ -1279,6 +1299,8 @@ function BroadcastV2PageInner() {
       // Remediation report warns about item order / duration-sequencing issues —
       // a reorder may resolve or introduce such warnings.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       reorderInFlightRef.current = false;
     },
     onError: (err) => {
@@ -1302,6 +1324,9 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["schedule"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     },
     onError: (err) => {
       toast.error(err instanceof HttpError ? err.message : "Schedule save failed.");

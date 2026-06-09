@@ -317,12 +317,12 @@ export const adminService = {
     // A session is "active" at time T when:
     //   started_at <= T  AND  (ended_at > T  OR  (ended_at IS NULL AND last_heartbeat_at >= T - 5 min))
     // The JOIN pre-filters sessions to only those within the query window for index efficiency.
-    const rawRows = await db.execute(sql.raw(`
+    const rawRows = await db.execute(sql`
       WITH buckets AS (
         SELECT generate_series(
-          date_trunc('hour', now()) - '${safeRangeDays} days'::interval,
+          date_trunc('hour', now()) - ${sql.raw(`'${safeRangeDays} days'`)}::interval,
           date_trunc('hour', now()),
-          '${safeGran}'::interval
+          ${sql.raw(`'${safeGran}'`)}::interval
         ) AS bucket
       )
       SELECT
@@ -349,10 +349,10 @@ export const adminService = {
       FROM buckets b
       LEFT JOIN viewer_sessions vs ON
         vs.started_at <= b.bucket
-        AND vs.started_at >= b.bucket - '${safeRangeDays + 1} days'::interval
+        AND vs.started_at >= b.bucket - ${sql.raw(`'${safeRangeDays + 1} days'`)}::interval
       GROUP BY b.bucket
       ORDER BY b.bucket
-    `));
+    `);
 
     const buckets: ConcurrentBucket[] = (rawRows.rows as Array<Record<string, unknown>>).map((r) => ({
       ts: String(r["ts"] ?? ""),

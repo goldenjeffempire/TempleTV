@@ -47,8 +47,7 @@ export async function mediaRoutes(app: FastifyInstance) {
     {
       // Anonymous analytics ping. 60/min per IP prevents counter inflation
       // from bots or runaway clients while allowing fast-switching viewers.
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["media"],
         summary: "Increment view counter (analytics ping)",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -66,8 +65,7 @@ export async function mediaRoutes(app: FastifyInstance) {
     "/",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["media"],
         summary: "Admin: create a new media item",
         body: CreateMediaBodySchema,
@@ -86,8 +84,7 @@ export async function mediaRoutes(app: FastifyInstance) {
     "/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["media"],
         summary: "Admin: update editable fields on a media item",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -103,8 +100,7 @@ export async function mediaRoutes(app: FastifyInstance) {
     "/:id",
     {
       preHandler: requireAuth("admin"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["media"],
         summary: "Admin: hard-delete a media item",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -122,8 +118,7 @@ export async function mediaRoutes(app: FastifyInstance) {
     "/uploads/signed-url",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["media"],
         summary: "Admin: get a presigned PUT URL for direct-to-S3 upload",
         body: SignedUploadBodySchema,

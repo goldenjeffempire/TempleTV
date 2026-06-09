@@ -320,8 +320,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
     "/queue",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["broadcast"],
         summary: "Admin: append a program to the queue",
         body: AddQueueItemSchema,
@@ -380,8 +379,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
     "/queue/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["broadcast"],
         summary: "Admin: remove a program from the queue",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -398,8 +396,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
       preHandler: requireAuth("editor"),
       // Reorder writes to the DB on every call. 30/min lets drag-and-drop
       // save debounce freely while bounding damage from a runaway client.
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["broadcast"],
         summary: "Admin: reorder the active queue",
         body: ReorderQueueSchema,
@@ -416,8 +413,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
       preHandler: requireAuth("editor"),
       // Skip advances the on-air item — a rapid burst could skip through
       // the entire queue in seconds. 10/min is ample for legitimate use.
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["broadcast"],
         summary: "Admin: skip the currently playing queue item and advance to the next",
         response: { 200: z.object({ ok: z.literal(true) }), 429: z.object({ error: z.string() }) },
@@ -443,8 +439,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
     "/queue/:id/active",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["broadcast"],
         summary: "Admin: toggle whether a queue item is in rotation",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -622,8 +617,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
       // High-volume telemetry from TV/mobile fleet. 120/min per IP is
       // generous enough for the 5 s reporting interval while bounding
       // log-flood attacks from malicious clients.
-      config: { rateLimit: { max: 120, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 120, timeWindow: "1 minute" } },      schema: {
         tags: ["broadcast"],
         summary: "Ingest a playback-quality sample from a TV/mobile client",
         body: PlaybackTelemetrySchema,
@@ -673,8 +667,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
   r.post(
     "/reaction",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["broadcast"],
         summary: "Send a live emoji reaction — fans out to all SSE subscribers",
         body: z.object({
@@ -708,8 +701,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
   r.post(
     "/prayer",
     {
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["broadcast"],
         summary: "Submit a prayer request during a live broadcast",
         body: z.object({
@@ -787,8 +779,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
     "/playback/state",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["broadcast"],
         summary: "Admin: update playback engine configuration",
         body: PlaybackStateSchema.partial(),

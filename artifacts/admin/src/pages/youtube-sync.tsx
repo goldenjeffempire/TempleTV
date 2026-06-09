@@ -180,6 +180,15 @@ export default function YoutubeSyncPage() {
       void qc.invalidateQueries({ queryKey: ["youtube-quota"] });
       void qc.invalidateQueries({ queryKey: ["yt-category-stats"] });
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     },
     onError: (e) => {
       const msg = e instanceof HttpError ? e.message : "Sync failed";
@@ -197,6 +206,15 @@ export default function YoutubeSyncPage() {
       );
       void qc.invalidateQueries({ queryKey: ["yt-category-stats"] });
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       void refetchCatStats();
     },
     onError: (e) => {

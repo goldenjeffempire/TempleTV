@@ -39,7 +39,10 @@ function safeSet(key: string, value: string | null): void {
     if (typeof window === "undefined") return;
     if (value == null) window.localStorage.removeItem(key);
     else window.localStorage.setItem(key, value);
-  } catch {
+  } catch (e) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error(`[auth] Failed to write key ${key} to storage:`, e);
+    }
     /* localStorage may be unavailable on some embedded browsers */
   }
 }

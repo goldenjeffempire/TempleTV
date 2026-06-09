@@ -328,6 +328,8 @@ export default function VideosPage() {
       // always see accurate metadata in the queue without a manual refresh.
       void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       // Playlists display video titles in their item lists — refresh so the
       // updated title is visible without a full page reload.
       void qc.invalidateQueries({ queryKey: ["playlists"] });
@@ -406,6 +408,8 @@ export default function VideosPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       // Featured flag may affect ordering/filtering in the YouTube library view.
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
     },
     onError: (_e, _vars, ctx) => {
       if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));
@@ -434,6 +438,8 @@ export default function VideosPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       // Lock status is displayed in the YouTube library view.
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
     },
     onError: (_e, _vars, ctx) => {
       if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));
@@ -462,6 +468,8 @@ export default function VideosPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       // broadcastOnly controls whether the video appears in the public/YouTube library view.
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
     },
     onError: (_e, _vars, ctx) => {
       if (ctx?.prev) ctx.prev.forEach(([key, data]) => qc.setQueryData(key, data));
@@ -477,6 +485,8 @@ export default function VideosPage() {
       toast.success(res.reused ? "HLS job re-queued" : "Queued for HLS transcoding — check the Transcoding tab");
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       // Broadcast queue shows "Missing HLS" warnings — invalidate so the
       // orchestrator panel reflects the new queued status immediately.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
@@ -495,6 +505,7 @@ export default function VideosPage() {
     onSuccess: () => {
       toast.success("Faststart started — status will update to 'ready' in ~30–90 seconds");
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       // Broadcast queue shows source URL status — invalidate so the Broadcast
       // panel reflects the faststart-in-progress state without waiting for SSE.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
@@ -521,6 +532,8 @@ export default function VideosPage() {
         toast.success(`Re-queued ${res.retried} failed job${res.retried !== 1 ? "s" : ""} — they will encode shortly.`);
         void qc.invalidateQueries({ queryKey: ["admin-videos"] });
         void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+        void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+        void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       }
       // Always refresh engine-health and remediation-report regardless of
       // retry count — even 0 retried is meaningful (confirms no actionable
@@ -561,13 +574,12 @@ export default function VideosPage() {
       if (failed > 0) toast.warning(`${failed} video${failed !== 1 ? "s" : ""} could not be queued (already encoding or YouTube source)`);
       setSelectedIds(new Set());
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       // Keep the Transcoding Pipeline tab in sync — jobs appear there the moment
       // they are enqueued, so a cross-invalidation here avoids the operator
       // switching tabs and seeing a stale "no jobs" state.
       void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
-      // Broadcast queue shows "Missing HLS" banners — invalidate so the status
-      // columns update immediately when videos are queued for transcoding.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       // Bulk-queuing directly addresses "Missing HLS" remediation entries.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
@@ -603,11 +615,14 @@ export default function VideosPage() {
       // Match single-delete: evict YouTube Library tab so deleted YouTube
       // videos don't linger there until stale time expires.
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
       // Bulk deletion can resolve orphaned-queue remediation entries — refresh
       // the panel so the report reflects the post-delete state immediately.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["schedule"] });
     },
     onError: () => toast.error("Bulk delete failed"),
   });

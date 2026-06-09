@@ -93,11 +93,14 @@ export default function SchedulePage() {
       toast.success("Schedule entry created");
       void qc.invalidateQueries({ queryKey: ["schedule"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       void qc.invalidateQueries({ queryKey: ["playlists"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       setAddOpen(false);
       setForm(BLANK_FORM);
     },
@@ -115,11 +118,14 @@ export default function SchedulePage() {
       toast.success("Schedule entry updated");
       void qc.invalidateQueries({ queryKey: ["schedule"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       void qc.invalidateQueries({ queryKey: ["playlists"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       setEditEntry(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update entry"),
@@ -131,11 +137,14 @@ export default function SchedulePage() {
       toast.success("Removed from schedule");
       void qc.invalidateQueries({ queryKey: ["schedule"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       void qc.invalidateQueries({ queryKey: ["playlists"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       setDeleteId(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to delete"),

@@ -33,8 +33,7 @@ export async function analyticsRoutes(app: FastifyInstance) {
       // Watch heartbeats fire every 30 s per viewer. 10/min per IP is
       // enough for up to 5 simultaneous sessions; prevents event floods
       // from malfunctioning clients or synthetic traffic.
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["analytics"],
         summary:
           "Record a watch-time event (started / heartbeat / completed / abandoned). " +

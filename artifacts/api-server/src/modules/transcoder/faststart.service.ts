@@ -90,6 +90,7 @@ async function extractPosterFrame(
       log.debug({ targetSecs }, "faststart: thumbnail extraction timed out — skipping");
       resolve(false);
     }, THUMB_EXTRACT_TIMEOUT_MS);
+    timer.unref();
     proc.on("close", (code) => {
       clearTimeout(timer);
       resolve(code === 0);
@@ -612,6 +613,7 @@ function spawnFfmpegFaststart(
       try { proc.kill("SIGKILL"); } catch { /* noop */ }
       reject(new Error(`faststart: ffmpeg timed out after ${FASTSTART_TIMEOUT_MS / 1000}s`));
     }, FASTSTART_TIMEOUT_MS);
+    timer.unref();
 
     proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
 
@@ -662,6 +664,7 @@ function probeDuration(filePath: string, log: typeof rootLogger): Promise<number
       log.warn("faststart: ffprobe duration timed out");
       settle(null);
     }, PROBE_TIMEOUT_MS);
+    timer.unref();
     proc.stdout.on("data", (b: Buffer) => { out += b.toString(); });
     proc.on("error", () => { clearTimeout(timer); settle(null); });
     proc.on("close", () => {

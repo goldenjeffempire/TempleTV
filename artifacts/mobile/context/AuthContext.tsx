@@ -75,8 +75,10 @@ async function clearUserScopedCaches(): Promise<void> {
     const keys = await AsyncStorage.getAllKeys();
     const toRemove = keys.filter((k) => USER_SCOPED_STORAGE_PREFIXES.some((p) => k.startsWith(p)));
     if (toRemove.length > 0) await AsyncStorage.multiRemove(toRemove);
-  } catch {
-    /* best-effort */
+  } catch (e) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("[AuthContext] Failed to clear user-scoped caches:", e);
+    }
   }
 }
 

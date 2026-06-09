@@ -141,8 +141,7 @@ export async function adminChatRoutes(app: FastifyInstance) {
     "/chat/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Soft-delete a chat message (RESTful alias)",
         params: z.object({ id: z.string().min(1) }),
@@ -168,8 +167,7 @@ export async function adminChatRoutes(app: FastifyInstance) {
     "/chat/messages/:id/delete",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Soft-delete a chat message",
         params: z.object({ id: z.string().min(1) }),
@@ -204,8 +202,7 @@ export async function adminChatRoutes(app: FastifyInstance) {
     "/chat/moderate",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Mute or ban a user/IP for a finite or indefinite duration",
         body: ModerateBodySchema,

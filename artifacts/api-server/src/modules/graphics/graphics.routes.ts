@@ -53,8 +53,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
   r.get(
     "/graphics",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["graphics"],
         summary: "Get all active on-air graphics for a channel",
         querystring: z.object({ channelId: z.string().optional().default("temple-tv-live") }),
@@ -93,8 +92,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
   r.get(
     "/graphics/events",
     {
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["graphics"],
         summary: "SSE stream for on-air graphic activation/deactivation",
         querystring: z.object({ channelId: z.string().optional().default("temple-tv-live") }),
@@ -178,8 +176,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
       // Each activation fans out an SSE graphic-activated event to all
       // connected clients. 10/min prevents a compromised editor account
       // from flooding every viewer's overlay in a tight loop.
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["graphics"],
         summary: "Activate an on-air graphic overlay",
         body: GraphicBodySchema,
@@ -273,8 +270,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
     "/admin/graphics/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["graphics"],
         summary: "Deactivate an on-air graphic",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -317,8 +313,7 @@ export async function graphicsRoutes(app: FastifyInstance) {
     {
       preHandler: requireAuth("editor"),
       // Bulk-deactivate all graphics for a channel + fans out a snapshot SSE.
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["graphics"],
         summary: "Clear all active on-air graphics for a channel",
         params: z.object({ channelId: z.string().min(1).max(128) }),

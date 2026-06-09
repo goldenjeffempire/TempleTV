@@ -28,8 +28,7 @@ export async function seriesRoutes(app: FastifyInstance) {
   r.get(
     "/series",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["series"],
         summary: "List all published sermon series",
         querystring: z.object({
@@ -81,8 +80,7 @@ export async function seriesRoutes(app: FastifyInstance) {
   r.get(
     "/series/:slug",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["series"],
         summary: "Get a series with its episodes",
         params: z.object({ slug: z.string().min(1).max(80) }),
@@ -169,8 +167,7 @@ export async function seriesRoutes(app: FastifyInstance) {
       // Series listing scans the entire series table (including unpublished
       // rows invisible to the public endpoint). 30/min is ample for the admin
       // UI while blocking automated scraping via a compromised editor token.
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["series"],
         summary: "List all series (admin, includes unpublished)",
         response: { 200: z.array(SeriesRowSchema), 429: z.object({ error: z.string() }) },
@@ -198,8 +195,7 @@ export async function seriesRoutes(app: FastifyInstance) {
     "/admin/series",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["series"],
         summary: "Create a new sermon series",
         body: SeriesBodySchema,
@@ -242,8 +238,7 @@ export async function seriesRoutes(app: FastifyInstance) {
     "/admin/series/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["series"],
         summary: "Update series metadata",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -275,8 +270,7 @@ export async function seriesRoutes(app: FastifyInstance) {
     {
       preHandler: requireAuth("admin"),
       // Cascade deletes all episodes. 5/min prevents bulk wipes.
-      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },      schema: {
         tags: ["series"],
         summary: "Delete a series (removes episodes too via cascade)",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -299,8 +293,7 @@ export async function seriesRoutes(app: FastifyInstance) {
     "/admin/series/:id/episodes",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["series"],
         summary: "Add a video as an episode in a series",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -394,8 +387,7 @@ export async function seriesRoutes(app: FastifyInstance) {
     "/admin/series/:id/episodes/:episodeId",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["series"],
         summary: "Remove an episode from a series",
         params: z.object({ id: z.string().min(1).max(128), episodeId: z.string().min(1).max(128) }),

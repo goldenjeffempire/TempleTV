@@ -40,8 +40,7 @@ export async function auditLogRoutes(app: FastifyInstance) {
       // Strict per-IP limit: this endpoint fans out to 4+ sequential DB scans
       // and performs in-memory merging. Without a low cap, a single client can
       // saturate the DB connection pool at the global 120/min default.
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Get admin activity audit log (latest 200 entries)",
         querystring: z.object({

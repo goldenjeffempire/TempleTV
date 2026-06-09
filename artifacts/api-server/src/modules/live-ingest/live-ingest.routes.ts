@@ -146,7 +146,7 @@ async function probeEndpoint(
   const started = Date.now();
   try {
     const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), 5_000);
+    const timer = setTimeout(() => ctl.abort(), 5_000).unref();
     const res = await fetch(url, { method: "GET", signal: ctl.signal, redirect: "follow" });
     clearTimeout(timer);
     const latencyMs = Date.now() - started;
@@ -227,8 +227,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/endpoints",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Create a new live-ingest endpoint",
         body: CreateBodySchema,
@@ -283,8 +282,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/endpoints/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Update mutable fields on a live-ingest endpoint",
         params: z.object({ id: z.string().min(1) }),
@@ -318,8 +316,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
       // blocked, but rate-limit independently so a compromised token can't
       // rapidly cycle through endpoints faster than the promote-then-delete
       // guard can catch.
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Remove a live-ingest endpoint",
         params: z.object({ id: z.string().min(1) }),
@@ -362,8 +359,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
       preHandler: requireAuth("editor"),
       // Key rotation is an infrequent admin action. 5/min is enough for
       // any accidental double-click; tighter than default to limit exposure.
-      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Generate a fresh stream key for an endpoint",
         params: z.object({ id: z.string().min(1) }),
@@ -388,8 +384,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/endpoints/:id/promote",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Make this endpoint the primary (sole) ingest source",
         params: z.object({ id: z.string().min(1) }),
@@ -434,8 +429,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
       // Makes an outbound TCP/HTTP probe to the ingest URL. 10/min
       // prevents an editor from using this as an SSRF relay or
       // accidentally hammering the upstream encoder.
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Run a one-shot HLS playback probe and persist the result",
         params: z.object({ id: z.string().min(1) }),
@@ -499,8 +493,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/stop",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Stop the active live override (delegates to live-overrides)",
         response: { 200: z.object({ ok: z.literal(true), stopped: z.boolean() }), 429: z.object({ error: z.string() }) },
@@ -524,8 +517,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/sweep",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Mark endpoints with no recent successful probe as unhealthy",
         body: z
@@ -575,8 +567,7 @@ export async function liveIngestRoutes(app: FastifyInstance) {
     "/live-ingest/validate-key",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Check if a candidate stream key collides with an existing one",
         body: z.object({ streamKey: z.string().min(1).max(512) }),

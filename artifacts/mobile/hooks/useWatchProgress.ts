@@ -53,12 +53,20 @@ export function useWatchProgress() {
             const parsed = JSON.parse(raw) as WatchProgressMap;
             progressMapRef.current = parsed;
             setProgressMap(parsed);
-          } catch {
+          } catch (e) {
             // Corrupted storage — start with empty progress map.
+            if (process.env.NODE_ENV !== "production") {
+              console.error("[useWatchProgress] Failed to parse progress map:", e);
+            }
+            void AsyncStorage.removeItem(STORAGE_KEY);
           }
         }
       })
-      .catch(() => {});
+      .catch((e) => {
+        if (process.env.NODE_ENV !== "production") {
+          console.error("[useWatchProgress] Failed to read from storage:", e);
+        }
+      });
   }, []);
 
   const saveProgress = useCallback(
@@ -122,7 +130,13 @@ export function useWatchProgress() {
 
       progressMapRef.current = updated;
       setProgressMap(updated);
-      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated)).catch(() => {});
+      try {
+        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+      } catch (e) {
+        if (process.env.NODE_ENV !== "production") {
+          console.error("[useWatchProgress] Failed to save progress:", e);
+        }
+      }
     },
     [],
   );
@@ -142,13 +156,25 @@ export function useWatchProgress() {
     const { [videoKey]: _, ...rest } = progressMapRef.current;
     progressMapRef.current = rest;
     setProgressMap(rest);
-    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(rest)).catch(() => {});
+    try {
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(rest));
+    } catch (e) {
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[useWatchProgress] Failed to clear entry:", e);
+      }
+    }
   }, []);
 
   const clearAllProgress = useCallback(async () => {
     progressMapRef.current = {};
     setProgressMap({});
-    await AsyncStorage.removeItem(STORAGE_KEY);
+    try {
+      await AsyncStorage.removeItem(STORAGE_KEY);
+    } catch (e) {
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[useWatchProgress] Failed to remove all progress:", e);
+      }
+    }
   }, []);
 
   const continueWatching: ContinueWatchingItem[] = Object.entries(progressMap)

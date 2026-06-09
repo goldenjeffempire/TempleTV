@@ -51,8 +51,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
       preHandler: requireAuth("editor"),
       // Fans out an SSE/WS PROGRAM_CHANGED signal to every connected client.
       // 5/min is ample for legitimate use; rapid starts would confuse viewers.
-      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },      schema: {
         tags: ["live"],
         summary: "Admin: start a live override (deactivates any prior)",
         body: StartOverrideBodySchema,
@@ -88,8 +87,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
     "/stop",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["live"],
         summary: "Admin: stop the currently active live override",
         response: { 200: LiveOverrideSchema, 429: z.object({ error: z.string() }) },
@@ -109,8 +107,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
     "/extend",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["live"],
         summary: "Admin: extend the active live override's end time",
         // Cap at 12 h (720 min) — prevents a typo from scheduling an
@@ -154,8 +151,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
     "/schedule",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["live"],
         summary: "Admin: schedule a future live override",
         body: StartOverrideBodySchema,
@@ -174,8 +170,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
     "/scheduled/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["live"],
         summary: "Admin: cancel a scheduled (not yet active) override",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -193,8 +188,7 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
   r.post(
     "/report-failure",
     {
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["live"],
         summary: "Client: report a stream playback failure",
         body: z.object({

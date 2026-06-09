@@ -405,7 +405,11 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
     setIsError(false);
     setErrorMsg(null);
     setIsConnecting(false);
-    AsyncStorage.setItem(RADIO_MODE_KEY, "false").catch(() => {});
+    AsyncStorage.setItem(RADIO_MODE_KEY, "false").catch((e) => {
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[RadioStreamContext] Failed to persist radio stop:", e);
+      }
+    });
   }, []);
 
   // Register our stop fn with the mutual-exclusion controller so
@@ -433,7 +437,11 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
       setIsConnecting(false);
     }
     // Persist toggle state (for within-session navigation — not cold start)
-    AsyncStorage.setItem(RADIO_MODE_KEY, String(next)).catch(() => {});
+    AsyncStorage.setItem(RADIO_MODE_KEY, String(next)).catch((e) => {
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[RadioStreamContext] Failed to persist radio toggle:", e);
+      }
+    });
   }, [isRadioOn]);
 
   const retryConnect = useCallback(() => {

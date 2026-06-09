@@ -56,7 +56,12 @@ export default function PlaylistsPage() {
       // both so operators don't have to manually reload.
       void qc.invalidateQueries({ queryKey: ["schedule"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       setOpen(false);
       setForm({ name: "", description: "" });
     },
@@ -75,7 +80,12 @@ export default function PlaylistsPage() {
       // The broadcast queue may show this playlist's title — refresh so a
       // rename is visible to the operator in Master Control without a reload.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       setEditing(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update"),
@@ -93,7 +103,12 @@ export default function PlaylistsPage() {
       // The broadcast queue may reference this playlist as an active item —
       // refresh so Master Control reflects the removal without a manual reload.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       setDeleting(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to delete"),

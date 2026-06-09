@@ -55,7 +55,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setThemeState(t);
     try {
       await AsyncStorage.setItem(THEME_KEY, t);
-    } catch {}
+    } catch (e) {
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[ThemeContext] Failed to persist theme:", e);
+      }
+    }
   }, []);
 
   const resolvedTheme: ResolvedTheme = theme === "system" ? systemTheme : theme;

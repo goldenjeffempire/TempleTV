@@ -35,8 +35,7 @@ export async function emergencyRoutes(app: FastifyInstance) {
   r.get(
     "/emergency/active",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["emergency"],
         summary: "Get currently active emergency alerts",
         response: { 200: z.array(AlertSchema), 429: z.object({ error: z.string() }) },
@@ -95,8 +94,7 @@ export async function emergencyRoutes(app: FastifyInstance) {
     "/admin/emergency",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["emergency"],
         summary: "List all emergency alerts (history)",
         response: { 200: z.array(AlertHistoryItemSchema), 429: z.object({ error: z.string() }) },
@@ -132,8 +130,7 @@ export async function emergencyRoutes(app: FastifyInstance) {
       // Each create fans out an SSE/WS EMERGENCY_BROADCAST signal to every
       // connected client. 5/min prevents alert-storm abuse from a compromised
       // editor account; legitimate use is always a deliberate manual action.
-      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },      schema: {
         tags: ["emergency"],
         summary: "Broadcast an emergency alert to all connected clients",
         body: AlertBodySchema,
@@ -225,8 +222,7 @@ export async function emergencyRoutes(app: FastifyInstance) {
     "/admin/emergency/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["emergency"],
         summary: "Dismiss an active emergency alert",
         params: z.object({ id: z.string().min(1).max(128) }),

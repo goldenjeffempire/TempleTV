@@ -415,8 +415,7 @@ export async function videosRoutes(app: FastifyInstance) {
   r.get(
     "/featured",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["videos"],
         summary: "Featured videos — top 12 by view count",
         querystring: z.object({
@@ -452,8 +451,7 @@ export async function videosRoutes(app: FastifyInstance) {
   r.get(
     "/:id",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["videos"],
         summary: "Get a single video by ID",
         params: z.object({ id: z.string().min(1) }),
@@ -494,8 +492,7 @@ export async function videosRoutes(app: FastifyInstance) {
   r.post(
     "/:id/view",
     {
-      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },      schema: {
         tags: ["videos"],
         summary: "Increment view count for a video",
         params: z.object({ id: z.string().min(1) }),

@@ -257,8 +257,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
     "/broadcast",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Admin alias: append an item to the queue",
         body: PostBodySchema,
@@ -443,8 +442,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
     "/broadcast/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Admin alias: update durationSecs / isActive on a queue item",
         params: z.object({ id: z.string().min(1) }),
@@ -500,8 +498,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
     "/broadcast/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Admin alias: remove a queue item",
         params: z.object({ id: z.string().min(1) }),
@@ -531,8 +528,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
     "/broadcast/reorder",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Admin alias: reorder the queue by item-id list",
         body: ReorderBodySchema,
@@ -585,8 +581,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
     "/broadcast/:id/schedule",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Pin or unpin a queue item to a specific air time",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -641,8 +636,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
     "/broadcast/schedule/batch",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Batch-update scheduled air times for multiple queue items",
         body: z.object({

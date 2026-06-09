@@ -154,7 +154,7 @@ function safeSend(socket: ChatSocket, event: ChatServerEvent): void {
 let pingInterval: ReturnType<typeof setInterval> | null = null;
 function ensurePingLoop(): void {
   if (pingInterval) return;
-  pingInterval = setInterval(() => chatHub.pingAll(), 25_000);
+  pingInterval = setInterval(() => chatHub.pingAll(), 25_000).unref();
   // Don't keep the event loop alive just for pings.
   pingInterval.unref?.();
 }
@@ -177,8 +177,7 @@ export async function chatRoutes(app: FastifyInstance) {
   r.get(
     "/:channelId/history",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["chat"],
         summary: "Recent chat messages for a channel",
         params: z.object({ channelId: z.string().min(1).max(128) }),
@@ -229,8 +228,7 @@ export async function chatRoutes(app: FastifyInstance) {
       preHandler: requireAuth("user"),
       // 20/min per user prevents chat spam while staying comfortable for
       // legitimate rapid-fire responses during a live service.
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["chat"],
         summary: "Post a chat message to a channel",
         params: z.object({ channelId: z.string().min(1).max(128) }),

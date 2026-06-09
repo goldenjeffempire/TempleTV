@@ -70,8 +70,7 @@ export async function feedbackRoutes(app: FastifyInstance) {
   r.post(
     "/feedback",
     {
-      config: { rateLimit: { max: 10, timeWindow: "10 minutes" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "10 minutes" } },      schema: {
         tags: ["feedback"],
         summary: "Submit app feedback or bug report",
         body: SubmitBodySchema,
@@ -114,8 +113,7 @@ export async function feedbackAdminRoutes(app: FastifyInstance) {
     "/feedback",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Paginated feedback inbox",
         querystring: ListQuerySchema,
@@ -160,8 +158,7 @@ export async function feedbackAdminRoutes(app: FastifyInstance) {
     "/feedback/:id/read",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Mark feedback as read or unread",
         params: z.object({ id: z.string().min(1) }),
@@ -187,8 +184,7 @@ export async function feedbackAdminRoutes(app: FastifyInstance) {
     "/feedback/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Permanently delete a feedback entry",
         params: z.object({ id: z.string().min(1) }),

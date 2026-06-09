@@ -74,8 +74,7 @@ export async function scheduledNotificationsRoutes(app: FastifyInstance) {
     "/notifications/scheduled",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "List queued + completed scheduled notifications",
         response: { 200: ListResponseSchema, 429: z.object({ error: z.string() }) },
@@ -98,8 +97,7 @@ export async function scheduledNotificationsRoutes(app: FastifyInstance) {
       preHandler: requireAuth("editor"),
       // Scheduling writes a DB row and will fan-out to thousands of devices
       // when the time arrives. 20/min matches the send endpoint's limit.
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Schedule a push notification for a future timestamp",
         body: ScheduleBodySchema,
@@ -162,8 +160,7 @@ export async function scheduledNotificationsRoutes(app: FastifyInstance) {
     "/notifications/failed",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "List permanently-failed scheduled notifications (exhausted max_attempts)",
         querystring: z.object({
@@ -202,8 +199,7 @@ export async function scheduledNotificationsRoutes(app: FastifyInstance) {
     "/notifications/scheduled/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Cancel (delete) a pending scheduled notification",
         params: z.object({ id: z.string().min(1) }),

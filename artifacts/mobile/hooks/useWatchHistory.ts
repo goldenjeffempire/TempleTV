@@ -68,14 +68,21 @@ export function useWatchHistory() {
             // Use sermon.id (db UUID) as the canonical dedup key.
             // This fixes local-video history where youtubeId is always "".
             setHistoryIds(new Set(parsed.map((h) => h.sermon.id)));
-          } catch {
+          } catch (e) {
             // Corrupted AsyncStorage data — clear and start fresh so the app
             // doesn't crash on every launch until the user reinstalls.
+            if (process.env.NODE_ENV !== "production") {
+              console.error("[useWatchHistory] Failed to parse history:", e);
+            }
             void AsyncStorage.removeItem(STORAGE_KEYS.watchHistory);
           }
         }
       })
-      .catch(() => {})
+      .catch((e) => {
+        if (process.env.NODE_ENV !== "production") {
+          console.error("[useWatchHistory] Failed to read history from storage:", e);
+        }
+      })
       .finally(() => setLoaded(true));
   }, []);
 
@@ -122,11 +129,21 @@ export function useWatchHistory() {
           .sort((a, b) => new Date(b.watchedAt).getTime() - new Date(a.watchedAt).getTime())
           .slice(0, APP_CONFIG.maxHistoryItems);
 
-        setHistory(merged);
-        setHistoryIds(new Set(merged.map((h) => h.sermon.id)));
+      setHistory(merged);
+      setHistoryIds(new Set(merged.map((h) => h.sermon.id)));
+      try {
         await AsyncStorage.setItem(STORAGE_KEYS.watchHistory, JSON.stringify(merged));
-      })
-      .catch(() => {});
+      } catch (e) {
+        if (process.env.NODE_ENV !== "production") {
+          console.error("[useWatchHistory] Failed to persist merged history:", e);
+        }
+      }
+    })
+    .catch((e) => {
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[useWatchHistory] Cloud sync failed:", e);
+      }
+    });
   }, [token, loaded]);
 
   const addToHistory = useCallback(
@@ -143,7 +160,13 @@ export function useWatchHistory() {
       latestHistoryRef.current = updated; // keep ref in sync immediately
       setHistory(updated);
       setHistoryIds(new Set(updated.map((h) => h.sermon.id)));
-      await AsyncStorage.setItem(STORAGE_KEYS.watchHistory, JSON.stringify(updated)).catch(() => {});
+      try {
+        await AsyncStorage.setItem(STORAGE_KEYS.watchHistory, JSON.stringify(updated));
+      } catch (e) {
+        if (process.env.NODE_ENV !== "production") {
+          console.error("[useWatchHistory] Failed to save entry:", e);
+        }
+      }
       hasAuthToken().then((loggedIn) => {
         if (!loggedIn) return;
         apiSyncHistory({

@@ -404,7 +404,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     // Run immediately on boot (catches sessions from a previous server process
     // that died without processing them), then on the repeating interval.
     void runSessionCleanup();
-    const cleanupTimer = setInterval(() => { void runSessionCleanup(); }, CLEANUP_INTERVAL_MS);
+    const cleanupTimer = setInterval(() => { void runSessionCleanup(); }, CLEANUP_INTERVAL_MS).unref();
     // Ensure the timer does not prevent the Node.js event loop from exiting
     // when the server shuts down gracefully.
     cleanupTimer.unref();
@@ -420,8 +420,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       // typical read. 30/min is enough for any realistic bulk-upload workflow
       // (3 concurrent uploads × 10 retries per minute) without leaving room
       // for a runaway loop to churn DB rows. (P2 fix)
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["uploads"],
         summary: "Initialize a resumable chunked upload session (server-relay path)",
         body: InitBodySchema,
@@ -535,7 +534,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       try {
         const mpPromise = storage().createMultipartUpload({ key: objectKey, contentType });
         const timeoutPromise = new Promise<never>((_, reject) => {
-          const t = setTimeout(() => reject(new Error("createMultipartUpload timed out after 5 s")), 5_000);
+          const t = setTimeout(() => reject(new Error("createMultipartUpload timed out after 5 s")), 5_000).unref();
           // .unref() so this timer does not prevent Node from exiting on SIGTERM
           // when the race resolves via mpPromise (the common case).
           t.unref();
@@ -625,7 +624,6 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       // 600/min per IP covers 3 concurrent uploads × 4 parallel chunks
       // at the maximum speed, with headroom for retries.
       config: { rateLimit: { max: 600, timeWindow: "1 minute" } },
-      schema: { response: { 429: z.object({ error: z.string() }) } },
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       // Disable proxy buffering so Nginx/Replit proxy streams bytes through
@@ -775,8 +773,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       preHandler: requireAuth("editor"),
       // Called once per upload resume attempt: 60/min covers normal use
       // (3 concurrent files × 10 resume checks) with headroom for retries.
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["uploads"],
         summary: "Return received chunk indices so the client can skip them on resume",
         params: z.object({ sessionId: z.string().min(1).max(128) }),
@@ -836,7 +833,6 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       // One thumbnail per upload session; 10/min covers retries and
       // multi-file batches.
       config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: { response: { 429: z.object({ error: z.string() }) } },
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       const { sessionId } = req.params as { sessionId: string };
@@ -887,8 +883,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       preHandler: requireAuth("editor"),
       // Finalize triggers DB assembly + transcoding job insertion. Same
       // limit as /init (30/min) since both create durable server-side work.
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["uploads"],
         summary: "Complete the upload, insert the video row, and queue HLS transcoding",
         params: z.object({ sessionId: z.string().min(1).max(128) }),
@@ -2067,8 +2062,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       preHandler: requireAuth("editor"),
       // Client polls every 2 s during assembly. 60/min covers 3 concurrent
       // uploads + generous headroom for tab-restore reconnects and retries.
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["uploads"],
         summary: "Poll the finalization status of an upload session",
         params: z.object({ sessionId: z.string().min(1).max(128) }),

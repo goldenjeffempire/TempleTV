@@ -412,8 +412,7 @@ export async function restRoutes(app: FastifyInstance) {
       // reconnecting clients without letting a single bad actor hammer the
       // server. 120 req/min ≈ 1 req/500 ms — well above any legitimate
       // polling cadence (keep-alive is 8 s).
-      rateLimit: { max: 120, timeWindow: "1 minute" },
-    },
+      rateLimit: { max: 120, timeWindow: "1 minute" } },
   }, async (_req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
     return { state: broadcastOrchestrator.snapshot() };
@@ -443,8 +442,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       // Each call triggers a DB query (eventLogRepo.replayFrom). Limit to
       // 10 req/min per IP — replay is only needed on cold start and after
       // reconnect, not on every keep-alive tick.
-      rateLimit: { max: 10, timeWindow: "1 minute" },
-    },
+      rateLimit: { max: 10, timeWindow: "1 minute" } },
   }, async (req, reply) => {
     const fromSeq = (req.query as z.infer<typeof _rehydrateQS>).fromSequence;
     try {
@@ -1358,6 +1356,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     "/queue/:id/transcode-remote",
     {
       preHandler: requireAuth("admin"),
+      bodyLimit: 1048576,
       schema: { response: { 429: _429err } },
       config: { rateLimit: { max: 10, timeWindow: "10 minutes" } },
     },
@@ -1450,6 +1449,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     "/queue/:id/reprobe",
     {
       preHandler: requireAuth("editor"),
+      bodyLimit: 1048576,
       schema: { response: { 429: _429err } },
       config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
     },
@@ -1489,7 +1489,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         // outlives its budget during normal operation.
         proc.unref?.();
         let out = "";
-        const timer = setTimeout(() => { proc.kill(); resolve(null); }, 45_000);
+        const timer = setTimeout(() => { proc.kill(); resolve(null); }, 45_000).unref();
         proc.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
         proc.on("close", (code) => {
           clearTimeout(timer);

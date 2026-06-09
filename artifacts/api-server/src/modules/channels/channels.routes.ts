@@ -69,8 +69,7 @@ export async function channelsRoutes(app: FastifyInstance) {
   r.get(
     "/channels",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["channels"],
         summary: "List all active channels",
         response: {
@@ -137,8 +136,7 @@ export async function channelsRoutes(app: FastifyInstance) {
   r.get(
     "/channels/:slug/current",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["channels"],
         summary: "Get current broadcast snapshot for a channel by slug",
         params: z.object({ slug: z.string().min(1).max(80) }),
@@ -172,8 +170,7 @@ export async function channelsRoutes(app: FastifyInstance) {
     "/admin/channels",
     {
       preHandler: requireAuth("admin"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["channels"],
         summary: "Create a new broadcast channel",
         body: ChannelBodySchema,
@@ -215,8 +212,7 @@ export async function channelsRoutes(app: FastifyInstance) {
     "/admin/channels/:id",
     {
       preHandler: requireAuth("admin"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["channels"],
         summary: "Update channel metadata",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -247,8 +243,7 @@ export async function channelsRoutes(app: FastifyInstance) {
       preHandler: requireAuth("admin"),
       // Deletes the channel and cascades to its queue. 5/min prevents
       // accidental rapid deletion of multiple channels.
-      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },      schema: {
         tags: ["channels"],
         summary: "Delete a non-primary channel",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -288,8 +283,7 @@ export async function channelsRoutes(app: FastifyInstance) {
     "/admin/channels/:id/queue",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["channels"],
         summary: "List queue items for a channel",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -312,8 +306,7 @@ export async function channelsRoutes(app: FastifyInstance) {
     "/admin/channels/:id/queue",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["channels"],
         summary: "Add a video to a channel's broadcast queue",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -359,8 +352,7 @@ export async function channelsRoutes(app: FastifyInstance) {
     "/admin/channels/:channelId/queue/:itemId",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["channels"],
         summary: "Remove an item from a channel's queue",
         params: z.object({ channelId: z.string().min(1).max(128), itemId: z.string().min(1).max(128) }),
@@ -390,8 +382,7 @@ export async function channelsRoutes(app: FastifyInstance) {
     "/admin/channels/:channelId/queue/:itemId/active",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["channels"],
         summary: "Toggle active status of a channel queue item",
         params: z.object({ channelId: z.string().min(1).max(128), itemId: z.string().min(1).max(128) }),

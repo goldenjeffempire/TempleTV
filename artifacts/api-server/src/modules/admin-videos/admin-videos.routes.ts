@@ -181,8 +181,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       // editor token can drive arbitrarily many expensive search queries.
       // 60/min covers heavy admin usage (fast typing in the search box, bulk
       // picker opens) while still blocking automated enumeration.
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Paginated, searchable video library for the admin picker",
         querystring: ListQuerySchema,
@@ -311,8 +310,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
     "/videos/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Update video metadata (title, description, category, preacher, featured, metadataLocked)",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -401,8 +399,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       preHandler: requireAuth("editor"),
       // Hard delete removes the DB row AND purges storage blobs.
       // 10/min prevents a runaway script from wiping the library in bulk.
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Delete a video from the library",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -545,8 +542,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       preHandler: requireAuth("editor"),
       // Spawns a real FFmpeg process. 10/min prevents editors from
       // flooding the transcoder queue via the UI.
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Queue a locally-uploaded video for HLS transcoding",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -606,8 +602,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
     "/videos/:id/faststart",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Re-apply MP4 faststart optimisation to a locally-uploaded video",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -679,8 +674,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
     "/videos/:id/reset-for-reupload",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Reset a corrupt-source video so its source file can be re-uploaded",
         params: z.object({ id: z.string().min(1).max(128) }),
@@ -763,8 +757,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       preHandler: requireAuth("admin"),
       // Bulk queuing can pin CPU for extended periods. 2/min is a hard
       // guard — the UI's "Transcode All" button has its own confirm dialog.
-      config: { rateLimit: { max: 2, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 2, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Queue all local videos without HLS for transcoding",
         response: {

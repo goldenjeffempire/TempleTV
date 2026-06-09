@@ -251,8 +251,7 @@ export async function healthRoutes(app: FastifyInstance) {
   r.get(
     "/ops/status",
     {
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["health"],
         summary: "Public platform status summary for mobile / TV clients",
         response: { 200: OpsStatusSchema, 429: z.object({ error: z.string() }) },

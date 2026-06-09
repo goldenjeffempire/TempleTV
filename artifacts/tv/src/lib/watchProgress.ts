@@ -74,7 +74,10 @@ function writeStore(store: Store): void {
   if (!s) return;
   try {
     s.setItem(KEY, JSON.stringify(store));
-  } catch {
+  } catch (e) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("[watchProgress] Failed to write to storage:", e);
+    }
     // Quota exceeded — silently skip; watch progress is best-effort.
   }
 }

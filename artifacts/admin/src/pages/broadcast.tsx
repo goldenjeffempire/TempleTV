@@ -907,6 +907,7 @@ function EmergencyOverridePanel({
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
   }
 
   // ── Start override ────────────────────────────────────────────────────────
@@ -1690,6 +1691,7 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Skip failed"),
   });
@@ -1706,6 +1708,7 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Reload failed"),
   });
@@ -1722,6 +1725,7 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to clear blocks"),
   });
@@ -1749,6 +1753,9 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
     },
     onError: (e) => {
       setIsSyncing(false);
@@ -1776,6 +1783,9 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
       setAddOpen(false);
       setSelectedVideoId("");
     },
@@ -1797,6 +1807,9 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to remove"),
   });
@@ -1814,6 +1827,9 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Bulk remove failed"),
   });
@@ -1830,6 +1846,9 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Faststart request failed"),
   });
@@ -1847,6 +1866,10 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Play Now failed"),
   });

@@ -107,8 +107,7 @@ export async function userRoutes(app: FastifyInstance) {
     "/me",
     {
       preHandler: requireAuth(),
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["user"],
         summary: "Get authenticated user's profile (alias for GET /auth/me)",
         security: [{ bearerAuth: [] }],
@@ -133,8 +132,7 @@ export async function userRoutes(app: FastifyInstance) {
     "/favorites",
     {
       preHandler: requireAuth(),
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["user"],
         summary: "List all favorited videos for the authenticated user",
         security: [{ bearerAuth: [] }],
@@ -252,8 +250,7 @@ export async function userRoutes(app: FastifyInstance) {
     "/favorites/:videoId",
     {
       preHandler: requireAuth(),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["user"],
         summary: "Remove a video from the authenticated user's favorites",
         security: [{ bearerAuth: [] }],
@@ -277,8 +274,7 @@ export async function userRoutes(app: FastifyInstance) {
     "/watch-history",
     {
       preHandler: requireAuth(),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["user"],
         summary: "Watch history alias (same as GET /user/history)",
         security: [{ bearerAuth: [] }],
@@ -315,8 +311,7 @@ export async function userRoutes(app: FastifyInstance) {
     "/history",
     {
       preHandler: requireAuth(),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["user"],
         summary: "List watch history for the authenticated user (newest first)",
         security: [{ bearerAuth: [] }],
@@ -437,8 +432,7 @@ export async function userRoutes(app: FastifyInstance) {
     {
       preHandler: requireAuth(),
       // Bulk clears all history — deliberate destructive action, 5/min is plenty.
-      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },      schema: {
         tags: ["user"],
         summary: "Clear entire watch history for the authenticated user",
         security: [{ bearerAuth: [] }],

@@ -64,8 +64,7 @@ export async function prayersAdminRoutes(app: FastifyInstance) {
     "/prayers",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Paginated prayer-request inbox",
         querystring: ListQuerySchema,
@@ -121,8 +120,7 @@ export async function prayersAdminRoutes(app: FastifyInstance) {
     "/prayers/:id/read",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Mark a prayer request as read (or unread via body)",
         params: z.object({ id: z.string().min(1) }),
@@ -152,8 +150,7 @@ export async function prayersAdminRoutes(app: FastifyInstance) {
     "/prayers/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Permanently delete a prayer request",
         params: z.object({ id: z.string().min(1) }),

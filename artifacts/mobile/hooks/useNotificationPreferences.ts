@@ -58,8 +58,10 @@ export function useNotificationPreferences() {
       setPrefs(next);
       try {
         await AsyncStorage.setItem(KEY, JSON.stringify(next));
-      } catch {
-        // Non-critical
+      } catch (e) {
+        if (process.env.NODE_ENV !== "production") {
+          console.error("[useNotificationPreferences] Failed to save prefs:", e);
+        }
       }
     },
     [],
@@ -69,8 +71,10 @@ export function useNotificationPreferences() {
     setHasSeenOptIn(true);
     try {
       await AsyncStorage.setItem(OPT_IN_SEEN_KEY, "1");
-    } catch {
-      //
+    } catch (e) {
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[useNotificationPreferences] Failed to mark opt-in seen:", e);
+      }
     }
   }, []);
 
@@ -85,8 +89,10 @@ export function useNotificationPreferences() {
       setPrefs(next);
       try {
         await AsyncStorage.setItem(KEY, JSON.stringify(next));
-      } catch {
-        //
+      } catch (e) {
+        if (process.env.NODE_ENV !== "production") {
+          console.error("[useNotificationPreferences] Failed to sync prefs:", e);
+        }
       }
     },
     [],

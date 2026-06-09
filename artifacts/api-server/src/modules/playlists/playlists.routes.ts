@@ -26,8 +26,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
   r.get(
     "/",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["playlists"],
         summary: "List all playlists with video counts",
         response: { 200: ListPlaylistsResponseSchema, 429: z.object({ error: z.string() }) },
@@ -39,8 +38,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
   r.get(
     "/:id",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["playlists"],
         summary: "Get a single playlist with its ordered video list",
         params: idParam,
@@ -54,8 +52,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
     "/",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["playlists"],
         summary: "Create a new playlist",
         body: CreatePlaylistBodySchema,
@@ -74,8 +71,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
     "/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["playlists"],
         summary: "Update playlist metadata",
         params: idParam,
@@ -91,8 +87,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
     "/:id",
     {
       preHandler: requireAuth("admin"),
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["playlists"],
         summary: "Delete a playlist (cascades to its videos)",
         params: idParam,
@@ -110,8 +105,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
     "/:id/videos",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["playlists"],
         summary: "Append a catalog video to a playlist",
         params: idParam,
@@ -131,8 +125,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
     "/:id/videos/:videoId",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["playlists"],
         summary: "Remove a video entry from a playlist",
         params: playlistVideoParams,
@@ -150,8 +143,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
     "/:id/reorder",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["playlists"],
         summary: "Reorder a playlist's videos by id",
         params: idParam,

@@ -23,8 +23,7 @@ export async function youtubeSyncRoutes(app: FastifyInstance) {
     "/youtube/sync/status",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "YouTube sync status and statistics",
         security: [{ bearerAuth: [] }],
@@ -63,8 +62,7 @@ export async function youtubeSyncRoutes(app: FastifyInstance) {
     "/youtube/sync",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Trigger a manual YouTube channel sync",
         security: [{ bearerAuth: [] }],
@@ -107,8 +105,7 @@ export async function youtubeSyncRoutes(app: FastifyInstance) {
     "/youtube/sync/history",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "YouTube sync history log",
         querystring: z.object({ limit: z.coerce.number().int().min(1).max(100).default(20) }),
@@ -165,8 +162,7 @@ export async function youtubeSyncRoutes(app: FastifyInstance) {
     "/youtube/sync/category-stats",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "YouTube video category breakdown",
         security: [{ bearerAuth: [] }],
@@ -197,8 +193,7 @@ export async function youtubeSyncRoutes(app: FastifyInstance) {
     "/youtube/recategorize",
     {
       preHandler: requireAuth("admin"),
-      config: { rateLimit: { max: 3, timeWindow: "5 minutes" } },
-      schema: {
+      config: { rateLimit: { max: 3, timeWindow: "5 minutes" } },      schema: {
         tags: ["admin"],
         summary: "Re-categorize all unlocked YouTube videos using current keyword rules",
         security: [{ bearerAuth: [] }],

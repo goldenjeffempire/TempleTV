@@ -94,10 +94,10 @@ export async function mfaRoutes(app: FastifyInstance) {
     "/status",
     {
       preHandler: requireAuth("user"),
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["auth", "mfa"],
         summary: "Get MFA status for the current user",
-        response: { 200: MfaStatusSchema },
+        response: { 200: MfaStatusSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async (req) => {

@@ -817,7 +817,7 @@ function toast(msg, type = "ok", ms = 4200) {
   setTimeout(() => {
     el.style.transition = "opacity .3s";
     el.style.opacity = "0";
-    setTimeout(() => el.remove(), 320);
+    setTimeout(() => el.remove(), 320).unref();
   }, ms);
 }
 
@@ -1285,11 +1285,11 @@ $("addForm").addEventListener("submit", async e => {
     updateAddFields();
     await loadQueue();
     toast("Added: " + title);
-    setTimeout(() => { msg.textContent = ""; }, 3000);
+    setTimeout(() => { msg.textContent = ""; }, 3000).unref();
   } catch (err) {
     msg.textContent = "✕ " + err.message; msg.style.color = "var(--rose)";
     toast(err.message, "err");
-    setTimeout(() => { msg.textContent = ""; }, 5000);
+    setTimeout(() => { msg.textContent = ""; }, 5000).unref();
   } finally {
     btn.disabled = false;
   }
@@ -1502,7 +1502,7 @@ function connectSSE() {
     es.close();
     currentES = null;
     if (sseWatchdog) clearInterval(sseWatchdog);
-    setTimeout(connectSSE, sseBackoff);
+    setTimeout(connectSSE, sseBackoff).unref();
     sseBackoff = Math.min(sseBackoff * 1.6, 30_000);
   };
 
@@ -1530,7 +1530,7 @@ function connectSSE() {
       // Debounced full reload so upcoming list refreshes once, not on every rapid advance
       if (!snapReloadScheduled) {
         snapReloadScheduled = true;
-        setTimeout(() => { snapReloadScheduled = false; loadCurrent(); }, 800);
+        setTimeout(() => { snapReloadScheduled = false; loadCurrent(); }, 800).unref();
       }
     } catch {}
   });
@@ -1684,7 +1684,7 @@ async function pollStreamHealth() {
 }
 
 pollStreamHealth();
-setInterval(pollStreamHealth, 5_000);
+setInterval(pollStreamHealth, 5_000).unref();
 
 // ──────────────────────────────────────────────────────────
 // BOOT
@@ -1697,13 +1697,13 @@ loadLiveStatus();
 if (token) {
   loadQueue();
   // Stagger health check so it doesn't compete with queue on startup
-  setTimeout(() => loadHealth(true), 2500);
+  setTimeout(() => loadHealth(true), 2500).unref();
 }
 
 // Polling safety nets (SSE is primary, these are fallbacks)
-setInterval(loadCurrent,    30_000);
-setInterval(loadViewers,    15_000);
-setInterval(loadLiveStatus, 25_000);
+setInterval(loadCurrent,    30_000).unref();
+setInterval(loadViewers,    15_000).unref();
+setInterval(loadLiveStatus, 25_000).unref();
 
 })();
 </script>

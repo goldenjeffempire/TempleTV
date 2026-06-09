@@ -56,7 +56,12 @@ function writeStore(store: Store): void {
   if (!s) return;
   try {
     s.setItem(KEY, JSON.stringify(store.slice(0, MAX_ENTRIES)));
-  } catch { /* quota exceeded — best-effort */ }
+  } catch (e) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("[favorites] Failed to write to storage:", e);
+    }
+    /* quota exceeded — best-effort */
+  }
 }
 
 /** Subscribe to store changes. Returns an unsubscribe function. */

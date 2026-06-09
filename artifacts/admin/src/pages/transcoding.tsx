@@ -63,16 +63,21 @@ export default function TranscodingPage() {
     onSuccess: () => {
       toast.success("Job requeued for transcoding");
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
       // Retry changes the video's transcodingStatus back to "queued" — sync the
       // Video Library badge so it stops showing "HLS failed" immediately.
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       // Retrying a job can change the broadcast queue's HLS-readiness state —
       // invalidate immediately without waiting for the next SSE cycle (which
       // only fires on pages where broadcast-v2 is mounted).
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Retry failed"),
   });
@@ -82,13 +87,18 @@ export default function TranscodingPage() {
     onSuccess: () => {
       toast.success("Job cancelled");
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
       // Cancel changes transcodingStatus — reflect this in the Video Library
       // immediately rather than waiting for its next 30 s stale refresh.
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Cancel failed"),
   });
@@ -98,14 +108,19 @@ export default function TranscodingPage() {
     onSuccess: (res) => {
       toast.success(res.message);
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
       // Sync the Video Library — bulk transcode sets many transcodingStatus
       // values to "queued"; without this the library tab continues to show
       // stale "HLS failed" or "none" badges until the user manually refreshes.
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Bulk transcode failed"),
   });
@@ -115,11 +130,16 @@ export default function TranscodingPage() {
     onSuccess: (res) => {
       toast.success(res.retried > 0 ? `Re-queued ${res.retried} failed job${res.retried !== 1 ? "s" : ""}` : "No failed jobs to retry");
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Retry all failed"),
   });
@@ -131,13 +151,18 @@ export default function TranscodingPage() {
     onSuccess: (res) => {
       toast.success(res.cleared > 0 ? `Cleared ${res.cleared} finished job${res.cleared !== 1 ? "s" : ""}` : "No finished jobs to clear");
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
       // Video Library shows per-row transcoding badges — clearing finished jobs
       // can affect the displayed status; sync it so stale "Encoding…" badges disappear.
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Clear finished jobs failed"),
   });

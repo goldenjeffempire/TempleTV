@@ -150,6 +150,13 @@ function EpisodesDialog({
       // Keep dashboard episode-count stats accurate after adding episodes.
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to add episode"),
   });
@@ -164,6 +171,13 @@ function EpisodesDialog({
       // Keep dashboard episode-count stats accurate after removing episodes.
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to remove episode"),
   });
@@ -552,6 +566,14 @@ export default function SeriesPage() {
       // Series metadata (preacher, category) is displayed in the video library
       // and YouTube library — refresh so cards reflect the new series mapping.
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       setFormOpen(false);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to create"),
@@ -566,6 +588,14 @@ export default function SeriesPage() {
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       // Series name/thumbnail changes surface in the video library cards.
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       setEditing(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update"),
@@ -582,6 +612,13 @@ export default function SeriesPage() {
       // library — invalidate both libraries so the UI reflects the unlinked state.
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       setDeleting(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to delete"),
@@ -598,6 +635,14 @@ export default function SeriesPage() {
       void qc.invalidateQueries({ queryKey: ["series-episodes", id] });
       // Publish state is surfaced on video library cards — keep in sync.
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update"),
   });

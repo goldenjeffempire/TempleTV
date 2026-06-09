@@ -34,8 +34,7 @@ export async function adminRoutes(app: FastifyInstance) {
       // 60/min is enough for a 1-second poller plus a few simultaneous tabs;
       // beyond that the cache is doing its job and there is no reason to
       // touch the DB. (P2 fix)
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Aggregate dashboard counts (videos, users, queue, schedule)",
         response: { 200: AdminStatsSchema, 429: z.object({ error: z.string() }) },
@@ -49,8 +48,7 @@ export async function adminRoutes(app: FastifyInstance) {
     "/analytics",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Top videos by view count and total views",
         response: { 200: AnalyticsSchema, 429: z.object({ error: z.string() }) },
@@ -64,8 +62,7 @@ export async function adminRoutes(app: FastifyInstance) {
     "/analytics/overview",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary:
           "Rich analytics overview: daily view time-series, platform breakdown, session engagement metrics",
@@ -83,8 +80,7 @@ export async function adminRoutes(app: FastifyInstance) {
     "/analytics/concurrent",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Concurrent viewer count time-series with per-platform breakdown and peak detection",
         querystring: z.object({
@@ -101,8 +97,7 @@ export async function adminRoutes(app: FastifyInstance) {
     "/analytics/platform-trends",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "Daily session counts broken down by platform (TV / mobile / web)",
         querystring: z.object({
@@ -121,8 +116,7 @@ export async function adminRoutes(app: FastifyInstance) {
       preHandler: requireAuth("admin"),
       // Hard-deletes user + all PII. 5/min prevents bulk account wipes via
       // a compromised admin token — each delete should be a deliberate act.
-      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
-      bodyLimit: 1 * 1024 * 1024,
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },      bodyLimit: 1 * 1024 * 1024,
       schema: {
         tags: ["admin"],
         summary: "Permanently delete a user account and all associated data",
@@ -162,8 +156,7 @@ export async function adminRoutes(app: FastifyInstance) {
       // optional full-text search filter. 30/min is generous for a human
       // operator but blocks automated scraping of the user base via a
       // compromised admin token.
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "List all users",
         querystring: ListUsersQuerySchema,
@@ -178,8 +171,7 @@ export async function adminRoutes(app: FastifyInstance) {
     "/users/:id/ban",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      bodyLimit: 1 * 1024 * 1024,
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      bodyLimit: 1 * 1024 * 1024,
       schema: {
         tags: ["admin"],
         summary: "Ban a user from chat (creates indefinite chat_moderation ban record)",
@@ -246,8 +238,7 @@ export async function adminRoutes(app: FastifyInstance) {
       preHandler: requireAuth("admin"),
       // Role escalation to admin/system is high privilege. 10/min is ample
       // for legitimate use while blocking automated privilege-escalation loops.
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      bodyLimit: 1 * 1024 * 1024,
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      bodyLimit: 1 * 1024 * 1024,
       schema: {
         tags: ["admin"],
         summary: "Update a user's role",

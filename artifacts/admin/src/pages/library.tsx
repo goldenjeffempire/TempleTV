@@ -227,9 +227,17 @@ export default function LibraryPage() {
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       void qc.invalidateQueries({ queryKey: ["youtube-sync-history"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       // A YouTube sync can resolve "missing video" remediation warnings — refresh
       // the report panel so resolved items disappear without waiting for SSE.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["series"] });
+      void qc.invalidateQueries({ queryKey: ["series-episodes"] });
+      void qc.invalidateQueries({ queryKey: ["playlists"] });
+      void qc.invalidateQueries({ queryKey: ["schedule"] });
     },
     onError: (err) => {
       const msg = (err as Error).message ?? "Sync failed";
@@ -673,9 +681,18 @@ function VideoCard({ video: initialVideo }: { video: VideoRow }) {
 
   const invalidateLibrary = () => {
     void queryClient.invalidateQueries({ queryKey: ["youtube-library-videos"] });
+    void queryClient.invalidateQueries({ queryKey: ["admin-videos"] });
     void queryClient.invalidateQueries({ queryKey: ["admin-stats"] });
     void queryClient.invalidateQueries({ queryKey: ["broadcast-queue"] });
     void queryClient.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+    void queryClient.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+    void queryClient.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+    void queryClient.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+    void queryClient.invalidateQueries({ queryKey: ["transcoding-queue"] });
+    void queryClient.invalidateQueries({ queryKey: ["series"] });
+    void queryClient.invalidateQueries({ queryKey: ["series-episodes"] });
+    void queryClient.invalidateQueries({ queryKey: ["playlists"] });
+    void queryClient.invalidateQueries({ queryKey: ["schedule"] });
   };
 
   const resetMutation = useMutation({

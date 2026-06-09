@@ -1674,7 +1674,9 @@ class BroadcastOrchestrator extends EventEmitter {
           }
         }
       }
-    })();
+    })().catch((err: unknown) => {
+      logger.warn({ err, channel: this.channelId }, "[broadcast-v2] dead-air escalation IIFE crashed unexpectedly (non-fatal)");
+    });
   }
 
   /**

@@ -399,6 +399,7 @@ async function probeDurationSecs(inputUrl: string): Promise<number | null> {
       logger.warn({ inputUrl }, "transcoder: ffprobe duration timed out after 30 s");
       settle(null);
     }, PROBE_TIMEOUT_MS);
+    timer.unref();
     proc.stdout.on("data", (b: Buffer) => { out += b.toString(); });
     proc.on("error", () => { clearTimeout(timer); settle(null); });
     proc.on("close", () => {
@@ -443,6 +444,7 @@ async function probeHasAudio(inputPath: string): Promise<boolean> {
       );
       settle(false);
     }, RESOLUTION_PROBE_TIMEOUT_MS);
+    timer.unref();
     proc.stdout.on("data", (b: Buffer) => { out += b.toString(); });
     proc.on("error", (err) => {
       clearTimeout(timer);
@@ -482,6 +484,7 @@ async function probeResolution(inputPath: string): Promise<{ width: number; heig
       try { proc.kill("SIGKILL"); } catch { /* noop */ }
       settle(null);
     }, RESOLUTION_PROBE_TIMEOUT_MS);
+    timer.unref();
     proc.stdout.on("data", (b: Buffer) => { out += b.toString(); });
     proc.on("error", () => { clearTimeout(timer); settle(null); });
     proc.on("close", () => {
@@ -656,6 +659,7 @@ async function _downloadWithRetry(objectKey: string, destPath: string): Promise<
 async function _downloadRemoteUrl(url: string, partPath: string): Promise<void> {
   const ac = new AbortController();
   const timeoutTimer = setTimeout(() => { ac.abort(); }, 20 * 60_000);
+  timeoutTimer.unref();
 
   let expectedSize: number | null = null;
   let bytesWritten = 0;
@@ -890,6 +894,7 @@ export async function probeContainerIsValid(inputPath: string): Promise<boolean>
       try { proc.kill("SIGKILL"); } catch { /* noop */ }
       settle(false);
     }, PROBE_TIMEOUT_MS);
+    timer.unref();
     proc.stdout.on("data", (b: Buffer) => { out += b.toString(); });
     proc.stderr.on("data", (b: Buffer) => { err = (err + b.toString()).slice(-2000); });
     proc.on("error", () => {
@@ -993,6 +998,7 @@ export async function detectMdatWithoutMoov(inputPath: string): Promise<boolean>
       // Safety valve: a legitimately absent moov means ffprobe exits quickly;
       // cap at 60 s to handle large files on slow storage without hanging.
       const timer = setTimeout(() => { proc.kill(); resolve(false); }, 60_000);
+      timer.unref();
       proc.on("close", (code) => {
         clearTimeout(timer);
         // Any stream found → moov exists → NOT unrecoverable (remux can fix it).
@@ -1050,6 +1056,7 @@ export async function remuxForFaststart(
         logger.warn({ videoId, strategyName }, "transcoder: remux strategy timed out");
         settle(false);
       }, timeoutMs);
+      timer.unref();
       proc.stderr?.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-2000); });
       proc.on("error", () => { clearTimeout(timer); settle(false); });
       proc.on("close", (code) => {
@@ -1151,6 +1158,7 @@ async function generateThumbnail(sourceUrl: string, scratchDir: string): Promise
       logger.warn({ sourceUrl }, "transcoder: thumbnail ffmpeg timed out after 30 s — skipping (non-fatal)");
       settle(null);
     }, THUMBNAIL_TIMEOUT_MS);
+    timer.unref();
 
     proc.stderr?.on("data", (chunk: Buffer) => {
       stderrTail = (stderrTail + chunk.toString()).slice(-2000);
@@ -2073,6 +2081,7 @@ export async function normalizeThumbnailBuffer(input: Buffer): Promise<Buffer | 
         try { proc.kill("SIGKILL"); } catch { /* noop */ }
         settle(false);
       }, 15_000);
+      timer.unref();
 
       proc.on("error", () => { clearTimeout(timer); settle(false); });
       proc.on("close", (code) => { clearTimeout(timer); settle(code === 0); });

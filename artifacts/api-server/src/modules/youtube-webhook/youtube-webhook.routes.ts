@@ -134,8 +134,7 @@ export async function youtubeWebhookRoutes(app: FastifyInstance): Promise<void> 
   // Rate-limited to 30/min — hub challenge verification only happens once at
   // subscription time; higher frequency is unexpected and may be abuse.
   app.get("/webhook", {
-    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-    schema: {
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },    schema: {
       response: {
         200: z.unknown(),
         400: z.object({ error: z.string() }),
@@ -166,8 +165,7 @@ export async function youtubeWebhookRoutes(app: FastifyInstance): Promise<void> 
     // Rate-limit to 60/min — YouTube PubSubHubbub hubs send at most a few
     // notifications per minute, so this is generous while bounding replay
     // attacks that could spam the sync dispatcher.
-    config: { bodyLimit: 64 * 1024, rateLimit: { max: 60, timeWindow: "1 minute" } },
-    schema: {
+    config: { bodyLimit: 64 * 1024, rateLimit: { max: 60, timeWindow: "1 minute" } },    schema: {
       response: {
         200: z.unknown(),
         403: z.object({ error: z.string() }),

@@ -38,8 +38,7 @@ export async function pushRoutes(app: FastifyInstance) {
   r.post(
     "/push-tokens",
     {
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["notifications"],
         summary: "Register an Expo push token for mobile push delivery",
         body: z.object({
@@ -85,8 +84,7 @@ export async function pushRoutes(app: FastifyInstance) {
   r.post(
     "/push/web-subscriptions",
     {
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
         tags: ["notifications"],
         summary: "Register a Web Push subscription for browser push delivery",
         body: z.object({
@@ -141,8 +139,7 @@ export async function pushRoutes(app: FastifyInstance) {
   r.get(
     "/push/web-vapid-public-key",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["notifications"],
         summary: "Retrieve the VAPID public key for Web Push subscriptions",
         response: {

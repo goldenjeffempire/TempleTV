@@ -266,8 +266,7 @@ export async function playbackRoutes(app: FastifyInstance) {
       // 60/min: called on every TV/mobile (re)connect and cold-start poll.
       // In-memory projection only (no DB) but still rate-limited to prevent
       // a runaway client from hammering the event loop.
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["playback"],
         summary:
           "Current playback snapshot (current/next/nextNext) for the new dual-buffer player",

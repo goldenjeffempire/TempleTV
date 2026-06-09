@@ -51,7 +51,10 @@ function writeHistory(store: HistoryStore): void {
   if (!s) return;
   try {
     s.setItem(KEY, JSON.stringify(store));
-  } catch {
+  } catch (e) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("[watchHistory] Failed to write to storage:", e);
+    }
     // Quota exceeded — silently skip; history is best-effort.
   }
 }

@@ -62,14 +62,21 @@ export function useFavorites() {
             // Use sermon.id (db UUID) as the canonical dedup key.
             // This fixes local-video favorites where youtubeId is always "".
             setFavoriteIds(new Set(parsed.map((s) => s.id)));
-          } catch {
+          } catch (e) {
             // Corrupted AsyncStorage data — clear and start fresh so the app
             // doesn't crash on every launch until the user reinstalls.
+            if (process.env.NODE_ENV !== "production") {
+              console.error("[useFavorites] Failed to parse favorites:", e);
+            }
             void AsyncStorage.removeItem(STORAGE_KEYS.favorites);
           }
         }
       })
-      .catch(() => {})
+      .catch((e) => {
+        if (process.env.NODE_ENV !== "production") {
+          console.error("[useFavorites] Failed to read from storage:", e);
+        }
+      })
       .finally(() => setLoaded(true));
   }, []);
 
@@ -113,9 +120,19 @@ export function useFavorites() {
         favoritesRef.current = merged;
         setFavorites(merged);
         setFavoriteIds(new Set(merged.map((s) => s.id)));
-        await AsyncStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(merged)).catch(() => {});
+        try {
+          await AsyncStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(merged));
+        } catch (e) {
+          if (process.env.NODE_ENV !== "production") {
+            console.error("[useFavorites] Failed to persist merged favorites:", e);
+          }
+        }
       })
-      .catch(() => {});
+      .catch((e) => {
+        if (process.env.NODE_ENV !== "production") {
+          console.error("[useFavorites] Cloud sync failed:", e);
+        }
+      });
   }, [token, loaded]);
 
   const persist = useCallback(async (updated: Sermon[]) => {
@@ -124,7 +141,13 @@ export function useFavorites() {
     favoritesRef.current = updated;
     setFavorites(updated);
     setFavoriteIds(new Set(updated.map((s) => s.id)));
-    await AsyncStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(updated)).catch(() => {});
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.favorites, JSON.stringify(updated));
+    } catch (e) {
+      if (process.env.NODE_ENV !== "production") {
+        console.error("[useFavorites] Failed to persist updated list:", e);
+      }
+    }
   }, []);
 
   const addFavorite = useCallback(

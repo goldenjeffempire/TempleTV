@@ -97,9 +97,7 @@ export async function mediaProxyRoutes(app: FastifyInstance) {
     "/media-proxy",
     {
       config: {
-        rateLimit: { max: 400, timeWindow: "1 minute" },
-      },
-      schema: { response: { 429: z.object({ error: z.string() }) } },
+        rateLimit: { max: 400, timeWindow: "1 minute" } },
     },
     async (req, reply) => {
       const { url: rawUrl, sig } = req.query;
@@ -154,7 +152,7 @@ export async function mediaProxyRoutes(app: FastifyInstance) {
       // the body — after 30 s, which kills a 291 MB video stream mid-transfer
       // and causes the browser's <video> element to fire MEDIA_ERR_NETWORK.
       const ctrl = new AbortController();
-      const connectionTimeout = setTimeout(() => ctrl.abort(), 30_000);
+      const connectionTimeout = setTimeout(() => ctrl.abort(), 30_000).unref();
 
       let upstream: Response;
       try {

@@ -148,8 +148,7 @@ export async function networkRoutes(app: FastifyInstance) {
     "/status",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
         tags: ["network"],
         summary: "OMEGA NOC: full broadcast network status",
         security: [{ bearerAuth: [] }],
@@ -165,8 +164,7 @@ export async function networkRoutes(app: FastifyInstance) {
   r.get(
     "/heartbeat",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["network"],
         summary: "OMEGA NOC: live heartbeat — encoder + stream + CDN + player",
         response: {
@@ -211,8 +209,7 @@ export async function networkRoutes(app: FastifyInstance) {
       preHandler: requireAuth("admin"),
       // High-impact NOC commands that mutate live broadcast state. 10/min
       // gives operators plenty of headroom while bounding accidental loops.
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["network"],
         summary: "OMEGA NOC: dispatch a broadcast command (GO_LIVE, SWITCH, SYNC, EMERGENCY, FAILOVER, LOCK, UNLOCK, STOP)",
         body: CommandSchema,

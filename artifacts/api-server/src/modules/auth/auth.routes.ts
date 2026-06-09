@@ -78,7 +78,10 @@ export async function authRoutes(app: FastifyInstance) {
         tags: ["auth"],
         summary: "Register a new viewer account",
         body: RegisterBodySchema,
-        response: { 201: AuthTokensSchema },
+        response: { 
+          201: AuthTokensSchema,
+          429: z.object({ error: z.string() }),
+        },
       },
     },
     async (req, reply) => {
@@ -155,7 +158,7 @@ export async function authRoutes(app: FastifyInstance) {
         tags: ["auth"],
         summary: "Rotate refresh token + issue new access token",
         body: RefreshBodySchema,
-        response: { 200: AuthTokensSchema },
+        response: { 200: AuthTokensSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async (req) => authService.refresh(req.body.refreshToken, {
@@ -175,8 +178,7 @@ export async function authRoutes(app: FastifyInstance) {
   r.post(
     "/extend",
     {
-      config: { rateLimit: { max: 120, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 120, timeWindow: "1 minute" } },      schema: {
         tags: ["auth"],
         summary: "Extend session — issues new access token without rotating refresh token",
         body: ExtendBodySchema,
@@ -198,8 +200,7 @@ export async function authRoutes(app: FastifyInstance) {
     "/session/ping",
     {
       preHandler: requireAuth(),
-      config: { rateLimit: { max: 120, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 120, timeWindow: "1 minute" } },      schema: {
         tags: ["auth"],
         summary: "Session heartbeat — validates access token without DB writes",
         security: [{ bearerAuth: [] }],
@@ -233,7 +234,7 @@ export async function authRoutes(app: FastifyInstance) {
         // server-side immediately, preventing replay for the remaining 30-day
         // window.
         body: z.object({ refreshToken: z.string().min(10) }).nullish(),
-        response: { 204: z.null() },
+        response: { 204: z.null(), 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {
@@ -287,6 +288,7 @@ export async function authRoutes(app: FastifyInstance) {
         body: ForgotPasswordBodySchema,
         response: {
           202: z.object({ message: z.string() }),
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -314,6 +316,7 @@ export async function authRoutes(app: FastifyInstance) {
         body: ResetPasswordBodySchema,
         response: {
           200: z.object({ message: z.string() }),
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -329,8 +332,7 @@ export async function authRoutes(app: FastifyInstance) {
     "/password",
     {
       preHandler: requireAuth(),
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
         tags: ["auth"],
         summary: "Change authenticated user's password",
         security: [{ bearerAuth: [] }],
@@ -385,7 +387,7 @@ export async function authRoutes(app: FastifyInstance) {
         summary: "Permanently delete the authenticated user's account",
         security: [{ bearerAuth: [] }],
         body: z.object({ currentPassword: z.string().min(1) }),
-        response: { 200: z.object({ message: z.string() }) },
+        response: { 200: z.object({ message: z.string() }), 429: z.object({ error: z.string() }) },
       },
     },
     async (req) => {
@@ -545,8 +547,7 @@ export async function authRoutes(app: FastifyInstance) {
       // Strict rate limit: each call inserts a row into device_link_codes.
       // Without this, a malicious client can flood the table to cause OOM
       // or exhaust connection pool bandwidth on the cleanup sweep.
-      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
-      schema: {
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },      schema: {
         tags: ["auth"],
         summary: "Create a device-link pairing code (TV side)",
         body: z.object({ deviceLabel: z.string().max(80).optional() }),
