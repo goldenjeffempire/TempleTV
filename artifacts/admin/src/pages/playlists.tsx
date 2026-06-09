@@ -52,6 +52,7 @@ export default function PlaylistsPage() {
       toast.success("Playlist created");
       void qc.invalidateQueries({ queryKey: ["playlists"] });
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       setOpen(false);
       setForm({ name: "", description: "" });
     },
@@ -63,12 +64,14 @@ export default function PlaylistsPage() {
     onSuccess: () => {
       toast.success("Playlist updated");
       void qc.invalidateQueries({ queryKey: ["playlists"] });
+      void qc.invalidateQueries({ queryKey: ["admin-stats"] });
       // The schedule page may reference this playlist by name — refresh so
       // a rename is reflected immediately without a manual page reload.
       void qc.invalidateQueries({ queryKey: ["schedule"] });
       // The broadcast queue may show this playlist's title — refresh so a
       // rename is visible to the operator in Master Control without a reload.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       setEditing(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to update"),
@@ -83,6 +86,7 @@ export default function PlaylistsPage() {
       // A deleted playlist may appear as a schedule entry contentId — refresh
       // the schedule so operators see that the referenced content is gone.
       void qc.invalidateQueries({ queryKey: ["schedule"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       setDeleting(null);
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to delete"),

@@ -30,6 +30,38 @@ const QueueItemBodySchema = z.object({
   videoSource: z.enum(["youtube", "local", "hls"]).default("youtube"),
 });
 
+const ChannelSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  description: z.string(),
+  color: z.string(),
+  failoverHlsUrl: z.string().nullable(),
+  isPrimary: z.boolean(),
+  isActive: z.boolean(),
+  sortOrder: z.number(),
+  createdAt: z.string().or(z.date()).nullable(),
+  updatedAt: z.string().or(z.date()).nullable(),
+});
+
+const ChannelQueueItemSchema = z.object({
+  id: z.string(),
+  channelId: z.string(),
+  videoId: z.string().nullable().optional(),
+  youtubeId: z.string(),
+  title: z.string(),
+  thumbnailUrl: z.string(),
+  durationSecs: z.number(),
+  localVideoUrl: z.string().nullable(),
+  hlsMasterUrl: z.string().nullable(),
+  videoSource: z.enum(["youtube", "local", "hls"]),
+  sortOrder: z.number(),
+  isActive: z.boolean(),
+  addedAt: z.string().or(z.date()).nullable(),
+});
+
+const ErrSchema = z.object({ error: z.string() });
+
 export async function channelsRoutes(app: FastifyInstance) {
   const r = app.withTypeProvider<ZodTypeProvider>();
 
@@ -137,6 +169,11 @@ export async function channelsRoutes(app: FastifyInstance) {
         tags: ["channels"],
         summary: "Create a new broadcast channel",
         body: ChannelBodySchema,
+        response: {
+          201: ChannelSchema,
+          409: ErrSchema,
+          429: ErrSchema,
+        },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -176,6 +213,11 @@ export async function channelsRoutes(app: FastifyInstance) {
         summary: "Update channel metadata",
         params: z.object({ id: z.string().min(1).max(128) }),
         body: ChannelBodySchema.partial(),
+        response: {
+          200: ChannelSchema,
+          404: ErrSchema,
+          429: ErrSchema,
+        },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -202,6 +244,12 @@ export async function channelsRoutes(app: FastifyInstance) {
         tags: ["channels"],
         summary: "Delete a non-primary channel",
         params: z.object({ id: z.string().min(1).max(128) }),
+        response: {
+          204: z.void(),
+          400: ErrSchema,
+          404: ErrSchema,
+          429: ErrSchema,
+        },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -260,6 +308,10 @@ export async function channelsRoutes(app: FastifyInstance) {
         summary: "Add a video to a channel's broadcast queue",
         params: z.object({ id: z.string().min(1).max(128) }),
         body: QueueItemBodySchema,
+        response: {
+          201: ChannelQueueItemSchema,
+          429: ErrSchema,
+        },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -297,6 +349,10 @@ export async function channelsRoutes(app: FastifyInstance) {
         tags: ["channels"],
         summary: "Remove an item from a channel's queue",
         params: z.object({ channelId: z.string().min(1).max(128), itemId: z.string().min(1).max(128) }),
+        response: {
+          204: z.void(),
+          429: ErrSchema,
+        },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -325,6 +381,10 @@ export async function channelsRoutes(app: FastifyInstance) {
         summary: "Toggle active status of a channel queue item",
         params: z.object({ channelId: z.string().min(1).max(128), itemId: z.string().min(1).max(128) }),
         body: z.object({ isActive: z.boolean() }),
+        response: {
+          204: z.void(),
+          429: ErrSchema,
+        },
         security: [{ bearerAuth: [] }],
       },
     },

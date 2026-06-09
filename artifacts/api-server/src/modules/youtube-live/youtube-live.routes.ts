@@ -155,6 +155,10 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
       if (closed) return;
       try { reply.raw.write(": ping\n\n"); } catch { /* ignore */ }
     }, 25_000);
+    // Unref so this timer never blocks graceful shutdown — the req.raw
+    // "close" / "error" handlers will clearInterval if the client disconnects,
+    // and SIGTERM will drain the server regardless of this timer.
+    heartbeat.unref();
 
     const cleanup = () => {
       closed = true;
