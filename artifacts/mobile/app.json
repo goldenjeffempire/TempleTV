@@ -90,7 +90,7 @@
     },
     "android": {
       "package": "com.templetv.jctm",
-      "versionCode": 55,
+      "versionCode": 56,
       "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon-foreground.png",
@@ -255,6 +255,7 @@
       "./plugins/with-kotlin-version.js",
       "./plugins/with-foreground-service-type.js",
       "./plugins/with-android-activity-flags.js",
+      "./plugins/with-enable-edge-to-edge.js",
       "./plugins/with-edge-to-edge.js",
       [
         "expo-screen-orientation",

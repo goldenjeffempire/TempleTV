@@ -1,24 +1,24 @@
-// Expo Config Plugin — Android 15 Edge-to-Edge Compatibility
+// Expo Config Plugin — Android Edge-to-Edge Theme Items (non-deprecated)
 //
-// Android 15 (API 35) enforces edge-to-edge for all apps that target API 35+.
-// This plugin configures the Android theme so content extends behind the
-// transparent status and navigation bars, relying on react-native-safe-area-context
-// (already installed at the app root as <SafeAreaProvider>) to supply insets
-// that keep interactive UI clear of the system bars.
+// Android 15 (API 35) deprecated the old attribute-based approach:
+//   • android:statusBarColor          → deprecated API 35
+//   • android:navigationBarColor      → deprecated API 35
+//   • android:windowTranslucentStatus → deprecated
+//   • android:windowTranslucentNavigation → deprecated
+//   • android:windowDrawsSystemBarBackgrounds → deprecated
 //
-// Changes applied to res/values/styles.xml (AppTheme):
-//   • statusBarColor = transparent     → no coloured band behind status icons
-//   • navigationBarColor = transparent → no coloured band behind gesture bar
-//   • windowDrawsSystemBarBackgrounds  → app draws the backgrounds itself
-//   • windowTranslucentStatus/Nav = false → use the explicit color set above
-//   • windowLayoutInDisplayCutoutMode = shortEdges → content extends into
-//     notch/punch-hole cutouts in landscape (status bar area only in portrait)
-//   • windowOptOutEdgeToEdgeEnforcement = false → explicitly opt IN to Android
-//     15 edge-to-edge (the default, but declared here for clarity)
+// Those are now handled by enableEdgeToEdge() called in MainActivity.onCreate()
+// via the companion with-enable-edge-to-edge.js plugin.
 //
-// NOTE: This plugin does NOT change softwareKeyboardLayoutMode — the app
-// uses react-native-keyboard-controller which handles keyboard insets via
-// WindowInsetsAnimationCompat regardless of the window soft input mode.
+// This plugin retains ONLY the two attributes that are still valid and required:
+//   • android:windowLayoutInDisplayCutoutMode = shortEdges
+//       → content fills the notch/punch-hole area in landscape (video fullscreen)
+//   • android:windowOptOutEdgeToEdgeEnforcement = false
+//       → explicitly opt IN to Android 15 edge-to-edge enforcement (the default,
+//         but declared here so it survives future Expo theme regenerations)
+//
+// NOTE: SafeAreaProvider at the app root (app/_layout.tsx) + useSafeAreaInsets()
+// in player.tsx continue to supply insets that keep interactive UI clear of bars.
 
 const { withAndroidStyles } = require("@expo/config-plugins");
 
@@ -34,24 +34,33 @@ module.exports = function withEdgeToEdge(config) {
 
     if (!Array.isArray(appTheme.item)) appTheme.item = [];
 
+    // Items to keep / add (non-deprecated in API 35+).
     const EDGE_TO_EDGE_ITEMS = [
-      { name: "android:windowTranslucentStatus",             value: "false" },
-      { name: "android:windowTranslucentNavigation",         value: "false" },
-      { name: "android:statusBarColor",                      value: "@android:color/transparent" },
-      { name: "android:navigationBarColor",                  value: "@android:color/transparent" },
-      { name: "android:windowDrawsSystemBarBackgrounds",     value: "true" },
       // Display cutout: content extends into notch area in landscape so the
       // video player fills the full screen including the camera cutout zone.
-      { name: "android:windowLayoutInDisplayCutoutMode",    value: "shortEdges" },
+      { name: "android:windowLayoutInDisplayCutoutMode", value: "shortEdges" },
       // Android 15 edge-to-edge enforcement: false = opt IN (do not opt out).
       // This attribute is no-op on API < 35 (safely ignored by older frameworks).
-      { name: "android:windowOptOutEdgeToEdgeEnforcement",  value: "false" },
+      { name: "android:windowOptOutEdgeToEdgeEnforcement", value: "false" },
     ];
 
-    // Remove stale values set by earlier runs or the Expo default theme,
-    // then append the canonical edge-to-edge set.
+    // Deprecated attributes replaced by enableEdgeToEdge() — remove them if
+    // they were set by an earlier version of this plugin or by Expo defaults.
+    const DEPRECATED_NAMES = new Set([
+      "android:statusBarColor",
+      "android:navigationBarColor",
+      "android:windowTranslucentStatus",
+      "android:windowTranslucentNavigation",
+      "android:windowDrawsSystemBarBackgrounds",
+    ]);
+
     const MANAGED_NAMES = new Set(EDGE_TO_EDGE_ITEMS.map((i) => i.name));
-    appTheme.item = appTheme.item.filter((item) => !MANAGED_NAMES.has(item.$?.name));
+
+    // Remove stale deprecated items and stale managed items, then re-add.
+    appTheme.item = appTheme.item.filter(
+      (item) =>
+        !DEPRECATED_NAMES.has(item.$?.name) && !MANAGED_NAMES.has(item.$?.name),
+    );
 
     for (const { name, value } of EDGE_TO_EDGE_ITEMS) {
       appTheme.item.push({ $: { name }, _: value });
