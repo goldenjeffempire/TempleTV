@@ -59,7 +59,10 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
    * Admin Live YouTube page polls this to populate the broadcast selector.
    * Returns an empty array when the YouTube API is not configured.
    */
-  app.get("/broadcasts", async () => {
+  app.get("/broadcasts", {
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+    schema: { response: { 429: z.object({ error: z.string() }) } },
+  }, async () => {
     const s = ytPoller.getState();
     // When live, surface the current broadcast as the only entry so the
     // admin can toggle it off. When offline, return an empty list — the
@@ -117,7 +120,12 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
    * A keepalive comment (`: ping`) is sent every 25 s to prevent proxy
    * / load-balancer idle timeouts from silently closing the stream.
    */
-  app.get("/events", async (req, reply) => {
+  // SSE long-poll: rate-limit new connections to 20/min per IP to prevent
+  // resource exhaustion from connection storms while allowing normal
+  // multi-tab admin usage.
+  app.get("/events", {
+    config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",

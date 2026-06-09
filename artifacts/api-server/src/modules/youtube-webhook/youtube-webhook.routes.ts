@@ -131,7 +131,12 @@ export async function youtubeWebhookRoutes(app: FastifyInstance): Promise<void> 
   }
 
   // ── GET /youtube/webhook — hub challenge verification ────────────────────
-  app.get("/webhook", async (req, reply) => {
+  // Rate-limited to 30/min — hub challenge verification only happens once at
+  // subscription time; higher frequency is unexpected and may be abuse.
+  app.get("/webhook", {
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    schema: { response: { 429: z.object({ error: z.string() }) } },
+  }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const mode = q["hub.mode"];
     const challenge = q["hub.challenge"];
@@ -204,7 +209,7 @@ export async function youtubeWebhookRoutes(app: FastifyInstance): Promise<void> 
           } finally {
             webhookSyncPending = false;
           }
-        }, 5_000); // 5-second delay to batch rapid consecutive notifications
+        }, 5_000).unref(); // 5-second delay to batch rapid consecutive notifications; unref so SIGTERM isn't blocked
       }
     } else {
       logger.debug({ bodySnippet: body.slice(0, 200) }, "youtube-webhook: POST received but no videoId found");

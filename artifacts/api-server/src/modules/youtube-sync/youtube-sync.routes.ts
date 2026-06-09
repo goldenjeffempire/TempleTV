@@ -23,6 +23,7 @@ export async function youtubeSyncRoutes(app: FastifyInstance) {
     "/youtube/sync/status",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "YouTube sync status and statistics",
@@ -44,6 +45,7 @@ export async function youtubeSyncRoutes(app: FastifyInstance) {
             syncInProgress: z.boolean(),
             contentWindowDays: z.number(),
           }),
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -105,6 +107,7 @@ export async function youtubeSyncRoutes(app: FastifyInstance) {
     "/youtube/sync/history",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin"],
         summary: "YouTube sync history log",
@@ -125,6 +128,7 @@ export async function youtubeSyncRoutes(app: FastifyInstance) {
               source: z.string().nullable(),
             })),
           }),
+          429: z.object({ error: z.string() }),
         },
       },
     },
