@@ -727,6 +727,14 @@ class UploadQueueEngine {
     }
   }
 
+  retryAll(): void {
+    for (const [id, item] of this.items) {
+      if (item.status === "failed") {
+        this.retry(id);
+      }
+    }
+  }
+
   clearCompleted(): void {
     for (const [id, item] of this.items) {
       if (item.status === "completed" || item.status === "cancelled") {

@@ -245,13 +245,19 @@ function UploadRow({
           )}
           {(isFailed || isCancelled) && (
             <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6"
+              variant={isFailed ? "destructive" : "ghost"}
+              size="sm"
+              className={cn(
+                "h-6 text-[10px] px-2 gap-1",
+                isFailed
+                  ? "bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 border-red-200 dark:border-red-800"
+                  : "text-muted-foreground",
+              )}
               onClick={() => uploadQueue.retry(item.id)}
-              title="Retry"
+              title={isFailed ? "Retry this upload" : "Re-upload"}
             >
-              <RefreshCw size={11} />
+              <RefreshCw size={10} />
+              {isFailed ? "Retry" : "Re-upload"}
             </Button>
           )}
 
@@ -412,6 +418,18 @@ export function UploadQueuePanel() {
             >
               <Play size={10} className="mr-0.5" />
               Resume
+            </Button>
+          )}
+          {failed > 0 && active === 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 text-[10px] px-1.5 text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
+              onClick={(e) => { e.stopPropagation(); uploadQueue.retryAll(); }}
+              title="Retry all failed uploads"
+            >
+              <RefreshCw size={10} className="mr-0.5" />
+              Retry {failed > 1 ? `${failed} failed` : "failed"}
             </Button>
           )}
           {inFlight === 0 && done > 0 && (
