@@ -426,6 +426,16 @@ async function getAllPlaylistItems(
   let pages = 0;
   let hitCutoff = false;
   do {
+    // Stop paginating if the daily quota is hit mid-run to prevent the quota
+    // counter from running way over QUOTA_TOTAL.  Each page costs 1 unit; for
+    // large channels with 100+ pages this is the primary over-run site.
+    if (isQuotaExhausted()) {
+      logger.warn(
+        { pages, itemsSoFar: items.length },
+        "youtube-sync: quota exhausted mid-pagination — returning partial playlist",
+      );
+      break;
+    }
     trackQuota("playlistItems.list", 1);
     const params = new URLSearchParams({
       part: "snippet", playlistId, maxResults: "50", key: apiKey,
@@ -469,6 +479,16 @@ async function getAllPlaylistItems(
 async function getVideoDetailsBatch(videoIds: string[], apiKey: string): Promise<Map<string, VideoDetails>> {
   const map = new Map<string, VideoDetails>();
   for (let i = 0; i < videoIds.length; i += 50) {
+    // Guard: stop fetching details if quota is exhausted mid-batch.
+    // Videos without details fall back to duration="" / viewCount="0" which
+    // is the same outcome as a failed details fetch — safe to skip.
+    if (isQuotaExhausted()) {
+      logger.warn(
+        { processed: i, total: videoIds.length },
+        "youtube-sync: quota exhausted mid-batch — skipping remaining video details",
+      );
+      break;
+    }
     const batch = videoIds.slice(i, i + 50);
     trackQuota("videos.list", 1);
     const params = new URLSearchParams({ part: "contentDetails,statistics", id: batch.join(","), key: apiKey });

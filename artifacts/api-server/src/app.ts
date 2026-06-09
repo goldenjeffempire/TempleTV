@@ -515,6 +515,34 @@ export async function buildApp(): Promise<FastifyInstance> {
   // any request taking longer than 1 000 ms for the diagnostics dashboard.
   registerSlowRequestHook(app);
 
+  // ── Canonical host redirect ────────────────────────────────────────────────
+  // Requests arriving with a stale `*.onrender.com` Host header are permanently
+  // redirected (301) to the canonical API origin.  This covers:
+  //   • Browsers / HLS players that cached old Render.com manifest URLs.
+  //   • Stale bookmarks / queue items that pre-date the domain migration.
+  //
+  // Why 301 (permanent): HLS clients re-fetch the master.m3u8 from the new
+  // URL, so all subsequent segment requests also go to the canonical host —
+  // preventing every segment from hitting the deprecated Render subdomain.
+  //
+  // Guard: only active in production when API_ORIGIN is set, so the dev
+  // environment (where RENDER_EXTERNAL_URL may still be an onrender.com URL)
+  // is never affected.
+  if (env.NODE_ENV === "production" && env.API_ORIGIN) {
+    const canonicalOrigin = env.API_ORIGIN.replace(/\/$/, "");
+    app.addHook("onRequest", async (req, reply) => {
+      const host = (req.headers["host"] ?? "").split(":")[0];
+      if (host.endsWith(".onrender.com")) {
+        const target = `${canonicalOrigin}${req.raw.url ?? "/"}`;
+        return reply
+          .code(301)
+          .header("Location", target)
+          .header("Cache-Control", "public, max-age=31536000, immutable")
+          .send();
+      }
+    });
+  }
+
   app.addHook("onRequest", adminCsrfHook);
   app.addHook("preHandler", attachPrincipal());
   registerErrorHandler(app);
