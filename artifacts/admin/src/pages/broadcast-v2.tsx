@@ -912,10 +912,16 @@ function BroadcastV2PageInner() {
     try {
       await api.post(path, { ...body, idempotencyKey: safeRandomUUID() });
       toast.success(`OK: ${path.split("/").pop()}`);
-      // Refresh broadcast state so the UI reflects the engine change without
-      // waiting for the next poll cycle (10–15 s).
+      // Refresh all engine-derived panels immediately so operators see the
+      // updated state without waiting for the next SSE-driven refresh (up to
+      // 15 s).  The SSE handler already provides the push-based invalidation,
+      // but firing it here eagerly prevents a stale "stuck" UI after skip /
+      // reload / failover / clear-failover commands.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     } catch (e) {
       const detail =
         e instanceof HttpError

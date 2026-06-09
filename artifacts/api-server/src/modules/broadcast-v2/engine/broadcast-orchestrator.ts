@@ -979,6 +979,28 @@ class BroadcastOrchestrator extends EventEmitter {
           logger.warn({ err, channel: this.channelId }, "[broadcast-v2] dead-air fallback override stop failed (non-fatal)"),
         );
       }
+      // Auto-clear the escalateDeadAir() fallback override (fallbackOverrideActive
+      // path) on ANY reload that recovers items — not just reloads triggered via
+      // scheduleSelfHealReload().  Previously this cleanup only ran in
+      // scheduleSelfHealReload().then(), so the ~8 direct reload() call-sites
+      // (bus bridge, REST /reload, override transitions, circuit-breaker reset)
+      // left the fallback override running indefinitely after queue recovery.
+      if (this.fallbackOverrideActive) {
+        this.fallbackOverrideActive = false;
+        logger.info(
+          { channel: this.channelId, resolvedCount: resolved.length },
+          "[broadcast-v2] dead-air fallback: queue recovered via direct reload — stopping BROADCAST_DEADAIR_FALLBACK_URL override",
+        );
+        void this.stopOverride().catch((err: unknown) =>
+          logger.warn({ err, channel: this.channelId }, "[broadcast-v2] dead-air fallback: stopOverride failed on direct-reload recovery (non-fatal)"),
+        );
+      }
+      // Reset the dead-air elapsed timer so a future dead-air window doesn't
+      // inherit elapsed time from a previous outage and fire the fallback
+      // override prematurely. Previously only cleared in scheduleSelfHealReload()
+      // — stale values could cause the fallback to apply within milliseconds
+      // of a new empty-queue window instead of waiting the full threshold.
+      this.deadAirDetectedAtMs = null;
     }
     // Mirror playable-queue depth as a Prometheus gauge for dashboards/alerts.
     broadcastQueueDepth.set({ channel: this.channelId, ...SERVICE_LABELS }, this.items.length);
@@ -1442,21 +1464,11 @@ class BroadcastOrchestrator extends EventEmitter {
         this.selfHealConsecutiveFails = 0;
         this.selfHealBlockedUntilMs = 0;
         if (this.items.length > 0) {
-          // Queue recovered — clear dead-air tracking and auto-fallback if active.
-          this.deadAirDetectedAtMs = null;
-          if (this.fallbackOverrideActive) {
-            this.fallbackOverrideActive = false;
-            logger.info(
-              { channel: this.channelId, items: this.items.length },
-              "[broadcast-v2] dead-air fallback: queue recovered — stopping BROADCAST_DEADAIR_FALLBACK_URL override",
-            );
-            void this.stopOverride().catch((err: unknown) => {
-              logger.warn(
-                { err, channel: this.channelId },
-                "[broadcast-v2] dead-air fallback: stopOverride failed on queue recovery (non-fatal)",
-              );
-            });
-          }
+          // fallbackOverrideActive + deadAirDetectedAtMs are now cleared inside
+          // reloadInner() so ALL reload paths (bus bridge, REST, circuit-breaker
+          // reset, self-heal) get the cleanup — not just this one.  No action
+          // needed here; the values are already reset before this .then() fires.
+          //
           // Routine drift-poll — log at DEBUG to avoid flooding production
           // logs every 20 s with an INFO message that signals no operator
           // action. The reload itself is silent (no sequence bump) when the
@@ -2040,12 +2052,37 @@ class BroadcastOrchestrator extends EventEmitter {
 
   async skip(): Promise<void> {
     if (this.items.length === 0 || this.cycleDurationMs === 0) return;
-    const snap = this.snapshot();
-    if (!snap.current) return;
-    const remainingMs = snap.current.endsAtMs - Date.now();
-    this.cycleStartedAtMs -= remainingMs;
+    // Compute the advance using elapsed position in the cycle rather than
+    // snapshot().current.endsAtMs.
+    //
+    // When skip() is called from probeCurrentItem() the caller has already
+    // called markBadUrl() for the current item's URL.  snapshot() then
+    // forward-scans past the blocked slot and returns the NEXT valid item B —
+    // so snap.current.endsAtMs = now + A_remaining + B_duration.  Using that
+    // value for remainingMs would advance the anchor by A_remaining + B_duration,
+    // silently skipping item B as well as the bad item A.
+    //
+    // Using elapsed lets us find the exact slot that contains the current clock
+    // position (identical logic to tickInner's auto-skip), advance past only that
+    // slot's remaining time, and always skip exactly one item regardless of URL
+    // blocking.  This matches what operators expect from a manual skip too.
+    const now = Date.now();
+    const elapsed = ((now - this.cycleStartedAtMs) % this.cycleDurationMs + this.cycleDurationMs) % this.cycleDurationMs;
+    let skippedItemId: string | null = null;
+    let acc = 0;
+    for (let i = 0; i < this.items.length; i++) {
+      const span = this.items[i]!.durationSecs * 1000;
+      if (elapsed < acc + span) {
+        const remaining = (acc + span) - elapsed;
+        this.cycleStartedAtMs -= remaining;
+        skippedItemId = this.items[i]!.id;
+        break;
+      }
+      acc += span;
+    }
+    if (!skippedItemId) return; // elapsed fell outside all slots (shouldn't happen)
     this.consecutiveSkips += 1;
-    await this.bump("item.skipped", { itemId: snap.current.id });
+    await this.bump("item.skipped", { itemId: skippedItemId });
     this.emitSnapshot();
     // Dead-air structured alert: emit once when the consecutive-skip
     // threshold first crosses 2.
