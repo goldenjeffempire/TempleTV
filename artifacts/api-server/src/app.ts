@@ -147,11 +147,30 @@ export async function buildApp(): Promise<FastifyInstance> {
   // but `@fastify/cors` with `origin: true` reflects the *request* origin,
   // which silently sidesteps that browser guard. Refuse to start in
   // production with that combination so the misconfiguration is loud.
-  const wildcardOrigin = env.CORS_ORIGINS === "*";
-  if (wildcardOrigin && env.NODE_ENV !== "development") {
-    throw new Error(
-      "CORS_ORIGINS='*' is only permitted in development — set an explicit comma-separated allowlist of origins for staging/production.",
+  const wildcardOriginRaw = env.CORS_ORIGINS === "*";
+  // When CORS_ORIGINS='*' arrives in a non-development environment (e.g. a
+  // Replit secret that cannot be scoped per-environment), do NOT crash the
+  // server. Instead: log a severe error, clear the wildcard flag, and fall
+  // back to the APP_BASE_URL-derived safe origin so the server stays up while
+  // the operator fixes the secret.  Crashing on misconfiguration is strictly
+  // worse than degraded-but-running with a logged alert.
+  let wildcardOrigin = wildcardOriginRaw;
+  if (wildcardOriginRaw && env.NODE_ENV !== "development") {
+    const fallback = env.APP_BASE_URL
+      ? env.APP_BASE_URL.replace(/\/$/, "")
+      : "";
+    logger.error(
+      { fallbackOrigin: fallback || "(none — APP_BASE_URL unset)" },
+      "CORS_ORIGINS='*' is set in a non-development environment — security misconfiguration. " +
+      "Update the CORS_ORIGINS secret/env-var to an explicit comma-separated allowlist " +
+      "(e.g. https://templetv.replit.app,https://*.templetv.org.ng). " +
+      "Falling back to APP_BASE_URL-derived origin to avoid crashing.",
     );
+    // Override: treat as a non-wildcard env with just APP_BASE_URL so the
+    // normal allowlist path runs below and auto-adds Replit/localhost origins.
+    wildcardOrigin = false;
+    // Temporarily override the env value in-scope so split() below works.
+    (env as { CORS_ORIGINS: string }).CORS_ORIGINS = fallback;
   }
   // F05: also warn loudly in development so the open wildcard is never silent.
   if (wildcardOrigin) {
@@ -548,20 +567,31 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.addHook("preHandler", attachPrincipal());
   registerErrorHandler(app);
 
-  // Root route: redirect browsers to the mobile web app; return JSON for API clients.
-  //
-  // Browser requests (Accept: text/html) are redirected to /mobile/ so that:
-  //   • Replit's "Simulate on Web" preview lands on the mobile app, not the API.
-  //   • The Replit published deployment's root URL shows the app, not a 404.
-  //   • Users who bookmark or share the root domain see the app immediately.
-  //
-  // Admins reach the dashboard at /dashboard/broadcast directly or via the
-  // sidebar link — they are not impacted by this redirect.
-  //
-  // API clients (curl, OpenAPI, health probes) receive JSON as before.
+  // Root route:
+  //   • Development: redirect browsers to the mobile web preview (Vite proxy)
+  //   • Production:  serve the admin SPA index.html so operators land on the
+  //     login page. The React router handles /login → /broadcast, etc.
+  //     If the admin dist hasn't been built yet, fall back to the inline
+  //     broadcast dashboard at /dashboard/broadcast.
+  //   • API clients (curl, OpenAPI, health probes): JSON either way.
   app.get("/", async (req, reply) => {
     const accept = req.headers["accept"] ?? "";
     if (accept.includes("text/html")) {
+      if (env.NODE_ENV === "production") {
+        const { resolve } = await import("node:path");
+        const { fileURLToPath } = await import("node:url");
+        const { existsSync, createReadStream } = await import("node:fs");
+        const thisDir = resolve(fileURLToPath(import.meta.url), "..");
+        const root = resolve(thisDir, "../..");
+        const idx = resolve(root, "artifacts/admin/dist/public/index.html");
+        if (existsSync(idx)) {
+          reply.header("Content-Type", "text/html; charset=utf-8");
+          reply.header("Cache-Control", "no-cache, no-store, must-revalidate");
+          return reply.send(createReadStream(idx));
+        }
+        return reply.redirect("/dashboard/broadcast", 302);
+      }
+      // Development: redirect to mobile web preview (served by Expo Metro proxy).
       return reply.redirect("/mobile/", 302);
     }
     return {
@@ -575,10 +605,16 @@ export async function buildApp(): Promise<FastifyInstance> {
     };
   });
 
-  // Browsers always fetch /favicon.ico at the root — redirect to the mobile
-  // app's favicon so the tab gets an icon instead of logging a 404.
+  // Browsers always fetch /favicon.ico at the root.
+  // In production the admin SPA catch-all (/*) serves /favicon.ico from
+  // artifacts/admin/dist/public/ — but since this specific route is registered
+  // first Fastify routes it here. Redirect to the admin SPA favicon.svg.
+  // In development redirect to the mobile app favicon.
   app.get("/favicon.ico", async (_req, reply) => {
-    return reply.redirect("/mobile/favicon.ico", 301);
+    return reply.redirect(
+      env.NODE_ENV === "production" ? "/favicon.svg" : "/mobile/favicon.ico",
+      301,
+    );
   });
 
   await app.register(healthRoutes);
@@ -962,6 +998,58 @@ export async function buildApp(): Promise<FastifyInstance> {
     mountSpa(pathResolve(projectRoot, "artifacts/mobile/web-dist"), "/mobile");
     // TV web app  — built with: BASE_PATH=/tv/ vite build
     mountSpa(pathResolve(projectRoot, "artifacts/tv/dist/public"), "/tv");
+
+    // Admin React SPA (base: "/") — registered as a wildcard catch-all AFTER
+    // all specific API routes, /mobile/*, /tv/*, /dashboard/*, etc.  Fastify's
+    // trie router gives exact/parameterised paths priority over wildcards, so
+    // every API endpoint continues to work.  Any path not claimed by an API
+    // route (e.g. /login, /broadcast, /users, /videos) falls through here and
+    // receives the admin index.html for client-side routing.
+    //
+    // GET / is handled by the root handler above (serves index.html directly).
+    // This route catches everything else: /login, /broadcast, /users, etc.
+    const adminDistDir = pathResolve(projectRoot, "artifacts/admin/dist/public");
+    if (!existsSync(adminDistDir)) {
+      logger.warn({ adminDistDir }, "prod admin SPA: dist not found — /login and admin routes will 404 until build runs");
+    } else {
+      const adminHandler = async (
+        req: import("fastify").FastifyRequest,
+        reply: import("fastify").FastifyReply,
+      ) => {
+        let rel = req.url;
+        const qIdx = rel.indexOf("?");
+        if (qIdx !== -1) rel = rel.slice(0, qIdx);
+        if (!rel || rel === "/") rel = "index.html";
+        if (rel.startsWith("/")) rel = rel.slice(1);
+
+        const filePath = join(adminDistDir, rel);
+        const indexPath = join(adminDistDir, "index.html");
+
+        if (existsSync(filePath)) {
+          const ext = extname(filePath).toLowerCase();
+          const isAsset = ext !== ".html" && ext !== "";
+          reply.header("Content-Type", MIME_MAP[ext] ?? "application/octet-stream");
+          reply.header(
+            "Cache-Control",
+            isAsset
+              ? "public, max-age=31536000, immutable"
+              : "no-cache, no-store, must-revalidate",
+          );
+          return reply.send(createReadStream(filePath));
+        }
+
+        if (existsSync(indexPath)) {
+          reply.header("Content-Type", "text/html; charset=utf-8");
+          reply.header("Cache-Control", "no-cache, no-store, must-revalidate");
+          return reply.send(createReadStream(indexPath));
+        }
+
+        return reply.status(404).send({ error: "Admin SPA dist not built" });
+      };
+
+      app.get("/*", adminHandler as unknown as Parameters<typeof app.get>[1]);
+      logger.info({ distDir: adminDistDir }, "prod admin SPA mounted at /*");
+    }
   }
 
   // Subscribe to YouTube's PubSubHubbub hub once the server is fully ready
