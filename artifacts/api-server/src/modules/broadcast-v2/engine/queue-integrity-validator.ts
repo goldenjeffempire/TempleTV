@@ -435,6 +435,10 @@ class QueueIntegrityValidatorImpl {
             reason: "integrity-fix-duplicate-active-video",
             count: duplicateVideoItemIds.length,
           });
+          adminEventBus.push("videos-library-updated", {
+            reason: "integrity-fix-duplicate-active-video",
+            count: duplicateVideoItemIds.length,
+          });
           sendBroadcastWebhook("item_deactivated", "main", {
             reason: "duplicate_active_video",
             count: duplicateVideoItemIds.length,
@@ -495,6 +499,10 @@ class QueueIntegrityValidatorImpl {
             reason: "integrity-fix-duplicate-sort-order",
             count: duplicateItemIds.length,
           });
+          adminEventBus.push("videos-library-updated", {
+            reason: "integrity-fix-duplicate-sort-order",
+            count: duplicateItemIds.length,
+          });
         } catch (fixErr) {
           logger.warn(
             { err: fixErr, count: duplicateItemIds.length },
@@ -542,6 +550,10 @@ class QueueIntegrityValidatorImpl {
           // Trigger orchestrator reload so the engine immediately stops serving
           // the deactivated items without waiting for the next drift-poll.
           adminEventBus.push("broadcast-queue-updated", {
+            reason: "integrity-fix-missing-video-join",
+            count: missingJoinIds.length,
+          });
+          adminEventBus.push("videos-library-updated", {
             reason: "integrity-fix-missing-video-join",
             count: missingJoinIds.length,
           });
@@ -624,6 +636,10 @@ class QueueIntegrityValidatorImpl {
               reason: "integrity-fix-restored-video-join",
               count: restoredIds.length,
             });
+            adminEventBus.push("videos-library-updated", {
+              reason: "integrity-fix-restored-video-join",
+              count: restoredIds.length,
+            });
           } catch (fixErr) {
             logger.warn(
               { err: fixErr, count: restoredIds.length },
@@ -679,6 +695,10 @@ class QueueIntegrityValidatorImpl {
             "removed from broadcast rotation; re-upload the source file or trigger a remote re-transcode to restore",
           );
           adminEventBus.push("broadcast-queue-updated", {
+            reason: "integrity-fix-corrupt-upload",
+            count: corruptUploadItemIds.length,
+          });
+          adminEventBus.push("videos-library-updated", {
             reason: "integrity-fix-corrupt-upload",
             count: corruptUploadItemIds.length,
           });
@@ -742,6 +762,10 @@ class QueueIntegrityValidatorImpl {
               "items returned to broadcast rotation",
             );
             adminEventBus.push("broadcast-queue-updated", {
+              reason: "integrity-fix-revived-corrupt-upload",
+              count: revivedIds.length,
+            });
+            adminEventBus.push("videos-library-updated", {
               reason: "integrity-fix-revived-corrupt-upload",
               count: revivedIds.length,
             });
@@ -818,6 +842,10 @@ class QueueIntegrityValidatorImpl {
             reason: "integrity-fix-orphaned-video-ref",
             count: orphanedFailedIds.length,
           });
+          adminEventBus.push("videos-library-updated", {
+            reason: "integrity-fix-orphaned-video-ref",
+            count: orphanedFailedIds.length,
+          });
         } catch (fixErr) {
           logger.warn(
             { err: fixErr, count: orphanedFailedIds.length },
@@ -863,6 +891,10 @@ class QueueIntegrityValidatorImpl {
               "whose video now has playable URLs — items returned to broadcast rotation",
             );
             adminEventBus.push("broadcast-queue-updated", {
+              reason: "integrity-fix-revived-orphaned-video-ref",
+              count: revivedIds.length,
+            });
+            adminEventBus.push("videos-library-updated", {
               reason: "integrity-fix-revived-orphaned-video-ref",
               count: revivedIds.length,
             });
@@ -919,6 +951,10 @@ class QueueIntegrityValidatorImpl {
               reason: "integrity-fix-revived-hls-storage-missing",
               count: revivedHlsIds.length,
             });
+            adminEventBus.push("videos-library-updated", {
+              reason: "integrity-fix-revived-hls-storage-missing",
+              count: revivedHlsIds.length,
+            });
           } catch (fixErr) {
             logger.warn(
               { err: fixErr, count: revivedHlsIds.length },
@@ -961,6 +997,11 @@ class QueueIntegrityValidatorImpl {
                 "[queue-validator] AUTO-FIX: SUSPICIOUS_DURATION reprobe corrected duration — managed_videos and broadcast_queue updated",
               );
               adminEventBus.push("broadcast-queue-updated", {
+                reason: "integrity-fix-suspicious-duration-reprobe",
+                itemId: item.id,
+                videoId: item.videoId,
+              });
+              adminEventBus.push("videos-library-updated", {
                 reason: "integrity-fix-suspicious-duration-reprobe",
                 itemId: item.id,
                 videoId: item.videoId,
@@ -1008,6 +1049,11 @@ class QueueIntegrityValidatorImpl {
                 "managed_videos.duration and broadcast_queue.duration_secs updated",
               );
               adminEventBus.push("broadcast-queue-updated", {
+                reason: "integrity-fix-hls-placeholder-duration-reprobe",
+                itemId: item.id,
+                videoId: item.videoId,
+              });
+              adminEventBus.push("videos-library-updated", {
                 reason: "integrity-fix-hls-placeholder-duration-reprobe",
                 itemId: item.id,
                 videoId: item.videoId,
@@ -1186,6 +1232,11 @@ class QueueIntegrityValidatorImpl {
                   itemId: row.id,
                   videoId: row.videoId2,
                 });
+                adminEventBus.push("videos-library-updated", {
+                  reason: "integrity-fix-hls-storage-missing",
+                  itemId: row.id,
+                  videoId: row.videoId2,
+                });
               } catch (fixErr) {
                 logger.warn(
                   { err: fixErr, itemId: row.id },
@@ -1244,6 +1295,10 @@ class QueueIntegrityValidatorImpl {
                   "whose HLS master.m3u8 is now present in storage",
                 );
                 adminEventBus.push("broadcast-queue-updated", {
+                  reason: "integrity-fix-hls-storage-missing-revived",
+                  count: reviveIds.length,
+                });
+                adminEventBus.push("videos-library-updated", {
                   reason: "integrity-fix-hls-storage-missing-revived",
                   count: reviveIds.length,
                 });

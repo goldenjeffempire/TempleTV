@@ -1083,9 +1083,13 @@ export function useImportVideo(opts?: MutationOpts<AdminVideo, ImportVideoVars>)
     onSuccess: chainOnSuccess(
       () => Promise.all([
         qc.invalidateQueries({ queryKey: ["admin", "videos"] }),
-        // Also invalidate the admin SPA's own "admin-videos" cache key so both
-        // key formats stay in sync regardless of which hook consumers use.
         qc.invalidateQueries({ queryKey: ["admin-videos"] }),
+        qc.invalidateQueries({ queryKey: ["broadcast-queue"] }),
+        qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] }),
+        qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] }),
+        qc.invalidateQueries({ queryKey: ["admin-stats"] }),
+        qc.invalidateQueries({ queryKey: ["transcoding-jobs"] }),
+        qc.invalidateQueries({ queryKey: ["youtube-library-videos"] }),
       ]),
       opts?.mutation?.onSuccess,
     ),
@@ -1116,6 +1120,9 @@ export function useUpdateAdminVideo(
       () => Promise.all([
         qc.invalidateQueries({ queryKey: ["admin", "videos"] }),
         qc.invalidateQueries({ queryKey: ["admin-videos"] }),
+        qc.invalidateQueries({ queryKey: ["broadcast-queue"] }),
+        qc.invalidateQueries({ queryKey: ["youtube-library-videos"] }),
+        qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] }),
       ]),
       opts?.mutation?.onSuccess,
     ),
@@ -1135,6 +1142,12 @@ export function useDeleteAdminVideo(
       () => Promise.all([
         qc.invalidateQueries({ queryKey: ["admin", "videos"] }),
         qc.invalidateQueries({ queryKey: ["admin-videos"] }),
+        qc.invalidateQueries({ queryKey: ["broadcast-queue"] }),
+        qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] }),
+        qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] }),
+        qc.invalidateQueries({ queryKey: ["admin-stats"] }),
+        qc.invalidateQueries({ queryKey: ["transcoding-jobs"] }),
+        qc.invalidateQueries({ queryKey: ["youtube-library-videos"] }),
       ]),
       opts?.mutation?.onSuccess,
     ),

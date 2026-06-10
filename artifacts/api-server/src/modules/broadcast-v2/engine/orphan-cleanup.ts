@@ -26,6 +26,7 @@ import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";
+import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 
 /** Sessions whose last heartbeat is older than this are considered abandoned. */
 const STALE_SESSION_THRESHOLD_MINS = 10;
@@ -152,6 +153,14 @@ class OrphanCleanupWorkerImpl {
             { count: deactivatedCount, deactivated: ids },
             "[orphan-cleanup] auto-deactivated broadcast_queue items referencing deleted videos",
           );
+          adminEventBus.push("broadcast-queue-updated", {
+            reason: "orphan-cleanup-deactivated",
+            count: deactivatedCount,
+          });
+          adminEventBus.push("videos-library-updated", {
+            reason: "orphan-cleanup-deactivated",
+            count: deactivatedCount,
+          });
         } catch (deactivErr) {
           logger.warn(
             { err: deactivErr, candidates },

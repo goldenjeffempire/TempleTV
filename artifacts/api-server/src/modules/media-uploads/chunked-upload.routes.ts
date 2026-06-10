@@ -46,6 +46,7 @@ import { runFaststart } from "../transcoder/faststart.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
+import { uploadTelemetry } from "./upload-telemetry.service.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { ServiceUnavailableError } from "../../shared/errors.js";
 
@@ -595,6 +596,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           totalBytes: body.totalBytes,
         },
         "[chunked-init] session created",
+      );
+
+      uploadTelemetry.init(
+        body.sessionId,
+        Number(body.totalBytes),
+        req.headers["user-agent"] ?? null,
       );
 
       return {
@@ -1393,6 +1400,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 .where(eq(videos.id, videoId))
                 .catch(() => {}),
             ]);
+            uploadTelemetry.success(sessionId, videoId, session.sizeBytes, Date.now() - assemblyStartMs);
 
             // Reclaim chunk metadata rows (db-mode rows hold no BYTEA data).
             void db
@@ -1663,6 +1671,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             // full cache TTL after it has been marked "failed".
             void invalidateVideosCatalogCache();
             adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-failed" });
+            uploadTelemetry.serverFail(
+              sessionId,
+              session.sizeBytes,
+              "assembly_failed",
+              err instanceof Error ? err.message : "Assembly failed",
+            );
           }
         })();
 

@@ -12,6 +12,7 @@ import { generateQuickThumbnail, probeUploadedContainerValidity, probeUploadedDu
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
+import { uploadTelemetry } from "./upload-telemetry.service.js";
 import { chunkedUploadRoutes } from "./chunked-upload.routes.js";
 import { logger } from "../../infrastructure/logger.js";
 import { ServiceUnavailableError } from "../../shared/errors.js";
@@ -447,6 +448,12 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
           { objectKey: body.objectKey, sizeBytes: body.sizeBytes },
           "[s3-multipart-complete] container validation failed (moov atom missing/unreadable) — rejecting before queue insertion",
         );
+        uploadTelemetry.serverFail(
+          body.sessionId,
+          body.sizeBytes,
+          "corrupt_container",
+          "Upload rejected: moov atom missing or unreadable",
+        );
         // The multipart object was already assembled by completeMultipartUpload
         // above, so remove the orphan blob + session before bailing out.
         await cleanupRejectedUpload(body.sessionId, body.objectKey, "corrupt-container");
@@ -529,6 +536,7 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
       // on their next poll interval, not in real time.
       adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "upload-finalize" });
       adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId: row.id });
+      uploadTelemetry.success(body.sessionId, row.id, body.sizeBytes, 0);
 
       // Enqueue HLS transcoding job. The in-process dispatcher
       // (artifacts/api-server/src/modules/transcoder/transcoder.dispatcher.ts)

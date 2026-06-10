@@ -1664,7 +1664,87 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       const since = new Date(Date.now() - hours * 3600 * 1000);
       const sinceIso = since.toISOString();
 
-      // Pull all upload sessions within the requested window.
+      // Percentile helper (used by both code paths below)
+      function percentile(arr: number[], p: number): number | null {
+        if (arr.length === 0) return null;
+        const sorted = [...arr].sort((a, b) => a - b);
+        const idx = Math.max(0, Math.ceil((p / 100) * sorted.length) - 1);
+        return Math.round(sorted[idx]!);
+      }
+
+      // Primary path: aggregate from s3_upload_telemetry which has accurate
+      // per-event records (init / success / server_fail) and measured throughput.
+      // Fallback to upload_sessions when the telemetry table is empty (e.g.
+      // early in a new deployment before any events have been recorded).
+      const telemetryRows = await db
+        .select({
+          event: schema.s3UploadTelemetryTable.event,
+          sizeBytes: schema.s3UploadTelemetryTable.sizeBytes,
+          throughputBps: schema.s3UploadTelemetryTable.throughputBps,
+          errorKind: schema.s3UploadTelemetryTable.errorKind,
+        })
+        .from(schema.s3UploadTelemetryTable)
+        .where(sql`${schema.s3UploadTelemetryTable.createdAt} >= ${since}`)
+        .catch(() => [] as Array<{
+          event: string;
+          sizeBytes: number | null;
+          throughputBps: number | null;
+          errorKind: string | null;
+        }>);
+
+      if (telemetryRows.length > 0) {
+        // Use telemetry data (accurate server-side events)
+        const counts: Record<string, number> = {};
+        let successes = 0, failures = 0;
+        const completedBps: number[] = [];
+        let totalBytes = 0;
+        const errorKindCounts: Record<string, number> = {};
+
+        for (const row of telemetryRows) {
+          counts[row.event] = (counts[row.event] ?? 0) + 1;
+          if (row.event === "success") {
+            successes++;
+            totalBytes += row.sizeBytes ?? 0;
+            if (row.throughputBps != null && row.throughputBps > 0) {
+              completedBps.push(row.throughputBps);
+            }
+          } else if (row.event === "server_fail") {
+            failures++;
+            if (row.errorKind) {
+              errorKindCounts[row.errorKind] = (errorKindCounts[row.errorKind] ?? 0) + 1;
+            }
+          }
+        }
+
+        const inits = counts["init"] ?? 0;
+        const attempts = inits > 0 ? inits : successes + failures;
+        const successRatePct = attempts > 0 ? Math.round((successes / attempts) * 1_000) / 10 : null;
+
+        const topErrors = Object.entries(errorKindCounts)
+          .sort(([, a], [, b]) => b - a)
+          .slice(0, 5)
+          .map(([kind, count]) => ({ errorKind: kind, errorMessage: null, count }));
+
+        return {
+          windowHours: hours,
+          since: sinceIso,
+          counts,
+          attempts,
+          successes,
+          failures,
+          successRatePct,
+          throughput: {
+            p50Bps: percentile(completedBps, 50),
+            p95Bps: percentile(completedBps, 95),
+            avgSizeBytes: successes > 0 ? Math.round(totalBytes / successes) : null,
+            totalBytes: successes > 0 ? totalBytes : null,
+          },
+          topErrors,
+        };
+      }
+
+      // Fallback: derive stats from upload_sessions (pre-telemetry deployments
+      // or when telemetry table has no data for the requested window).
       const rows = await db
         .select({
           status: schema.uploadSessionsTable.status,
@@ -1683,7 +1763,6 @@ export async function adminOpsRoutes(app: FastifyInstance) {
           updatedAt: Date;
         }>);
 
-      // Count by status (and backend for the counts map)
       const counts: Record<string, number> = {};
       let successes = 0, failures = 0;
       const completedBps: number[] = [];
@@ -1692,11 +1771,9 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       for (const row of rows) {
         const key = `${row.storageBackend}:${row.status}`;
         counts[key] = (counts[key] ?? 0) + 1;
-
         if (row.status === "completed" || row.status === "finalized") {
           successes++;
           totalBytes += row.sizeBytes ?? 0;
-          // Estimate throughput: sizeBytes / elapsed seconds
           const elapsedMs = (row.updatedAt?.getTime() ?? Date.now()) - (row.createdAt?.getTime() ?? Date.now());
           if (elapsedMs > 1_000 && row.sizeBytes > 0) {
             completedBps.push((row.sizeBytes * 1_000) / elapsedMs);
@@ -1708,14 +1785,6 @@ export async function adminOpsRoutes(app: FastifyInstance) {
 
       const attempts = rows.length;
       const successRatePct = attempts > 0 ? Math.round((successes / attempts) * 1_000) / 10 : null;
-
-      // Percentile helper
-      function percentile(arr: number[], p: number): number | null {
-        if (arr.length === 0) return null;
-        const sorted = [...arr].sort((a, b) => a - b);
-        const idx = Math.max(0, Math.ceil((p / 100) * sorted.length) - 1);
-        return Math.round(sorted[idx]);
-      }
 
       return {
         windowHours: hours,
@@ -1805,6 +1874,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       "/transcoding/retry/:id",
       {
         preHandler: requireAuth("editor"),
+        config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
         schema: {
           tags: ["admin-ops"],
           summary: "Re-arm a transcoding job (resets attempts + clears error)",
@@ -1812,6 +1882,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
           response: {
             200: z.object({ ok: z.literal(true) }),
             404: z.object({ message: z.string() }),
+            429: z.object({ error: z.string() }),
           },
           security: [{ bearerAuth: [] }],
         },
@@ -1824,6 +1895,8 @@ export async function adminOpsRoutes(app: FastifyInstance) {
           return { message: "Transcoding job not found" };
         }
         transcoderDispatcher.nudge();
+        adminEventBus.push("videos-library-updated", { reason: "single-job-retry", jobId: id });
+        adminEventBus.push("broadcast-queue-updated", { reason: "single-job-retry", jobId: id });
         return { ok: true as const };
       },
     );

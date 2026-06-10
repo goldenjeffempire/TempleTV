@@ -203,6 +203,14 @@ class TranscoderDispatcher {
   private stuckJobsCounter = 0;
   private static readonly STUCK_JOBS_TICKS = 12; // ~2 min at 10 s/tick
 
+  // Faststart-orphan watchdog: sweeps managed_videos for rows stuck in
+  // transcodingStatus='processing'/'queued' with no backing transcoding_jobs
+  // row and updated_at older than FASTSTART_ORPHAN_TICKS × poll interval
+  // (~45 min). This catches faststart crashes that leave the video status
+  // permanently stuck while the job row was already cleaned up.
+  private faststartOrphanCounter = 0;
+  private static readonly FASTSTART_ORPHAN_TICKS = 270; // 45 min at 10 s/tick
+
   // Early-stuck detector thresholds (not configurable via env — hardcoded for
   // simplicity; operators who need different values can fork the dispatcher).
   // - EARLY_STUCK_MS: if a job starts but never reports any progress within
@@ -804,6 +812,66 @@ class TranscoderDispatcher {
     }
   }
 
+  /**
+   * Faststart-orphan recovery watchdog.
+   *
+   * Finds `managed_videos` rows stuck in transcodingStatus = 'processing' or
+   * 'queued' with no corresponding `transcoding_jobs` row in an active state
+   * AND whose updated_at is older than 45 minutes. This indicates the
+   * process that was running faststart/transcoding died (SIGKILL, OOM, crash)
+   * without cleaning up the video status, leaving it permanently stuck.
+   *
+   * Fix: reset transcodingStatus → 'queued' so the dispatcher re-picks the
+   * video on the next tick. Does NOT increment the attempts counter (unlike
+   * resetStuckJobs) because the cause is infrastructure failure, not a bad job.
+   */
+  private async resetFaststartOrphans(): Promise<void> {
+    const ORPHAN_AGE_MS = 45 * 60_000;
+    const cutoff = new Date(Date.now() - ORPHAN_AGE_MS);
+    try {
+      const result = await db.execute<{ id: string }>(sql`
+        SELECT v.id
+        FROM managed_videos v
+        WHERE v.transcoding_status IN ('processing', 'queued')
+          AND v.updated_at < ${cutoff}
+          AND NOT EXISTS (
+            SELECT 1 FROM transcoding_jobs j
+            WHERE j.video_id = v.id
+              AND j.status IN ('queued', 'processing')
+          )
+        LIMIT 20
+      `);
+
+      const stuckIds = (result.rows as Array<{ id: string }>).map((r) => r.id);
+      if (stuckIds.length === 0) return;
+
+      logger.warn(
+        { count: stuckIds.length, videoIds: stuckIds },
+        "[transcoder] faststart-orphan watchdog: videos stuck in processing/queued >45 min " +
+        "with no active transcoding_jobs row — resetting to queued for re-dispatch",
+      );
+
+      await db.execute(sql`
+        UPDATE managed_videos
+        SET transcoding_status = 'queued',
+            transcoding_error_message = NULL,
+            updated_at = NOW()
+        WHERE id = ANY(${stuckIds}::text[])
+      `);
+
+      adminEventBus.push("videos-library-updated", {
+        reason: "faststart-orphan-watchdog-reset",
+        count: stuckIds.length,
+      });
+      adminEventBus.push("broadcast-queue-updated", {
+        reason: "faststart-orphan-watchdog-reset",
+        count: stuckIds.length,
+      });
+    } catch (err) {
+      logger.warn({ err }, "[transcoder] faststart-orphan watchdog sweep failed (non-fatal)");
+    }
+  }
+
   async runOnce(): Promise<{ ran: boolean }> {
     if (this.running) return { ran: false };
     // Circuit open — ffmpeg unavailable. Pause dispatch to preserve every
@@ -857,6 +925,17 @@ class TranscoderDispatcher {
             logger.warn({ err }, "transcoder: auto-retry sweep error (non-fatal)");
           });
         }
+      }
+
+      // Periodic faststart-orphan watchdog (~every 45 min at 10 s/tick).
+      // Resets managed_videos rows stuck in processing/queued with no active
+      // transcoding_jobs row — caused by crashes mid-faststart.
+      this.faststartOrphanCounter++;
+      if (this.faststartOrphanCounter >= TranscoderDispatcher.FASTSTART_ORPHAN_TICKS) {
+        this.faststartOrphanCounter = 0;
+        await this.resetFaststartOrphans().catch((err) => {
+          logger.warn({ err }, "[transcoder] faststart-orphan watchdog error (non-fatal)");
+        });
       }
 
       const now = new Date();
