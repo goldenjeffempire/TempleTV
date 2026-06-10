@@ -43,8 +43,10 @@ type Listener = (state: YtLiveState) => void;
 function ytApiKey(): string { return process.env["YOUTUBE_API_KEY"] ?? ""; }
 function ytChannelId(): string { return process.env["YOUTUBE_CHANNEL_ID"] ?? ""; }
 
-const API_POLL_INTERVAL_MS = 90_000;  // 90s — 100 quota units per call
-const RSS_POLL_INTERVAL_MS = 60_000;  // 60s — quota-free
+// RSS is now the primary live-detection mechanism (quota-free).
+// search.list (100 units/call) is relegated to an infrequent safety net.
+const RSS_POLL_INTERVAL_MS   = 60_000;               // 60 s — RSS primary, always on
+const SAFETY_NET_INTERVAL_MS = 2 * 60 * 60_000;      // 2 h  — search.list safety net
 
 function httpsGet(url: string, timeoutMs = 10_000): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -137,9 +139,20 @@ class YtLivePoller extends EventEmitter {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private _subs = new Set<Listener>();
-  // Timestamp until which pollApi() calls are suppressed after a quota/API error.
-  // Prevents hammering an exhausted quota (resets daily) for the remaining day.
-  private apiCooldownUntilMs = 0;
+
+  // ── Safety-net search.list timing ────────────────────────────────────────
+  // The safety net fires search.list (100 units) at most once per
+  // SAFETY_NET_INTERVAL_MS (2 h) to catch live streams that the RSS feed
+  // has not yet indexed (typical RSS latency: 1–3 min for new streams).
+  private _lastSafetyNetMs = 0;
+  // Error backoff: 1-hour cooldown after a search.list API error.
+  private _searchCooldownUntilMs = 0;
+
+  // ── Viewer-count enrichment timing ───────────────────────────────────────
+  // When live, videos.list?liveStreamingDetails (1 unit/call) is used to
+  // fetch the real concurrent viewer count.  This field tracks a 30-minute
+  // backoff applied only when the enrichment call itself returns an error.
+  private _enrichCooldownUntilMs = 0;
 
   getState(): YtLiveState {
     return this.state;
@@ -165,13 +178,12 @@ class YtLivePoller extends EventEmitter {
       return;
     }
     this.running = true;
-    this.poll();
-    const interval = ytApiKey() ? API_POLL_INTERVAL_MS : RSS_POLL_INTERVAL_MS;
-    this.timer = setInterval(() => { this.poll(); }, interval);
-    // unref so this background poll interval never keeps the Node event loop
-    // alive past app.close() during graceful shutdown (stop() is not wired into
-    // the shutdown sequence, so without this the process waits for the force-
-    // exit grace timer to fire).
+    void this.poll();
+    // RSS is now the primary detector — the interval is always RSS_POLL_INTERVAL_MS
+    // (60 s) regardless of whether an API key is configured.  The search.list
+    // safety net fires conditionally inside poll() on its own 2-hour cadence.
+    this.timer = setInterval(() => { void this.poll(); }, RSS_POLL_INTERVAL_MS);
+    // unref so this timer never keeps the Node event loop alive past shutdown.
     this.timer.unref?.();
   }
 
@@ -184,45 +196,96 @@ class YtLivePoller extends EventEmitter {
   }
 
   private async poll(): Promise<void> {
-    let result: Omit<YtLiveState, "checkedAt">;
-    const apiKey = ytApiKey();
     const channelId = ytChannelId();
-    if (apiKey && channelId) {
-      if (Date.now() < this.apiCooldownUntilMs) {
-        // API quota exhausted or key invalid — skip Data API v3 call and use
-        // quota-free RSS exclusively until the cooldown window expires.
-        result = await this.pollRss();
-      } else if (isQuotaExhausted()) {
-        // Local quota counter says the daily limit is used up.  Each search.list
-        // call costs 100 units — continuing to poll would burn 100 units every
-        // 90 s for the rest of the day even though the sync service has already
-        // switched to RSS.  Set the cooldown to midnight UTC so we stay on
-        // quota-free RSS until the daily quota resets.
-        const midnight = new Date();
-        midnight.setUTCHours(24, 0, 0, 0);
-        this.apiCooldownUntilMs = midnight.getTime();
-        result = await this.pollRss();
-      } else {
-        result = await this.pollApi();
-        // If the API returned an error (403 quota exhausted, invalid key, rate
-        // limit, or any network failure), back off API calls for 1 hour and fall
-        // back to RSS so live detection remains accurate. Without the cooldown the
-        // poller would hammer an exhausted quota at full speed (every 90 s) for
-        // the rest of the day, wasting quota units that become available again at
-        // midnight Pacific.
-        if (result.detectionMethod === "api-error") {
-          this.apiCooldownUntilMs = Date.now() + 60 * 60 * 1000;
-          result = await this.pollRss();
+    if (!channelId) {
+      this.setState({
+        isLive: false, videoId: null, title: null, viewerCount: null,
+        checkedAt: Date.now(), detectionMethod: "no-channel-configured",
+      });
+      return;
+    }
+
+    // ── Step 1: RSS — primary live detector (quota-free, always on) ──────────
+    // The YouTube RSS feed reflects live/offline state within ~1–3 minutes of a
+    // broadcast starting.  This eliminates the 100-unit search.list cost on every
+    // poll cycle and cuts quota consumption by >99% during non-live periods.
+    let result: Omit<YtLiveState, "checkedAt"> = await this.pollRss();
+
+    if (result.isLive && result.videoId) {
+      // ── Step 2: Viewer-count enrichment — videos.list (1 unit/call) ─────────
+      // RSS does not carry a concurrent viewer count.  When live, call
+      // videos.list?part=liveStreamingDetails for the real viewer count.
+      // Suppressed when quota is locally exhausted or an error cooldown is active.
+      const apiKey = ytApiKey();
+      if (apiKey && !isQuotaExhausted() && Date.now() >= this._enrichCooldownUntilMs) {
+        const vc = await this.fetchViewerCount(result.videoId, apiKey);
+        if (vc !== null) result = { ...result, viewerCount: vc };
+      }
+    } else {
+      // ── Step 3: Safety-net search.list (100 units, at most once per 2 h) ────
+      // Catches live streams that RSS has not yet indexed.  The safety net is
+      // skipped when quota is locally exhausted, an API error cooldown is active,
+      // or the interval has not yet elapsed since the last call.
+      const now = Date.now();
+      const apiKey = ytApiKey();
+      if (
+        apiKey &&
+        !isQuotaExhausted() &&
+        now - this._lastSafetyNetMs >= SAFETY_NET_INTERVAL_MS &&
+        now >= this._searchCooldownUntilMs
+      ) {
+        this._lastSafetyNetMs = now;
+        const searchResult = await this.pollApi();
+        if (searchResult.isLive) {
+          // RSS has not yet indexed this stream — trust the search result.
+          result = searchResult;
+        }
+        if (searchResult.detectionMethod === "api-error") {
+          // Transient API error: suppress safety-net for 1 hour.
+          this._searchCooldownUntilMs = now + 60 * 60_000;
+          logger.warn("youtube-live: search.list error — safety-net suppressed for 1 h");
         }
       }
-    } else if (channelId) {
-      result = await this.pollRss();
-    } else {
-      result = { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "no-channel-configured" };
     }
+
     this.setState({ ...result, checkedAt: Date.now() });
   }
 
+  /**
+   * Fetch concurrent viewer count for a live video via videos.list
+   * (liveStreamingDetails part).  Cost: 1 quota unit per call.
+   *
+   * On error, sets a 30-minute backoff so a transient API problem does not
+   * silently consume quota units every 60 seconds for the rest of the broadcast.
+   * Returns null on any error; callers fall back to the RSS-derived state.
+   */
+  private async fetchViewerCount(videoId: string, apiKey: string): Promise<number | null> {
+    try {
+      const url = `https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=${encodeURIComponent(videoId)}&key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+      trackQuota("videos.list.liveDetails", 1);
+      if (!res.ok) {
+        // Set a 30-minute backoff: enrichment errors should not consume quota
+        // on every poll tick for the duration of a live broadcast.
+        this._enrichCooldownUntilMs = Date.now() + 30 * 60_000;
+        return null;
+      }
+      this._enrichCooldownUntilMs = 0; // clear backoff on success
+      const data = await res.json() as {
+        items?: Array<{ liveStreamingDetails?: { concurrentViewers?: string } }>;
+      };
+      const vc = data.items?.[0]?.liveStreamingDetails?.concurrentViewers;
+      return vc !== undefined ? parseInt(vc, 10) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Safety-net search.list call (100 quota units).
+   * Only invoked by poll() at most once per SAFETY_NET_INTERVAL_MS (2 h)
+   * to catch streams RSS has not yet indexed.
+   */
   private async pollApi(): Promise<Omit<YtLiveState, "checkedAt">> {
     try {
       const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${encodeURIComponent(ytChannelId())}&eventType=live&type=video&key=${encodeURIComponent(ytApiKey())}`;
