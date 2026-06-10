@@ -283,71 +283,138 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
   // status="uploading" so the client's retry logic can re-attempt finalize.
   app.addHook("onReady", async () => {
     try {
-      // Select completedVideoId and objectKey — the async-finalize path pre-commits
-      // a video row (completedVideoId) and starts writing the assembled blob to
-      // storage_blobs at objectKey BEFORE marking the session "completed". If the
-      // server restarts mid-assembly, both the video row AND the partially-written
-      // dest blob are orphaned and must be cleaned up so the client can re-upload
-      // cleanly to a new objectKey.
+      // The async-finalize path pre-commits a video row and starts writing the
+      // assembled blob to storage_blobs (status="assembling") BEFORE responding
+      // to the client. If the server restarts mid-assembly we must triage each
+      // stuck session instead of blindly deleting every pre-committed video row:
+      //
+      //   • Assembly COMPLETED before crash (blob size = declared size):
+      //     Keep the video row — it is a real, usable video that was fully
+      //     uploaded. Just mark the session "completed" so the idempotency
+      //     check and the finalize-status poller both see the right state.
+      //     Fire a videos-library-updated SSE so the admin panel refreshes.
+      //
+      //   • Assembly INTERRUPTED (blob missing or truncated):
+      //     Delete the pre-committed video row (it has no usable blob),
+      //     delete the partial storage_blobs row, and reset the session to
+      //     "uploading" so the client can re-attempt finalize from scratch.
+      //
+      // This prevents the previously-observed bug where a video uploaded
+      // successfully in one API process disappears from the admin panel after
+      // the next server restart (e.g. a routine dev hot-reload).
       const stuckRows = await db
         .select({
           sessionId: sessions.sessionId,
           completedVideoId: sessions.completedVideoId,
           objectKey: sessions.objectKey,
+          sizeBytes: sessions.sizeBytes,
         })
         .from(sessions)
         .where(inArray(sessions.status, ["assembling"]));
-      if (stuckRows.length > 0) {
-        const orphanedVideoIds = stuckRows
-          .filter((r) => r.completedVideoId)
-          .map((r) => r.completedVideoId as string);
 
+      if (stuckRows.length > 0) {
+        const recoveredSessionIds: string[] = [];
+        const recoveredVideoIds: string[] = [];
+        const orphanedSessionIds: string[] = [];
+        const orphanedVideoIds: string[] = [];
+        const orphanedObjectKeys: string[] = [];
+
+        for (const row of stuckRows) {
+          // Sessions that never reached pre-commit (no video row yet) are
+          // straightforward: just reset to "uploading".
+          if (!row.completedVideoId || !row.objectKey) {
+            orphanedSessionIds.push(row.sessionId);
+            continue;
+          }
+
+          // Probe the blob size in storage_blobs to determine whether
+          // completeMultipartUpload ran to completion before the crash.
+          const head = await storage().headObject(row.objectKey).catch(() => ({ exists: false as const }));
+          const assemblyComplete =
+            head.exists && (head.contentLength ?? 0) === row.sizeBytes && row.sizeBytes > 0;
+
+          if (assemblyComplete) {
+            // Blob is fully intact — the crash happened AFTER assembly completed
+            // but BEFORE the session status was written to "completed". Recover
+            // the video row by finalising the session state without deleting anything.
+            recoveredSessionIds.push(row.sessionId);
+            recoveredVideoIds.push(row.completedVideoId);
+          } else {
+            // Blob is missing or truncated — assembly was genuinely interrupted.
+            // Clean up so the client can retry with a fresh video row.
+            orphanedSessionIds.push(row.sessionId);
+            orphanedVideoIds.push(row.completedVideoId);
+            orphanedObjectKeys.push(row.objectKey);
+          }
+        }
+
+        // ── Recover fully-assembled sessions ──────────────────────────────
+        if (recoveredSessionIds.length > 0) {
+          await db
+            .update(sessions)
+            .set({ status: "completed", updatedAt: new Date() })
+            .where(inArray(sessions.sessionId, recoveredSessionIds))
+            .catch((err: unknown) =>
+              app.log.warn({ err }, "[upload] recovery: session status update failed (non-fatal)"),
+            );
+          // Ensure s3MirroredAt is stamped on the video rows so the post-assembly
+          // path (faststart / enqueueIfMissing) knows the blob exists.
+          await db
+            .update(videos)
+            .set({ s3MirroredAt: new Date() })
+            .where(inArray(videos.id, recoveredVideoIds))
+            .catch((err: unknown) =>
+              app.log.warn({ err }, "[upload] recovery: s3MirroredAt stamp failed (non-fatal)"),
+            );
+          // Notify the admin panel so recovered videos appear immediately without
+          // requiring a manual page refresh.
+          for (const videoId of recoveredVideoIds) {
+            adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-recovered-on-restart" });
+          }
+          app.log.info(
+            { count: recoveredSessionIds.length, videoIds: recoveredVideoIds },
+            "[upload] recovered fully-assembled sessions after server restart — video rows preserved",
+          );
+        }
+
+        // ── Clean up genuinely interrupted sessions ────────────────────────
         if (orphanedVideoIds.length > 0) {
-          // Remove broadcast_queue slots (were added optimistically at pre-commit time)
+          // Remove broadcast_queue slots added optimistically at pre-commit time.
           await db
             .delete(schema.broadcastQueueTable)
             .where(inArray(schema.broadcastQueueTable.videoId, orphanedVideoIds))
             .catch(() => {});
-          // Remove the orphaned video rows so retry creates a clean new row
+          // Delete the video rows — blobs are missing/corrupt so these rows are useless.
           await db
             .delete(videos)
             .where(inArray(videos.id, orphanedVideoIds))
             .catch(() => {});
         }
-
-        // Delete partially-written destination blobs from storage_blobs.
-        // Each assembling session's objectKey is the key of the blob that was
-        // being assembled when the server crashed. Without deletion, these become
-        // permanent storage orphans after the video row is deleted — the next
-        // finalize creates a fresh video row with a new objectKey, leaving the
-        // old partial blob unreachable.
-        const destObjectKeys = stuckRows
-          .filter((r) => r.objectKey)
-          .map((r) => r.objectKey as string);
-        for (const key of destObjectKeys) {
+        // Delete partially-written destination blobs so the next finalize attempt
+        // gets a clean objectKey instead of appending to a corrupt partial blob.
+        for (const key of orphanedObjectKeys) {
           await db
             .execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`)
             .catch((err: unknown) =>
               app.log.warn({ err, key }, "[upload] partial dest blob cleanup failed (non-fatal)"),
             );
         }
-
-        // Reset session state: clear completedVideoId so the idempotency check
-        // doesn't incorrectly fast-path on the next /finalize call.
-        await db
-          .update(sessions)
-          .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
-          .where(inArray(sessions.status, ["assembling"]));
-
-        app.log.warn(
-          {
-            count: stuckRows.length,
-            orphanedVideoIds,
-            destBlobsDeleted: destObjectKeys.length,
-            ids: stuckRows.map((r) => r.sessionId),
-          },
-          "[upload] reset stuck assembling sessions — orphaned video rows, dest blobs, and broadcast_queue slots cleaned up",
-        );
+        if (orphanedSessionIds.length > 0) {
+          // Reset to "uploading" so the client's retry logic can re-attempt finalize.
+          await db
+            .update(sessions)
+            .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
+            .where(inArray(sessions.sessionId, orphanedSessionIds));
+          app.log.warn(
+            {
+              count: orphanedSessionIds.length,
+              orphanedVideoIds,
+              destBlobsDeleted: orphanedObjectKeys.length,
+              ids: orphanedSessionIds,
+            },
+            "[upload] reset interrupted assembling sessions — orphaned video rows and partial blobs cleaned up",
+          );
+        }
       }
     } catch (err) {
       app.log.warn({ err }, "[upload] startup assembling-session recovery failed (non-fatal)");
