@@ -1289,7 +1289,36 @@ class QueueIntegrityValidatorImpl {
             );
 
             for (const row of stuckRows) {
-              if (!row.local_video_url) continue;
+              if (!row.local_video_url) {
+                // No source URL — there is nothing to re-transcode. Reset the
+                // video to 'failed' + SOURCE_MISSING so:
+                //   (a) the UNPLAYABLE_CORRUPT_UPLOAD check deactivates the
+                //       broadcast queue row on the next validator cycle, and
+                //   (b) the operator sees a clear error instead of a video
+                //       permanently stuck at transcodingStatus='encoding'.
+                // Without this branch the video stays stuck at 'encoding'
+                // forever — enqueueTranscode would require a valid videoPath,
+                // and there is no recovery path if the source blob is gone.
+                logger.warn(
+                  { videoId: row.id },
+                  "[queue-validator] STUCK_ENCODING_NO_JOB: no local_video_url — resetting to failed+SOURCE_MISSING",
+                );
+                await db
+                  .update(schema.videosTable)
+                  .set({
+                    transcodingStatus: "failed",
+                    transcodingErrorCode: "SOURCE_MISSING",
+                    transcodingErrorMessage:
+                      "Video was stuck at 'encoding' for >2 h with no active transcoding job " +
+                      "and no source URL. The source blob may have been deleted. " +
+                      "Re-upload the video to recover.",
+                  })
+                  .where(eq(schema.videosTable.id, row.id))
+                  .catch((err: unknown) =>
+                    logger.warn({ err, videoId: row.id }, "[queue-validator] STUCK_ENCODING_NO_JOB: failed to reset status (non-fatal)"),
+                  );
+                continue;
+              }
               try {
                 await enqueueTranscode({ videoId: row.id, videoPath: row.local_video_url, priority: 3 });
                 logger.info({ videoId: row.id }, "[queue-validator] STUCK_ENCODING_NO_JOB: re-enqueued video for transcoding");

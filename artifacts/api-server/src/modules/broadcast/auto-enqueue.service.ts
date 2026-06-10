@@ -232,10 +232,20 @@ export async function scanLibraryAndEnqueue(opts: {
           // from storage. Both require a fresh re-upload.
           sql`(${videosTable.transcodingErrorCode} IS NULL OR ${videosTable.transcodingErrorCode} NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING'))`,
           // Pre-filter: exclude raw MP4s that are known-unplayable (failed
-          // transcoding + faststart never applied + no HLS manifest).
+          // transcoding + faststart explicitly failed + no HLS manifest).
+          //
+          // IMPORTANT: use = false, NOT IS NULL.
+          // faststartApplied is a nullable boolean:
+          //   NULL  = faststart was never attempted → unknown moov position,
+          //           but we give the file the benefit of the doubt (same rule
+          //           as isPlayableForBroadcast which uses === false).
+          //   false = faststart was explicitly run and FAILED → moov at EOF.
+          // Adding "OR faststartApplied IS NULL" would exclude freshly uploaded
+          // videos that have not yet gone through the faststart pipeline, causing
+          // them to never enter the broadcast queue.
           sql`NOT (
             ${videosTable.transcodingStatus} = 'failed'
-            AND (${videosTable.faststartApplied} = false OR ${videosTable.faststartApplied} IS NULL)
+            AND ${videosTable.faststartApplied} = false
             AND ${videosTable.hlsMasterUrl} IS NULL
           )`,
           // NOT EXISTS subquery — keeps the JOIN cheap and the candidate set
@@ -338,14 +348,24 @@ function isPlayableForBroadcast(row: {
   if (row.transcodingErrorCode === "CORRUPT_SOURCE" || row.transcodingErrorCode === "SOURCE_MISSING") return false;
 
   // Raw local MP4 (no HLS yet): safe to broadcast ONLY when the moov atom is
-  // positioned at byte 0 (faststartApplied = true). If transcoding permanently
-  // failed (status = 'failed') and faststart was never applied (false/null),
-  // the moov is at EOF — browsers buffer the entire file before playing.
-  // That means the raw URL will stall or error in the player. Exclude it.
+  // positioned at byte 0 (faststartApplied = true or null). If transcoding
+  // permanently failed (status = 'failed') AND faststart was explicitly run
+  // and failed (faststartApplied === false), the moov is at EOF — browsers
+  // buffer the entire file before playing.
+  //
+  // IMPORTANT: use === false, NOT the ! operator.
+  // faststartApplied is a nullable boolean:
+  //   null  = faststart was never attempted → unknown moov position, but we
+  //           give the file the benefit of the doubt so it can broadcast.
+  //   false = faststart was explicitly run and FAILED → moov at EOF, confirmed
+  //           unplayable via HTTP range streaming.
+  // !null === true would block every file where faststart has not yet run —
+  // including freshly uploaded videos that are queued but not yet processed.
+  // The queue-integrity-validator uses the same === false guard for consistency.
   if (row.localVideoUrl && row.localVideoUrl.trim() !== "") {
     if (
       row.transcodingStatus === "failed" &&
-      !row.faststartApplied
+      row.faststartApplied === false
     ) {
       return false;
     }

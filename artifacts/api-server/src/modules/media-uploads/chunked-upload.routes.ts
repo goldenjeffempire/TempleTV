@@ -1293,7 +1293,21 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 "[finalize:bg] assembly watchdog fired — marking video failed, resetting session",
               );
               await Promise.allSettled([
-                db.update(videos).set({ transcodingStatus: "failed" }).where(eq(videos.id, videoId)),
+                db
+                  .update(videos)
+                  .set({
+                    transcodingStatus: "failed",
+                    // CORRUPT_SOURCE signals the queue-integrity-validator's
+                    // UNPLAYABLE_CORRUPT_UPLOAD check so it auto-deactivates
+                    // this queue item.  Without it the validator never fires
+                    // and the orchestrator keeps trying to play the
+                    // partially-assembled blob on every tick.
+                    transcodingErrorCode: "CORRUPT_SOURCE",
+                    transcodingErrorMessage:
+                      "Assembly watchdog timeout (60 min) — the blob was never fully assembled. " +
+                      "Reset the session from the upload panel and retry the upload.",
+                  })
+                  .where(eq(videos.id, videoId)),
                 db
                   .update(sessions)
                   .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
@@ -1623,7 +1637,22 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               void storage().deleteObject(session.objectKey).catch(() => {});
             }
             await Promise.allSettled([
-              db.update(videos).set({ transcodingStatus: "failed" }).where(eq(videos.id, videoId)),
+              db
+                .update(videos)
+                .set({
+                  transcodingStatus: "failed",
+                  // CORRUPT_SOURCE signals the queue-integrity-validator's
+                  // UNPLAYABLE_CORRUPT_UPLOAD check so it auto-deactivates
+                  // this queue item.  Without it the validator never fires
+                  // and the orchestrator keeps trying to play the
+                  // partially-assembled blob on every tick.
+                  transcodingErrorCode: "CORRUPT_SOURCE",
+                  transcodingErrorMessage:
+                    `Assembly failed after ${Date.now() - assemblyStartMs} ms — ` +
+                    "the blob may be partially written. Reset the session from the " +
+                    "upload panel and retry the upload to recover.",
+                })
+                .where(eq(videos.id, videoId)),
               db
                 .update(sessions)
                 .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
@@ -1764,7 +1793,21 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               "[finalize:db_fallback:bg] assembly watchdog fired — marking failed, resetting session",
             );
             await Promise.allSettled([
-              db.update(videos).set({ transcodingStatus: "failed" }).where(eq(videos.id, videoIdB)),
+              db
+                .update(videos)
+                .set({
+                  transcodingStatus: "failed",
+                  // CORRUPT_SOURCE signals the queue-integrity-validator's
+                  // UNPLAYABLE_CORRUPT_UPLOAD check so it auto-deactivates
+                  // this queue item.  Without it the validator never fires
+                  // and the orchestrator keeps trying to play the
+                  // partially-assembled blob on every tick.
+                  transcodingErrorCode: "CORRUPT_SOURCE",
+                  transcodingErrorMessage:
+                    "Assembly watchdog timeout (60 min) — the blob was never fully assembled. " +
+                    "Reset the session from the upload panel and retry the upload.",
+                })
+                .where(eq(videos.id, videoIdB)),
               db
                 .update(sessions)
                 .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
@@ -2024,7 +2067,22 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             "[finalize:db_fallback:bg] ASSEMBLY FAILED — resetting session, marking video failed",
           );
           await Promise.allSettled([
-            db.update(videos).set({ transcodingStatus: "failed" }).where(eq(videos.id, videoIdB)),
+            db
+              .update(videos)
+              .set({
+                transcodingStatus: "failed",
+                // CORRUPT_SOURCE signals the queue-integrity-validator's
+                // UNPLAYABLE_CORRUPT_UPLOAD check so it auto-deactivates
+                // this queue item.  Without it the validator never fires
+                // and the orchestrator keeps trying to play the
+                // partially-assembled blob on every tick.
+                transcodingErrorCode: "CORRUPT_SOURCE",
+                transcodingErrorMessage:
+                  `Assembly failed after ${Date.now() - assemblyStartMsB} ms — ` +
+                  "the blob may be partially written. Reset the session from the " +
+                  "upload panel and retry the upload to recover.",
+              })
+              .where(eq(videos.id, videoIdB)),
             db
               .update(sessions)
               .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
