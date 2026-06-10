@@ -202,12 +202,18 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
             transcodingStatus: videosTable.transcodingStatus,
             hlsMasterUrl: videosTable.hlsMasterUrl,
             transcodingErrorCode: videosTable.transcodingErrorCode,
+            // Pre-populate transcodingError from managed_videos so CORRUPT_SOURCE
+            // errors set by the early upload gate (before any transcoding job runs)
+            // are surfaced to the admin UI.  The transcoding-jobs join below will
+            // overwrite this with the job's errorMessage when a job exists, but
+            // for early-gate failures there is no job row — only the column value.
+            transcodingErrorMessage: videosTable.transcodingErrorMessage,
             youtubeLiveStatus: videosTable.youtubeLiveStatus,
           })
           .from(videosTable)
           .where(inArray(videosTable.id, videoIds));
         for (const v of vids) {
-          hlsMap.set(v.id, { transcodingStatus: v.transcodingStatus, hlsMasterUrl: v.hlsMasterUrl, transcodingError: null, transcodingErrorCode: v.transcodingErrorCode ?? null, youtubeLiveStatus: (v.youtubeLiveStatus as "live" | "rebroadcast" | null) ?? null });
+          hlsMap.set(v.id, { transcodingStatus: v.transcodingStatus, hlsMasterUrl: v.hlsMasterUrl, transcodingError: v.transcodingErrorMessage ?? null, transcodingErrorCode: v.transcodingErrorCode ?? null, youtubeLiveStatus: (v.youtubeLiveStatus as "live" | "rebroadcast" | null) ?? null });
         }
 
         // For items whose transcoding_status is 'failed', fetch the last error

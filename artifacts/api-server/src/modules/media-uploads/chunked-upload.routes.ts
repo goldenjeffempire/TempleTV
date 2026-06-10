@@ -1571,27 +1571,40 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             // fail there after 3 expensive retry cycles).
             let skipTranscodeEnqueue = false;
             try {
-              const { valid: containerOk } = await probeUploadedContainerValidity(objectKey);
-              if (!containerOk) {
-                capturedLog.error(
-                  { videoId, objectKey },
-                  "[finalize:bg] EARLY CORRUPT GATE — container probe failed before faststart. " +
-                  "Marking video failed; operator must re-upload the source file.",
-                );
-                skipTranscodeEnqueue = true;
-                await db
-                  .update(videos)
-                  .set({
-                    transcodingStatus: "failed",
-                    transcodingErrorCode: "CORRUPT_SOURCE",
-                    transcodingErrorMessage:
-                      "Upload rejected: the video file is corrupt or incomplete " +
-                      "(container validation failed before processing). " +
-                      "Please re-upload from the original source file.",
-                  })
-                  .where(eq(videos.id, videoId))
-                  .catch(() => {});
-                adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-early-gate" });
+              const containerProbe = await probeUploadedContainerValidity(objectKey);
+              if (!containerProbe.valid) {
+                if (containerProbe.unrecoverable === true) {
+                  // Moov atom is completely absent or file failed pre-flight —
+                  // no remux strategy can recover this. Mark failed immediately
+                  // so the operator knows to re-upload the original source file.
+                  capturedLog.error(
+                    { videoId, objectKey, kind: containerProbe.kind },
+                    "[finalize:bg] EARLY CORRUPT GATE (unrecoverable) — container probe confirmed " +
+                    "no moov atom or invalid file type; marking failed before faststart.",
+                  );
+                  skipTranscodeEnqueue = true;
+                  await db
+                    .update(videos)
+                    .set({
+                      transcodingStatus: "failed",
+                      transcodingErrorCode: "CORRUPT_SOURCE",
+                      transcodingErrorMessage: containerProbe.error ??
+                        "Upload rejected: the video file is unrecoverable " +
+                        "(moov atom absent or invalid file type). " +
+                        "Please re-upload from the original source file.",
+                    })
+                    .where(eq(videos.id, videoId))
+                    .catch(() => {});
+                  adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-early-gate" });
+                } else {
+                  // Container is mildly damaged but moov is not confirmed absent —
+                  // faststart's remux strategies (including error-tolerant copy and
+                  // fMP4 output) may recover it. Log a warning and let faststart run.
+                  capturedLog.warn(
+                    { videoId, objectKey, kind: containerProbe.kind },
+                    "[finalize:bg] container probe soft-fail — allowing faststart remux to attempt repair.",
+                  );
+                }
               }
             } catch (earlyGateErr) {
               capturedLog.warn(
@@ -2033,27 +2046,37 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           // rather than burning 3 transcoder retry cycles against a broken file.
           let skipTranscodeEnqueueB = false;
           try {
-            const { valid: containerOkB } = await probeUploadedContainerValidity(result.objectKey);
-            if (!containerOkB) {
-              capturedLogB.error(
-                { videoId: videoIdB, objectKey: result.objectKey },
-                "[finalize:db_fallback:bg] EARLY CORRUPT GATE — container probe failed before faststart. " +
-                "Marking video failed; operator must re-upload the source file.",
-              );
-              skipTranscodeEnqueueB = true;
-              await db
-                .update(videos)
-                .set({
-                  transcodingStatus: "failed",
-                  transcodingErrorCode: "CORRUPT_SOURCE",
-                  transcodingErrorMessage:
-                    "Upload rejected: the video file is corrupt or incomplete " +
-                    "(container validation failed before processing). " +
-                    "Please re-upload from the original source file.",
-                })
-                .where(eq(videos.id, videoIdB))
-                .catch(() => {});
-              adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "corrupt-upload-early-gate" });
+            const containerProbeB = await probeUploadedContainerValidity(result.objectKey);
+            if (!containerProbeB.valid) {
+              if (containerProbeB.unrecoverable === true) {
+                // Moov atom is completely absent or file failed pre-flight —
+                // no remux strategy can recover this. Mark failed immediately.
+                capturedLogB.error(
+                  { videoId: videoIdB, objectKey: result.objectKey, kind: containerProbeB.kind },
+                  "[finalize:db_fallback:bg] EARLY CORRUPT GATE (unrecoverable) — container probe confirmed " +
+                  "no moov atom or invalid file type; marking failed before faststart.",
+                );
+                skipTranscodeEnqueueB = true;
+                await db
+                  .update(videos)
+                  .set({
+                    transcodingStatus: "failed",
+                    transcodingErrorCode: "CORRUPT_SOURCE",
+                    transcodingErrorMessage: containerProbeB.error ??
+                      "Upload rejected: the video file is unrecoverable " +
+                      "(moov atom absent or invalid file type). " +
+                      "Please re-upload from the original source file.",
+                  })
+                  .where(eq(videos.id, videoIdB))
+                  .catch(() => {});
+                adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "corrupt-upload-early-gate" });
+              } else {
+                // Mildly damaged container — faststart remux may recover it.
+                capturedLogB.warn(
+                  { videoId: videoIdB, objectKey: result.objectKey, kind: containerProbeB.kind },
+                  "[finalize:db_fallback:bg] container probe soft-fail — allowing faststart remux to attempt repair.",
+                );
+              }
             }
           } catch (earlyGateBErr) {
             capturedLogB.warn(

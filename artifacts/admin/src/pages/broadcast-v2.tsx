@@ -683,7 +683,9 @@ const SortableQueueItem = memo(function SortableQueueItem({
                   : "HLS failed";
             const terminalTitle =
               item.transcodingErrorCode === "CORRUPT_SOURCE"
-                ? "Recording was interrupted before the codec configuration (moov atom) could be written — the file is unrecoverable. Please re-upload from the original source file."
+                ? item.transcodingError
+                  ? `File is unrecoverable and must be re-uploaded.\n\nDetails: ${item.transcodingError}`
+                  : "The video file is corrupt or unrecoverable (moov atom absent or container invalid). Please re-upload from the original source file."
                 : item.transcodingErrorCode === "SOURCE_MISSING"
                   ? "The source video file is no longer in storage (deleted or never uploaded). Please re-upload the original file."
                   : item.transcodingError

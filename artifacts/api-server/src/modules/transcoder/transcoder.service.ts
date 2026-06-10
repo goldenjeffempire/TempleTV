@@ -1340,6 +1340,25 @@ export async function remuxForFaststart(
   ], "s3-tolerant-no-faststart", REMUX_TIMEOUT);
   if (s3) return outputPath;
 
+  // Strategy 4: fragmented MP4 (fMP4) output. Some action cameras and
+  // recording apps produce fMP4 files with moof+mdat segment pairs whose
+  // global moov is minimal or non-standard, causing Strategies 1–3 to
+  // reject the file before reaching the muxer. fMP4 output bypasses the
+  // classic faststart moov-relocation entirely and produces a streaming-
+  // compatible file that the HLS transcoder can read without needing a
+  // front-loaded moov atom.
+  const s4 = await tryFfmpeg([
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-fflags", "+genpts+discardcorrupt",
+    "-err_detect", "ignore_err",
+    "-i", inputPath,
+    "-c", "copy",
+    "-movflags", "frag_keyframe+default_base_moof",
+    "-ignore_unknown",
+    outputPath,
+  ], "s4-fragmented-mp4", REMUX_TIMEOUT);
+  if (s4) return outputPath;
+
   logger.warn({ videoId }, "transcoder: all remux-recovery strategies exhausted — container is unrepairable");
   return null;
 }
@@ -2245,7 +2264,7 @@ export async function probeUploadedDuration(sourceObjectKey: string): Promise<nu
  */
 export async function probeUploadedContainerValidity(
   objectKey: string,
-): Promise<{ valid: boolean; error?: string }> {
+): Promise<{ valid: boolean; unrecoverable?: boolean; kind?: string; error?: string }> {
   const s = storage();
   if (!s.enabled) return { valid: true };
   const tmpDir = path.join(os.tmpdir(), `container-probe-${randomUUID()}`);
@@ -2257,17 +2276,53 @@ export async function probeUploadedContainerValidity(
     await downloadSourceToTempFile(objectKey, tmpPath);
 
     // Stage 0: existence, size, and magic-bytes gate (no subprocess).
+    // Wrong file type or truncated content is always unrecoverable — no remux
+    // strategy can turn a non-video file into a valid MP4.
     try {
       await validateLocalSourceFile(tmpPath);
     } catch (valErr) {
       const errMsg = valErr instanceof Error ? valErr.message : String(valErr);
-      return { valid: false, error: `source file failed pre-flight validation: ${errMsg}` };
+      return {
+        valid: false,
+        unrecoverable: true,
+        kind: "preflight_failed",
+        error: `source file failed pre-flight validation: ${errMsg}`,
+      };
     }
 
     // Stage 1: structural integrity — moov atom present and parseable.
     const containerStructureValid = await probeContainerIsValid(tmpPath);
     if (!containerStructureValid) {
-      return { valid: false, error: "container structure invalid (moov atom missing, partial file, or damaged container header)" };
+      // Distinguish: moov is truly absent (recording cut off mid-write) vs.
+      // moov is present but in an unusual location or mildly damaged.
+      //
+      // When moov is completely absent the codec configuration (SPS/PPS stored
+      // in the moov's avcC box) is permanently lost — no remux can reconstruct
+      // it.  When moov exists but is hard to find, faststart's remux strategies
+      // (error-tolerant stream-copy, fMP4 output) may recover the file.
+      const mdatNoMoov = await detectMdatWithoutMoov(tmpPath);
+      if (mdatNoMoov) {
+        return {
+          valid: false,
+          unrecoverable: true,
+          kind: "moov_absent",
+          error:
+            "moov atom is completely absent — the recording was interrupted before the " +
+            "codec configuration (moov/avcC) could be written; no remux or repair is possible. " +
+            "Please re-export or re-record from the original source.",
+        };
+      }
+      // moov is not confirmed absent — container may be mildly damaged,
+      // have an unusual structure, or be a fragmented MP4 (fMP4). Let
+      // faststart's remux strategies attempt repair.
+      return {
+        valid: false,
+        unrecoverable: false,
+        kind: "structure_invalid",
+        error:
+          "container structure invalid (moov atom in an unexpected location, partial file, " +
+          "or damaged container header) — faststart remux repair will be attempted",
+      };
     }
 
     // Stage 2: media-data decodability — mdat payload is intact.
@@ -2275,10 +2330,17 @@ export async function probeUploadedContainerValidity(
     // have a valid moov but a truncated or corrupt mdat that would pass the
     // structural check yet fail HLS encoding after 15+ minutes of wasted
     // compute. Decode the first frame to verify the payload.
+    //
+    // This is NOT marked unrecoverable: the HLS transcoder's -err_detect
+    // ignore_err mode can sometimes extract usable content from files that
+    // fail a single-frame probe (e.g. first-frame keyframe is missing but
+    // subsequent frames are intact).
     const mediaDataDecodable = await probeCanDecodeFirstFrame(tmpPath);
     if (!mediaDataDecodable) {
       return {
         valid: false,
+        unrecoverable: false,
+        kind: "frame_decode_failed",
         error:
           "media data undecodable: container structure is valid but the first video frame " +
           "cannot be decoded — mdat may be truncated, bit-corrupted, or the codec is unsupported",

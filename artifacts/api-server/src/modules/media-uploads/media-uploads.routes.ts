@@ -453,30 +453,37 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
       // container. Mirrors the early gate in the chunked-upload path. The probe
       // returns valid=true on any infrastructure error (download/ffprobe), so
       // this only rejects on genuine, confirmed corruption.
-      const { valid: containerOk } = await probeUploadedContainerValidity(body.objectKey);
-      if (!containerOk) {
+      const containerProbe = await probeUploadedContainerValidity(body.objectKey);
+      if (!containerProbe.valid && containerProbe.unrecoverable === true) {
+        // File is genuinely unrecoverable (moov absent, wrong file type, etc.).
+        // Reject before the DB row is created — no point starting the pipeline.
         req.log.error(
-          { objectKey: body.objectKey, sizeBytes: body.sizeBytes },
-          "[s3-multipart-complete] container validation failed (moov atom missing/unreadable) — rejecting before queue insertion",
+          { objectKey: body.objectKey, sizeBytes: body.sizeBytes, kind: containerProbe.kind },
+          "[s3-multipart-complete] container validation failed (unrecoverable) — rejecting before DB insert",
         );
         uploadTelemetry.serverFail(
           body.sessionId,
           body.sizeBytes,
           "corrupt_container",
-          "Upload rejected: moov atom missing or unreadable",
+          containerProbe.error ?? "Upload rejected: moov atom absent or file type invalid",
         );
         // The multipart object was already assembled by completeMultipartUpload
         // above, so remove the orphan blob + session before bailing out.
         await cleanupRejectedUpload(body.sessionId, body.objectKey, "corrupt-container");
         throw Object.assign(
           new Error(
-            "Upload rejected: the video container is corrupt (missing or unreadable moov atom). " +
-              "This usually means the file was incompletely written or exported. " +
-              "Please re-export the video and upload again.",
+            containerProbe.kind === "moov_absent"
+              ? "Upload rejected: the recording was interrupted before the codec configuration could be written (moov atom absent). " +
+                "Please re-record or re-export the video and upload again."
+              : (containerProbe.error
+                  ? `Upload rejected: ${containerProbe.error}`
+                  : "Upload rejected: the video container is unrecoverable. Please re-export and upload again."),
           ),
           { statusCode: 422 },
         );
       }
+      // If the container probe soft-failed (valid: false, unrecoverable: false),
+      // allow the upload through — faststart's remux strategies will attempt repair.
 
       const localVideoUrl = completed.location || storage().publicUrl(body.objectKey);
       const videoId = randomUUID();
@@ -757,30 +764,37 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
       // broadcast queue. Mirrors the chunked-upload early gate. The probe
       // returns valid=true on any infrastructure error, so this only rejects
       // on genuine, confirmed corruption.
-      const { valid: containerOk } = await probeUploadedContainerValidity(body.objectKey);
-      if (!containerOk) {
+      const containerProbeS3 = await probeUploadedContainerValidity(body.objectKey);
+      if (!containerProbeS3.valid && containerProbeS3.unrecoverable === true) {
+        // File is genuinely unrecoverable (moov absent, wrong file type, etc.).
+        // Reject before the DB row is created.
         req.log.error(
-          { objectKey: body.objectKey, sizeBytes: body.sizeBytes },
-          "[s3-finalize] container validation failed (moov atom missing/unreadable) — rejecting before queue insertion",
+          { objectKey: body.objectKey, sizeBytes: body.sizeBytes, kind: containerProbeS3.kind },
+          "[s3-finalize] container validation failed (unrecoverable) — rejecting before DB insert",
         );
         uploadTelemetry.serverFail(
           body.sessionId,
           body.sizeBytes,
           "corrupt_container",
-          "Upload rejected: moov atom missing or unreadable",
+          containerProbeS3.error ?? "Upload rejected: moov atom absent or file type invalid",
         );
         // The object is already in storage; remove the orphan blob + session
         // before bailing out so a rejected upload leaves no residue.
         await cleanupRejectedUpload(body.sessionId, body.objectKey, "corrupt-container");
         throw Object.assign(
           new Error(
-            "Upload rejected: the video container is corrupt (missing or unreadable moov atom). " +
-              "This usually means the file was incompletely written or exported. " +
-              "Please re-export the video and upload again.",
+            containerProbeS3.kind === "moov_absent"
+              ? "Upload rejected: the recording was interrupted before the codec configuration could be written (moov atom absent). " +
+                "Please re-record or re-export the video and upload again."
+              : (containerProbeS3.error
+                  ? `Upload rejected: ${containerProbeS3.error}`
+                  : "Upload rejected: the video container is unrecoverable. Please re-export and upload again."),
           ),
           { statusCode: 422 },
         );
       }
+      // If the container probe soft-failed (valid: false, unrecoverable: false),
+      // allow the upload through — faststart's remux strategies will attempt repair.
 
       const localVideoUrl = storage().publicUrl(body.objectKey);
       const videoId = randomUUID();
