@@ -727,6 +727,20 @@ declare class BroadcastOrchestrator extends EventEmitter {
      */
     getStartedAtMs(): number;
     isStarted(): boolean;
+    /**
+     * Nuclear recovery: stop all timers, wipe the in-memory bad-URL blacklist,
+     * re-enable every DB-suspended queue item, then restart from scratch.
+     *
+     * Intended for use by the broadcast health monitor when normal self-heal
+     * mechanisms (self-heal reload, dead-air escalation) have failed to unstick
+     * the orchestrator.  Unlike a simple reload(), this tears down and rebuilds
+     * the entire runtime state — equivalent to a soft process restart for the
+     * broadcast subsystem.
+     *
+     * NEVER throws.  All errors are logged and the restart is attempted regardless.
+     * Caller should schedule a follow-up health check to verify recovery succeeded.
+     */
+    initiateFullRecovery(reason: string): Promise<void>;
 }
 export declare const broadcastOrchestrator: BroadcastOrchestrator;
 export {};

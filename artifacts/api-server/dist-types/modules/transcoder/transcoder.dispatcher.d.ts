@@ -67,11 +67,28 @@ declare class TranscoderDispatcher {
     private openFfmpegCircuit;
     start(): void;
     private purgeOrphanedScratchDirs;
+    /**
+     * Scan /proc for ffmpeg child processes left behind by a SIGKILL-ed server.
+     *
+     * When the server is killed (OOM, deploy SIGKILL, container eviction) the
+     * normally-reliable finally block in runTranscode() never runs, leaving
+     * orphaned ffmpeg processes alive. They consume CPU and memory while
+     * their jobs have already been reset to 'queued' by resetOrphanedJobs().
+     *
+     * Safety: ONLY kills ffmpeg processes whose cmdline references our own
+     * TRANSCODER_SCRATCH_DIR. This makes it safe even if other services in the
+     * same container run ffmpeg for unrelated purposes.
+     *
+     * Linux-only: skips silently on macOS / Windows where /proc is absent.
+     */
+    private scanAndKillOrphanedFfmpegProcesses;
     private partialRecoveryCounter;
     private static readonly PARTIAL_RECOVERY_TICKS;
     private autoRetryCounter;
     private stuckJobsCounter;
     private static readonly STUCK_JOBS_TICKS;
+    private faststartOrphanCounter;
+    private static readonly FASTSTART_ORPHAN_TICKS;
     private static readonly EARLY_STUCK_MS;
     private static readonly PROGRESS_STALE_MS;
     private static readonly JOB_START_GRACE_MS;
@@ -162,6 +179,20 @@ declare class TranscoderDispatcher {
      * false resets when the job is legitimately finishing its final upload.
      */
     private resetStuckJobs;
+    /**
+     * Faststart-orphan recovery watchdog.
+     *
+     * Finds `managed_videos` rows stuck in transcodingStatus = 'processing' or
+     * 'queued' with no corresponding `transcoding_jobs` row in an active state
+     * AND whose updated_at is older than 45 minutes. This indicates the
+     * process that was running faststart/transcoding died (SIGKILL, OOM, crash)
+     * without cleaning up the video status, leaving it permanently stuck.
+     *
+     * Fix: reset transcodingStatus → 'queued' so the dispatcher re-picks the
+     * video on the next tick. Does NOT increment the attempts counter (unlike
+     * resetStuckJobs) because the cause is infrastructure failure, not a bad job.
+     */
+    private resetFaststartOrphans;
     runOnce(): Promise<{
         ran: boolean;
     }>;

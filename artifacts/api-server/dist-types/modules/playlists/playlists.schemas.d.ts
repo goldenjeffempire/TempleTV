@@ -9,21 +9,21 @@ export declare const PlaylistSchema: z.ZodObject<{
     updatedAt: z.ZodString;
     videoCount: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    description: string;
     id: string;
+    description: string;
     name: string;
-    isActive: boolean;
     updatedAt: string;
     loopMode: string;
+    isActive: boolean;
     createdAt: string;
     videoCount: number;
 }, {
-    description: string;
     id: string;
+    description: string;
     name: string;
-    isActive: boolean;
     updatedAt: string;
     loopMode: string;
+    isActive: boolean;
     createdAt: string;
     videoCount: number;
 }>;
@@ -40,28 +40,28 @@ export declare const PlaylistVideoSchema: z.ZodObject<{
     addedAt: z.ZodString;
     youtubeLiveStatus: z.ZodOptional<z.ZodNullable<z.ZodEnum<["live", "rebroadcast"]>>>;
 }, "strip", z.ZodTypeAny, {
-    videoId: string;
-    title: string;
-    id: string;
     duration: string;
+    id: string;
     youtubeId: string;
+    title: string;
     thumbnailUrl: string;
-    sortOrder: number;
-    addedAt: string;
     category: string;
     playlistId: string;
+    videoId: string;
+    sortOrder: number;
+    addedAt: string;
     youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
 }, {
-    videoId: string;
-    title: string;
-    id: string;
     duration: string;
+    id: string;
     youtubeId: string;
+    title: string;
     thumbnailUrl: string;
-    sortOrder: number;
-    addedAt: string;
     category: string;
     playlistId: string;
+    videoId: string;
+    sortOrder: number;
+    addedAt: string;
     youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
 }>;
 export declare const PlaylistDetailSchema: z.ZodObject<{
@@ -87,71 +87,71 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
         addedAt: z.ZodString;
         youtubeLiveStatus: z.ZodOptional<z.ZodNullable<z.ZodEnum<["live", "rebroadcast"]>>>;
     }, "strip", z.ZodTypeAny, {
-        videoId: string;
-        title: string;
-        id: string;
         duration: string;
+        id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
-        sortOrder: number;
-        addedAt: string;
         category: string;
         playlistId: string;
+        videoId: string;
+        sortOrder: number;
+        addedAt: string;
         youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
     }, {
-        videoId: string;
-        title: string;
-        id: string;
         duration: string;
+        id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
-        sortOrder: number;
-        addedAt: string;
         category: string;
         playlistId: string;
+        videoId: string;
+        sortOrder: number;
+        addedAt: string;
         youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
     }>, "many">;
 }, "strip", z.ZodTypeAny, {
-    description: string;
     id: string;
+    description: string;
     name: string;
-    isActive: boolean;
     updatedAt: string;
     loopMode: string;
+    isActive: boolean;
     createdAt: string;
     videos: {
-        videoId: string;
-        title: string;
-        id: string;
         duration: string;
+        id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
-        sortOrder: number;
-        addedAt: string;
         category: string;
         playlistId: string;
+        videoId: string;
+        sortOrder: number;
+        addedAt: string;
         youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
     }[];
     videoCount: number;
 }, {
-    description: string;
     id: string;
+    description: string;
     name: string;
-    isActive: boolean;
     updatedAt: string;
     loopMode: string;
+    isActive: boolean;
     createdAt: string;
     videos: {
-        videoId: string;
-        title: string;
-        id: string;
         duration: string;
+        id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
-        sortOrder: number;
-        addedAt: string;
         category: string;
         playlistId: string;
+        videoId: string;
+        sortOrder: number;
+        addedAt: string;
         youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
     }[];
     videoCount: number;
@@ -167,49 +167,49 @@ export declare const ListPlaylistsResponseSchema: z.ZodObject<{
         updatedAt: z.ZodString;
         videoCount: z.ZodNumber;
     }, "strip", z.ZodTypeAny, {
-        description: string;
         id: string;
+        description: string;
         name: string;
-        isActive: boolean;
         updatedAt: string;
         loopMode: string;
+        isActive: boolean;
         createdAt: string;
         videoCount: number;
     }, {
-        description: string;
         id: string;
+        description: string;
         name: string;
-        isActive: boolean;
         updatedAt: string;
         loopMode: string;
+        isActive: boolean;
         createdAt: string;
         videoCount: number;
     }>, "many">;
     total: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    total: number;
     items: {
-        description: string;
         id: string;
+        description: string;
         name: string;
-        isActive: boolean;
         updatedAt: string;
         loopMode: string;
+        isActive: boolean;
         createdAt: string;
         videoCount: number;
     }[];
+    total: number;
 }, {
-    total: number;
     items: {
-        description: string;
         id: string;
+        description: string;
         name: string;
-        isActive: boolean;
         updatedAt: string;
         loopMode: string;
+        isActive: boolean;
         createdAt: string;
         videoCount: number;
     }[];
+    total: number;
 }>;
 export declare const CreatePlaylistBodySchema: z.ZodObject<{
     name: z.ZodString;
@@ -219,13 +219,13 @@ export declare const CreatePlaylistBodySchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     description: string;
     name: string;
+    loopMode: "shuffle" | "sequential" | "single";
     isActive: boolean;
-    loopMode: "sequential" | "single" | "shuffle";
 }, {
     name: string;
     description?: string | undefined;
+    loopMode?: "shuffle" | "sequential" | "single" | undefined;
     isActive?: boolean | undefined;
-    loopMode?: "sequential" | "single" | "shuffle" | undefined;
 }>;
 export declare const UpdatePlaylistBodySchema: z.ZodObject<{
     name: z.ZodOptional<z.ZodString>;
@@ -235,13 +235,13 @@ export declare const UpdatePlaylistBodySchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     description?: string | undefined;
     name?: string | undefined;
+    loopMode?: "shuffle" | "sequential" | "single" | undefined;
     isActive?: boolean | undefined;
-    loopMode?: "sequential" | "single" | "shuffle" | undefined;
 }, {
     description?: string | undefined;
     name?: string | undefined;
+    loopMode?: "shuffle" | "sequential" | "single" | undefined;
     isActive?: boolean | undefined;
-    loopMode?: "sequential" | "single" | "shuffle" | undefined;
 }>;
 export declare const AddVideoBodySchema: z.ZodObject<{
     videoId: z.ZodString;

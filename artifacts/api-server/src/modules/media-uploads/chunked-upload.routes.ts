@@ -1401,6 +1401,13 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           // will still run to completion on its own if the server stays up).
           assemblyWatchdog.unref();
 
+          // Track whether completeMultipartUpload has committed the blob to
+          // storage.  The catch block below deletes the blob to clean up
+          // partial/failed assemblies — but if assembly already committed
+          // (assemblyCommitted=true) the blob is intact and must NOT be
+          // deleted, or the video row will point to a missing object.
+          let assemblyCommitted = false;
+
           try {
             capturedLog.info(
               { sessionId, videoId, parts: partsForAssembly.length },
@@ -1412,6 +1419,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               uploadId,
               parts: partsForAssembly,
             });
+            // Blob is now committed in storage_blobs.  Any exception thrown
+            // after this point must NOT delete the object.
+            assemblyCommitted = true;
 
             // ── Post-assembly blob integrity check ───────────────────────────
             // Verify that the assembled blob in storage_blobs actually has the
@@ -1479,7 +1489,17 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 .where(eq(videos.id, videoId))
                 .catch(() => {}),
             ]);
-            uploadTelemetry.success(sessionId, videoId, session.sizeBytes, Date.now() - assemblyStartMs);
+            // Wrap telemetry write: a DB failure here must not propagate to
+            // the outer catch and trigger blob deletion — the blob is already
+            // committed and the video row is valid.
+            try {
+              uploadTelemetry.success(sessionId, videoId, session.sizeBytes, Date.now() - assemblyStartMs);
+            } catch (telErr) {
+              capturedLog.warn(
+                { err: telErr, sessionId },
+                "[finalize:bg] telemetry success write failed (non-fatal — blob is intact)",
+              );
+            }
 
             // Reclaim chunk metadata rows (db-mode rows hold no BYTEA data).
             void db
@@ -1729,12 +1749,27 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               { err, sessionId, videoId, assemblyMs: Date.now() - assemblyStartMs },
               "[finalize:bg] ASSEMBLY FAILED — resetting session, marking video failed",
             );
-            // Best-effort orphan cleanup: if the seed INSERT succeeded but a
-            // later append failed, a partially-assembled blob remains at the
-            // final key. Delete it so the storage GC doesn't carry it for
-            // 4 h and the next finalize retry starts from a clean slate.
-            if (session.objectKey) {
+            // Best-effort orphan cleanup: if completeMultipartUpload threw
+            // (assemblyCommitted=false) a partially-assembled blob may remain
+            // at the final key.  Delete it so the storage GC doesn't carry it
+            // for 4 h and the next finalize retry starts from a clean slate.
+            //
+            // CRITICAL: skip deletion when assemblyCommitted=true.  That flag
+            // means completeMultipartUpload already committed the blob — the
+            // exception was thrown by a later step (e.g. telemetry write) and
+            // the video row still references this object.  Deleting it here
+            // would make the video permanently unrecoverable.
+            if (!assemblyCommitted && session.objectKey) {
+              capturedLog.warn(
+                { sessionId, videoId, objectKey: session.objectKey },
+                "[finalize:bg] deleting uncommitted partial assembly blob",
+              );
               void storage().deleteObject(session.objectKey).catch(() => {});
+            } else if (assemblyCommitted && session.objectKey) {
+              capturedLog.error(
+                { sessionId, videoId, objectKey: session.objectKey },
+                "[finalize:bg] assembly committed but a later step threw — blob is PRESERVED; video row intact",
+              );
             }
             await Promise.allSettled([
               db

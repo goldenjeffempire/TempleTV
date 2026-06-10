@@ -1,6 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { broadcastOrchestrator } from "./engine/broadcast-orchestrator.js";
 import { broadcastFanout } from "./io/broadcast-fanout.js";
+import { getBroadcastHealthMonitorStatus } from "./engine/broadcast-health-monitor.js";
+import { getContentRotationStatus } from "./engine/content-rotation.js";
+import { getQueueHealthGuardStatus } from "./engine/queue-health-guard.js";
+export { getQueueHealthGuardStatus };
 /**
  * Broadcast v2 — server-authoritative streaming control plane.
  *
@@ -48,4 +52,4 @@ export declare function ensureBroadcastV2Started(): Promise<void>;
  * Called from main.ts shutdown handler before app.close().
  */
 export declare function stopBroadcastV2(): Promise<void>;
-export { broadcastOrchestrator, broadcastFanout };
+export { broadcastOrchestrator, broadcastFanout, getBroadcastHealthMonitorStatus, getContentRotationStatus };

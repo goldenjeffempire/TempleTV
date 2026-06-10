@@ -173,6 +173,8 @@ export declare function probeUploadedDuration(sourceObjectKey: string): Promise<
  */
 export declare function probeUploadedContainerValidity(objectKey: string): Promise<{
     valid: boolean;
+    unrecoverable?: boolean;
+    kind?: string;
     error?: string;
 }>;
 /**

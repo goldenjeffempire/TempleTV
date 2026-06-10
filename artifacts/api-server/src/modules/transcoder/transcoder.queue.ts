@@ -396,11 +396,33 @@ export async function cancelJob(id: string): Promise<{ ok: boolean; reason?: str
       .returning({ id: jobs.id, videoId: jobs.videoId });
 
     if (out.length > 0) {
+      // Determine the correct restored transcodingStatus.
+      // Setting 'none' unconditionally is wrong when faststart already ran:
+      // 'none' signals "raw upload, never processed" and causes the auto-enqueue
+      // service to immediately re-queue this video for HLS transcoding, creating
+      // a silent re-enqueue loop on every cancel for faststart-applied videos.
+      //
+      // Correct mapping:
+      //   faststartApplied=true + no hlsMasterUrl → 'ready'  (faststart done, no HLS)
+      //   otherwise                               → 'none'   (raw or HLS already present)
+      const videoState = await tx
+        .select({ faststartApplied: videos.faststartApplied, hlsMasterUrl: videos.hlsMasterUrl })
+        .from(videos)
+        .where(eq(videos.id, out[0]!.videoId))
+        .limit(1)
+        .then((r) => r[0]);
+      const restoredStatus =
+        videoState?.faststartApplied === true && !videoState?.hlsMasterUrl
+          ? "ready"
+          : "none";
       await tx
         .update(videos)
-        .set({ transcodingStatus: "none" })
+        .set({ transcodingStatus: restoredStatus })
         .where(eq(videos.id, out[0]!.videoId));
-      logger.info({ jobId: id, videoId: out[0]!.videoId }, "transcoder: job cancelled by operator");
+      logger.info(
+        { jobId: id, videoId: out[0]!.videoId, restoredStatus },
+        "transcoder: job cancelled by operator",
+      );
     }
     return { ok: out.length > 0 };
   });

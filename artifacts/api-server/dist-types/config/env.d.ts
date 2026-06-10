@@ -46,6 +46,11 @@ declare const Env: z.ZodObject<{
     TRANSCODER_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     BROADCAST_AUTO_ENQUEUE_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     BROADCAST_QUEUE_MAX_ITEMS: z.ZodDefault<z.ZodNumber>;
+    BROADCAST_HEALTH_MONITOR_STALE_MS: z.ZodDefault<z.ZodNumber>;
+    BROADCAST_HEALTH_MONITOR_RECOVERY_MS: z.ZodDefault<z.ZodNumber>;
+    BROADCAST_ROTATION_STRATEGY: z.ZodDefault<z.ZodEnum<["shuffle", "fifo"]>>;
+    BROADCAST_ROTATION_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
+    DB_POOL_WARN_UTILIZATION: z.ZodDefault<z.ZodNumber>;
     BROADCAST_DEADAIR_FALLBACK_URL: z.ZodOptional<z.ZodString>;
     BROADCAST_DEADAIR_FALLBACK_AFTER_MS: z.ZodDefault<z.ZodNumber>;
     BROADCAST_WEBHOOK_URL: z.ZodOptional<z.ZodString>;
@@ -104,6 +109,8 @@ declare const Env: z.ZodObject<{
     SEED_ADMIN_EMAIL: z.ZodOptional<z.ZodString>;
     SEED_ADMIN_PASSWORD: z.ZodOptional<z.ZodString>;
     SEED_ADMIN_FORCE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
+    QUEUE_MIN_ITEMS: z.ZodDefault<z.ZodNumber>;
+    STORAGE_HEALTH_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
     NODE_ENV: "development" | "test" | "production";
     PORT: number;
@@ -138,6 +145,11 @@ declare const Env: z.ZodObject<{
     TRANSCODER_DISABLE: boolean;
     BROADCAST_AUTO_ENQUEUE_DISABLE: boolean;
     BROADCAST_QUEUE_MAX_ITEMS: number;
+    BROADCAST_HEALTH_MONITOR_STALE_MS: number;
+    BROADCAST_HEALTH_MONITOR_RECOVERY_MS: number;
+    BROADCAST_ROTATION_STRATEGY: "shuffle" | "fifo";
+    BROADCAST_ROTATION_INTERVAL_MS: number;
+    DB_POOL_WARN_UTILIZATION: number;
     BROADCAST_DEADAIR_FALLBACK_AFTER_MS: number;
     BROADCAST_WEBHOOK_TIMEOUT_MS: number;
     BROADCAST_WEBHOOK_RETRY_ATTEMPTS: number;
@@ -170,6 +182,8 @@ declare const Env: z.ZodObject<{
     CLEANUP_DISABLE: boolean;
     CLEANUP_MAX_PER_SWEEP: number;
     SEED_ADMIN_FORCE: boolean;
+    QUEUE_MIN_ITEMS: number;
+    STORAGE_HEALTH_INTERVAL_MS: number;
     REPLIT_DEV_DOMAIN?: string | undefined;
     REPLIT_EXPO_DEV_DOMAIN?: string | undefined;
     WEBHOOK_BASE_URL?: string | undefined;
@@ -248,6 +262,11 @@ declare const Env: z.ZodObject<{
     TRANSCODER_DISABLE?: string | boolean | undefined;
     BROADCAST_AUTO_ENQUEUE_DISABLE?: string | boolean | undefined;
     BROADCAST_QUEUE_MAX_ITEMS?: number | undefined;
+    BROADCAST_HEALTH_MONITOR_STALE_MS?: number | undefined;
+    BROADCAST_HEALTH_MONITOR_RECOVERY_MS?: number | undefined;
+    BROADCAST_ROTATION_STRATEGY?: "shuffle" | "fifo" | undefined;
+    BROADCAST_ROTATION_INTERVAL_MS?: number | undefined;
+    DB_POOL_WARN_UTILIZATION?: number | undefined;
     BROADCAST_DEADAIR_FALLBACK_URL?: string | undefined;
     BROADCAST_DEADAIR_FALLBACK_AFTER_MS?: number | undefined;
     BROADCAST_WEBHOOK_URL?: string | undefined;
@@ -306,6 +325,8 @@ declare const Env: z.ZodObject<{
     SEED_ADMIN_EMAIL?: string | undefined;
     SEED_ADMIN_PASSWORD?: string | undefined;
     SEED_ADMIN_FORCE?: string | boolean | undefined;
+    QUEUE_MIN_ITEMS?: number | undefined;
+    STORAGE_HEALTH_INTERVAL_MS?: number | undefined;
 }>;
 export type AppEnv = z.infer<typeof Env>;
 export declare const env: AppEnv;
