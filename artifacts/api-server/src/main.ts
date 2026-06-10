@@ -254,9 +254,9 @@ async function main() {
     const configWarnings: string[] = [];
 
     if (env.SEED_ADMIN_FORCE) {
-      configErrors.push(
-        "SEED_ADMIN_FORCE=true is set but BLOCKED by production guard — " +
-        "set SEED_ADMIN_FORCE=false to silence this error",
+      configWarnings.push(
+        "SEED_ADMIN_FORCE=true is set — safely BLOCKED by production guard, " +
+        "no accounts were affected; set SEED_ADMIN_FORCE=false to silence this warning",
       );
     }
     if (!env.YOUTUBE_WEBHOOK_SECRET) {
