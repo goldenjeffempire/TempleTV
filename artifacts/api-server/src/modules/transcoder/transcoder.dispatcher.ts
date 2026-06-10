@@ -1,5 +1,5 @@
 import { and, eq, inArray, lt, lte, ne, or, sql, isNull, count } from "drizzle-orm";
-import { readdir, rm, stat } from "node:fs/promises";
+import { readdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { db, schema } from "../../infrastructure/db.js";
@@ -134,6 +134,13 @@ class TranscoderDispatcher {
     // touching anything belonging to a job in-flight in another replica.
     void this.purgeOrphanedScratchDirs();
 
+    // Scan /proc for ffmpeg processes left over from a previous server run
+    // (SIGKILL bypasses the finally block in runTranscode, leaving orphaned
+    // ffmpeg children alive). Only kills processes whose cmdline references
+    // our own scratch directory — zero risk of touching unrelated ffmpeg
+    // processes that may be running in the same container.
+    void this.scanAndKillOrphanedFfmpegProcesses();
+
     this.timer = setTimeout(() => this.tick(), env.TRANSCODER_POLL_MS);
     this.timer.unref();
     logger.info({ pollMs: env.TRANSCODER_POLL_MS }, "transcoder dispatcher started");
@@ -179,6 +186,68 @@ class TranscoderDispatcher {
       }
     } catch (err) {
       logger.warn({ err }, "transcoder: scratch dir GC failed (non-fatal)");
+    }
+  }
+
+  /**
+   * Scan /proc for ffmpeg child processes left behind by a SIGKILL-ed server.
+   *
+   * When the server is killed (OOM, deploy SIGKILL, container eviction) the
+   * normally-reliable finally block in runTranscode() never runs, leaving
+   * orphaned ffmpeg processes alive. They consume CPU and memory while
+   * their jobs have already been reset to 'queued' by resetOrphanedJobs().
+   *
+   * Safety: ONLY kills ffmpeg processes whose cmdline references our own
+   * TRANSCODER_SCRATCH_DIR. This makes it safe even if other services in the
+   * same container run ffmpeg for unrelated purposes.
+   *
+   * Linux-only: skips silently on macOS / Windows where /proc is absent.
+   */
+  private async scanAndKillOrphanedFfmpegProcesses(): Promise<void> {
+    if (process.platform !== "linux") return;
+    const scratchRoot = env.TRANSCODER_SCRATCH_DIR ?? path.join(os.tmpdir(), "transcoder");
+    try {
+      let entries: string[];
+      try {
+        entries = await readdir("/proc");
+      } catch {
+        return; // /proc not mounted or unreadable — skip silently
+      }
+      let killed = 0;
+      for (const pidStr of entries) {
+        // /proc entries are PIDs (all-digit strings) or named files.
+        if (!/^\d+$/.test(pidStr)) continue;
+        try {
+          // cmdline contains NUL-separated args: exe\0arg1\0arg2\0...
+          const cmdlineRaw = await readFile(`/proc/${pidStr}/cmdline`, "utf8");
+          const args = cmdlineRaw.split("\0");
+          const exe = args[0] ?? "";
+          // Only target ffmpeg processes.
+          if (!exe.endsWith("ffmpeg") && exe !== "ffmpeg") continue;
+          // Only kill processes working on OUR scratch directory — ignore
+          // any unrelated ffmpeg instances running in the same container.
+          if (!cmdlineRaw.includes(scratchRoot)) continue;
+          const pid = parseInt(pidStr, 10);
+          process.kill(pid, "SIGTERM");
+          killed++;
+        } catch {
+          // /proc entry vanished between readdir and readFile — normal race,
+          // not an error. ESRCH on process.kill means the process already died.
+        }
+      }
+      if (killed > 0) {
+        logger.warn(
+          { killed, scratchRoot },
+          "transcoder: killed orphaned ffmpeg processes from previous server run",
+        );
+      } else {
+        logger.debug(
+          { scratchRoot },
+          "transcoder: no orphaned ffmpeg processes found at startup",
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, "transcoder: orphaned ffmpeg scan failed (non-fatal)");
     }
   }
 

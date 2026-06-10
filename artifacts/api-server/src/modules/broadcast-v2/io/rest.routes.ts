@@ -2,8 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod/v4";
 import { broadcastOrchestrator } from "../engine/broadcast-orchestrator.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";
-import { getBroadcastV2BootStatus, broadcastFanout, getBroadcastHealthMonitorStatus, getContentRotationStatus } from "../index.js";
+import { getBroadcastV2BootStatus, broadcastFanout, getBroadcastHealthMonitorStatus, getContentRotationStatus, getQueueHealthGuardStatus } from "../index.js";
 import { getDbPoolHealthStatus } from "../../../infrastructure/db-pool-health.js";
+import { getStorageHealthStatus } from "../../../infrastructure/storage-health-monitor.js";
 import { prodQueueSync } from "../../prod-sync/prod-queue-sync.js";
 import { getViewerSlopeStatus } from "../../admin-ops/viewer-slope-monitor.js";
 import { registerNamedStore } from "../../../infrastructure/cache.js";
@@ -408,6 +409,10 @@ export async function restRoutes(app: FastifyInstance) {
       contentRotation: getContentRotationStatus(),
       /** DB connection pool utilization (shared-infra monitor). */
       dbPool: getDbPoolHealthStatus(),
+      /** Object storage probe health (write/head/delete circuit breaker). */
+      storageHealth: getStorageHealthStatus(),
+      /** Queue health guard — active item count vs. minimum threshold. */
+      queueHealthGuard: getQueueHealthGuardStatus(),
       /** Recovery eligibility — true when a full recovery could improve the situation. */
       recovery: {
         eligible: (stuck || sequenceStale) && !getBroadcastHealthMonitorStatus().recoveryInFlight,

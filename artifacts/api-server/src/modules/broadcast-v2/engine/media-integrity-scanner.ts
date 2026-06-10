@@ -119,6 +119,96 @@ async function probeUrl(url: string): Promise<{ ok: boolean; status: number | nu
 }
 
 /**
+ * Extract the first variant playlist URI from a master HLS manifest body.
+ * Returns a fully-resolved absolute URL, or null if none can be found.
+ *
+ * HLS spec: a URI immediately follows each #EXT-X-STREAM-INF line.
+ * The URI may be relative (resolved against the master URL's directory)
+ * or absolute.
+ */
+function extractFirstVariantUrl(masterText: string, masterUrl: string): string | null {
+  const lines = masterText.split("\n");
+  for (let i = 0; i < lines.length - 1; i++) {
+    const line = lines[i]?.trim() ?? "";
+    if (!line.startsWith("#EXT-X-STREAM-INF")) continue;
+    // The URI is on the very next non-comment, non-blank line.
+    const uri = lines[i + 1]?.trim() ?? "";
+    if (!uri || uri.startsWith("#")) continue;
+    if (uri.startsWith("http://") || uri.startsWith("https://")) return uri;
+    // Resolve relative URI against master playlist's directory.
+    try {
+      const base = new URL(masterUrl);
+      // Strip filename component so relative URIs resolve correctly.
+      base.pathname = base.pathname.replace(/\/[^/]*$/, "/");
+      return new URL(uri, base).href;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Probe a single HLS variant playlist to confirm it has actual segments (#EXTINF).
+ * A valid master playlist can reference a variant that is 404 or empty, causing
+ * all clients to stall without the server ever seeing an error on the master URL.
+ * This probe catches that failure mode before the item ever reaches air.
+ */
+async function probeHlsVariant(
+  url: string,
+): Promise<{ ok: boolean; status: number | null; reason?: string }> {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      signal: ac.signal,
+      headers: { Accept: "application/vnd.apple.mpegurl, application/x-mpegurl, */*" },
+    });
+    clearTimeout(t);
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return { ok: false, status: res.status, reason: `variant HTTP ${res.status}` };
+    }
+    // Read up to 32 KB — enough for any real variant playlist.
+    const HLS_VARIANT_MAX_BYTES = 32 * 1024;
+    const reader = res.body?.getReader();
+    let text = "";
+    if (reader) {
+      const decoder = new TextDecoder();
+      let received = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done || !value) break;
+        received += value.byteLength;
+        text += decoder.decode(value, { stream: !done });
+        if (received >= HLS_VARIANT_MAX_BYTES) {
+          reader.cancel().catch(() => undefined);
+          break;
+        }
+      }
+    } else {
+      text = await res.text();
+    }
+    if (!text.includes("#EXTINF")) {
+      return {
+        ok: false,
+        status: res.status,
+        reason: "HLS variant playlist contains no #EXTINF segments",
+      };
+    }
+    return { ok: true, status: res.status };
+  } catch (err) {
+    clearTimeout(t);
+    const reason =
+      err instanceof Error && err.name === "AbortError"
+        ? "variant probe timeout"
+        : "variant probe network error";
+    return { ok: false, status: null, reason };
+  }
+}
+
+/**
  * Validate an HLS manifest URL by fetching it and checking content.
  *
  * HEAD probes can return 200 for stale/empty manifests cached by a CDN.
@@ -172,6 +262,25 @@ async function probeHlsManifest(url: string): Promise<{ ok: boolean; status: num
     const hasSegments = text.includes("#EXTINF");
     if (!hasStreams && !hasSegments) {
       return { ok: false, status: res.status, reason: "empty HLS manifest (no streams or segments)" };
+    }
+    // Deep validation: master playlists (#EXT-X-STREAM-INF present, no #EXTINF)
+    // may reference variant playlists that are 404 or empty. The master returns
+    // HTTP 200 with valid structure, but every client stalls immediately when it
+    // tries to load the variant. Probe the first variant URI to catch this before
+    // the item airs — "silent dead air" from broken variant playlists is the most
+    // common undetected HLS failure mode.
+    if (hasStreams && !hasSegments) {
+      const variantUrl = extractFirstVariantUrl(text, url);
+      if (variantUrl) {
+        const variantProbe = await probeHlsVariant(variantUrl);
+        if (!variantProbe.ok) {
+          return {
+            ok: false,
+            status: variantProbe.status,
+            reason: `HLS variant unreachable: ${variantProbe.reason ?? "unknown"}`,
+          };
+        }
+      }
     }
     return { ok: true, status: res.status };
   } catch (err) {

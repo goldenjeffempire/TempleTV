@@ -201,13 +201,27 @@ async function startWorkers() {
   } else {
     logger.info("youtube-sync dispatcher disabled by YOUTUBE_SYNC_DISABLE");
   }
+  // Storage health monitor: periodically probes object storage (write/head/delete)
+  // to detect failures before they silently affect uploads or HLS delivery.
+  if (env.STORAGE_HEALTH_INTERVAL_MS > 0) {
+    const { storageHealthMonitor } = await import("./infrastructure/storage-health-monitor.js");
+    storageHealthMonitor.start(env.STORAGE_HEALTH_INTERVAL_MS);
+  } else {
+    logger.info("storage health monitor disabled by STORAGE_HEALTH_INTERVAL_MS=0");
+  }
 }
 
-function stopWorkers() {
+async function stopWorkers() {
   scheduledNotificationDispatcher.stop();
   transcoderDispatcher.stop();
   cleanupWorker.stop();
   youtubeSyncDispatcher.stop();
+  try {
+    const { storageHealthMonitor } = await import("./infrastructure/storage-health-monitor.js");
+    storageHealthMonitor.stop();
+  } catch {
+    // non-fatal if module never loaded
+  }
 }
 
 async function main() {
@@ -734,7 +748,7 @@ async function main() {
         prodQueueSync.stop();
       } catch { /* non-fatal — prod-sync may not have been started */ }
     }
-    if (mode === "worker" || mode === "all") stopWorkers();
+    if (mode === "worker" || mode === "all") void stopWorkers();
     if (app) {
       // F20: wait for open SSE connections to drain before closing the server.
       // All SSE handlers have already been force-closed above, so this loop

@@ -572,6 +572,17 @@ const Env = z.object({
     .union([z.boolean(), z.string()])
     .transform((v) => v === true || v === "true" || v === "1")
     .default(false),
+
+  // ── Queue health guard ────────────────────────────────────────────────────
+  // Minimum number of active broadcast queue items before the guard worker
+  // auto-rebuilds from the library. Set to 0 to disable proactive rebuilding
+  // (the orchestrator's own empty-queue self-heal still runs independently).
+  QUEUE_MIN_ITEMS: z.coerce.number().int().nonnegative().default(5),
+
+  // ── Storage health monitor ────────────────────────────────────────────────
+  // Interval (ms) between object-storage write/head/delete probe cycles.
+  // Default 60 s. Set to 0 to disable the monitor.
+  STORAGE_HEALTH_INTERVAL_MS: z.coerce.number().int().nonnegative().default(60_000),
 });
 
 export type AppEnv = z.infer<typeof Env>;

@@ -684,6 +684,39 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         WHERE deleted_at IS NULL
     `);
 
+    // ── Maintenance hot-path indexes (added after production deploy) ──────
+    // reEnableAllSuspended() queries: WHERE is_active=false AND
+    // validator_deactivated_reason IS NOT NULL. The table has no index on
+    // inactive rows, so every boot-time reEnableAllSuspended() call scanned
+    // the full broadcast_queue table. A partial index on the deactivated
+    // subset makes this O(deactivated rows) instead of O(total rows).
+    await run("idx_broadcast_queue_inactive_deactivated", `
+      CREATE INDEX IF NOT EXISTS idx_broadcast_queue_inactive_deactivated
+        ON broadcast_queue (validator_deactivated_reason)
+        WHERE is_active = false AND validator_deactivated_reason IS NOT NULL
+    `);
+
+    // resetStuckProcessingVideos() queries: WHERE transcoding_status = 'processing'.
+    // The existing idx_managed_videos_source_transcoding is a composite index
+    // on (video_source, transcoding_status) — queries that filter only on
+    // transcoding_status cannot use it efficiently because video_source is the
+    // leading column. A targeted partial index makes the startup reset O(stuck rows).
+    await run("idx_managed_videos_processing_status", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_processing_status
+        ON managed_videos (id)
+        WHERE transcoding_status = 'processing'
+    `);
+
+    // Admin listQueue() selects ALL broadcast_queue rows (active + inactive)
+    // ordered by sort_order, added_at. The existing idx_broadcast_queue_active_sort
+    // is partial (WHERE is_active=true) so a full-table sort is still required for
+    // the admin view that includes inactive rows. This non-partial index covers
+    // that path without a sequential scan + in-memory sort.
+    await run("idx_broadcast_queue_all_sort", `
+      CREATE INDEX IF NOT EXISTS idx_broadcast_queue_all_sort
+        ON broadcast_queue (sort_order ASC, added_at ASC)
+    `);
+
     // ── Check constraints (DO-block pattern for idempotency) ───────────────
     // ALTER TABLE ADD CONSTRAINT has no IF NOT EXISTS; use a DO block.
     await client.query(`

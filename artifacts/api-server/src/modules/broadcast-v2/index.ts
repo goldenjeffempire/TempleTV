@@ -15,7 +15,10 @@ import { faststartRecoveryWorker } from "./engine/faststart-recovery.js";
 import { reEnableAllSuspended } from "./repository/queue.repo.js";
 import { broadcastHealthMonitorScan, getBroadcastHealthMonitorStatus } from "./engine/broadcast-health-monitor.js";
 import { contentRotationScan, getContentRotationStatus } from "./engine/content-rotation.js";
+import { queueHealthGuard, getQueueHealthGuardStatus } from "./engine/queue-health-guard.js";
 import { env } from "../../config/env.js";
+
+export { getQueueHealthGuardStatus };
 
 /**
  * Broadcast v2 — server-authoritative streaming control plane.
@@ -245,6 +248,22 @@ function startSupervisedWorkers(): void {
     initialDelayMs: env.BROADCAST_ROTATION_INTERVAL_MS,
     backoffMs: [60_000, 5 * 60_000, 10 * 60_000],
   });
+
+  // Queue Health Guard: proactively detects when the active queue count falls
+  // below QUEUE_MIN_ITEMS (default 5) and auto-rebuilds from the library.
+  // Complements the orchestrator's own empty-queue self-heal — fires while
+  // content is still playing so there is always a buffer before dead air.
+  // Initial delay matches the queue-integrity-validator so both run after the
+  // first validator pass (which may deactivate invalid items, reducing count).
+  if (env.QUEUE_MIN_ITEMS > 0) {
+    workerSupervisor.spawn({
+      name: "queue-health-guard",
+      fn: () => queueHealthGuard.scan(),
+      intervalMs: 5 * 60_000,
+      initialDelayMs: 2 * 60_000,
+      backoffMs: [30_000, 60_000, 3 * 60_000],
+    });
+  }
 
   logger.info("[broadcast-v2] supervised workers registered");
 }
