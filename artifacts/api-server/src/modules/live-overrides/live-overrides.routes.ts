@@ -22,10 +22,11 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
   r.get(
     "/status",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["live"],
         summary: "Public: is a live override currently active?",
-        response: { 200: LiveStatusSchema },
+        response: { 200: LiveStatusSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async () => liveOverridesService.getStatus(),
@@ -35,10 +36,11 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
     "/recent",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["live"],
         summary: "Admin: list recent live overrides for audit",
-        response: { 200: ListResponseSchema },
+        response: { 200: ListResponseSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },
@@ -137,10 +139,11 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
     "/scheduled",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
       schema: {
         tags: ["live"],
         summary: "Admin: list upcoming scheduled live overrides",
-        response: { 200: ListResponseSchema },
+        response: { 200: ListResponseSchema, 429: z.object({ error: z.string() }) },
         security: [{ bearerAuth: [] }],
       },
     },

@@ -307,10 +307,12 @@ export async function broadcastRoutes(app: FastifyInstance) {
     "/queue",
     {
       preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["broadcast"],
         summary: "Admin: list every program in the queue (active + inactive)",
         security: [{ bearerAuth: [] }],
+        response: { 200: z.unknown(), 429: z.object({ error: z.string() }) },
       },
     },
     async () => broadcastService.listQueue(),
@@ -454,11 +456,13 @@ export async function broadcastRoutes(app: FastifyInstance) {
   r.get(
     "/viewers",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["broadcast"],
         summary: "Live viewer count for the channel",
         response: {
           200: z.object({ channelId: z.string(), count: z.number().int().nonnegative() }),
+          429: z.object({ error: z.string() }),
         },
       },
     },
@@ -517,10 +521,11 @@ export async function broadcastRoutes(app: FastifyInstance) {
   r.get(
     "/guide",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["broadcast"],
         summary: "Channel guide — current + upcoming programs (mobile + TV compatible)",
-        response: { 200: GuideResponseSchema },
+        response: { 200: GuideResponseSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {
@@ -766,10 +771,11 @@ export async function broadcastRoutes(app: FastifyInstance) {
   r.get(
     "/playback/state",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["broadcast"],
         summary: "Get current playback engine configuration",
-        response: { 200: PlaybackStateSchema },
+        response: { 200: PlaybackStateSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async () => getPlaybackState(),
