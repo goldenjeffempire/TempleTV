@@ -8,7 +8,7 @@ import {
   Bell, BarChart2, Users, Heart, Settings, Shield,
   Zap, Cpu, Signal, Layers, Tv2, Wifi, WifiOff, Loader, ChevronRight, X, Youtube,
   Image, Gauge, Rss, ClipboardList, Settings2, RefreshCw, Trash2, Headphones, Lock,
-  SignalLow, Moon, ScanSearch,
+  SignalLow, Moon, ScanSearch, Smartphone,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
@@ -132,6 +132,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
         { href: "/settings", label: "System Settings", icon: <Settings2 size={16} />, adminOnly: true },
         { href: "/launch-readiness", label: "Launch Check", icon: <Settings size={16} /> },
         { href: "/purge", label: "Storage Purge", icon: <Trash2 size={16} />, adminOnly: true },
+        { href: "/app-versions", label: "App Versions", icon: <Smartphone size={16} />, adminOnly: true },
       ],
     },
   ];

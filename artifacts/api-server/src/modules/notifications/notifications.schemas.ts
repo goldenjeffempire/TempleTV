@@ -37,7 +37,7 @@ export const ListNotificationsResponseSchema = z.object({
 export const SendPushBodySchema = z.object({
   title: z.string().min(1).max(120),
   body: z.string().min(1).max(500),
-  type: z.enum(["live", "new_video", "announcement", "test"]).default("announcement"),
+  type: z.enum(["live", "new_video", "announcement", "test", "app_update"]).default("announcement"),
   videoId: z.string().nullable().optional(),
   // Optional caller-supplied dedup key. Repeated POSTs with the same
   // key short-circuit to the original audit row. Also accepted via the

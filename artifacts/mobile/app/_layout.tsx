@@ -64,6 +64,9 @@ import { NetworkBanner } from "@/components/NetworkBanner";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import { setupTrackPlayer } from "@/services/nowPlaying";
 import { useNotificationPreferences } from "@/hooks/useNotificationPreferences";
+import { UpdateProvider } from "@/context/UpdateContext";
+import { UpdateBanner } from "@/components/UpdateBanner";
+import { MandatoryUpdateGate } from "@/components/MandatoryUpdateGate";
 
 /**
  * Global offline/recovery banner — mounted once at the root so every screen
@@ -378,6 +381,14 @@ function RootLayoutNav() {
             }
             break;
           }
+          case "app_update": {
+          // App update notification — trigger a version check; the
+          // UpdateContext listener handles it; no navigation needed.
+          import("@/services/appUpdate")
+            .then(({ markVersionCheckDone }) => markVersionCheckDone())
+            .catch(() => {});
+          break;
+        }
           case "prayer":
           case "announcement":
           default:
@@ -595,6 +606,7 @@ function RootLayout() {
     <SafeAreaProvider style={{ flex: 1 }}>
       <ThemeProvider>
       <NetworkProvider>
+      <UpdateProvider>
       <ErrorBoundary
         onError={(error, stackTrace) => {
           reportClientError({
@@ -635,6 +647,19 @@ function RootLayout() {
                    * for the whole app, no per-screen duplication.
                    */}
                   <GlobalNetworkBanner />
+                  {/*
+                   * UpdateBanner slides in from the top when a non-mandatory
+                   * OTA or store update is available. Positioned above all
+                   * content via zIndex so it is always visible but does not
+                   * block interaction (dismissable). Only on native builds.
+                   */}
+                  <UpdateBanner />
+                  {/*
+                   * MandatoryUpdateGate is a full-screen overlay that blocks
+                   * all app interaction when the server marks an update as
+                   * mandatory. Users cannot dismiss it. Only on native builds.
+                   */}
+                  <MandatoryUpdateGate />
                 </SafeKeyboardProvider>
               </GestureHandlerRootView>
             </PlayerProvider>
@@ -642,6 +667,7 @@ function RootLayout() {
           </AuthProvider>
         </QueryClientProvider>
       </ErrorBoundary>
+      </UpdateProvider>
       </NetworkProvider>
       </ThemeProvider>
     </SafeAreaProvider>

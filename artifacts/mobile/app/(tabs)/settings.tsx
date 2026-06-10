@@ -39,6 +39,7 @@ import {
   getNotificationPermissionStatus,
 } from "@/services/notifications";
 import { FeedbackModal } from "@/components/FeedbackModal";
+import { useUpdate } from "@/context/UpdateContext";
 
 const APP_VERSION =
   Constants.expoConfig?.version ?? "1.0.5";
@@ -156,6 +157,10 @@ export default function SettingsScreen() {
 
   const [notifGranted, setNotifGranted] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
+  const {
+    hasOTAUpdate, hasStoreUpdate, isChecking, isMandatory,
+    latestVersion, isApplyingOTA, checkNow, applyOTA, openStore,
+  } = useUpdate();
 
   // Web push state — only meaningful when Platform.OS === "web"
   const [webPushPermission, setWebPushPermission] = useState<NotificationPermission | null>(null);
@@ -567,6 +572,58 @@ export default function SettingsScreen() {
           onPress={() => Linking.openURL("https://templetv.org.ng/terms").catch(() => {})}
         />
       </GlassCard>
+
+      {/* App Updates */}
+      {Platform.OS !== "web" && (
+        <>
+          <SectionTitle title="APP UPDATES" />
+          <GlassCard style={styles.card}>
+            {hasOTAUpdate ? (
+              <Row
+                icon="arrow-up-circle"
+                label="Update Ready"
+                description={isApplyingOTA ? "Applying update…" : "Tap to restart with the latest improvements"}
+                onPress={isApplyingOTA ? undefined : () => void applyOTA()}
+                right={
+                  isApplyingOTA ? (
+                    <ActivityIndicator size="small" color={c.primary} />
+                  ) : (
+                    <View style={[styles.badge, { backgroundColor: c.primary + "22" }]}>
+                      <Text style={{ fontSize: 11, color: c.primary, fontWeight: "600" }}>READY</Text>
+                    </View>
+                  )
+                }
+              />
+            ) : hasStoreUpdate ? (
+              <Row
+                icon="arrow-up-circle"
+                label={isMandatory ? "Required Update" : "Update Available"}
+                description={latestVersion ? `Version ${latestVersion} is available` : "A new version is ready in the store"}
+                onPress={() => void openStore()}
+                right={
+                  <View style={[styles.badge, { backgroundColor: isMandatory ? "#ef444422" : c.primary + "22" }]}>
+                    <Text style={{ fontSize: 11, color: isMandatory ? "#ef4444" : c.primary, fontWeight: "600" }}>
+                      {isMandatory ? "REQUIRED" : "NEW"}
+                    </Text>
+                  </View>
+                }
+              />
+            ) : (
+              <Row
+                icon="check-circle"
+                label="App is Up to Date"
+                description={`Version ${APP_VERSION} · ${isChecking ? "Checking…" : "Tap to check for updates"}`}
+                onPress={isChecking ? undefined : () => void checkNow()}
+                right={
+                  isChecking ? (
+                    <ActivityIndicator size="small" color={c.primary} />
+                  ) : undefined
+                }
+              />
+            )}
+          </GlassCard>
+        </>
+      )}
 
       {/* App info */}
       <View style={styles.appInfo}>

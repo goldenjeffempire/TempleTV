@@ -37,3 +37,4 @@ export * from "./broadcast-event-log";
 export * from "./player-position-checkpoint";
 export * from "./midnight-prayers";
 export * from "./memory-hourly-snapshots";
+export * from "./app-versions";
