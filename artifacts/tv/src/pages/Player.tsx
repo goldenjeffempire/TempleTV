@@ -179,16 +179,17 @@ function YouTubePlayer({
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [loading, setLoading] = useState(true);
+  const loadingRef = useRef(true);
   const loadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     setLoading(true);
+    loadingRef.current = true;
     loadTimer.current = setTimeout(() => {
-      if (loading) onLiveError?.();
+      if (loadingRef.current) onLiveError?.();
     }, 15_000);
     return () => { if (loadTimer.current) clearTimeout(loadTimer.current); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoId]);
+  }, [videoId, onLiveError]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -215,7 +216,7 @@ function YouTubePlayer({
         style={{ width: "100%", height: "100%", border: "none", display: loading ? "none" : "block" }}
         allow="autoplay; encrypted-media; picture-in-picture"
         allowFullScreen
-        onLoad={() => setLoading(false)}
+        onLoad={() => { setLoading(false); loadingRef.current = false; }}
       />
       <button onClick={onBack} style={{ position: "absolute", top: "var(--tv-safe-v, 24px)", left: "var(--tv-safe-h, 32px)", zIndex: 30, background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 50, width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff", fontSize: 20 }}>←</button>
       {isLive && <BroadcastChannelBug />}
