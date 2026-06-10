@@ -128,6 +128,9 @@ async function attempt(
 ): Promise<{ status: number; ok: boolean }> {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), env.BROADCAST_WEBHOOK_TIMEOUT_MS);
+  // Unref the abort timer so it never holds the event loop during SIGTERM.
+  // The backoff timers in deliver() are also unref'd; this completes the set.
+  (timer as NodeJS.Timeout).unref?.();
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -135,6 +138,10 @@ async function attempt(
       body,
       signal: ac.signal,
     });
+    // Always drain the response body regardless of status code.
+    // In Node 24 (undici), an unconsumed body keeps the socket open until GC
+    // decides to finalize it — under load this exhausts the connection pool.
+    void res.body?.cancel().catch(() => {});
     return { status: res.status, ok: res.ok };
   } finally {
     clearTimeout(timer);

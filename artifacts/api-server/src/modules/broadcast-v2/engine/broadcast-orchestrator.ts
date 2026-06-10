@@ -1856,7 +1856,17 @@ class BroadcastOrchestrator extends EventEmitter {
     // Start the continuous on-air uptime clock the first time an item becomes
     // current after boot or after a dead-air gap. onAirSinceMs stays pinned
     // until the next dead-air / all-blocked event resets it to null above.
-    if (this.onAirSinceMs === null) this.onAirSinceMs = Date.now();
+    if (this.onAirSinceMs === null) {
+      this.onAirSinceMs = Date.now();
+      // Reset the dead-air timestamp whenever broadcast resumes.  Without this
+      // reset the next dead-air window accumulates elapsed time from the
+      // *previous* dead-air episode rather than the new one, causing
+      // escalateDeadAir() to fire with a wildly inflated deadAirElapsedMs and
+      // an immediately-stale webhook payload.  reloadInner() + start() also
+      // reset it, but those paths don't fire when items unblock in-tick (e.g.
+      // bad-URL TTL expiry promotes an item without a full DB reload).
+      this.deadAirDetectedAtMs = null;
+    }
     // NOTE: consecutiveSkips is intentionally NOT reset here. It resets only
     // in naturalItemEnd() (confirmed successful play) so the dead-air counter
     // is not cleared the instant a new item becomes current but before it plays.

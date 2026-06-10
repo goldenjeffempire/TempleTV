@@ -666,6 +666,15 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         ON broadcast_queue (video_id)
         WHERE video_id IS NOT NULL
     `);
+    // upload_sessions.completed_video_id — FK-like reference to managed_videos.id.
+    // Queried in chunked-upload finalize, library-sync, and cleanup sweeps when
+    // looking up sessions by their resulting video.  Without this index each
+    // lookup is a sequential scan over the sessions table.
+    await run("idx_upload_sessions_completed_video_id", `
+      CREATE INDEX IF NOT EXISTS idx_upload_sessions_completed_video_id
+        ON upload_sessions (completed_video_id)
+        WHERE completed_video_id IS NOT NULL
+    `);
     // Chat history: queries filter by channel_id + order by created_at, with a
     // partial predicate on deleted_at IS NULL. Without this index each
     // GET /chat/:channel/history performs a sequential scan over the full table.
