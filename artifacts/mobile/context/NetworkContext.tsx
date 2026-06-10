@@ -28,14 +28,29 @@ import React, {
 } from "react";
 import { AppState, Platform } from "react-native";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
+import { getApiBase } from "@/lib/apiBase";
 
 // ── Connectivity probe ────────────────────────────────────────────────────────
 
-const PING_ENDPOINTS = [
-  "https://api.templetv.org.ng/api/healthz",
+// Static fallback endpoints: Cloudflare IP (no DNS required) and Ubuntu
+// connectivity check. These cover general internet reachability.
+const PING_FALLBACKS = [
   "https://1.1.1.1/cdn-cgi/trace",
   "https://connectivity-check.ubuntu.com",
 ];
+
+// Build the probe list at module initialisation time so getApiBase() is
+// evaluated once (its result is static — env vars are baked at build time).
+// The app's own API healthz is placed first so corporate VPN environments
+// that block Cloudflare / Ubuntu still report online when the API is
+// reachable; it also covers dev-mode builds using a local or Replit URL.
+function buildPingEndpoints(): string[] {
+  const base = getApiBase();
+  const appHealthz = base ? `${base}/api/healthz` : null;
+  return appHealthz ? [appHealthz, ...PING_FALLBACKS] : PING_FALLBACKS;
+}
+
+const PING_ENDPOINTS = buildPingEndpoints();
 
 const POLL_ONLINE_MS  = 30_000;
 const POLL_OFFLINE_MS =  8_000;

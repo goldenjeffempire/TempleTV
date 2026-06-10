@@ -113,11 +113,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await AsyncStorage.removeItem(STORAGE_KEYS.authUser);
         }
 
-        const [storedToken, storedRefresh, storedUser] = await Promise.all([
-          secureStorage.getItem(SECURE_KEYS.authToken),
-          secureStorage.getItem(SECURE_KEYS.authRefreshToken),
-          secureStorage.getItem(SECURE_KEYS.authUser),
-        ]);
+        // Read credentials from SecureStore. On Android, the hardware-backed
+        // keystore can be temporarily unavailable immediately after device
+        // reboot (keystore daemon still warming up). Retry once with a short
+        // delay before treating the exception as permanent — this prevents a
+        // valid session from being silently dropped on every cold-boot.
+        let storedToken: string | null = null;
+        let storedRefresh: string | null = null;
+        let storedUser: string | null = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            [storedToken, storedRefresh, storedUser] = await Promise.all([
+              secureStorage.getItem(SECURE_KEYS.authToken),
+              secureStorage.getItem(SECURE_KEYS.authRefreshToken),
+              secureStorage.getItem(SECURE_KEYS.authUser),
+            ]);
+            break; // success — exit retry loop
+          } catch (secErr) {
+            if (attempt === 0) {
+              // First failure: could be a transient keystore initialisation
+              // race. Wait 500 ms and try once more.
+              await new Promise<void>((r) => setTimeout(r, 500));
+            } else {
+              // Second failure: treat as permanent and propagate to the outer
+              // catch so the user stays logged out rather than in an unknown
+              // credential state.
+              throw secErr;
+            }
+          }
+        }
 
         const hasCredential = !!(storedToken || storedRefresh);
         if (!hasCredential) return;

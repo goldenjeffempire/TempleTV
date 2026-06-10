@@ -656,6 +656,16 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         ON viewer_sessions (last_heartbeat_at)
         WHERE ended_at IS NULL
     `);
+    // Admin analytics concurrent-viewers CTE: the time-bucket correlated
+    // sub-query joins viewer_sessions on a started_at range AND filters by
+    // platform in CASE expressions. The single-column idx_viewer_sessions_started_at
+    // covers range scans but Postgres still fans over all platform values.
+    // A covering (started_at, platform) index turns the platform filter into
+    // an index scan instead of a heap fetch for each matched row.
+    await run("idx_viewer_sessions_started_platform", `
+      CREATE INDEX IF NOT EXISTS idx_viewer_sessions_started_platform
+        ON viewer_sessions (started_at, platform)
+    `);
     // broadcast_queue.video_id — unconditional index for JOIN patterns that
     // include inactive rows (e.g. orphan detection, integrity validator
     // reverse-pass, duration-sync UPDATE FROM broadcast_queue). The partial

@@ -110,10 +110,39 @@ export async function sseRoutes(app: FastifyInstance) {
         : 0;
     const lastSeq = lastEventId ? Number(lastEventId) : lastSeqQuery;
 
+    // Forward reference: cleanup() is defined after the async event-log
+    // replay gap. Stored here so send() can trigger teardown when it detects
+    // sustained write backpressure on a zombie/slow client.
+    let cleanupRef: (() => void) | null = null;
+
+    // Track consecutive write() → false returns (TCP send-buffer full).
+    // After WRITE_STALL_MAX consecutive false returns — each separated by at
+    // least one heartbeat interval (10 s) — the client is not draining its
+    // receive buffer. We close the connection proactively to free the in-kernel
+    // send buffer before it grows large enough to OOM the Node.js process.
+    // A single false is normal on a momentary network blip; only sustained
+    // stalls warrant closure.
+    const WRITE_STALL_MAX = 3;
+    let writeStallCount = 0;
+
     const send = (frame: V2ServerFrame) => {
       try {
         const seq = "sequence" in frame ? frame.sequence : Date.now();
-        reply.raw.write(`id: ${seq}\nevent: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`);
+        const ok = reply.raw.write(`id: ${seq}\nevent: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`);
+        if (ok) {
+          writeStallCount = 0; // buffer drained — reset stall counter
+        } else {
+          writeStallCount++;
+          if (writeStallCount >= WRITE_STALL_MAX && cleanupRef) {
+            // Sustained backpressure: client is not reading. Close now so the
+            // kernel TCP send buffer is freed before it consumes Node RSS.
+            logger.warn(
+              { ip, stallCount: writeStallCount },
+              "[broadcast-v2] SSE client stalled — closing zombie connection",
+            );
+            cleanupRef();
+          }
+        }
       } catch {
         /* client gone */
       }
@@ -233,6 +262,10 @@ export async function sseRoutes(app: FastifyInstance) {
         /* noop */
       }
     };
+
+    // Wire the forward reference so send() can call cleanup() when it detects
+    // sustained TCP backpressure from a zombie / slow-reading client.
+    cleanupRef = cleanup;
 
     openSseCleanups.add(cleanup);
     req.raw.on("close", cleanup);
