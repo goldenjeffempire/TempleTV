@@ -327,7 +327,8 @@ export async function scheduleSourceCleanup(
     // If retention window is zero, run immediately (synchronously, but
     // non-blocking to the caller via void).
     if (retentionMs === 0) {
-      void runCleanupForVideo(videoId, sourceObjectKey);
+      void runCleanupForVideo(videoId, sourceObjectKey)
+        .catch((err) => logger.warn({ err, videoId, sourceObjectKey }, "[cleanup] zero-retention runCleanupForVideo failed (non-fatal)"));
     }
   } catch (err) {
     logger.error({ err, videoId, sourceObjectKey }, "[cleanup] scheduleSourceCleanup failed");

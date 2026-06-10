@@ -29,7 +29,7 @@
 
 import { Expo, type ExpoPushMessage, type ExpoPushTicket } from "expo-server-sdk";
 import webpush from "web-push";
-import { eq, inArray, sql } from "drizzle-orm";
+import { eq, gt, inArray, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
@@ -130,95 +130,110 @@ async function sendChunkWithRetry(chunk: ExpoPushMessage[]): Promise<ExpoPushTic
 /**
  * Deliver `payload` to all registered Expo push tokens.
  * Returns the number of tokens successfully dispatched.
+ *
+ * Tokens are loaded in pages of PUSH_PAGE_SIZE to avoid a single enormous
+ * heap allocation that would OOM Node.js when the subscriber list is large
+ * (100k+ tokens). Each page is messaged, chunked, and delivered before the
+ * next page is fetched so peak memory is bounded to O(PUSH_PAGE_SIZE).
+ * Stale tokens discovered per-page are pruned immediately after that page.
  */
+const PUSH_PAGE_SIZE = 500;
+
 async function deliverToExpo(payload: PushPayload): Promise<number> {
-  const tokens = await db
-    .select({ id: schema.pushTokensTable.id, token: schema.pushTokensTable.token })
-    .from(schema.pushTokensTable);
+  let totalDispatched = 0;
+  let lastId = "";
 
-  if (tokens.length === 0) return 0;
+  for (;;) {
+    const page = await db
+      .select({ id: schema.pushTokensTable.id, token: schema.pushTokensTable.token })
+      .from(schema.pushTokensTable)
+      .where(lastId ? gt(schema.pushTokensTable.id, lastId) : undefined)
+      .orderBy(schema.pushTokensTable.id)
+      .limit(PUSH_PAGE_SIZE);
 
-  const messages: ExpoPushMessage[] = tokens
-    .filter((t) => Expo.isExpoPushToken(t.token))
-    .map((t) => ({
-      to: t.token,
-      sound: "default" as const,
-      title: payload.title,
-      body: payload.body,
-      data: {
-        type: payload.type,
-        notificationId: payload.notificationId,
-        ...(payload.videoId ? { videoId: payload.videoId } : {}),
-      },
-      channelId: "temple-tv-default",
-      priority: "high" as const,
-    }));
+    if (page.length === 0) break;
+    lastId = page[page.length - 1]!.id;
 
-  if (messages.length === 0) return 0;
+    const messages: ExpoPushMessage[] = page
+      .filter((t) => Expo.isExpoPushToken(t.token))
+      .map((t) => ({
+        to: t.token,
+        sound: "default" as const,
+        title: payload.title,
+        body: payload.body,
+        data: {
+          type: payload.type,
+          notificationId: payload.notificationId,
+          ...(payload.videoId ? { videoId: payload.videoId } : {}),
+        },
+        channelId: "temple-tv-default",
+        priority: "high" as const,
+      }));
 
-  const chunks = expo.chunkPushNotifications(messages);
-  const staleIds: string[] = [];
-  let dispatched = 0;
+    if (messages.length > 0) {
+      const chunks = expo.chunkPushNotifications(messages);
+      const staleIds: string[] = [];
+      let dispatched = 0;
 
-  for (const chunk of chunks) {
-    try {
-      // sendChunkWithRetry handles transient failures with exponential
-      // backoff. Permanent errors (non-retriable) bubble up to the catch
-      // below where they are logged and the chunk is skipped so the rest
-      // of the batch can still proceed.
-      const receipts = await sendChunkWithRetry(chunk);
-      for (let i = 0; i < receipts.length; i++) {
-        const receipt = receipts[i]!;
-        if (receipt.status === "ok") {
-          dispatched++;
-        } else if (
-          receipt.details?.error === "DeviceNotRegistered" ||
-          receipt.details?.error === "InvalidCredentials"
-        ) {
-          const chunkMsg = chunk[i];
-          if (chunkMsg) {
-            const targetToken = Array.isArray(chunkMsg.to) ? chunkMsg.to[0] : chunkMsg.to;
-            const match = tokens.find((t) => t.token === targetToken);
-            if (match) staleIds.push(match.id);
+      for (const chunk of chunks) {
+        try {
+          const receipts = await sendChunkWithRetry(chunk);
+          for (let i = 0; i < receipts.length; i++) {
+            const receipt = receipts[i]!;
+            if (receipt.status === "ok") {
+              dispatched++;
+            } else if (
+              receipt.details?.error === "DeviceNotRegistered" ||
+              receipt.details?.error === "InvalidCredentials"
+            ) {
+              const chunkMsg = chunk[i];
+              if (chunkMsg) {
+                const targetToken = Array.isArray(chunkMsg.to) ? chunkMsg.to[0] : chunkMsg.to;
+                const match = page.find((t) => t.token === targetToken);
+                if (match) staleIds.push(match.id);
+              }
+            }
           }
+        } catch (err) {
+          logger.error(
+            { err, chunkSize: chunk.length },
+            "[push-delivery] expo chunk permanently failed after retries — skipping chunk",
+          );
         }
       }
-    } catch (err) {
-      // Chunk exhausted retries or hit a permanent error. Log and skip —
-      // the remaining chunks are still sent (no early abort on one bad chunk).
-      logger.error(
-        { err, chunkSize: chunk.length },
-        "[push-delivery] expo chunk permanently failed after retries — skipping chunk",
-      );
+
+      if (staleIds.length > 0) {
+        await db
+          .delete(schema.pushTokensTable)
+          .where(inArray(schema.pushTokensTable.id, staleIds))
+          .catch((err) => logger.warn({ err, staleIds }, "[push-delivery] stale expo token cleanup failed"));
+        logger.info({ count: staleIds.length }, "[push-delivery] pruned stale Expo tokens");
+      }
+
+      totalDispatched += dispatched;
     }
+
+    if (page.length < PUSH_PAGE_SIZE) break;
   }
 
-  if (staleIds.length > 0) {
-    await db
-      .delete(schema.pushTokensTable)
-      .where(inArray(schema.pushTokensTable.id, staleIds))
-      .catch((err) => logger.warn({ err, staleIds }, "[push-delivery] stale expo token cleanup failed"));
-    logger.info({ count: staleIds.length }, "[push-delivery] pruned stale Expo tokens");
-  }
-
-  return dispatched;
+  return totalDispatched;
 }
 
 /**
  * Deliver `payload` to all registered Web Push subscriptions.
  * Returns the number of subscriptions successfully dispatched.
+ *
+ * Subscriptions are loaded in pages of PUSH_PAGE_SIZE (keyset pagination on
+ * id) so peak heap is O(PUSH_PAGE_SIZE) regardless of subscriber count.
+ * Within each page, sends are fanned out in parallel chunks of
+ * WEB_PUSH_CHUNK_SIZE to cap OS socket pressure. Stale subs found in a page
+ * are pruned before the next page is fetched.
  */
 async function deliverToWebPush(payload: PushPayload): Promise<number> {
   if (!ensureVapid()) {
     logger.warn("[push-delivery] VAPID keys not configured — web push disabled; set VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY to enable");
     return 0;
   }
-
-  const subs = await db
-    .select()
-    .from(schema.webPushSubscriptionsTable);
-
-  if (subs.length === 0) return 0;
 
   const webPayload = JSON.stringify({
     title: payload.title,
@@ -230,62 +245,75 @@ async function deliverToWebPush(payload: PushPayload): Promise<number> {
     badge: "/icons/badge-72x72.png",
   });
 
-  const staleIds: string[] = [];
-  let dispatched = 0;
-
-  // Retry policy for transient errors (matching the Expo path above).
-  // 410/404 = stale subscription (permanent) → no retry, prune.
-  // Any other status or network error → retry up to 3 times with
-  // exponential backoff: 1 s, 5 s, 30 s.
+  // Retry policy: 410/404 = stale (permanent) → prune; anything else → retry.
   const WEB_PUSH_MAX_RETRIES = 3;
   const WEB_PUSH_BACKOFF_MS = [1_000, 5_000, 30_000];
-  // Process in chunks to avoid exhausting OS sockets when the subscriber
-  // list is large (mirrors the Expo path which uses expo.chunkPushNotifications).
   const WEB_PUSH_CHUNK_SIZE = 100;
 
-  for (let i = 0; i < subs.length; i += WEB_PUSH_CHUNK_SIZE) {
-    const chunk = subs.slice(i, i + WEB_PUSH_CHUNK_SIZE);
-    await Promise.allSettled(
-      chunk.map(async (sub) => {
-        let lastErr: unknown;
-        for (let attempt = 0; attempt <= WEB_PUSH_MAX_RETRIES; attempt++) {
-          try {
-            await webpush.sendNotification(
-              { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-              webPayload,
-              { TTL: 86_400 },
-            );
-            dispatched++;
-            return;
-          } catch (err: unknown) {
-            lastErr = err;
-            const status = (err as { statusCode?: number }).statusCode;
-            if (status === 410 || status === 404) {
-              staleIds.push(sub.id);
+  let totalDispatched = 0;
+  let lastId = "";
+
+  for (;;) {
+    const page = await db
+      .select()
+      .from(schema.webPushSubscriptionsTable)
+      .where(lastId ? gt(schema.webPushSubscriptionsTable.id, lastId) : undefined)
+      .orderBy(schema.webPushSubscriptionsTable.id)
+      .limit(PUSH_PAGE_SIZE);
+
+    if (page.length === 0) break;
+    lastId = page[page.length - 1]!.id;
+
+    const staleIds: string[] = [];
+    let dispatched = 0;
+
+    for (let i = 0; i < page.length; i += WEB_PUSH_CHUNK_SIZE) {
+      const chunk = page.slice(i, i + WEB_PUSH_CHUNK_SIZE);
+      await Promise.allSettled(
+        chunk.map(async (sub) => {
+          let lastErr: unknown;
+          for (let attempt = 0; attempt <= WEB_PUSH_MAX_RETRIES; attempt++) {
+            try {
+              await webpush.sendNotification(
+                { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+                webPayload,
+                { TTL: 86_400 },
+              );
+              dispatched++;
               return;
-            }
-            if (attempt < WEB_PUSH_MAX_RETRIES) {
-              await new Promise<void>((r) => { const t = setTimeout(r, WEB_PUSH_BACKOFF_MS[attempt]); t.unref?.(); });
+            } catch (err: unknown) {
+              lastErr = err;
+              const status = (err as { statusCode?: number }).statusCode;
+              if (status === 410 || status === 404) {
+                staleIds.push(sub.id);
+                return;
+              }
+              if (attempt < WEB_PUSH_MAX_RETRIES) {
+                await new Promise<void>((r) => { const t = setTimeout(r, WEB_PUSH_BACKOFF_MS[attempt]); t.unref?.(); });
+              }
             }
           }
-        }
-        logger.warn(
-          { err: lastErr, endpoint: sub.endpoint },
-          "[push-delivery] web push send failed after retries",
-        );
-      }),
-    );
+          logger.warn(
+            { err: lastErr, endpoint: sub.endpoint },
+            "[push-delivery] web push send failed after retries",
+          );
+        }),
+      );
+    }
+
+    if (staleIds.length > 0) {
+      await db
+        .delete(schema.webPushSubscriptionsTable)
+        .where(inArray(schema.webPushSubscriptionsTable.id, staleIds))
+        .catch((err) => logger.warn({ err }, "[push-delivery] stale web-push cleanup failed"));
+      logger.info({ count: staleIds.length }, "[push-delivery] pruned stale Web Push subscriptions");
+    }
+
+    totalDispatched += dispatched;
+    if (page.length < PUSH_PAGE_SIZE) break;
   }
 
-  if (staleIds.length > 0) {
-    await db
-      .delete(schema.webPushSubscriptionsTable)
-      .where(inArray(schema.webPushSubscriptionsTable.id, staleIds))
-      .catch((err) => logger.warn({ err }, "[push-delivery] stale web-push cleanup failed"));
-    logger.info({ count: staleIds.length }, "[push-delivery] pruned stale Web Push subscriptions");
-  }
-
-  return dispatched;
+  return totalDispatched;
 }
 
 /**
