@@ -688,6 +688,10 @@ export async function videoServeRoutes(app: FastifyInstance) {
             const head = await s.headObject(key);
             if (!head.exists) {
               decrementConcurrent();
+              if (env.PROD_SYNC_API_URL && env.NODE_ENV !== "production") {
+                const prodBase = env.PROD_SYNC_API_URL.replace(/\/+$/, "");
+                return reply.redirect(`${prodBase}/api/hls/${videoId}/${wildcard}`, 302);
+              }
               return reply.code(404).send({ error: "HLS segment not found in storage" });
             }
             const total = head.contentLength ?? 0;
@@ -740,6 +744,10 @@ export async function videoServeRoutes(app: FastifyInstance) {
         const e = err as { $metadata?: { httpStatusCode?: number }; message?: string };
         const status = e?.$metadata?.httpStatusCode;
         if (status === 403 || status === 404) {
+          if (env.PROD_SYNC_API_URL && env.NODE_ENV !== "production") {
+            const prodBase = env.PROD_SYNC_API_URL.replace(/\/+$/, "");
+            return reply.redirect(`${prodBase}/api/hls/${videoId}/${wildcard}`, 302);
+          }
           return reply.code(404).send({ error: "HLS asset not found in storage" });
         }
         throw err;

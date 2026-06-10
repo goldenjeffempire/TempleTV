@@ -437,6 +437,24 @@ services:
       - key: SMTP_FROM_NAME
         sync: false
 
+      # ── Web Push / VAPID ───────────────────────────────────────────────────
+      # Required for browser (PWA) push notifications.
+      # Without these, GET /api/push/web-vapid-public-key returns 503 and
+      # web subscribers cannot register. Mobile (Expo) push is unaffected.
+      # Generate: npx web-push generate-vapid-keys --save-to vapid-keys.json
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+
+      # ── Expo push notifications ─────────────────────────────────────────────
+      # Authenticates server-side calls to Expo's push API.
+      # Without this, bulk delivery falls back to unauthenticated mode
+      # (lower rate limits). Generate at:
+      # https://expo.dev/accounts/[account]/settings/access-tokens
+      - key: EXPO_ACCESS_TOKEN
+        sync: false
+
       # ── HLS token auth ─────────────────────────────────────────────────────
       # When REQUIRE_HLS_TOKEN=true, each /api/hls/* request must carry a
       # short-lived signed token. This prevents direct link sharing or embed
