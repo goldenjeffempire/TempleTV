@@ -16,6 +16,27 @@
 import { logger } from "./logger.js";
 import { storage } from "./storage.js";
 
+// Lazy import to avoid circular dep: storage → mail → storage (via env)
+async function sendStorageDegradedAlert(lastError: string): Promise<void> {
+  try {
+    const { sendAdminAlert } = await import("../modules/mail/mail.service.js");
+    await sendAdminAlert({
+      subject: "Object storage health degraded",
+      severity: "critical",
+      body: [
+        `Object storage probe has failed ${FAILURE_THRESHOLD} consecutive times.`,
+        "",
+        `Last error: ${lastError}`,
+        "",
+        "Impact: uploads, HLS segment delivery, and thumbnail retrieval may be broken.",
+        "Check the admin dashboard → System Health for storage status.",
+      ].join("\n"),
+    });
+  } catch (err) {
+    logger.warn({ err }, "[storage-health] admin alert email failed (non-fatal)");
+  }
+}
+
 const HEALTH_KEY = "__health_probe__";
 const HEALTH_VALUE = Buffer.from("ok");
 const FAILURE_THRESHOLD = 3;
@@ -160,6 +181,9 @@ class StorageHealthMonitorImpl {
         } catch {
           // adminEventBus import failure is non-fatal
         }
+        // Email alert: SSE only reaches an open admin dashboard; email is the
+        // out-of-band path when no one is watching (e.g. overnight outage).
+        void sendStorageDegradedAlert(this.lastError ?? "unknown error");
       } else {
         logger.warn(
           { consecutiveFailures: this.consecutiveFailures, err },

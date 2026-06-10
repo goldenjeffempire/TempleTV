@@ -367,15 +367,18 @@ function sample() {
     !criticalExitInFlight
   ) {
     criticalExitInFlight = true;
+    const heapUsedMb = Math.round(mem.heapUsed / (1024 * 1024));
+    const heapTotalMb = Math.round(mem.heapTotal / (1024 * 1024));
+    const externalMb  = Math.round(mem.external  / (1024 * 1024));
     // Snapshot the full memory breakdown at the moment of exit so engineers
     // can distinguish Buffer pressure (externalMb high) from heap leaks
     // (heapUsedMb high) when reviewing logs after a restart cycle.
     logger.fatal(
       {
         rssMb,
-        heapUsedMb: Math.round(mem.heapUsed / (1024 * 1024)),
-        heapTotalMb: Math.round(mem.heapTotal / (1024 * 1024)),
-        externalMb: Math.round(mem.external / (1024 * 1024)),
+        heapUsedMb,
+        heapTotalMb,
+        externalMb,
         arrayBuffersMb: Math.round(mem.arrayBuffers / (1024 * 1024)),
         warnThresholdMb: thresholdMb,
         restartThresholdMb,
@@ -403,6 +406,26 @@ function sample() {
         graceMs: FORCE_EXIT_GRACE_MS,
       },
     });
+    // Email alert (fire-and-forget before SIGTERM). SSE only reaches an open
+    // admin dashboard — email is the only out-of-band signal for an overnight
+    // OOM restart that would otherwise appear only as a gap in uptime metrics.
+    void import("../modules/mail/mail.service.js")
+      .then(({ sendAdminAlert }) =>
+        sendAdminAlert({
+          subject: "API process restarting — critical memory pressure",
+          severity: "critical",
+          body: [
+            `RSS has been above the restart threshold (${restartThresholdMb} MB) for ${consecutiveRssOverRestart} consecutive samples.`,
+            `Current: ${rssMb} MB  |  heap: ${heapUsedMb}/${heapTotalMb} MB  |  external: ${externalMb} MB`,
+            "",
+            `The process is sending SIGTERM now and will exit in ${FORCE_EXIT_GRACE_MS / 1000}s.`,
+            "The supervisor (Render/k8s) will restart it automatically.",
+            "",
+            "If restarts are frequent, reduce HLS_MAX_CONCURRENT or raise your host memory.",
+          ].join("\n"),
+        }),
+      )
+      .catch(() => {/* non-fatal — process is about to exit anyway */});
     process.kill(process.pid, "SIGTERM");
     const forceExitTimer = setTimeout(() => {
       logger.fatal(

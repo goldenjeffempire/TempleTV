@@ -35,6 +35,7 @@
 import { broadcastOrchestrator } from "./broadcast-orchestrator.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { sendBroadcastWebhookSync } from "../webhook/webhook.service.js";
+import { sendAdminAlert } from "../../mail/mail.service.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
 
@@ -128,6 +129,25 @@ export async function broadcastHealthMonitorScan(): Promise<void> {
         detail: reason,
         timestamp: new Date().toISOString(),
         source: "broadcast-health-monitor",
+      });
+
+      // Email the admin inbox. Critical: if no one has the dashboard open
+      // at the time of the incident (e.g. overnight), SSE alone is not enough
+      // — email is the only out-of-band notification path.
+      void sendAdminAlert({
+        subject: "Broadcast orchestrator stuck — full recovery initiated",
+        severity: "critical",
+        body: [
+          `The broadcast-v2 orchestrator was stuck for ${Math.round(advanceAgeMs / 60_000)} minutes`,
+          `with ${itemCount} items in the queue (sequence: ${sequence}).`,
+          "",
+          `Reason: ${reason}`,
+          "",
+          "Full recovery has been initiated automatically.",
+          "Check the admin dashboard → Broadcast for the current status.",
+        ].join("\n"),
+      }).catch((err: unknown) => {
+        logger.warn({ err }, "[broadcast-health-monitor] admin alert email failed (non-fatal)");
       });
 
       // Fire webhook (non-blocking) so external monitors are notified.

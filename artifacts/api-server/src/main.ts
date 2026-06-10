@@ -320,6 +320,30 @@ async function main() {
         "(required for zero-downtime rolling restarts on Render / AWS ALB / k8s)",
       );
     }
+    // SMTP outbound email check. Three scenarios:
+    //   • All three vars absent  → warning (email silently no-ops; acceptable if intentional)
+    //   • Partially configured   → error (mailer always no-ops even though vars are present)
+    //   • All three present      → pass (the verifyMailer() call below confirms connectivity)
+    {
+      const smtpVarsSet = [env.SMTP_HOST, env.SMTP_USER, env.SMTP_PASS].filter(Boolean).length;
+      if (smtpVarsSet === 0) {
+        configWarnings.push(
+          "SMTP not configured — outbound transactional email (welcome, password reset, " +
+          "admin alerts) is disabled; set SMTP_HOST / SMTP_USER / SMTP_PASS to enable",
+        );
+      } else if (smtpVarsSet < 3) {
+        const missing = [
+          !env.SMTP_HOST  && "SMTP_HOST",
+          !env.SMTP_USER  && "SMTP_USER",
+          !env.SMTP_PASS  && "SMTP_PASS",
+        ].filter(Boolean);
+        configErrors.push(
+          `SMTP partially configured — missing: ${missing.join(", ")}. ` +
+          "The mailer silently no-ops until all three are set. " +
+          "All transactional email (welcome, password reset, admin alerts) will be lost.",
+        );
+      }
+    }
 
     if (configErrors.length > 0) {
       logger.error(

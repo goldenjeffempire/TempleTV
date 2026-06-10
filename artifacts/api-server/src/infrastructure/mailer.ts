@@ -21,6 +21,14 @@ import { logger } from "./logger.js";
 
 let _transport: Transporter | null = null;
 
+/**
+ * SMTP error codes that indicate a permanent misconfiguration rather than
+ * a transient network blip. When sendMail() catches one of these codes the
+ * singleton transport is reset so the next send attempt re-initialises the
+ * pool with fresh credentials (handles password rotations without a restart).
+ */
+const PERMANENT_ERROR_CODES = new Set(["EAUTH", "ECONNREFUSED"]);
+
 function createTransport(): Transporter | null {
   if (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASS) {
     logger.warn(
@@ -57,6 +65,23 @@ export function getTransport(): Transporter | null {
     _transport = createTransport();
   }
   return _transport;
+}
+
+/**
+ * Forcibly reset the transport singleton.
+ *
+ * Call this after rotating SMTP credentials, or from the admin test-email
+ * endpoint after a failed send, so the next getTransport() call builds a
+ * fresh connection pool with the updated credentials. Without this, a bad
+ * password will keep every subsequent sendMail() failing until the process
+ * is restarted.
+ */
+export function resetTransport(): void {
+  if (_transport) {
+    try { (_transport as Transporter & { close?(): void }).close?.(); } catch { /* already closed */ }
+  }
+  _transport = null;
+  logger.info("[mailer] transport singleton reset — next send will re-initialise the pool");
 }
 
 /**
@@ -120,6 +145,18 @@ export async function sendMail(msg: MailMessage): Promise<SentMessageInfo | null
     );
     return info;
   } catch (err) {
+    // Auto-reset the transport singleton on permanent errors (auth failure,
+    // connection refused) so the next call rebuilds the pool with whatever
+    // credentials are currently in env — handles password rotations without
+    // requiring a process restart.
+    const code = (err as { code?: string }).code ?? "";
+    if (PERMANENT_ERROR_CODES.has(code)) {
+      logger.warn(
+        { code, to: options.to },
+        "[mailer] permanent SMTP error — resetting transport singleton so next send re-initialises pool",
+      );
+      resetTransport();
+    }
     logger.error({ err, to: options.to, subject: msg.subject }, "[mailer] email send failed");
     throw err;
   }

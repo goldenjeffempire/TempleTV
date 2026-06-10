@@ -10,6 +10,7 @@ import {
   SendPushResponseSchema,
 } from "./notifications.schemas.js";
 import { notificationsService, recoverStuckPendingNotifications } from "./notifications.service.js";
+import { sendMail, getTransport } from "../../infrastructure/mailer.js";
 
 export async function notificationsRoutes(app: FastifyInstance) {
   app.addHook("onReady", () => {
@@ -75,6 +76,83 @@ export async function notificationsRoutes(app: FastifyInstance) {
       },
     },
     async () => notificationsService.getStats(),
+  );
+
+  /**
+   * POST /notifications/test-email
+   *
+   * Sends a test email to SMTP_USER so operators can verify SMTP configuration
+   * without triggering a real business event (password reset, welcome, etc.).
+   * On auth/connection failure the transport singleton is reset automatically
+   * so the next send attempt re-initialises the pool with updated credentials.
+   *
+   * Admin-only — never expose to editor/moderator roles.
+   */
+  r.post(
+    "/test-email",
+    {
+      preHandler: requireAuth("admin"),
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["notifications"],
+        summary: "Send a test email to verify SMTP configuration (admin only)",
+        response: {
+          200: z.object({
+            ok: z.boolean(),
+            configured: z.boolean(),
+            recipient: z.string().optional(),
+            messageId: z.string().optional(),
+            error: z.string().optional(),
+          }),
+          429: z.object({ error: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => {
+      const transport = getTransport();
+      if (!transport) {
+        return {
+          ok: false,
+          configured: false,
+          error:
+            "SMTP is not configured — set SMTP_HOST, SMTP_USER, and SMTP_PASS " +
+            "in the environment to enable outbound email",
+        };
+      }
+
+      const recipient = env.SMTP_USER ?? "unknown";
+      try {
+        const info = await sendMail({
+          to: recipient,
+          subject: "[Temple TV] SMTP test — configuration verified",
+          html: `
+            <p>This is a test email sent from the Temple TV admin dashboard.</p>
+            <p>If you received this, your SMTP configuration is working correctly.</p>
+            <p style="color:#888;font-size:12px;">Sent at: ${new Date().toISOString()}</p>
+          `.trim(),
+          text:
+            "This is a test email sent from the Temple TV admin dashboard.\n" +
+            "If you received this, your SMTP configuration is working correctly.\n" +
+            `Sent at: ${new Date().toISOString()}`,
+        });
+        return {
+          ok: true,
+          configured: true,
+          recipient,
+          messageId: (info as { messageId?: string } | null)?.messageId,
+        };
+      } catch (err) {
+        // resetTransport() is already called inside sendMail() on EAUTH/ECONNREFUSED
+        // errors. Surfacing the error here gives the admin immediate feedback in the UI.
+        return {
+          ok: false,
+          configured: true,
+          recipient,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
   );
 
   r.post(

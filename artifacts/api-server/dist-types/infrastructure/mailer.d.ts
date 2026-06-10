@@ -17,6 +17,16 @@ import { type Transporter } from "nodemailer";
 import type { SentMessageInfo } from "nodemailer";
 export declare function getTransport(): Transporter | null;
 /**
+ * Forcibly reset the transport singleton.
+ *
+ * Call this after rotating SMTP credentials, or from the admin test-email
+ * endpoint after a failed send, so the next getTransport() call builds a
+ * fresh connection pool with the updated credentials. Without this, a bad
+ * password will keep every subsequent sendMail() failing until the process
+ * is restarted.
+ */
+export declare function resetTransport(): void;
+/**
  * Verify SMTP connectivity. Called on server startup.
  * Logs a warning (not a crash) when SMTP is unconfigured.
  */
