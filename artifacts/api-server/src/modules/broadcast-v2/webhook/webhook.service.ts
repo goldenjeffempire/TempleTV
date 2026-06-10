@@ -115,6 +115,29 @@ function sign(body: string, secret: string): string {
   return "sha256=" + createHmac("sha256", secret).update(body, "utf8").digest("hex");
 }
 
+// ─── SSRF guard ───────────────────────────────────────────────────────────────
+// Mirrors the policy enforced by universal-source-resolver without importing it.
+// Private (non-loopback) ranges blocked in all environments; loopback only in
+// production (local dev legitimately uses localhost for webhook receivers).
+
+/** IPv4 private / loopback / link-local / CGNAT / multicast CIDRs. */
+const _PRIVATE_IPV4_RE =
+  /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.|0\.0\.|169\.254\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|2(2[4-9]|[3-4]\d|5[0-5])\.)/;
+
+function _isSsrfTarget(url: string): boolean {
+  let hostname: string;
+  try {
+    hostname = new URL(url).hostname;
+  } catch {
+    return false;
+  }
+  const isLoopback = hostname === "localhost" || hostname === "127.0.0.1";
+  const isPrivate = _PRIVATE_IPV4_RE.test(hostname);
+  if (isPrivate && !isLoopback) return true;
+  if (isLoopback && env.NODE_ENV === "production") return true;
+  return false;
+}
+
 // ─── Core delivery ───────────────────────────────────────────────────────────
 
 /**
@@ -158,6 +181,25 @@ async function deliver(
   delivery: WebhookDelivery,
 ): Promise<void> {
   const url = env.BROADCAST_WEBHOOK_URL!;
+
+  // SSRF guard: reject private/loopback targets before any network call so
+  // the delivery loop is never entered for misconfigured URLs.  A single
+  // synchronous check here is cheaper than letting all MAX retry attempts
+  // fail with the same network error.
+  if (_isSsrfTarget(url)) {
+    const host = (() => { try { return new URL(url).hostname; } catch { return url; } })();
+    logger.warn(
+      { deliveryId, host },
+      "[broadcast-webhook] SSRF blocked — BROADCAST_WEBHOOK_URL targets a private network; delivery skipped",
+    );
+    Object.assign(delivery, {
+      status: "failed" as WebhookDeliveryStatus,
+      error: `SSRF blocked: private host (${host})`,
+    });
+    recordDelivery(delivery);
+    return;
+  }
+
   const body = JSON.stringify(payload);
   const MAX = env.BROADCAST_WEBHOOK_RETRY_ATTEMPTS;
 

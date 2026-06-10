@@ -2900,7 +2900,16 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   //   - JWT session cookie           → real user row from requireAuth()
   app.get(
     "/me",
-    { preHandler: [requireAuth("editor")] },
+    {
+      preHandler: [requireAuth("editor")],
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      schema: {
+        response: {
+          200: z.object({ id: z.string(), email: z.string(), role: z.string() }),
+          429: z.object({ error: z.string() }),
+        },
+      },
+    },
     async (req) => {
       return {
         id: req.principal!.id,
@@ -3025,7 +3034,16 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   // expected and harmless — the window refills within 5 minutes.
   app.get(
     "/stream-health/metrics",
-    { preHandler: [requireAuth("editor")] },
+    {
+      preHandler: [requireAuth("editor")],
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      schema: {
+        response: {
+          200: passthrough,
+          429: z.object({ error: z.string() }),
+        },
+      },
+    },
     async () => {
       return streamHealthAggregator.getDetailedStats();
     },
@@ -3158,6 +3176,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   //      clients should migrate to the sub-token flow above.
   app.get<{ Querystring: { platform?: string; token?: string; sseToken?: string } }>(
     "/live/events",
+    { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
     async (req, reply) => {
       // Inline auth check that supports query param auth for EventSource.
       // Can't use requireAuth() here — that helper only reads the header.
