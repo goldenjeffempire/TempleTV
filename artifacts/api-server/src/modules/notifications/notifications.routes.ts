@@ -14,7 +14,9 @@ import { sendMail, getTransport } from "../../infrastructure/mailer.js";
 
 export async function notificationsRoutes(app: FastifyInstance) {
   app.addHook("onReady", () => {
-    void recoverStuckPendingNotifications();
+    void recoverStuckPendingNotifications().catch((err: unknown) => {
+      app.log.warn({ err }, "[notifications] boot recovery failed (non-fatal)");
+    });
   });
   const r = app.withTypeProvider<ZodTypeProvider>();
 

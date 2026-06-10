@@ -162,7 +162,8 @@ class QueueIntegrityValidatorImpl {
         .from(q)
         .leftJoin(v, eq(q.videoId, v.id))
         .where(eq(q.isActive, true))
-        .orderBy(asc(q.sortOrder));
+        .orderBy(asc(q.sortOrder))
+        .limit(2000); // broadcast queues are typically <100; cap prevents OOM on runaway growth
 
       // Items with SUSPICIOUS_DURATION collected here for background reprobe
       // after the main issue-detection loop (max 3 per cycle).

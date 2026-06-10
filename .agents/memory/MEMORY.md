@@ -1,3 +1,4 @@
+- [Platform audit sprint 115 — false positive patterns](sprint-115-false-positive-patterns.md) — 4 real fixes applied; 15+ confirmed false positives across admin SPA, broadcast-v2, mobile; key patterns documented.
 - [Bash counter arithmetic set-e pitfall](bash-counter-set-e.md) — ((COUNTER++)) with set -e exits when COUNTER=0 (expression evaluates to 0=false); always use COUNTER=$((COUNTER+1)) in scripts.
 - [Bash curl SSE status parsing](bash-curl-sse-status.md) — `curl -w "%{http_code}" ... || echo "000"` appends "000" to a valid code on SSE timeout; use `; true` + `${var:0:3}`; python3 not in PATH on Nix/Replit — use node for JSON/math.
 - [Smoke test endpoint corrections](smoke-test-endpoint-corrections.md) — /api/v1/sermons→/api/v1/series; Swagger UI at /docs not /api/docs; auth/refresh empty body→400 (Zod rejects before auth); no python3 in PATH→use node.

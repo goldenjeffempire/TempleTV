@@ -86,6 +86,7 @@ async function probeDurationSecs(url: string): Promise<{ secs: number | null; fr
       try { child?.kill("SIGKILL"); } catch { /* already exited */ }
       done(null);
     }, DURATION_PROBE_TIMEOUT_MS);
+    timer.unref?.();
     try {
       child = spawn("ffprobe", [
         "-v", "quiet",
