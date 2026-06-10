@@ -44,6 +44,7 @@ import {
   isWebhookConfigured,
   sendBroadcastWebhookSync,
 } from "../webhook/webhook.service.js";
+import { runFaststart } from "../../transcoder/faststart.service.js";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
 const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
@@ -1561,6 +1562,171 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         "[broadcast-v2] duration re-probed successfully",
       );
       return { ok: true, oldDurSecs, newDurSecs };
+    },
+  );
+
+  // POST /broadcast-v2/queue/:id/retry-repair
+  //
+  // Attempts to recover a CORRUPT_SOURCE video by re-running the faststart
+  // remux repair. Only valid for 'structure_invalid' items (borderline
+  // container damage where a stream-copy remux may rebuild the moov atom)
+  // OR items with no kind recorded (pre-column legacy items that may still
+  // be recoverable). Refuses 'moov_absent' items — the moov is permanently
+  // lost and re-upload is the only option.
+  //
+  // Flow:
+  //   1. Validates: queue item exists, has a linked video, video has
+  //      transcodingErrorCode='CORRUPT_SOURCE', video has an objectPath
+  //      (source blob in storage), kind is NOT 'moov_absent'.
+  //   2. Resets the video row: status → "queued", clears error fields,
+  //      resets faststartApplied → false.
+  //   3. Re-activates the broadcast queue item (validator may have deactivated it).
+  //   4. Fires bus events immediately so the admin UI refreshes.
+  //   5. Returns 202. Runs faststart in the background:
+  //        • On success: fire bus events + enqueue for HLS transcoding.
+  //        • On failure: write CORRUPT_SOURCE error back, re-deactivate
+  //          queue item, fire bus events.
+  app.post<{ Params: { id: string } }>(
+    "/queue/:id/retry-repair",
+    {
+      preHandler: requireAuth("editor"),
+      bodyLimit: 1048576,
+      schema: { response: { 429: _429err } },
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+    },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+
+      // ── 1. Fetch and validate queue item ──────────────────────────────────
+      const [queueItem] = await db
+        .select()
+        .from(schema.broadcastQueueTable)
+        .where(eq(schema.broadcastQueueTable.id, id))
+        .limit(1);
+      if (!queueItem) return reply.code(404).send({ error: "Queue item not found" });
+      if (!queueItem.videoId) {
+        return reply.code(422).send({ error: "Queue item has no linked video — retry-repair is only available for uploaded videos" });
+      }
+
+      const [video] = await db
+        .select()
+        .from(schema.videosTable)
+        .where(eq(schema.videosTable.id, queueItem.videoId))
+        .limit(1);
+      if (!video) return reply.code(404).send({ error: "Linked video not found" });
+
+      if (video.transcodingErrorCode !== "CORRUPT_SOURCE") {
+        return reply.code(422).send({
+          error: `Video transcodingErrorCode is '${video.transcodingErrorCode ?? "null"}' — retry-repair only applies to CORRUPT_SOURCE failures`,
+        });
+      }
+      if (video.transcodingErrorKind === "moov_absent") {
+        return reply.code(422).send({
+          error: "Cannot repair: moov atom is permanently absent (recording was interrupted before moov was written). Re-upload the original source file.",
+        });
+      }
+      if (!video.objectPath) {
+        return reply.code(422).send({ error: "Video has no object path — source blob is missing. Re-upload the original file." });
+      }
+
+      const objectPath = video.objectPath;
+      const videoId = video.id;
+
+      req.log.info(
+        { itemId: id, videoId, objectPath, kind: video.transcodingErrorKind ?? "null" },
+        "[broadcast-v2] retry-repair: starting faststart remux repair",
+      );
+
+      // ── 2. Reset video error state ─────────────────────────────────────────
+      await db
+        .update(schema.videosTable)
+        .set({
+          transcodingStatus: "queued",
+          transcodingErrorCode: null,
+          transcodingErrorKind: null,
+          transcodingErrorMessage: null,
+          faststartApplied: false,
+        })
+        .where(eq(schema.videosTable.id, videoId));
+
+      // ── 3. Re-activate queue item (validator may have deactivated it) ──────
+      await db
+        .update(schema.broadcastQueueTable)
+        .set({ isActive: true, validatorDeactivatedReason: null })
+        .where(eq(schema.broadcastQueueTable.id, id))
+        .catch(() => {});
+
+      // ── 4. Notify admin UI immediately ─────────────────────────────────────
+      adminEventBus.push("videos-library-updated", { videoId, reason: "retry-repair-started" });
+      adminEventBus.push("broadcast-queue-updated", { reason: "retry-repair-started", itemId: id, videoId });
+
+      // ── 5. Background repair ────────────────────────────────────────────────
+      void (async () => {
+        try {
+          // skipStatusUpdate: true — we manage transcodingStatus ourselves so
+          // faststart does not set it to "processing" (which would cause a brief
+          // status flicker) and does not restore it on failure. faststartApplied
+          // is still written unconditionally by faststart on success.
+          await runFaststart(videoId, objectPath, { skipStatusUpdate: true });
+          req.log.info({ videoId, itemId: id }, "[broadcast-v2] retry-repair: faststart succeeded");
+
+          // Set faststartApplied explicitly (faststart writes it, but be safe)
+          // and enqueue for HLS transcoding so the video gets the best possible
+          // stream quality after remux recovery.
+          await db
+            .update(schema.videosTable)
+            .set({ transcodingStatus: "queued" })
+            .where(eq(schema.videosTable.id, videoId))
+            .catch(() => {});
+
+          try {
+            await enqueueTranscode({ videoId, videoPath: objectPath });
+            if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
+            req.log.info({ videoId }, "[broadcast-v2] retry-repair: HLS transcode queued after remux recovery");
+          } catch (tErr: unknown) {
+            req.log.warn({ err: tErr, videoId }, "[broadcast-v2] retry-repair: enqueueTranscode failed (non-fatal — video will broadcast as MP4)");
+          }
+
+          adminEventBus.push("videos-library-updated", { videoId, reason: "retry-repair-succeeded" });
+          adminEventBus.push("broadcast-queue-updated", { reason: "retry-repair-succeeded", itemId: id, videoId });
+          void broadcastOrchestrator.reload().catch(() => {});
+        } catch (err: unknown) {
+          const errKind = (err as { kind?: string }).kind ?? null;
+          const errMsg = err instanceof Error ? err.message : String(err);
+          req.log.error(
+            { err, videoId, itemId: id, kind: errKind },
+            "[broadcast-v2] retry-repair: faststart remux repair failed — marking CORRUPT_SOURCE again",
+          );
+
+          await db
+            .update(schema.videosTable)
+            .set({
+              transcodingStatus: "failed",
+              transcodingErrorCode: "CORRUPT_SOURCE",
+              transcodingErrorKind: errKind,
+              transcodingErrorMessage:
+                `Remux repair failed (retry-repair): ${errMsg.slice(0, 500)}. ` +
+                (errKind === "moov_absent"
+                  ? "The moov atom is permanently absent — re-upload the original source file."
+                  : "All remux strategies exhausted — re-upload the original source file."),
+            })
+            .where(eq(schema.videosTable.id, videoId))
+            .catch(() => {});
+
+          // Re-deactivate the queue item so the orchestrator doesn't try to
+          // play a video that is still corrupt.
+          await db
+            .update(schema.broadcastQueueTable)
+            .set({ isActive: false, validatorDeactivatedReason: "retry-repair-failed" })
+            .where(eq(schema.broadcastQueueTable.id, id))
+            .catch(() => {});
+
+          adminEventBus.push("videos-library-updated", { videoId, reason: "retry-repair-failed" });
+          adminEventBus.push("broadcast-queue-updated", { reason: "retry-repair-failed", itemId: id, videoId });
+        }
+      })();
+
+      return reply.code(202).send({ ok: true, videoId, message: "Faststart remux repair started in background" });
     },
   );
 

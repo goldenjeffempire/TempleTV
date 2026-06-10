@@ -387,7 +387,7 @@ export async function runFaststart(
             "was interrupted before the moov could be written. The codec configuration (SPS/PPS) " +
             "stored in the moov is permanently lost. Re-upload from the original source file.",
           ),
-          { code: "CORRUPT_UPLOAD" },
+          { code: "CORRUPT_UPLOAD", kind: "moov_absent" },
         );
       }
       log.warn(
@@ -403,7 +403,7 @@ export async function runFaststart(
             "(moov atom missing, partial/truncated file, or invalid container data) and the " +
             "stream-copy remux recovery also failed. Re-upload the video file to recover.",
           ),
-          { code: "CORRUPT_UPLOAD" },
+          { code: "CORRUPT_UPLOAD", kind: "structure_invalid" },
         );
       }
       // Repair succeeded: outputPath already has -movflags +faststart applied.

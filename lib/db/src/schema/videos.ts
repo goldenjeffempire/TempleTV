@@ -33,6 +33,16 @@ export const videosTable = pgTable("managed_videos", {
   //   'DISK_FULL'      — ENOSPC/EDQUOT at encode time; free space and retry.
   //   null             — not failed, failure has no specific code, or cleared on re-transcode.
   transcodingErrorCode: text("transcoding_error_code"),
+  // Subtype of transcodingErrorCode that narrows the exact container failure kind.
+  // Only populated when transcodingErrorCode is 'CORRUPT_SOURCE'.
+  //   'structure_invalid' — moov not confirmed absent; stream-copy remux repair
+  //                         can be attempted via the retry-repair route.
+  //   'moov_absent'       — mdat present but moov permanently lost (interrupted
+  //                         recording); re-upload required, no repair possible.
+  //   'preflight_failed'  — file failed early container validity gate.
+  //   null                — not set (assembly failure, size mismatch, or old
+  //                         item created before this column existed).
+  transcodingErrorKind: text("transcoding_error_kind"),
   // ── Upload metadata (Postgres = source of truth, bucket = bytes) ─────────
   originalFilename: text("original_filename"),
   mimeType: text("mime_type"),

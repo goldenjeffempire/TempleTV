@@ -134,6 +134,13 @@ interface BroadcastQueueRow {
    * Terminal codes (CORRUPT_SOURCE / SOURCE_MISSING) require re-upload; retry won't help.
    */
   transcodingErrorCode: string | null;
+  /**
+   * Sub-kind for CORRUPT_SOURCE failures.
+   * 'structure_invalid' — remux repair via retry-repair may recover without re-upload.
+   * 'moov_absent'       — moov permanently lost; re-upload required.
+   * null                — unknown (pre-column item) or not a CORRUPT_SOURCE failure.
+   */
+  transcodingErrorKind: string | null;
   /** Absolute URL of the locally-uploaded video (prod-sync items only). */
   localVideoUrl: string | null;
   /** ISO string of the locked air time for this item, or null for floating. */
@@ -496,6 +503,9 @@ interface SortableItemProps {
   /** Re-upload: reset CORRUPT_SOURCE/SOURCE_MISSING and open file picker. */
   onReupload: (videoId: string) => void;
   isReuploading: boolean;
+  /** Retry remux repair for structure_invalid CORRUPT_SOURCE items. */
+  onRetryRepair: (itemId: string) => void;
+  isRetryingRepair: boolean;
 }
 
 const SortableQueueItem = memo(function SortableQueueItem({
@@ -519,6 +529,8 @@ const SortableQueueItem = memo(function SortableQueueItem({
   isReprobing,
   onReupload,
   isReuploading,
+  onRetryRepair,
+  isRetryingRepair,
 }: SortableItemProps) {
   const {
     attributes,
@@ -675,17 +687,26 @@ const SortableQueueItem = memo(function SortableQueueItem({
             const isTerminal =
               item.transcodingErrorCode === "CORRUPT_SOURCE" ||
               item.transcodingErrorCode === "SOURCE_MISSING";
+            // structure_invalid: moov not confirmed absent — remux repair may recover
+            // without a re-upload. moov_absent (or null for legacy items) requires re-upload.
+            const isRepairEligible =
+              item.transcodingErrorCode === "CORRUPT_SOURCE" &&
+              item.transcodingErrorKind === "structure_invalid";
             const terminalLabel =
               item.transcodingErrorCode === "CORRUPT_SOURCE"
-                ? "Re-upload required"
+                ? isRepairEligible ? "Repair needed" : "Re-upload required"
                 : item.transcodingErrorCode === "SOURCE_MISSING"
                   ? "Source missing"
                   : "HLS failed";
             const terminalTitle =
               item.transcodingErrorCode === "CORRUPT_SOURCE"
-                ? item.transcodingError
-                  ? `File is unrecoverable and must be re-uploaded.\n\nDetails: ${item.transcodingError}`
-                  : "The video file is corrupt or unrecoverable (moov atom absent or container invalid). Please re-upload from the original source file."
+                ? isRepairEligible
+                  ? item.transcodingError
+                    ? `Container structure is damaged — remux repair may recover without re-uploading.\n\nDetails: ${item.transcodingError}`
+                    : "Container structure is damaged but moov atom is not confirmed absent. Click 'Retry repair' to attempt remux recovery. If repair fails, re-upload the original file."
+                  : item.transcodingError
+                    ? `File is unrecoverable and must be re-uploaded.\n\nDetails: ${item.transcodingError}`
+                    : "The video file is corrupt or unrecoverable (moov atom absent or container invalid). Please re-upload from the original source file."
                 : item.transcodingErrorCode === "SOURCE_MISSING"
                   ? "The source video file is no longer in storage (deleted or never uploaded). Please re-upload the original file."
                   : item.transcodingError
@@ -713,7 +734,19 @@ const SortableQueueItem = memo(function SortableQueueItem({
                     Retry
                   </button>
                 )}
-                {/* Re-upload: only for terminal error codes where the source file is gone/corrupt */}
+                {/* Retry repair: structure_invalid CORRUPT_SOURCE — remux may recover without re-upload */}
+                {item.videoId && isRepairEligible && (
+                  <button
+                    onClick={() => onRetryRepair(item.id)}
+                    disabled={isRetryingRepair}
+                    className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-300 hover:bg-amber-50 disabled:opacity-50 dark:text-amber-400 dark:ring-amber-700 dark:hover:bg-amber-950/30"
+                    title="Attempt remux repair — rebuilds the moov atom via stream-copy. Faster than re-uploading. If repair fails, use Re-upload."
+                  >
+                    <RotateCw className={`h-2.5 w-2.5 ${isRetryingRepair ? "animate-spin" : ""}`} />
+                    Retry repair
+                  </button>
+                )}
+                {/* Re-upload: for terminal error codes where re-upload is the only option or as fallback after repair */}
                 {item.videoId && isTerminal && (
                   <button
                     onClick={() => onReupload(item.videoId!)}
@@ -721,7 +754,9 @@ const SortableQueueItem = memo(function SortableQueueItem({
                     className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-blue-300 hover:bg-blue-50 disabled:opacity-50 dark:text-blue-400 dark:ring-blue-700 dark:hover:bg-blue-950/30"
                     title={
                       item.transcodingErrorCode === "CORRUPT_SOURCE"
-                        ? "The original recording was corrupt. Click to clear the failure state and pick a replacement video file to upload."
+                        ? isRepairEligible
+                          ? "Re-upload the original file if remux repair fails."
+                          : "The original recording was corrupt. Click to clear the failure state and pick a replacement video file to upload."
                         : "The source file is missing from storage. Click to clear the failure state and pick a replacement video file to upload."
                     }
                   >

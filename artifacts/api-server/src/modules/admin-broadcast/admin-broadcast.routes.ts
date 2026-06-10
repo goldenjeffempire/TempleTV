@@ -77,6 +77,14 @@ const QueueRowSchema = z.object({
    * null when not failed or no code recorded.
    */
   transcodingErrorCode: z.string().nullable(),
+  /**
+   * Sub-kind for CORRUPT_SOURCE failures.
+   * - 'structure_invalid' — remux repair may recover without re-upload.
+   * - 'moov_absent'       — moov permanently lost; re-upload required.
+   * - 'preflight_failed'  — failed early container validity gate.
+   * null for non-CORRUPT_SOURCE failures or items predating this field.
+   */
+  transcodingErrorKind: z.string().nullable(),
   /** ISO string of the locked air time for this item, or null for floating. */
   scheduledAt: z.string().nullable(),
   /** Human-readable programming block label, e.g. "Sunday Morning Service". */
@@ -91,6 +99,7 @@ type EnrichedQueueRow = typeof queueTable.$inferSelect & {
   hlsMasterUrl?: string | null | undefined;
   transcodingError?: string | null | undefined;
   transcodingErrorCode?: string | null | undefined;
+  transcodingErrorKind?: string | null | undefined;
   youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
 };
 
@@ -112,6 +121,7 @@ function toDto(row: EnrichedQueueRow): z.infer<typeof QueueRowSchema> {
     hasHls: !!(row.hlsMasterUrl),
     transcodingError: row.transcodingError ?? null,
     transcodingErrorCode: row.transcodingErrorCode ?? null,
+    transcodingErrorKind: row.transcodingErrorKind ?? null,
     scheduledAt: row.scheduledAt ? row.scheduledAt.toISOString() : null,
     scheduleLabel: row.scheduleLabel ?? null,
     youtubeLiveStatus: (row.youtubeLiveStatus as "live" | "rebroadcast" | null) ?? null,
@@ -194,7 +204,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
       // Enrich each row with HLS readiness data from managed_videos.
       // One batched IN query is far cheaper than N individual lookups.
       const videoIds = rows.filter((r) => r.videoId).map((r) => r.videoId!);
-      const hlsMap = new Map<string, { transcodingStatus: string | null; hlsMasterUrl: string | null; transcodingError: string | null; transcodingErrorCode: string | null; youtubeLiveStatus: "live" | "rebroadcast" | null }>();
+      const hlsMap = new Map<string, { transcodingStatus: string | null; hlsMasterUrl: string | null; transcodingError: string | null; transcodingErrorCode: string | null; transcodingErrorKind: string | null; youtubeLiveStatus: "live" | "rebroadcast" | null }>();
       if (videoIds.length > 0) {
         const vids = await db
           .select({
@@ -202,6 +212,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
             transcodingStatus: videosTable.transcodingStatus,
             hlsMasterUrl: videosTable.hlsMasterUrl,
             transcodingErrorCode: videosTable.transcodingErrorCode,
+            transcodingErrorKind: videosTable.transcodingErrorKind,
             // Pre-populate transcodingError from managed_videos so CORRUPT_SOURCE
             // errors set by the early upload gate (before any transcoding job runs)
             // are surfaced to the admin UI.  The transcoding-jobs join below will
@@ -213,7 +224,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
           .from(videosTable)
           .where(inArray(videosTable.id, videoIds));
         for (const v of vids) {
-          hlsMap.set(v.id, { transcodingStatus: v.transcodingStatus, hlsMasterUrl: v.hlsMasterUrl, transcodingError: v.transcodingErrorMessage ?? null, transcodingErrorCode: v.transcodingErrorCode ?? null, youtubeLiveStatus: (v.youtubeLiveStatus as "live" | "rebroadcast" | null) ?? null });
+          hlsMap.set(v.id, { transcodingStatus: v.transcodingStatus, hlsMasterUrl: v.hlsMasterUrl, transcodingError: v.transcodingErrorMessage ?? null, transcodingErrorCode: v.transcodingErrorCode ?? null, transcodingErrorKind: v.transcodingErrorKind ?? null, youtubeLiveStatus: (v.youtubeLiveStatus as "live" | "rebroadcast" | null) ?? null });
         }
 
         // For items whose transcoding_status is 'failed', fetch the last error
