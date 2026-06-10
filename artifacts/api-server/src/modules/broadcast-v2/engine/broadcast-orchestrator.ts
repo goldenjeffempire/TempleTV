@@ -3013,6 +3013,47 @@ class BroadcastOrchestrator extends EventEmitter {
   isStarted(): boolean {
     return this.started;
   }
+
+  /**
+   * Nuclear recovery: stop all timers, wipe the in-memory bad-URL blacklist,
+   * re-enable every DB-suspended queue item, then restart from scratch.
+   *
+   * Intended for use by the broadcast health monitor when normal self-heal
+   * mechanisms (self-heal reload, dead-air escalation) have failed to unstick
+   * the orchestrator.  Unlike a simple reload(), this tears down and rebuilds
+   * the entire runtime state — equivalent to a soft process restart for the
+   * broadcast subsystem.
+   *
+   * NEVER throws.  All errors are logged and the restart is attempted regardless.
+   * Caller should schedule a follow-up health check to verify recovery succeeded.
+   */
+  async initiateFullRecovery(reason: string): Promise<void> {
+    logger.warn(
+      { channelId: this.channelId, reason },
+      "[broadcast-v2] FULL RECOVERY initiated — stopping orchestrator, clearing bad-URL cache, re-enabling suspended items",
+    );
+    // 1. Stop all internal timers and mark as not started.
+    this.stop();
+    // 2. Wipe the in-memory bad-URL blacklist so no items remain blocked.
+    clearAllBadUrls();
+    // 3. Re-enable any queue items that the integrity validator suspended.
+    await reEnableAllSuspended().catch((err: unknown) => {
+      logger.warn({ err }, "[broadcast-v2] full-recovery: reEnableAllSuspended failed (non-fatal)");
+    });
+    // 4. Restart the orchestrator with a fresh state.
+    try {
+      await this.start();
+      logger.info(
+        { channelId: this.channelId, reason },
+        "[broadcast-v2] FULL RECOVERY completed — orchestrator restarted",
+      );
+    } catch (err) {
+      logger.error(
+        { err, channelId: this.channelId, reason },
+        "[broadcast-v2] FULL RECOVERY: orchestrator restart failed — self-heal ticks will retry",
+      );
+    }
+  }
 }
 
 export const broadcastOrchestrator = new BroadcastOrchestrator();

@@ -2,7 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod/v4";
 import { broadcastOrchestrator } from "../engine/broadcast-orchestrator.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";
-import { getBroadcastV2BootStatus, broadcastFanout } from "../index.js";
+import { getBroadcastV2BootStatus, broadcastFanout, getBroadcastHealthMonitorStatus, getContentRotationStatus } from "../index.js";
+import { getDbPoolHealthStatus } from "../../../infrastructure/db-pool-health.js";
 import { prodQueueSync } from "../../prod-sync/prod-queue-sync.js";
 import { getViewerSlopeStatus } from "../../admin-ops/viewer-slope-monitor.js";
 import { registerNamedStore } from "../../../infrastructure/cache.js";
@@ -399,6 +400,21 @@ export async function restRoutes(app: FastifyInstance) {
        * broadcast recovers — measures uninterrupted on-air uptime only.
        */
       continuousOnAirMs: broadcastOrchestrator.getContinuousOnAirMs(),
+      /** Milliseconds since the sequence last advanced. Useful for monitoring dashboards. */
+      sequenceAdvanceAgeMs: Date.now() - broadcastOrchestrator.getLastSequenceAdvanceMs(),
+      /** Broadcast health monitor (external orchestrator watchdog) status. */
+      healthMonitor: getBroadcastHealthMonitorStatus(),
+      /** Content rotation worker status (queue shuffle). */
+      contentRotation: getContentRotationStatus(),
+      /** DB connection pool utilization (shared-infra monitor). */
+      dbPool: getDbPoolHealthStatus(),
+      /** Recovery eligibility — true when a full recovery could improve the situation. */
+      recovery: {
+        eligible: (stuck || sequenceStale) && !getBroadcastHealthMonitorStatus().recoveryInFlight,
+        inFlight: getBroadcastHealthMonitorStatus().recoveryInFlight,
+        fullRecoveryCount: getBroadcastHealthMonitorStatus().fullRecoveryCount,
+        lastFullRecoveryAtMs: getBroadcastHealthMonitorStatus().lastFullRecoveryAtMs,
+      },
     };
   });
 

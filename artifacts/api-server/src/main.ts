@@ -19,6 +19,7 @@ import { broadcastScheduler } from "./modules/broadcast/broadcast-scheduler.js";
 import { startKeepAlive, stopKeepAlive } from "./modules/network/keep-alive.js";
 import { startMemoryWatchdog, stopMemoryWatchdog } from "./infrastructure/memory-watchdog.js";
 import { startEventLoopLagMonitor, stopEventLoopLagMonitor } from "./infrastructure/event-loop-lag.js";
+import { installDbPoolHealthMonitor, uninstallDbPoolHealthMonitor } from "./infrastructure/db-pool-health.js";
 import { markShuttingDown } from "./infrastructure/shutdown-flag.js";
 import { schema } from "./infrastructure/db.js";
 import { hashPassword } from "./modules/auth/password.js";
@@ -503,6 +504,48 @@ async function main() {
         logger.warn({ err }, "[broadcast-v2] boot remediation report failed (non-fatal)");
       }
     })();
+    // Startup verification: 30 s after boot, log a structured health summary
+    // covering all autonomous components so operators can confirm everything
+    // initialised correctly without hitting the /health endpoint manually.
+    // Non-blocking; never fatal.
+    void (async () => {
+      await new Promise<void>((resolve) => { const t = setTimeout(resolve, 30_000); t.unref?.(); });
+      try {
+        const { getBroadcastHealthMonitorStatus, getContentRotationStatus, broadcastOrchestrator } =
+          await import("./modules/broadcast-v2/index.js");
+        const { getDbPoolHealthStatus } = await import("./infrastructure/db-pool-health.js");
+        const pool = getDbPoolHealthStatus();
+        const hm = getBroadcastHealthMonitorStatus();
+        const rot = getContentRotationStatus();
+        logger.info(
+          {
+            broadcast: {
+              started: broadcastOrchestrator.isStarted(),
+              sequence: broadcastOrchestrator.getSequence(),
+              itemCount: broadcastOrchestrator.getItemCount(),
+            },
+            healthMonitor: {
+              staleThresholdMs: hm.staleThresholdMs,
+              recoveryThresholdMs: hm.recoveryThresholdMs,
+            },
+            contentRotation: {
+              strategy: rot.strategy,
+              intervalMs: rot.intervalMs,
+            },
+            dbPool: {
+              active: pool.active,
+              idle: pool.idle,
+              waiting: pool.waiting,
+              max: pool.max,
+              utilizationPct: pool.utilizationPct,
+            },
+          },
+          "[startup-verification] 30s post-boot autonomous component check",
+        );
+      } catch (err) {
+        logger.warn({ err }, "[startup-verification] post-boot health check failed (non-fatal)");
+      }
+    })();
     // Cross-environment broadcast queue mirror — only activates when
     // PROD_SYNC_API_URL is set (typically dev pointing at prod). No-op in
     // production. See modules/prod-sync/prod-queue-sync.ts for design notes.
@@ -533,6 +576,8 @@ async function main() {
     // Monitor event-loop lag so CPU starvation on constrained hosts (0.1 vCPU
     // Render free tier) is visible before health-check timeouts trigger SIGTERM.
     startEventLoopLagMonitor();
+    // Monitor pg connection pool utilization; emits ops-alert SSE on saturation.
+    installDbPoolHealthMonitor();
     logger.info({ port: env.PORT }, "API ready — http://0.0.0.0:" + env.PORT);
 
     // Dev-only: bind a secondary port and forward to the real listener.
@@ -626,6 +671,7 @@ async function main() {
       stopKeepAlive();
       stopMemoryWatchdog();
       stopEventLoopLagMonitor();
+      uninstallDbPoolHealthMonitor();
       // Stop the viewer-slope monitor (1-min setInterval) so it does not
       // keep the event loop alive after all other subsystems have shut down.
       try {

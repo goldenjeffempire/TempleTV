@@ -13,6 +13,9 @@ import { broadcastFanout } from "./io/broadcast-fanout.js";
 import { installYouTubeAutoOverride, uninstallYouTubeAutoOverride } from "../youtube-live/auto-override.js";
 import { faststartRecoveryWorker } from "./engine/faststart-recovery.js";
 import { reEnableAllSuspended } from "./repository/queue.repo.js";
+import { broadcastHealthMonitorScan, getBroadcastHealthMonitorStatus } from "./engine/broadcast-health-monitor.js";
+import { contentRotationScan, getContentRotationStatus } from "./engine/content-rotation.js";
+import { env } from "../../config/env.js";
 
 /**
  * Broadcast v2 — server-authoritative streaming control plane.
@@ -218,6 +221,31 @@ function startSupervisedWorkers(): void {
     backoffMs: [5_000, 15_000, 30_000],
   });
 
+  // Broadcast Health Monitor: external orchestrator watchdog that detects
+  // sequence staleness from outside the orchestrator's own self-heal loop.
+  // Tier 1 (STALE_MS=5min): calls reload(). Tier 2 (RECOVERY_MS=10min):
+  // calls initiateFullRecovery() and emits ops-alert + broadcast webhook.
+  workerSupervisor.spawn({
+    name: "broadcast-health-monitor",
+    fn: () => broadcastHealthMonitorScan(),
+    intervalMs: 60_000,
+    initialDelayMs: 90_000, // Wait past the orchestrator's own first-reload (30s)
+    backoffMs: [15_000, 30_000, 60_000],
+  });
+
+  // Content Rotation Worker: shuffles broadcast queue sort_order periodically
+  // so 24/7 broadcasts play content in a fresh order rather than the same
+  // cycle forever. BROADCAST_ROTATION_STRATEGY=fifo disables the shuffle.
+  // Uses a longer initial delay so the first shuffle happens only after the
+  // broadcast has been on-air for at least one full rotation interval.
+  workerSupervisor.spawn({
+    name: "content-rotation",
+    fn: () => contentRotationScan(),
+    intervalMs: env.BROADCAST_ROTATION_INTERVAL_MS,
+    initialDelayMs: env.BROADCAST_ROTATION_INTERVAL_MS,
+    backoffMs: [60_000, 5 * 60_000, 10 * 60_000],
+  });
+
   logger.info("[broadcast-v2] supervised workers registered");
 }
 
@@ -402,4 +430,4 @@ export async function stopBroadcastV2(): Promise<void> {
   );
 }
 
-export { broadcastOrchestrator, broadcastFanout };
+export { broadcastOrchestrator, broadcastFanout, getBroadcastHealthMonitorStatus, getContentRotationStatus };

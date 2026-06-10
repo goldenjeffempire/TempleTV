@@ -210,6 +210,49 @@ const Env = z.object({
   // sufficient for any foreseeable 24/7 broadcast schedule.
   BROADCAST_QUEUE_MAX_ITEMS: z.coerce.number().int().min(10).max(50_000).default(2000),
 
+  // Broadcast Health Monitor — external orchestrator watchdog.
+  //
+  // An independent supervised worker that observes the orchestrator from outside
+  // its own self-heal loop. If the broadcast sequence has not advanced while
+  // items are queued and the orchestrator is started, it intervenes:
+  //
+  //   Tier 1 (STALE_MS): call orchestrator.reload() to nudge it.
+  //   Tier 2 (RECOVERY_MS): if still stuck, call initiateFullRecovery()
+  //     (stop → clear bad-URL cache → re-enable suspended items → restart)
+  //     and emit an ops-alert SSE event + fire the broadcast webhook.
+  //
+  // Default 5 min stale / 10 min recovery is conservative. Tighten for a
+  // stricter SLA (e.g. STALE_MS=120000 / RECOVERY_MS=300000 for 2/5-min).
+  BROADCAST_HEALTH_MONITOR_STALE_MS: z.coerce.number().int().positive().default(300_000),
+  BROADCAST_HEALTH_MONITOR_RECOVERY_MS: z.coerce.number().int().positive().default(600_000),
+
+  // Content Rotation Worker — automatic broadcast queue shuffle.
+  //
+  // Periodically shuffles the sort_order of all active broadcast queue items
+  // so 24/7 broadcasts present content in a fresh order rather than cycling
+  // the same sequence forever. After each shuffle the orchestrator reloads and
+  // applies the new order starting at the next item boundary (the currently-
+  // airing item is never interrupted).
+  //
+  // BROADCAST_ROTATION_STRATEGY:
+  //   shuffle (default) — Fisher-Yates shuffle of all active item sort_orders
+  //   fifo              — no-op; preserves existing operator-set order
+  //
+  // Set BROADCAST_ROTATION_STRATEGY=fifo when a strict broadcast schedule is
+  // required (e.g. a pre-planned programme grid), or set a longer interval
+  // (e.g. 86400000 = 24 h) for daily variety instead of 30-minute cycles.
+  BROADCAST_ROTATION_STRATEGY: z.enum(["shuffle", "fifo"]).default("shuffle"),
+  BROADCAST_ROTATION_INTERVAL_MS: z.coerce.number().int().positive().default(1_800_000),
+
+  // DB Pool Health Monitor — pg connection pool utilization alerting.
+  //
+  // Fraction (0–1) of DB_POOL_MAX active connections that triggers a
+  // sustained "ops-alert" warning SSE event. At 0.8 the alert fires when
+  // 16+ of the 20 default pool slots are occupied.
+  // A second "critical" alert fires immediately (no sustain buffer) when
+  // the pool has waiting connections — callers are already stalling.
+  DB_POOL_WARN_UTILIZATION: z.coerce.number().min(0.1).max(1.0).default(0.8),
+
   // Dead-air external stream fallback.
   //
   // When the broadcast has been continuously off-air (empty queue OR all queue
