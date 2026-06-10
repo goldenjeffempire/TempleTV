@@ -10,7 +10,7 @@ export declare function isAutoEnqueueEnabled(): boolean;
  */
 export declare function enqueueIfMissing(opts: {
     videoId: string;
-    reason: "upload-finalize" | "yt-sync" | "library-scan" | "manual-import";
+    reason: "upload-finalize" | "yt-sync" | "library-scan" | "manual-import" | "upload-recovery-on-restart";
 }): Promise<{
     enqueued: boolean;
     queueItemId?: string;
