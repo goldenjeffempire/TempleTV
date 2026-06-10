@@ -17,7 +17,7 @@
 
 import EventEmitter from "node:events";
 import https from "node:https";
-import { trackQuota } from "../youtube-sync/youtube-sync.service.js";
+import { trackQuota, isQuotaExhausted } from "../youtube-sync/youtube-sync.service.js";
 
 export interface YtLiveState {
   isLive: boolean;
@@ -191,6 +191,16 @@ class YtLivePoller extends EventEmitter {
       if (Date.now() < this.apiCooldownUntilMs) {
         // API quota exhausted or key invalid — skip Data API v3 call and use
         // quota-free RSS exclusively until the cooldown window expires.
+        result = await this.pollRss();
+      } else if (isQuotaExhausted()) {
+        // Local quota counter says the daily limit is used up.  Each search.list
+        // call costs 100 units — continuing to poll would burn 100 units every
+        // 90 s for the rest of the day even though the sync service has already
+        // switched to RSS.  Set the cooldown to midnight UTC so we stay on
+        // quota-free RSS until the daily quota resets.
+        const midnight = new Date();
+        midnight.setUTCHours(24, 0, 0, 0);
+        this.apiCooldownUntilMs = midnight.getTime();
         result = await this.pollRss();
       } else {
         result = await this.pollApi();
