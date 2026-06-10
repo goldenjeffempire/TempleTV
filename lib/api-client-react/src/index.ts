@@ -1123,6 +1123,8 @@ export function useUpdateAdminVideo(
         qc.invalidateQueries({ queryKey: ["broadcast-queue"] }),
         qc.invalidateQueries({ queryKey: ["youtube-library-videos"] }),
         qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] }),
+        qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] }),
+        qc.invalidateQueries({ queryKey: ["transcoding-jobs"] }),
       ]),
       opts?.mutation?.onSuccess,
     ),

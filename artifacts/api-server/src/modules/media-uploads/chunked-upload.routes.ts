@@ -1321,6 +1321,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   .where(eq(sessions.sessionId, sessionId)),
               ]);
               adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-watchdog-timeout" });
+              uploadTelemetry.serverFail(
+                sessionId,
+                session.sizeBytes,
+                "assembly_watchdog_timeout",
+                "Assembly watchdog timeout (60 min) — blob was never fully assembled.",
+              );
             })();
           }, env.ASSEMBLY_WATCHDOG_MS);
           // .unref() so this timer does not prevent Node from exiting on SIGTERM
@@ -1374,6 +1380,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                     .where(eq(sessions.sessionId, sessionId)),
                 ]);
                 adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-size-mismatch" });
+                uploadTelemetry.serverFail(
+                  sessionId,
+                  actualBytes,
+                  "assembly_size_mismatch",
+                  `Assembly integrity check failed: declared ${expectedBytes} bytes but assembled blob is ${actualBytes} bytes.`,
+                );
                 clearTimeout(assemblyWatchdog);
                 return;
               }
@@ -1828,6 +1840,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 .where(eq(sessions.sessionId, sessionId)),
             ]);
             adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "assembly-watchdog-timeout" });
+            uploadTelemetry.serverFail(
+              sessionId,
+              session.sizeBytes,
+              "assembly_watchdog_timeout",
+              "Assembly watchdog timeout (60 min) — blob was never fully assembled.",
+            );
           })();
         }, 60 * 60 * 1000);
         // .unref() so this timer does not prevent Node from exiting on SIGTERM
@@ -1869,6 +1887,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   .where(eq(sessions.sessionId, sessionId)),
               ]);
               adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "assembly-size-mismatch" });
+              uploadTelemetry.serverFail(
+                sessionId,
+                actualBytesB,
+                "assembly_size_mismatch",
+                `Assembly integrity check failed: declared ${expectedBytesB} bytes but assembled blob is ${actualBytesB} bytes.`,
+              );
               return;
             }
           }

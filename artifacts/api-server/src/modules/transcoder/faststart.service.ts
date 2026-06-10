@@ -600,6 +600,12 @@ export async function runFaststart(
         log.error({ dbErr }, "faststart: could not restore transcodingStatus");
       }
     }
+    // Notify the admin UI that the video's status changed after the failure so
+    // the library / broadcast-queue panels refresh without waiting for the next
+    // poll interval. The transcodingStatus was already restored above; these
+    // events trigger a React Query refetch to surface the restored state.
+    adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-failed" });
+    adminEventBus.push("broadcast-queue-updated", { videoId, reason: "faststart-failed" });
     throw err;
   } finally {
     await rm(scratchDir, { recursive: true, force: true }).catch(() => { /* noop */ });

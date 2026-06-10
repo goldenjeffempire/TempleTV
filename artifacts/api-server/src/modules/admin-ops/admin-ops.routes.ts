@@ -3558,6 +3558,13 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         "[purge] content purge completed",
       );
 
+      // Notify all SSE-connected admin tabs so they refresh their query cache
+      // immediately after a destructive purge without waiting for poll intervals.
+      if (deleted > 0) {
+        adminEventBus.push("videos-library-updated", { reason: "purge", targets, deleted });
+        adminEventBus.push("broadcast-queue-updated", { reason: "purge", targets, deleted });
+      }
+
       return {
         deleted,
         ...(Object.keys(errors).length > 0 ? { errors } : {}),

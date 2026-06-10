@@ -426,6 +426,17 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
           },
           "[s3-multipart-complete] size mismatch — upload is truncated or corrupt, rejecting",
         );
+        // The multipart object was assembled in storage but has the wrong size.
+        // Clean it up before rejecting so there is no orphaned blob.
+        uploadTelemetry.serverFail(
+          body.sessionId,
+          head.contentLength,
+          "size_mismatch",
+          `Upload integrity check failed: expected ${body.sizeBytes} bytes but storage reports ${head.contentLength}.`,
+        );
+        await cleanupRejectedUpload(body.sessionId, body.objectKey, "size-mismatch").catch((e: unknown) =>
+          req.log.warn({ err: e, objectKey: body.objectKey }, "[s3-multipart-complete] size-mismatch cleanup failed (non-fatal)"),
+        );
         throw Object.assign(
           new Error(
             `Upload integrity check failed: expected ${body.sizeBytes} bytes but storage reports ${head.contentLength}. ` +
@@ -493,6 +504,12 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
           req.log.error(
             { err: dbErr, objectKey: body.objectKey },
             "[s3-multipart-complete] videos insert failed after storage write — cleaning up orphaned object",
+          );
+          uploadTelemetry.serverFail(
+            body.sessionId,
+            body.sizeBytes,
+            "db_insert_failed",
+            dbErr instanceof Error ? dbErr.message : "DB videos insert failed after storage write",
           );
           await cleanupRejectedUpload(body.sessionId, body.objectKey, "db-insert-failed");
           throw Object.assign(
@@ -700,7 +717,8 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
         if (rows[0]) return projectVideoRow(rows[0]);
       }
 
-      // Verify the object actually landed in database storage
+      // Verify the object actually landed in database storage and matches the
+      // declared size. A size mismatch means the PUT was truncated in transit.
       const head = await storage().headObject(body.objectKey);
       if (!head.exists) {
         throw Object.assign(
@@ -709,6 +727,28 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
               "The upload may have failed silently — try uploading again.",
           ),
           { statusCode: 502 },
+        );
+      }
+      if (head.contentLength != null && head.contentLength !== body.sizeBytes) {
+        req.log.error(
+          { objectKey: body.objectKey, expectedBytes: body.sizeBytes, actualBytes: head.contentLength },
+          "[s3-finalize] size mismatch — upload is truncated or corrupt, rejecting",
+        );
+        uploadTelemetry.serverFail(
+          body.sessionId,
+          head.contentLength,
+          "size_mismatch",
+          `Upload integrity check failed: expected ${body.sizeBytes} bytes but storage reports ${head.contentLength}.`,
+        );
+        await cleanupRejectedUpload(body.sessionId, body.objectKey, "size-mismatch").catch((e: unknown) =>
+          req.log.warn({ err: e, objectKey: body.objectKey }, "[s3-finalize] size-mismatch cleanup failed (non-fatal)"),
+        );
+        throw Object.assign(
+          new Error(
+            `Upload integrity check failed: expected ${body.sizeBytes} bytes but storage reports ${head.contentLength}. ` +
+              "The file may have been truncated in transit. Please retry the upload.",
+          ),
+          { statusCode: 422 },
         );
       }
 
@@ -722,6 +762,12 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
         req.log.error(
           { objectKey: body.objectKey, sizeBytes: body.sizeBytes },
           "[s3-finalize] container validation failed (moov atom missing/unreadable) — rejecting before queue insertion",
+        );
+        uploadTelemetry.serverFail(
+          body.sessionId,
+          body.sizeBytes,
+          "corrupt_container",
+          "Upload rejected: moov atom missing or unreadable",
         );
         // The object is already in storage; remove the orphan blob + session
         // before bailing out so a rejected upload leaves no residue.
@@ -738,6 +784,9 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
 
       const localVideoUrl = storage().publicUrl(body.objectKey);
       const videoId = randomUUID();
+      // Guard: if the DB insert fails after the object is already in storage,
+      // the blob would be orphaned forever. Catch the error, clean up, telemetry,
+      // then re-throw a 500 so the client knows to retry.
       const inserted = await db
         .insert(videos)
         .values({
@@ -759,7 +808,24 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
           objectPath: body.objectKey,
           s3MirroredAt: new Date(),
         })
-        .returning();
+        .returning()
+        .catch(async (dbErr: unknown) => {
+          req.log.error(
+            { err: dbErr, objectKey: body.objectKey },
+            "[s3-finalize] videos insert failed after storage write — cleaning up orphaned object",
+          );
+          uploadTelemetry.serverFail(
+            body.sessionId,
+            body.sizeBytes,
+            "db_insert_failed",
+            dbErr instanceof Error ? dbErr.message : "DB videos insert failed after storage write",
+          );
+          await cleanupRejectedUpload(body.sessionId, body.objectKey, "db-insert-failed");
+          throw Object.assign(
+            new Error("Failed to create video record — the upload is safe to retry."),
+            { statusCode: 500 },
+          );
+        });
       const row = inserted[0];
       if (!row) throw new Error("videos insert returned no rows");
 
