@@ -1157,6 +1157,11 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      // The server fires videos-library-updated when the video row is cleared.
+      // The broadcast-v2 page has no SSE handler for that event so we must
+      // eagerly invalidate admin-videos here so any embedded video status
+      // badges reflect the cleared transcodingStatus immediately.
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
     } catch (err) {
       toast.error(err instanceof HttpError ? err.message : "Failed to reset video for re-upload — please try again.");
     }
@@ -1287,6 +1292,9 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      // Newly enqueued items kick off HLS jobs — refresh the transcoding panel
+      // so operators see the queued jobs without waiting for the next SSE push.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
       if (result.enqueued > 0) {
         toast.success(
           `Synced ${result.enqueued} video${result.enqueued !== 1 ? "s" : ""} into the broadcast queue (scanned ${result.scanned}).`,
@@ -1521,6 +1529,17 @@ function BroadcastV2PageInner() {
   useSSEEvent("broadcast-schedule-updated", () => {
     void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+  });
+
+  // Library mutation events (reset-for-reupload, YouTube sync, import, etc.)
+  // fire videos-library-updated. The broadcast-v2 console embeds video status
+  // badges and the transcoding panel — both must refresh so operators see the
+  // updated transcodingStatus/hlsMasterUrl without a full page reload.
+  useSSEEvent("videos-library-updated", () => {
+    void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
   });
 
   // Real-time stall counter — incremented the instant a stall report fires a
