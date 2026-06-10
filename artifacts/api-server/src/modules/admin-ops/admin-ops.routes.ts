@@ -1853,6 +1853,10 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         // for the next SSE heartbeat or polling interval.
         adminEventBus.push("transcoding-update", { type: "bulk-retry", retried });
         adminEventBus.push("videos-library-updated", { reason: "bulk-retry-failed" });
+        // Re-queued jobs may immediately become playable — signal the broadcast
+        // engine to reload so it picks them up without waiting for the next
+        // scheduled validator cycle (up to 10 minutes away).
+        adminEventBus.push("broadcast-queue-updated", { reason: "bulk-retry-failed" });
       }
       return { ok: true as const, retried };
     },
@@ -2010,6 +2014,11 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       // Notify the admin UI that the job list changed so it refreshes immediately.
       if (cleared > 0) {
         adminEventBus.push("transcoding-update", { type: "bulk-cleared", status, cleared });
+        // Cleared jobs change the visible video library state (status badges reset)
+        // and may free up queue slots — notify both channels so the Video Library
+        // and broadcast engine panels refresh immediately without waiting for polling.
+        adminEventBus.push("videos-library-updated", { reason: "bulk-cleared", status });
+        adminEventBus.push("broadcast-queue-updated", { reason: "bulk-cleared", status });
       }
       return { cleared };
     },

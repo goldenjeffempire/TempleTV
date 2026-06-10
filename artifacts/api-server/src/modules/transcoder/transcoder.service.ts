@@ -1844,7 +1844,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
             const pct = durationSecs && durationSecs > 0
               ? Math.min(90, Math.max(0, Math.round((sec / durationSecs) * 90)))
               : Math.min(85, Math.max(1, Math.round((sec / 3_600) * 85)));
-            void req.onProgress(pct);
+            void Promise.resolve(req.onProgress(pct)).catch(() => { /* non-fatal — progress update failure must not crash encoding */ });
           }
         }
       });
@@ -2008,7 +2008,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
                   const pct = durationSecs && durationSecs > 0
                     ? Math.min(90, Math.max(0, Math.round((sec / durationSecs) * 90)))
                     : Math.min(85, Math.max(1, Math.round((sec / 3_600) * 85)));
-                  void req.onProgress(pct);
+                  void Promise.resolve(req.onProgress(pct)).catch(() => { /* non-fatal — progress update failure must not crash encoding */ });
                 }
               }
             });

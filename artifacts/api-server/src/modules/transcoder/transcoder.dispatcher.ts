@@ -1178,35 +1178,43 @@ class TranscoderDispatcher {
           : Math.min(60_000 * 2 ** attempts, 30 * 60_000);
         const nextRetry = new Date(Date.now() + backoffMs);
 
-        await db.update(jobs)
-          .set({
-            status: exceeded ? "failed" : "queued",
-            attempts,
-            progress: 0,
-            errorMessage: message,
-            nextRetryAt: exceeded ? null : nextRetry,
-            completedAt: exceeded ? new Date() : null,
-            startedAt: null,
-          })
-          .where(eq(jobs.id, job.id));
-
         // Truncate error message to 2000 chars to avoid DB bloat from FFmpeg
         // stderr dumps. The full error is always in application logs.
         const truncatedMessage = message.slice(0, 2000);
-        await db.update(videos)
-          .set({
-            transcodingStatus: exceeded ? "failed" : "queued",
-            // Write failure reason and machine-readable code to managed_videos so:
-            //   (a) admin UI can show WHY a video failed without joining transcoding_jobs.
-            //   (b) auto-enqueue can exclude CORRUPT_SOURCE videos without regex-matching.
-            //   (c) retryAllFailed() can skip permanently-unrecoverable jobs.
-            // Only set on terminal failure — cleared on re-queue via enqueueTranscode.
-            ...(exceeded ? {
-              transcodingErrorMessage: truncatedMessage,
-              transcodingErrorCode: isCorruptSource ? "CORRUPT_SOURCE" : isSourceMissing ? "SOURCE_MISSING" : isDiskFull ? "DISK_FULL" : null,
-            } : {}),
-          })
-          .where(eq(videos.id, job.videoId));
+
+        // Both tables must update atomically. A process crash between the two
+        // writes would leave the job as "failed" while the video stays in
+        // "encoding" state (or vice versa), causing the UI to show
+        // contradictory status badges and blocking the auto-enqueue from
+        // picking up the video on the next cycle.
+        await db.transaction(async (tx) => {
+          await tx.update(jobs)
+            .set({
+              status: exceeded ? "failed" : "queued",
+              attempts,
+              progress: 0,
+              errorMessage: message,
+              nextRetryAt: exceeded ? null : nextRetry,
+              completedAt: exceeded ? new Date() : null,
+              startedAt: null,
+            })
+            .where(eq(jobs.id, job.id));
+
+          await tx.update(videos)
+            .set({
+              transcodingStatus: exceeded ? "failed" : "queued",
+              // Write failure reason and machine-readable code to managed_videos so:
+              //   (a) admin UI can show WHY a video failed without joining transcoding_jobs.
+              //   (b) auto-enqueue can exclude CORRUPT_SOURCE videos without regex-matching.
+              //   (c) retryAllFailed() can skip permanently-unrecoverable jobs.
+              // Only set on terminal failure — cleared on re-queue via enqueueTranscode.
+              ...(exceeded ? {
+                transcodingErrorMessage: truncatedMessage,
+                transcodingErrorCode: isCorruptSource ? "CORRUPT_SOURCE" : isSourceMissing ? "SOURCE_MISSING" : isDiskFull ? "DISK_FULL" : null,
+              } : {}),
+            })
+            .where(eq(videos.id, job.videoId));
+        });
 
         adminEventBus.push("transcoding-update", {
           videoId: job.videoId,
