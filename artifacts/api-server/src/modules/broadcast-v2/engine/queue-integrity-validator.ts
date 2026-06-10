@@ -28,6 +28,7 @@
  */
 import { spawn } from "node:child_process";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { sendBroadcastWebhook } from "../webhook/webhook.service.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
@@ -434,6 +435,11 @@ class QueueIntegrityValidatorImpl {
             reason: "integrity-fix-duplicate-active-video",
             count: duplicateVideoItemIds.length,
           });
+          sendBroadcastWebhook("item_deactivated", "main", {
+            reason: "duplicate_active_video",
+            count: duplicateVideoItemIds.length,
+            itemIds: duplicateVideoItemIds,
+          });
         } catch (fixErr) {
           logger.warn(
             { err: fixErr, count: duplicateVideoItemIds.length },
@@ -538,6 +544,11 @@ class QueueIntegrityValidatorImpl {
           adminEventBus.push("broadcast-queue-updated", {
             reason: "integrity-fix-missing-video-join",
             count: missingJoinIds.length,
+          });
+          sendBroadcastWebhook("item_deactivated", "main", {
+            reason: "missing_video_join",
+            count: missingJoinIds.length,
+            itemIds: missingJoinIds,
           });
         } catch (fixErr) {
           logger.warn(
@@ -671,6 +682,11 @@ class QueueIntegrityValidatorImpl {
             reason: "integrity-fix-corrupt-upload",
             count: corruptUploadItemIds.length,
           });
+          sendBroadcastWebhook("item_deactivated", "main", {
+            reason: "corrupt_upload",
+            count: corruptUploadItemIds.length,
+            itemIds: corruptUploadItemIds,
+          });
         } catch (fixErr) {
           logger.warn(
             { err: fixErr, count: corruptUploadItemIds.length },
@@ -793,6 +809,11 @@ class QueueIntegrityValidatorImpl {
             "(video row exists but has no playable URLs; transcodingStatus is 'failed' or null) — " +
             "removed from broadcast rotation; re-transcode or re-upload the source file to restore",
           );
+          sendBroadcastWebhook("item_deactivated", "main", {
+            reason: "orphaned_video_ref",
+            count: orphanedFailedIds.length,
+            itemIds: orphanedFailedIds,
+          });
           adminEventBus.push("broadcast-queue-updated", {
             reason: "integrity-fix-orphaned-video-ref",
             count: orphanedFailedIds.length,

@@ -10,6 +10,7 @@ import { faststartRecoveryWorker } from "./faststart-recovery.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { playbackAnalytics } from "./playback-analytics.js";
 import { scanLibraryAndEnqueue } from "../../broadcast/auto-enqueue.service.js";
+import { sendBroadcastWebhook } from "../webhook/webhook.service.js";
 import type {
   V2EventType,
   V2Item,
@@ -1605,6 +1606,14 @@ class BroadcastOrchestrator extends EventEmitter {
           "— re-enabling suspended items, clearing bad-URL cache, triggering faststart recovery",
         );
 
+        // Notify external monitoring: dead-air with recoverable items in DB.
+        sendBroadcastWebhook("dead_air", this.channelId, {
+          reason: "items_blocked",
+          dbActiveCount: dbCount,
+          orchestratorItemCount: this.items.length,
+          uptimeMs: this.started ? Date.now() - (this.startedAtWallMs ?? Date.now()) : 0,
+        });
+
         const reEnabled = await reEnableAllSuspended().catch((err: unknown) => {
           logger.warn({ err }, "[broadcast-v2] dead-air: reEnableAllSuspended failed (non-fatal)");
           return 0;
@@ -1620,6 +1629,13 @@ class BroadcastOrchestrator extends EventEmitter {
           { channel: this.channelId, dbActiveCount: dbCount, reEnabled },
           "[broadcast-v2] dead-air escalation: recovery dispatched — scheduling reload",
         );
+
+        // Notify external monitoring: recovery attempt dispatched.
+        sendBroadcastWebhook("recovery", this.channelId, {
+          reEnabled,
+          badUrlsCleared: true,
+          dbActiveCount: dbCount,
+        });
 
         this.scheduleSelfHealReload("dead-air-escalation");
       } catch (err: unknown) {

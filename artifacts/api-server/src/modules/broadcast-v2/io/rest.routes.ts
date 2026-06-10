@@ -37,6 +37,11 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
 import { env } from "../../../config/env.js";
+import {
+  getWebhookStatus,
+  isWebhookConfigured,
+  sendBroadcastWebhookSync,
+} from "../webhook/webhook.service.js";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
 const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
@@ -1586,6 +1591,78 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     });
   }, 15_000);
   _bootHlsScanTimer.unref?.();
+
+  // ── Webhook status & test ──────────────────────────────────────────────────
+
+  const _webhookDeliverySchema = z.object({
+    id: z.string(),
+    event: z.string(),
+    timestamp: z.number(),
+    status: z.enum(["success", "failed", "pending"]),
+    statusCode: z.number().optional(),
+    durationMs: z.number().optional(),
+    error: z.string().optional(),
+  });
+
+  /**
+   * GET /api/broadcast-v2/webhook/status
+   *
+   * Returns webhook configuration state and the last ≤20 delivery attempts.
+   * The webhook URL is masked (scheme + host only) for safe display in the UI.
+   */
+  app.get("/webhook/status", {
+    ...adminGuard,
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    schema: {
+      response: {
+        200: z.object({
+          configured: z.boolean(),
+          urlMasked: z.string().optional(),
+          recentDeliveries: z.array(_webhookDeliverySchema),
+        }),
+        429: z.object({ error: z.string() }),
+      },
+    },
+  }, async (_req, reply) => {
+    return reply.send(getWebhookStatus());
+  });
+
+  /**
+   * POST /api/broadcast-v2/webhook/test
+   *
+   * Fires a test webhook event to the configured URL and returns the delivery
+   * result synchronously (waits for all retry attempts to complete). Useful
+   * for verifying connectivity and HMAC signing before relying on the webhook
+   * in production monitoring.
+   *
+   * Returns `{ status: "not_configured" }` when BROADCAST_WEBHOOK_URL is unset.
+   */
+  app.post("/webhook/test", {
+    ...adminGuard,
+    config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+    schema: {
+      body: z.object({}),
+      response: {
+        200: z.object({
+          deliveryId: z.string(),
+          status: z.enum(["success", "failed", "not_configured"]),
+          statusCode: z.number().optional(),
+          durationMs: z.number().optional(),
+          error: z.string().optional(),
+        }),
+        429: z.object({ error: z.string() }),
+      },
+    },
+  }, async (_req, reply) => {
+    if (!isWebhookConfigured()) {
+      return reply.send({ deliveryId: "", status: "not_configured" as const });
+    }
+    const result = await sendBroadcastWebhookSync("test", "main", {
+      message: "This is a test webhook from Temple TV Admin — your endpoint is correctly configured.",
+      triggeredAt: new Date().toISOString(),
+    });
+    return reply.send(result);
+  });
 
 }
 

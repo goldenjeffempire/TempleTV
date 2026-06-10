@@ -226,6 +226,31 @@ const Env = z.object({
   // self-heal mechanisms more time to recover without triggering the fallback.
   BROADCAST_DEADAIR_FALLBACK_AFTER_MS: z.coerce.number().int().positive().default(300_000),
 
+  // Broadcast health webhook.
+  //
+  // When BROADCAST_WEBHOOK_URL is set, the broadcast engine POSTs a signed JSON
+  // payload to that URL on key health events:
+  //
+  //   dead_air        — dead-air escalation fired (engine sees 0 items airing)
+  //   item_deactivated — queue-integrity-validator auto-deactivated one or more items
+  //   recovery        — dead-air escalation dispatched a successful recovery reload
+  //   test            — operator-triggered test from POST /api/broadcast-v2/webhook/test
+  //
+  // Useful for Slack/PagerDuty integrations, external monitoring, or any webhook
+  // receiver the operator controls. Leave unset to disable entirely.
+  BROADCAST_WEBHOOK_URL: z.string().url().optional(),
+  // HMAC-SHA256 secret for signing webhook payloads.  When set, each request
+  // includes an `X-Temple-TV-Signature: sha256=<hex>` header computed from the
+  // raw JSON body.  Verify on your receiver:
+  //   expectedSig = "sha256=" + HMAC_SHA256(secret, rawBody)
+  //   timingSafeEqual(expectedSig, request.headers["x-temple-tv-signature"])
+  BROADCAST_WEBHOOK_SECRET: z.string().min(16).optional(),
+  // Per-attempt timeout for webhook delivery (ms).  Default 5 000.
+  BROADCAST_WEBHOOK_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+  // Maximum delivery attempts per event with exponential backoff (1 s / 2 s / 4 s…).
+  // Default 3.  Set to 1 to disable retries.
+  BROADCAST_WEBHOOK_RETRY_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+
   // Auto-retry for recoverable failed transcoding jobs.
   //
   // When enabled (default true), the dispatcher periodically re-arms failed

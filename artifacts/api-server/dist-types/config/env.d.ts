@@ -48,6 +48,10 @@ declare const Env: z.ZodObject<{
     BROADCAST_QUEUE_MAX_ITEMS: z.ZodDefault<z.ZodNumber>;
     BROADCAST_DEADAIR_FALLBACK_URL: z.ZodOptional<z.ZodString>;
     BROADCAST_DEADAIR_FALLBACK_AFTER_MS: z.ZodDefault<z.ZodNumber>;
+    BROADCAST_WEBHOOK_URL: z.ZodOptional<z.ZodString>;
+    BROADCAST_WEBHOOK_SECRET: z.ZodOptional<z.ZodString>;
+    BROADCAST_WEBHOOK_TIMEOUT_MS: z.ZodDefault<z.ZodNumber>;
+    BROADCAST_WEBHOOK_RETRY_ATTEMPTS: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_AUTO_RETRY_FAILED: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     TRANSCODER_AUTO_RETRY_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_SCRATCH_DIR: z.ZodOptional<z.ZodString>;
@@ -135,6 +139,8 @@ declare const Env: z.ZodObject<{
     BROADCAST_AUTO_ENQUEUE_DISABLE: boolean;
     BROADCAST_QUEUE_MAX_ITEMS: number;
     BROADCAST_DEADAIR_FALLBACK_AFTER_MS: number;
+    BROADCAST_WEBHOOK_TIMEOUT_MS: number;
+    BROADCAST_WEBHOOK_RETRY_ATTEMPTS: number;
     TRANSCODER_AUTO_RETRY_FAILED: boolean;
     TRANSCODER_AUTO_RETRY_INTERVAL_MS: number;
     TRANSCODER_PRESET: string;
@@ -164,8 +170,6 @@ declare const Env: z.ZodObject<{
     CLEANUP_DISABLE: boolean;
     CLEANUP_MAX_PER_SWEEP: number;
     SEED_ADMIN_FORCE: boolean;
-    YOUTUBE_API_KEY?: string | undefined;
-    YOUTUBE_CHANNEL_ID?: string | undefined;
     REPLIT_DEV_DOMAIN?: string | undefined;
     REPLIT_EXPO_DEV_DOMAIN?: string | undefined;
     WEBHOOK_BASE_URL?: string | undefined;
@@ -176,6 +180,8 @@ declare const Env: z.ZodObject<{
     AUTH_BF_BYPASS_TOKEN?: string | undefined;
     SENTRY_DSN?: string | undefined;
     BROADCAST_DEADAIR_FALLBACK_URL?: string | undefined;
+    BROADCAST_WEBHOOK_URL?: string | undefined;
+    BROADCAST_WEBHOOK_SECRET?: string | undefined;
     TRANSCODER_SCRATCH_DIR?: string | undefined;
     SMTP_HOST?: string | undefined;
     SMTP_USER?: string | undefined;
@@ -187,6 +193,8 @@ declare const Env: z.ZodObject<{
     HLS_TOKEN_SECRET?: string | undefined;
     YOUTUBE_WEBHOOK_SECRET?: string | undefined;
     APP_VERSION?: string | undefined;
+    YOUTUBE_API_KEY?: string | undefined;
+    YOUTUBE_CHANNEL_ID?: string | undefined;
     PROD_SYNC_API_URL?: string | undefined;
     API_ORIGIN?: string | undefined;
     RENDER_GIT_COMMIT?: string | undefined;
@@ -201,8 +209,6 @@ declare const Env: z.ZodObject<{
     DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
-    YOUTUBE_API_KEY?: string | undefined;
-    YOUTUBE_CHANNEL_ID?: string | undefined;
     NODE_ENV?: "development" | "test" | "production" | undefined;
     PORT?: number | undefined;
     REPLIT_DEV_DOMAIN?: string | undefined;
@@ -244,6 +250,10 @@ declare const Env: z.ZodObject<{
     BROADCAST_QUEUE_MAX_ITEMS?: number | undefined;
     BROADCAST_DEADAIR_FALLBACK_URL?: string | undefined;
     BROADCAST_DEADAIR_FALLBACK_AFTER_MS?: number | undefined;
+    BROADCAST_WEBHOOK_URL?: string | undefined;
+    BROADCAST_WEBHOOK_SECRET?: string | undefined;
+    BROADCAST_WEBHOOK_TIMEOUT_MS?: number | undefined;
+    BROADCAST_WEBHOOK_RETRY_ATTEMPTS?: number | undefined;
     TRANSCODER_AUTO_RETRY_FAILED?: string | boolean | undefined;
     TRANSCODER_AUTO_RETRY_INTERVAL_MS?: number | undefined;
     TRANSCODER_SCRATCH_DIR?: string | undefined;
@@ -272,6 +282,8 @@ declare const Env: z.ZodObject<{
     SHUTDOWN_PRECLOSE_DELAY_MS?: number | undefined;
     SHUTDOWN_DRAIN_MS?: number | undefined;
     APP_VERSION?: string | undefined;
+    YOUTUBE_API_KEY?: string | undefined;
+    YOUTUBE_CHANNEL_ID?: string | undefined;
     YOUTUBE_QUOTA_DAILY_LIMIT?: number | undefined;
     YOUTUBE_CONTENT_WINDOW_DAYS?: number | undefined;
     YOUTUBE_SYNC_INTERVAL_MINS?: number | undefined;

@@ -42,6 +42,8 @@ import {
   ChevronDown,
   ChevronUp,
   Keyboard,
+  Webhook,
+  Send,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
@@ -1007,6 +1009,51 @@ function BroadcastV2PageInner() {
     queryFn: () => api.get<RemediationReportData>("/broadcast-v2/remediation-report"),
     refetchInterval: 60_000,
     staleTime: 30_000,
+  });
+
+  // Broadcast health webhook status.
+  type WebhookDelivery = {
+    id: string;
+    event: string;
+    timestamp: number;
+    status: "success" | "failed" | "pending";
+    statusCode?: number;
+    durationMs?: number;
+    error?: string;
+  };
+  type WebhookStatusData = {
+    configured: boolean;
+    urlMasked?: string;
+    recentDeliveries: WebhookDelivery[];
+  };
+  type WebhookTestResult = {
+    deliveryId: string;
+    status: "success" | "failed" | "not_configured";
+    statusCode?: number;
+    durationMs?: number;
+    error?: string;
+  };
+  const { data: webhookStatus, refetch: refetchWebhookStatus } = useQuery({
+    queryKey: ["broadcast-v2-webhook-status"],
+    queryFn: () => api.get<WebhookStatusData>("/broadcast-v2/webhook/status"),
+    refetchInterval: 120_000,
+    staleTime: 60_000,
+  });
+  const testWebhookMutation = useMutation({
+    mutationFn: () => api.post<WebhookTestResult>("/broadcast-v2/webhook/test", {}),
+    onSuccess: (data) => {
+      if (data.status === "not_configured") {
+        toast.error("No webhook URL configured. Set BROADCAST_WEBHOOK_URL in your environment.");
+      } else if (data.status === "success") {
+        toast.success(`Test webhook delivered (${data.durationMs ?? "?"}ms, HTTP ${data.statusCode ?? "?"}).`);
+      } else {
+        toast.error(`Test webhook failed: ${data.error ?? "Unknown error"}`);
+      }
+      void refetchWebhookStatus();
+    },
+    onError: (err) => {
+      toast.error(err instanceof HttpError ? err.message : "Failed to send test webhook.");
+    },
   });
 
   // Deactivate (remove) a queue item without navigating away.
@@ -3308,6 +3355,91 @@ function BroadcastV2PageInner() {
             <p className="text-right text-[10px] text-muted-foreground">
               Last run {formatAgo(remediationReport.generatedAtMs)} · {remediationReport.totalQueueItems} total queue items
             </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Broadcast Health Webhook ─────────────────────────────────────────── */}
+      {/* Always shown; displays configuration status and recent delivery log.  */}
+      {/* Set BROADCAST_WEBHOOK_URL in environment to enable outbound events.   */}
+      {webhookStatus && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Webhook className="h-4 w-4 text-muted-foreground" />
+              Health Webhook
+              <Badge
+                variant={webhookStatus.configured ? "outline" : "secondary"}
+                className="ml-1 text-[10px]"
+              >
+                {webhookStatus.configured ? "Configured" : "Not configured"}
+              </Badge>
+            </CardTitle>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 gap-1 px-2 text-xs"
+              disabled={testWebhookMutation.isPending}
+              onClick={() => testWebhookMutation.mutate()}
+              title="Send a test event to the configured webhook URL"
+            >
+              {testWebhookMutation.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Send className="h-3 w-3" />
+              )}
+              Send Test
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-3 pt-0">
+            {!webhookStatus.configured ? (
+              <p className="text-[11px] text-muted-foreground">
+                Set <code className="font-mono bg-muted px-1 rounded text-[10px]">BROADCAST_WEBHOOK_URL</code> in your environment
+                to receive HTTP POST alerts when dead-air is detected, items are auto-deactivated, or the engine recovers.
+                Optionally set <code className="font-mono bg-muted px-1 rounded text-[10px]">BROADCAST_WEBHOOK_SECRET</code> for
+                HMAC-SHA256 request signing.
+              </p>
+            ) : (
+              <>
+                <div className="flex items-center gap-2 text-[11px]">
+                  <span className="text-muted-foreground">Endpoint:</span>
+                  <code className="font-mono text-[10px] bg-muted px-1.5 py-0.5 rounded">
+                    {webhookStatus.urlMasked}
+                  </code>
+                </div>
+                {webhookStatus.recentDeliveries.length === 0 ? (
+                  <p className="text-[11px] text-muted-foreground">No deliveries yet.</p>
+                ) : (
+                  <div className="rounded-md border divide-y">
+                    {webhookStatus.recentDeliveries.slice(0, 8).map((d) => (
+                      <div key={d.id} className="flex items-center gap-2 px-3 py-1.5 text-[10px]">
+                        {d.status === "success" ? (
+                          <CircleCheck className="h-3 w-3 shrink-0 text-emerald-500" />
+                        ) : d.status === "failed" ? (
+                          <CircleX className="h-3 w-3 shrink-0 text-destructive" />
+                        ) : (
+                          <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
+                        )}
+                        <Badge
+                          variant="outline"
+                          className="shrink-0 h-3.5 px-1 text-[9px] font-mono capitalize"
+                        >
+                          {d.event.replace(/_/g, " ")}
+                        </Badge>
+                        <span className="flex-1 min-w-0 text-muted-foreground truncate">
+                          {d.statusCode ? `HTTP ${d.statusCode}` : ""}
+                          {d.durationMs ? ` · ${d.durationMs}ms` : ""}
+                          {d.error ? ` · ${d.error}` : ""}
+                        </span>
+                        <span className="shrink-0 text-muted-foreground opacity-60">
+                          {new Date(d.timestamp).toLocaleTimeString()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </CardContent>
         </Card>
       )}
