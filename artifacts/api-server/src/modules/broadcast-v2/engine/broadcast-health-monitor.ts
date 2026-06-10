@@ -87,8 +87,23 @@ export async function broadcastHealthMonitorScan(): Promise<void> {
     ? snap.current.durationSecs * 1000
     : 0;
   const PLAYBACK_GRACE_MS = env.BROADCAST_HEALTH_MONITOR_STALE_MS;
+
+  // Overrun detection: if the current item has been playing for MORE than
+  // its expected duration PLUS 3× the grace period, the item has silently
+  // overrun its slot — naturalItemEnd was never reported by any client
+  // (e.g. no live clients, or all clients stalled before the natural end).
+  // In this case we bypass the withinPlaybackWindow guard so the stale-
+  // reload / full-recovery tiers can fire even while the elapsed time is
+  // technically "within the window".  Without this, a 30-minute placeholder-
+  // duration item whose video is only 20 minutes would suppress the health
+  // monitor for up to 30 min + GRACE even though naturalItemEnd was missed.
+  const itemMassivelyOverdue =
+    snap.current != null &&
+    currentItemElapsedMs > currentItemDurationMs + 3 * PLAYBACK_GRACE_MS;
+
   const withinPlaybackWindow =
     snap.current != null &&
+    !itemMassivelyOverdue &&
     currentItemElapsedMs < currentItemDurationMs + PLAYBACK_GRACE_MS;
 
   if (withinPlaybackWindow) return; // Item still playing — not stuck.

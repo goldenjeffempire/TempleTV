@@ -23,6 +23,15 @@ export interface WorkerConfig {
   backoffMs?: readonly number[];
   maxConsecutiveFailures?: number;
   initialDelayMs?: number;
+  /**
+   * Called once, synchronously, the moment the circuit breaker opens.
+   * Use this to fire SSE ops-alerts or out-of-band email from the caller
+   * without creating an import cycle between worker-supervisor and the
+   * notification layer.
+   *
+   * Must never throw — WorkerSupervisor wraps the call in try/catch.
+   */
+  onCircuitOpen?: (name: string, consecutiveFailures: number) => void;
 }
 
 export interface WorkerHealth {
@@ -164,6 +173,17 @@ class SupervisedWorker {
           { worker: this.cfg.name, consecutiveFailures: this.consecutiveFailures, maxAllowed: max, autoResetMs: CIRCUIT_AUTO_RESET_MS },
           "[worker-supervisor] circuit breaker opened — worker suspended; auto-reset scheduled",
         );
+        // Notify the caller so it can push an out-of-band alert (SSE ops-alert,
+        // email) without creating an import cycle between this module and the
+        // notification layer. Wrapped in try/catch so a throwing callback never
+        // crashes the supervisor itself.
+        if (this.cfg.onCircuitOpen) {
+          try {
+            this.cfg.onCircuitOpen(this.cfg.name, this.consecutiveFailures);
+          } catch (cbErr) {
+            logger.warn({ worker: this.cfg.name, err: cbErr }, "[worker-supervisor] onCircuitOpen callback threw (non-fatal)");
+          }
+        }
         // Auto-reset after cooldown so transient errors (DB blip, network
         // hiccup, cold-start race) don't permanently silence background
         // workers. The timer is cancelled if stop() or resetCircuit() is

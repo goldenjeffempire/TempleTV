@@ -380,6 +380,15 @@ class BroadcastOrchestrator extends EventEmitter {
   private currentItemProbeAmbiguousFailures = 0;
   /** Item ID under observation — resets failure counters on item advance. */
   private currentItemProbeId: string | null = null;
+  /**
+   * Guards the fire-and-forget duration write-back in naturalItemEnd().
+   * Prevents two near-simultaneous client reports for the same item from
+   * issuing redundant concurrent DB writes (both would write the same value,
+   * but the double-write wastes a DB round-trip and produces noisy logs).
+   * Entries are removed in .finally() so subsequent item cycles are never
+   * permanently blocked.
+   */
+  private readonly durationWriteInFlight = new Set<string>();
 
   constructor() {
     super();
@@ -2178,26 +2187,38 @@ class BroadcastOrchestrator extends EventEmitter {
       (snap.current.endsAtMs - remainingMs - snap.current.startsAtMs) / 1000,
     );
     if (actualDurationSecs > 10 && actualDurationSecs < 86_400) {
-      void queueRepo
-        .updateDurationSecs(itemId, actualDurationSecs)
-        .then(() => {
-          // Mirror the DB write-back into the in-memory items array so that
-          // the NEXT cycle iteration uses the real duration without waiting
-          // for the next self-heal reload (up to 60 s later). Without this,
-          // the stale 1800-second placeholder stays in this.items and the
-          // cycle timing is wrong for every subsequent loop.
-          const idx = this.items.findIndex((i) => i.id === itemId);
-          if (idx !== -1 && this.items[idx]) {
-            this.items[idx] = { ...this.items[idx]!, durationSecs: actualDurationSecs };
-            this.cycleDurationMs = this.items.reduce((s, r) => s + r.durationSecs * 1000, 0);
-          }
-        })
-        .catch((err) =>
-          logger.warn(
-            { err, itemId, actualDurationSecs },
-            "[broadcast-v2] naturalItemEnd: duration write-back failed (non-fatal)",
-          ),
-        );
+      // Guard against two near-simultaneous naturalItemEnd calls for the same
+      // item (multiple clients reporting the natural end in the same event-loop
+      // tick) issuing redundant concurrent DB writes.  Both writes would carry
+      // the same value — harmless but wasteful.  The Set is cleared in finally()
+      // so a future cycle iteration for the same item ID is never permanently
+      // blocked.  See durationWriteInFlight field declaration for full rationale.
+      if (!this.durationWriteInFlight.has(itemId)) {
+        this.durationWriteInFlight.add(itemId);
+        void queueRepo
+          .updateDurationSecs(itemId, actualDurationSecs)
+          .then(() => {
+            // Mirror the DB write-back into the in-memory items array so that
+            // the NEXT cycle iteration uses the real duration without waiting
+            // for the next self-heal reload (up to 60 s later). Without this,
+            // the stale 1800-second placeholder stays in this.items and the
+            // cycle timing is wrong for every subsequent loop.
+            const idx = this.items.findIndex((i) => i.id === itemId);
+            if (idx !== -1 && this.items[idx]) {
+              this.items[idx] = { ...this.items[idx]!, durationSecs: actualDurationSecs };
+              this.cycleDurationMs = this.items.reduce((s, r) => s + r.durationSecs * 1000, 0);
+            }
+          })
+          .catch((err) =>
+            logger.warn(
+              { err, itemId, actualDurationSecs },
+              "[broadcast-v2] naturalItemEnd: duration write-back failed (non-fatal)",
+            ),
+          )
+          .finally(() => {
+            this.durationWriteInFlight.delete(itemId);
+          });
+      }
     }
 
     this.cycleStartedAtMs -= remainingMs;

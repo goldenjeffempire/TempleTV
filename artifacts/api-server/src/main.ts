@@ -401,10 +401,34 @@ async function main() {
     }
   } else {
     const fallback = process.env["RENDER_EXTERNAL_URL"] ?? process.env["REPLIT_DEV_DOMAIN"];
-    logger.info(
-      { fallbackOrigin: fallback ?? "(none — localhost fallback active)" },
-      "API_ORIGIN not set — using fallback origin for upload URL normalisation and media proxy",
-    );
+    if (isProdNodeEnv && !fallback) {
+      // Production with no API_ORIGIN and no auto-detected fallback.
+      // Relative localVideoUrl paths (/api/v1/uploads/…) stored in the DB will
+      // NOT be absolutized by normalizeQueueUrl() → resolveSource() returns
+      // null → every locally-uploaded item causes dead air.  This is the #1
+      // cause of broadcast outages after a clean deploy.
+      logger.error(
+        {},
+        "MISCONFIGURED: API_ORIGIN is unset in production and no RENDER_EXTERNAL_URL / " +
+        "REPLIT_DEV_DOMAIN auto-detect fallback is available. " +
+        "Relative upload paths (localVideoUrl) will not be absolutized — " +
+        "all locally-uploaded broadcast items will fail with resolveSource()=null and cause dead air. " +
+        "Set API_ORIGIN=https://your-api-domain.com in the environment.",
+      );
+    } else if (isProdNodeEnv && fallback) {
+      // Production with an auto-detected fallback: functional but fragile —
+      // if RENDER_EXTERNAL_URL changes on a redeploy, URLs silently break.
+      logger.warn(
+        { fallbackOrigin: fallback },
+        "API_ORIGIN not set in production — falling back to RENDER_EXTERNAL_URL/REPLIT_DEV_DOMAIN for " +
+        "upload URL absolutizing and media proxy. Set API_ORIGIN explicitly for reliability.",
+      );
+    } else {
+      logger.info(
+        { fallbackOrigin: fallback ?? "(none — localhost fallback active)" },
+        "API_ORIGIN not set — using fallback origin for upload URL normalisation and media proxy",
+      );
+    }
   }
 
   // Pre-warm the pg pool so the first inbound request doesn't pay the

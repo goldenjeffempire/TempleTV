@@ -444,6 +444,18 @@ async function probeHasAudio(inputPath: string): Promise<boolean> {
         "transcoder: audio stream probe timed out — defaulting to video-only HLS. " +
         "If the source has audio the output will be silent. Re-upload or retry the job to attempt the probe again.",
       );
+      // Push an ops-alert so operators notice silent-audio output before it
+      // reaches viewers.  Lazy import to avoid circular deps at module load.
+      void import("../admin-ops/admin-event-bus.js").then(({ adminEventBus }) => {
+        adminEventBus.push("ops-alert", {
+          level: "warn",
+          title: "Audio Probe Timeout",
+          message: "Transcoder audio stream probe timed out — output will be video-only (silent). Re-upload or retry the job.",
+          detail: `inputPath=${inputPath} timeoutMs=${RESOLUTION_PROBE_TIMEOUT_MS}`,
+          timestamp: new Date().toISOString(),
+          source: "transcoder",
+        });
+      }).catch(() => {});
       settle(false);
     }, RESOLUTION_PROBE_TIMEOUT_MS);
     timer.unref();

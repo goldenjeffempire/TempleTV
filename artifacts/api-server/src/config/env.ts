@@ -221,10 +221,16 @@ const Env = z.object({
   //     (stop → clear bad-URL cache → re-enable suspended items → restart)
   //     and emit an ops-alert SSE event + fire the broadcast webhook.
   //
-  // Default 5 min stale / 10 min recovery is conservative. Tighten for a
-  // stricter SLA (e.g. STALE_MS=120000 / RECOVERY_MS=300000 for 2/5-min).
-  BROADCAST_HEALTH_MONITOR_STALE_MS: z.coerce.number().int().positive().default(300_000),
-  BROADCAST_HEALTH_MONITOR_RECOVERY_MS: z.coerce.number().int().positive().default(600_000),
+  // Tighten for a stricter SLA (e.g. STALE_MS=120000 / RECOVERY_MS=300000 for 2/5-min).
+  // How long without a sequence advance (outside the normal playback window)
+  // before Tier-1 stale-reload fires.  Default 3 min (was 5 min) tightens the
+  // SLA: a naturalItemEnd miss or a stuck tick loop is now recovered in ≤3 min
+  // instead of ≤5 min.  Increase only if long-running content with very tight
+  // loop windows produces false-positive reloads.
+  BROADCAST_HEALTH_MONITOR_STALE_MS: z.coerce.number().int().positive().default(180_000),
+  // How long stuck without recovery before escalating to Tier-2 full-recovery +
+  // ops-alert SSE + admin email.  Default 7 min (was 10 min).
+  BROADCAST_HEALTH_MONITOR_RECOVERY_MS: z.coerce.number().int().positive().default(420_000),
 
   // Content Rotation Worker — automatic broadcast queue shuffle.
   //

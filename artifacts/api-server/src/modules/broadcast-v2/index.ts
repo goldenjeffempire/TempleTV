@@ -17,6 +17,7 @@ import { broadcastHealthMonitorScan, getBroadcastHealthMonitorStatus } from "./e
 import { contentRotationScan, getContentRotationStatus } from "./engine/content-rotation.js";
 import { queueHealthGuard, getQueueHealthGuardStatus } from "./engine/queue-health-guard.js";
 import { env } from "../../config/env.js";
+import { sendAdminAlert } from "../mail/mail.service.js";
 
 export { getQueueHealthGuardStatus };
 
@@ -150,6 +151,57 @@ function scheduleBootRetry(): void {
 
 let supervisedWorkersStarted = false;
 
+/**
+ * Factory for a circuit-breaker alert callback shared across all critical
+ * supervised workers.  When any worker's circuit breaker opens (i.e. the
+ * worker has failed maxConsecutiveFailures times in a row), this fires:
+ *   1. An SSE ops-alert so the admin dashboard surfaces a banner immediately.
+ *   2. An out-of-band admin email so on-call operators are notified even when
+ *      no one has the dashboard open (e.g. overnight).
+ *
+ * Non-critical workers (viewer-count-metrics-updater) do NOT use this callback
+ * because their circuit opening has no user-visible broadcast impact.
+ *
+ * The callback must never throw — WorkerSupervisor wraps it in try/catch, but
+ * being explicitly safe here makes the contract clear at the call site.
+ */
+function makeCircuitOpenCallback(workerName: string) {
+  return (name: string, consecutiveFailures: number): void => {
+    try {
+      adminEventBus.push("ops-alert", {
+        level: "critical",
+        title: "Worker Suspended",
+        message: `Background worker "${name}" has been suspended after ${consecutiveFailures} consecutive failures. Auto-reset in 10 min.`,
+        detail: `Check Diagnostics → Workers for recent error details. The circuit will auto-reset and retry after 10 minutes.`,
+        timestamp: new Date().toISOString(),
+        source: "worker-supervisor",
+        workerName: name,
+      });
+    } catch { /* non-fatal */ }
+
+    void sendAdminAlert({
+      subject: `Temple TV: background worker "${name}" suspended`,
+      severity: "critical",
+      body: [
+        `The background worker "${name}" has been suspended after ${consecutiveFailures} consecutive failures.`,
+        "",
+        "The circuit breaker will auto-reset and retry after 10 minutes.",
+        "",
+        "What this means:",
+        `  • If this is "broadcast-health-monitor" → stuck broadcasts may not self-recover.`,
+        `  • If this is "queue-integrity-validator" → corrupt/unplayable items won't be auto-deactivated.`,
+        `  • If this is "faststart-recovery" → MP4-only items may stay off-air.`,
+        `  • If this is "media-integrity-scanner" → dead CDN URLs won't be proactively detected.`,
+        "",
+        "Action: check the admin dashboard → Diagnostics → Workers for the most recent error.",
+        "If the issue persists after auto-reset, investigate the underlying cause and restart the server.",
+      ].join("\n"),
+    }).catch((err: unknown) => {
+      logger.warn({ worker: workerName, err }, "[broadcast-v2] circuit-open admin alert email failed (non-fatal)");
+    });
+  };
+}
+
 function startSupervisedWorkers(): void {
   if (supervisedWorkersStarted) return;
   supervisedWorkersStarted = true;
@@ -161,6 +213,7 @@ function startSupervisedWorkers(): void {
     intervalMs: 2 * 60_000,
     initialDelayMs: 45_000,
     backoffMs: [5_000, 15_000, 30_000, 60_000],
+    onCircuitOpen: makeCircuitOpenCallback("media-integrity-scanner"),
   });
 
   // Orphan cleanup: sweeps stale event-log + orphaned queue refs every 4 h
@@ -183,6 +236,7 @@ function startSupervisedWorkers(): void {
     intervalMs: 5 * 60_000,
     initialDelayMs: 30_000,
     backoffMs: [5_000, 15_000, 30_000],
+    onCircuitOpen: makeCircuitOpenCallback("queue-integrity-validator"),
   });
 
   // Faststart recovery: detects active queue items whose joined video is
@@ -198,6 +252,7 @@ function startSupervisedWorkers(): void {
     intervalMs: 60_000,
     initialDelayMs: 15_000,
     backoffMs: [5_000, 15_000, 30_000, 60_000],
+    onCircuitOpen: makeCircuitOpenCallback("faststart-recovery"),
   });
 
   // Viewer-count metrics updater: mirrors the v1 broadcastEngine viewer count
@@ -222,11 +277,12 @@ function startSupervisedWorkers(): void {
     intervalMs: 5_000,
     initialDelayMs: 5_000,
     backoffMs: [5_000, 15_000, 30_000],
+    // No onCircuitOpen — viewer-count silently stalling has no broadcast impact.
   });
 
   // Broadcast Health Monitor: external orchestrator watchdog that detects
   // sequence staleness from outside the orchestrator's own self-heal loop.
-  // Tier 1 (STALE_MS=5min): calls reload(). Tier 2 (RECOVERY_MS=10min):
+  // Tier 1 (STALE_MS=3min): calls reload(). Tier 2 (RECOVERY_MS=7min):
   // calls initiateFullRecovery() and emits ops-alert + broadcast webhook.
   workerSupervisor.spawn({
     name: "broadcast-health-monitor",
@@ -234,6 +290,7 @@ function startSupervisedWorkers(): void {
     intervalMs: 60_000,
     initialDelayMs: 90_000, // Wait past the orchestrator's own first-reload (30s)
     backoffMs: [15_000, 30_000, 60_000],
+    onCircuitOpen: makeCircuitOpenCallback("broadcast-health-monitor"),
   });
 
   // Content Rotation Worker: shuffles broadcast queue sort_order periodically
@@ -247,6 +304,7 @@ function startSupervisedWorkers(): void {
     intervalMs: env.BROADCAST_ROTATION_INTERVAL_MS,
     initialDelayMs: env.BROADCAST_ROTATION_INTERVAL_MS,
     backoffMs: [60_000, 5 * 60_000, 10 * 60_000],
+    onCircuitOpen: makeCircuitOpenCallback("content-rotation"),
   });
 
   // Queue Health Guard: proactively detects when the active queue count falls
@@ -262,6 +320,7 @@ function startSupervisedWorkers(): void {
       intervalMs: 5 * 60_000,
       initialDelayMs: 2 * 60_000,
       backoffMs: [30_000, 60_000, 3 * 60_000],
+      onCircuitOpen: makeCircuitOpenCallback("queue-health-guard"),
     });
   }
 
