@@ -443,6 +443,18 @@ export async function stopBroadcastV2(): Promise<void> {
       logger.warn({ err }, "[broadcast-v2] YouTube live-status service uninstall failed (non-fatal)"),
     );
 
+  // 6b. Stop the YouTube live poller itself.
+  //     uninstallYouTubeAutoOverride() un-subscribes listeners but does NOT stop
+  //     the poller's 60-second setInterval.  The timer is .unref()ed so it won't
+  //     block process exit — but it fires between SIGTERM and pool.end(), causing
+  //     "Cannot use a pool after calling end" warnings in production logs.
+  //     Explicit stop gives clean shutdown logs on every rolling deploy.
+  await import("../youtube-live/youtube-live.poller.js")
+    .then(({ ytPoller }) => ytPoller.stop())
+    .catch((err) =>
+      logger.warn({ err }, "[broadcast-v2] YouTube live poller stop failed (non-fatal)"),
+    );
+
   // 7. Close Redis fan-out subscriber and leader renewal timer.
   await broadcastFanout.close().catch((err) =>
     logger.warn({ err }, "[broadcast-v2] fanout close error (non-fatal)"),

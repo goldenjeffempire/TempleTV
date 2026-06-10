@@ -323,6 +323,19 @@ services:
       - key: SHUTDOWN_PRECLOSE_DELAY_MS
         value: "10000"
 
+      # ── Autonomous monitor tuning ──────────────────────────────────────────
+      # QUEUE_MIN_ITEMS: queue-health-guard threshold — if the active broadcast
+      # queue drops below this count the guard triggers a DB rebuild from
+      # managed_videos. Default: 5. Increase for larger libraries (e.g. 10-20).
+      - key: QUEUE_MIN_ITEMS
+        sync: false
+
+      # STORAGE_HEALTH_INTERVAL_MS: how often the storage health monitor probes
+      # object storage with a write/head/delete cycle. Default: 60000 (60 s).
+      # Raise on the free tier to reduce storage I/O (e.g. 120000 = 2 min).
+      - key: STORAGE_HEALTH_INTERVAL_MS
+        sync: false
+
       # ── HTTP server tuning ─────────────────────────────────────────────────
       # Long-lived SSE clients (broadcast bus, ops events) can sit idle for
       # 60+ s between server-pushed events. 75 s keep-alive prevents socket

@@ -525,12 +525,19 @@ async function main() {
     void (async () => {
       await new Promise<void>((resolve) => { const t = setTimeout(resolve, 30_000); t.unref?.(); });
       try {
-        const { getBroadcastHealthMonitorStatus, getContentRotationStatus, broadcastOrchestrator } =
-          await import("./modules/broadcast-v2/index.js");
+        const {
+          getBroadcastHealthMonitorStatus,
+          getContentRotationStatus,
+          getQueueHealthGuardStatus,
+          broadcastOrchestrator,
+        } = await import("./modules/broadcast-v2/index.js");
         const { getDbPoolHealthStatus } = await import("./infrastructure/db-pool-health.js");
+        const { getStorageHealthStatus } = await import("./infrastructure/storage-health-monitor.js");
         const pool = getDbPoolHealthStatus();
         const hm = getBroadcastHealthMonitorStatus();
         const rot = getContentRotationStatus();
+        const qhg = getQueueHealthGuardStatus();
+        const sth = getStorageHealthStatus();
         logger.info(
           {
             broadcast: {
@@ -552,6 +559,17 @@ async function main() {
               waiting: pool.waiting,
               max: pool.max,
               utilizationPct: pool.utilizationPct,
+            },
+            storageHealth: {
+              healthy: sth.healthy,
+              enabled: sth.enabled,
+              consecutiveFailures: sth.consecutiveFailures,
+            },
+            queueHealthGuard: {
+              threshold: qhg.threshold,
+              lastActiveCount: qhg.lastActiveCount,
+              belowThreshold: qhg.belowThreshold,
+              totalRebuilds: qhg.totalRebuilds,
             },
           },
           "[startup-verification] 30s post-boot autonomous component check",

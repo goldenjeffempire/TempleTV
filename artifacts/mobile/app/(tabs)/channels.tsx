@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -24,6 +25,122 @@ import { getApiBase } from "@/lib/apiBase";
 import { usePageSeo } from "@/hooks/usePageSeo";
 import { fetchChannels, type ApiChannel } from "@/services/api";
 import type { SermonCategory } from "@/types";
+
+// ─── Broadcast guide types ──────────────────────────────────────────────────
+
+type GuideItem = {
+  id: string;
+  title: string;
+  thumbnailUrl: string;
+  durationSecs: number;
+  isCurrent: boolean;
+  startMs: number;
+};
+
+type GuideResponse = {
+  items: GuideItem[];
+  liveOverride: { title: string } | null;
+};
+
+// ─── Broadcast schedule hook ────────────────────────────────────────────────
+
+function useBroadcastSchedule() {
+  const [items, setItems] = useState<GuideItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const mountedRef = useRef(true);
+
+  const fetchGuide = useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
+    try {
+      const base = getApiBase();
+      if (!base) return;
+      const res = await fetch(`${base}/api/broadcast/guide`, {
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok || !mountedRef.current) return;
+      const data = (await res.json()) as GuideResponse;
+      if (mountedRef.current && Array.isArray(data.items)) {
+        setItems(data.items.slice(0, 5));
+      }
+    } catch {
+      // Non-critical — silently fall back to an empty schedule
+    } finally {
+      if (!quiet && mountedRef.current) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    void fetchGuide(false);
+    // Refresh every 30 s to track queue progression
+    const interval = setInterval(() => void fetchGuide(true), 30_000);
+    return () => {
+      mountedRef.current = false;
+      clearInterval(interval);
+    };
+  }, [fetchGuide]);
+
+  return { items, loading };
+}
+
+// ─── Schedule row ────────────────────────────────────────────────────────────
+
+function formatDuration(secs: number): string {
+  if (!secs || secs <= 0) return "";
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function ScheduleCard({ item, index }: { item: GuideItem; index: number }) {
+  const colors = useColors();
+  return (
+    <View
+      style={[
+        styles.scheduleCard,
+        {
+          backgroundColor: colors.card,
+          borderColor: item.isCurrent ? colors.primary + "55" : colors.border,
+          borderWidth: item.isCurrent ? 1.5 : StyleSheet.hairlineWidth,
+        },
+      ]}
+    >
+      {item.thumbnailUrl ? (
+        <Image
+          source={{ uri: item.thumbnailUrl }}
+          style={styles.scheduleThumb}
+          resizeMode="cover"
+        />
+      ) : (
+        <View style={[styles.scheduleThumb, styles.scheduleThumbPlaceholder, { backgroundColor: colors.muted }]}>
+          <Feather name="film" size={20} color={colors.mutedForeground} />
+        </View>
+      )}
+      {item.isCurrent && (
+        <View style={[styles.scheduleNowBadge, { backgroundColor: colors.primary }]}>
+          <View style={styles.scheduleNowDot} />
+          <Text style={styles.scheduleNowText}>NOW</Text>
+        </View>
+      )}
+      {!item.isCurrent && (
+        <View style={[styles.scheduleIndexBadge, { backgroundColor: "rgba(0,0,0,0.65)" }]}>
+          <Text style={styles.scheduleIndexText}>{index}</Text>
+        </View>
+      )}
+      <View style={styles.scheduleInfo}>
+        <Text style={[styles.scheduleTitle, { color: colors.text }]} numberOfLines={2}>
+          {item.title}
+        </Text>
+        {item.durationSecs > 0 && (
+          <Text style={[styles.scheduleDuration, { color: colors.mutedForeground }]}>
+            {formatDuration(item.durationSecs)}
+          </Text>
+        )}
+      </View>
+    </View>
+  );
+}
 
 // ─── Content category config ──────────────────────────────────────────────────
 
@@ -335,6 +452,7 @@ export default function ChannelsTab() {
   const insets = useSafeAreaInsets();
   const colors = useColors();
   const { channels, loading, error, isRetrying, refetch } = useChannels();
+  const { items: scheduleItems, loading: scheduleLoading } = useBroadcastSchedule();
   const [tuningId, setTuningId] = useState<string | null>(null);
 
   const handleChannelPress = useCallback((channel: ApiChannel) => {
@@ -466,6 +584,28 @@ export default function ChannelsTab() {
         {/* ── Live Channels ─────────────────────────────────────────────── */}
         <SectionHeader live title="Live Channels" />
         {channelsSectionContent}
+
+        {/* ── Up Next / Broadcast Schedule ─────────────────────────────── */}
+        {(scheduleLoading || scheduleItems.length > 0) && (
+          <>
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+            <SectionHeader icon="list" title="Up Next" />
+            {scheduleLoading && scheduleItems.length === 0 ? (
+              <View style={styles.scheduleLoadingRow}>
+                <ActivityIndicator size="small" color={colors.primary} />
+                <Text style={[styles.scheduleLoadingText, { color: colors.mutedForeground }]}>
+                  Loading schedule…
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.scheduleList}>
+                {scheduleItems.map((item, idx) => (
+                  <ScheduleCard key={item.id} item={item} index={idx + 1} />
+                ))}
+              </View>
+            )}
+          </>
+        )}
 
         {/* ── Browse by Category — always rendered regardless of channel state */}
         <View style={[styles.divider, { backgroundColor: colors.border }]} />
@@ -606,6 +746,83 @@ const styles = StyleSheet.create({
   cardDesc: { fontSize: 12, marginTop: 2 },
   viewerRow: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 4 },
   viewerText: { fontSize: 11 },
+
+  scheduleLoadingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 12,
+  },
+  scheduleLoadingText: { fontSize: 13 },
+  scheduleList: { gap: 10 },
+  scheduleCard: {
+    borderRadius: 12,
+    overflow: "hidden",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 0,
+  },
+  scheduleThumb: {
+    width: 100,
+    height: 62,
+    flexShrink: 0,
+  },
+  scheduleThumbPlaceholder: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  scheduleNowBadge: {
+    position: "absolute",
+    top: 6,
+    left: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  scheduleNowDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: "#fff",
+  },
+  scheduleNowText: {
+    color: "#fff",
+    fontSize: 9,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
+  scheduleIndexBadge: {
+    position: "absolute",
+    top: 6,
+    left: 6,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  scheduleIndexText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "700",
+  },
+  scheduleInfo: {
+    flex: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 4,
+  },
+  scheduleTitle: {
+    fontSize: 13,
+    fontWeight: "600",
+    lineHeight: 17,
+  },
+  scheduleDuration: {
+    fontSize: 11,
+  },
 
   categoryGrid: {
     flexDirection: "row",

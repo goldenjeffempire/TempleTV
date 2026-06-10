@@ -305,3 +305,36 @@ export async function cancelAllNotifications(): Promise<void> {
     //
   }
 }
+
+/**
+ * Revoke the device's Expo push token from the server.
+ *
+ * Called on sign-out to prevent the previous user from receiving push
+ * notifications on a shared device. Best-effort — failures are swallowed
+ * because the server auto-removes stale tokens whenever Expo returns
+ * `DeviceNotRegistered` on the next delivery attempt.
+ *
+ * After a successful revocation the token is removed from local storage so
+ * a fresh sign-in re-registers a clean token.
+ */
+export async function unregisterCurrentPushToken(): Promise<void> {
+  try {
+    const token = await AsyncStorage.getItem(PUSH_TOKEN_KEY);
+    if (!token) return;
+    const baseUrl = getApiBase();
+    await fetchWithRetry(
+      `${baseUrl}/api/push-tokens`,
+      {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+        signal: AbortSignal.timeout(5_000),
+      },
+      { maxRetries: 0, baseDelayMs: 0, isRetryable: () => false },
+    );
+    // Remove from local storage so the next sign-in gets a clean token.
+    await AsyncStorage.removeItem(PUSH_TOKEN_KEY);
+  } catch {
+    // Non-critical — server auto-cleans DeviceNotRegistered tokens.
+  }
+}

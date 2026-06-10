@@ -1,6 +1,6 @@
 import React, { memo } from "react";
 import { Image as ExpoImage } from "expo-image";
-import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, Share, StyleSheet, Text, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
@@ -13,6 +13,7 @@ const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
 interface SermonCardProps {
   sermon: Sermon;
   onPress: (sermon: Sermon) => void;
+  onShare?: (sermon: Sermon) => void;
   variant?: "horizontal" | "vertical";
   progress?: number;
 }
@@ -33,6 +34,7 @@ const SmartImage = memo(function SmartImage({ uri, style }: { uri: string; style
 export const SermonCard = memo(function SermonCard({
   sermon,
   onPress,
+  onShare,
   variant = "vertical",
   progress,
 }: SermonCardProps) {
@@ -43,6 +45,24 @@ export const SermonCard = memo(function SermonCard({
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     }
     onPress(sermon);
+  };
+
+  const handleShare = async () => {
+    if (onShare) {
+      onShare(sermon);
+      return;
+    }
+    try {
+      if (Platform.OS !== "web") {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      }
+      await Share.share({
+        title: sermon.title,
+        message: `Watch "${sermon.title}"${sermon.preacher ? ` by ${sermon.preacher}` : ""} on Temple TV – JCTM Broadcasting Network`,
+      });
+    } catch {
+      // User cancelled or share not available
+    }
   };
 
   const showProgress = typeof progress === "number" && progress > 0.01 && progress < 0.98;
@@ -93,6 +113,15 @@ export const SermonCard = memo(function SermonCard({
               </View>
             </View>
           </View>
+          <Pressable
+            onPress={handleShare}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={`Share ${sermon.title}`}
+            style={styles.shareBtn}
+          >
+            <Feather name="share-2" size={16} color={c.mutedForeground} />
+          </Pressable>
         </GlassCard>
       </Pressable>
     );
@@ -218,6 +247,13 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     gap: 3,
+    minWidth: 0,
+  },
+  shareBtn: {
+    paddingLeft: 8,
+    paddingVertical: 4,
+    alignSelf: "center",
+    flexShrink: 0,
   },
   title: {
     fontSize: 14,

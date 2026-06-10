@@ -326,6 +326,39 @@ export async function apiLogin(
   return data as AuthResponse;
 }
 
+/**
+ * Complete MFA login — exchange a short-lived `mfaToken` (returned by the
+ * initial sign-in when 2FA is enabled) plus a 6-digit TOTP code for a real
+ * access + refresh token pair.
+ */
+export async function apiLoginVerifyMfa(
+  mfaToken: string,
+  totpCode: string,
+): Promise<AuthResponse> {
+  const res = await fetchWithRetry(
+    `${getApiBase()}/api/auth/mfa/verify`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mfaToken, totpCode }),
+      signal: AbortSignal.timeout(12_000),
+    },
+    AUTH_RETRY,
+  );
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error("Incorrect verification code. Please try again.");
+    }
+    if (res.status === 429) {
+      throw new Error("Too many attempts. Please wait and try again.");
+    }
+    throw new Error(await extractApiError(res, "Verification failed. Please try again."));
+  }
+  const data = (await res.json()) as AuthResponse;
+  await persistAuthResponse(data);
+  return data;
+}
+
 export async function apiLogout(everywhere = false): Promise<void> {
   const refreshToken = await secureStorage.getItem(SECURE_KEYS.authRefreshToken);
   // Best-effort server revocation; never block local sign-out on network

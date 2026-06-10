@@ -242,6 +242,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signOut = useCallback(async (everywhere = false) => {
+    // Revoke the push token before clearing credentials. The DELETE endpoint
+    // is unauthenticated (token = proof of ownership), but calling it first
+    // while we still have the stored token in AsyncStorage ensures revocation
+    // completes before the local storage is wiped. Best-effort: failure never
+    // blocks sign-out.
+    await import("@/services/notifications").then(({ unregisterCurrentPushToken }) =>
+      unregisterCurrentPushToken(),
+    ).catch(() => {});
     await apiLogout(everywhere).catch(() => {});
     await clearLocal();
     // Intentionally does NOT navigate — callers decide where to go because

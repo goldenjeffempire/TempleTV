@@ -19,7 +19,10 @@ const HealthSchema = z.object({
   dependencies: z.object({
     database: z.enum(["ok", "down"]),
     cache: z.enum(["ok", "down"]),
-    storage: z.enum(["ok", "disabled"]),
+    // "degraded" = storage is enabled but the health-monitor circuit breaker
+    // has tripped (consecutive probe failures).  "disabled" = storage is not
+    // configured.
+    storage: z.enum(["ok", "degraded", "disabled"]),
     broadcastV2: z.enum(["ok", "stuck", "down"]),
   }),
   broadcast: z.object({
@@ -134,6 +137,17 @@ export async function healthRoutes(app: FastifyInstance) {
 
       const storageEnabled = storage().enabled;
       const storageDisabledInProd = !storageEnabled && env.NODE_ENV === "production";
+      // Use the storage health monitor circuit-breaker status when available.
+      // Falls back to healthy=true during the first 5 s before the probe fires
+      // so a freshly started process doesn't 503 its own readiness check.
+      let storageProbeFailed = false;
+      try {
+        const { getStorageHealthStatus } = await import("../../infrastructure/storage-health-monitor.js");
+        const sth = getStorageHealthStatus();
+        storageProbeFailed = sth.enabled && !sth.healthy && sth.totalChecks > 0;
+      } catch {
+        // monitor not yet loaded — treat as healthy
+      }
 
       // Broadcast-v2 health: surface stuck-orchestrator state (boot succeeded
       // but sequence never advanced past 0 while items exist for >30 s).
@@ -161,7 +175,7 @@ export async function healthRoutes(app: FastifyInstance) {
         !dbOk ? "down"
         : storageDisabledInProd ? "down"
         : v2Status === "down" ? "down"
-        : (!cacheOk || v2Status === "stuck") ? "degraded"
+        : (!cacheOk || v2Status === "stuck" || storageProbeFailed) ? "degraded"
         : "ok";
       const body = {
         status,
@@ -170,7 +184,9 @@ export async function healthRoutes(app: FastifyInstance) {
         dependencies: {
           database: dbOk ? "ok" as const : "down" as const,
           cache: cacheOk ? "ok" as const : "down" as const,
-          storage: storageEnabled ? "ok" as const : "disabled" as const,
+          storage: storageEnabled
+            ? (storageProbeFailed ? "degraded" as const : "ok" as const)
+            : "disabled" as const,
           broadcastV2: v2Status,
         },
         broadcast: {

@@ -143,3 +143,7 @@ export async function cancelAllNotifications(): Promise<void> {
 export async function setupAndroidNotificationChannel(): Promise<void> {
   // Native-only.
 }
+
+export async function unregisterCurrentPushToken(): Promise<void> {
+  // Web push subscriptions expire or are cleaned up by the browser automatically.
+}

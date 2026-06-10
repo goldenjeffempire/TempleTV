@@ -17,6 +17,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
+import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, schema } from "../../infrastructure/db.js";
 import { env } from "../../config/env.js";
@@ -127,6 +128,39 @@ export async function pushRoutes(app: FastifyInstance) {
 
       const created = now.getTime() - row!.createdAt.getTime() < 2_000;
       return { ok: true as const, created };
+    },
+  );
+
+  /**
+   * Unregister an Expo push token. Called by the mobile app on sign-out so
+   * the device stops receiving push notifications for the previous user.
+   * Best-effort: failures are non-fatal because the server also auto-removes
+   * tokens whenever Expo returns DeviceNotRegistered on a delivery attempt.
+   *
+   * Intentionally unauthenticated — the token itself is the proof of ownership
+   * (only the device that received the token can know it). Using the JWT here
+   * would prevent revocation when the JWT has already expired.
+   */
+  r.delete(
+    "/push-tokens",
+    {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["notifications"],
+        summary: "Unregister an Expo push token (called on sign-out)",
+        body: z.object({ token: z.string().min(1).max(512) }),
+        response: {
+          200: z.object({ ok: z.literal(true), deleted: z.boolean() }),
+          429: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req) => {
+      const rows = await db
+        .delete(pushTokens)
+        .where(eq(pushTokens.token, req.body.token))
+        .returning({ id: pushTokens.id });
+      return { ok: true as const, deleted: rows.length > 0 };
     },
   );
 

@@ -17,7 +17,7 @@ import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
-import { apiLogin, isValidEmail, MfaRequiredError } from "@/services/authApi";
+import { apiLogin, apiLoginVerifyMfa, isValidEmail, MfaRequiredError } from "@/services/authApi";
 import { Logo } from "@/components/Logo";
 import { usePageSeo } from "@/hooks/usePageSeo";
 
@@ -117,6 +117,11 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // MFA challenge phase — set when the server returns mfaRequired: true.
+  const [phase, setPhase] = useState<"credentials" | "mfa">("credentials");
+  const mfaTokenRef = useRef<string>("");
+  const [totpCode, setTotpCode] = useState("");
+
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(32)).current;
   const btnScale = useRef(new Animated.Value(1)).current;
@@ -159,14 +164,49 @@ export default function LoginScreen() {
       }
     } catch (err) {
       if (err instanceof MfaRequiredError) {
-        // Server requested 2FA — surface a friendly message until the
-        // mobile MFA challenge screen ships. The MFA token has a short TTL,
-        // so we don't persist it across the manual retry.
-        setError("Two-factor authentication is enabled on this account. Use a web browser to sign in, or disable 2FA in your account settings.");
+        // Server returned mfaRequired — switch to the TOTP challenge phase.
+        mfaTokenRef.current = err.mfaToken;
+        setTotpCode("");
+        setError(null);
+        setPhase("mfa");
       } else if (err instanceof Error && /network|timed?\s*out|fetch/i.test(err.message)) {
         setError("Couldn't reach the server. Check your connection and try again.");
       } else {
         setError(err instanceof Error ? err.message : "Sign in failed. Please try again.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleMfaSubmit = async () => {
+    const code = totpCode.replace(/\D/g, "").trim();
+    setError(null);
+    if (code.length !== 6) {
+      setError("Please enter the 6-digit code from your authenticator app.");
+      return;
+    }
+
+    Animated.sequence([
+      Animated.timing(btnScale, { toValue: 0.96, duration: 80, useNativeDriver: true }),
+      Animated.timing(btnScale, { toValue: 1, duration: 80, useNativeDriver: true }),
+    ]).start();
+
+    setLoading(true);
+    try {
+      const resp = await apiLoginVerifyMfa(mfaTokenRef.current, code);
+      await signIn(resp, resp.user);
+      const pending = consumePendingPlayback();
+      if (pending?.pathname) {
+        router.replace({ pathname: pending.pathname, params: pending.params } as never);
+      } else {
+        router.replace("/(tabs)");
+      }
+    } catch (err) {
+      if (err instanceof Error && /network|timed?\s*out|fetch/i.test(err.message)) {
+        setError("Couldn't reach the server. Check your connection and try again.");
+      } else {
+        setError(err instanceof Error ? err.message : "Verification failed. Please try again.");
       }
     } finally {
       setLoading(false);
@@ -218,100 +258,167 @@ export default function LoginScreen() {
               <View style={styles.dividerLine} />
             </View>
 
-            <Text style={styles.title}>Welcome back</Text>
-            <Text style={styles.subtitle}>
-              Sign in to sync your favourites and watch history across devices.
-            </Text>
+            {phase === "credentials" ? (
+              <>
+                <Text style={styles.title}>Welcome back</Text>
+                <Text style={styles.subtitle}>
+                  Sign in to sync your favourites and watch history across devices.
+                </Text>
 
-            <View style={styles.form}>
-              <Text style={styles.label}>EMAIL ADDRESS</Text>
-              <AnimatedInput
-                icon="mail"
-                placeholder="you@example.com"
-                value={email}
-                onChangeText={setEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoComplete="email"
-                returnKeyType="next"
-              />
+                <View style={styles.form}>
+                  <Text style={styles.label}>EMAIL ADDRESS</Text>
+                  <AnimatedInput
+                    icon="mail"
+                    placeholder="you@example.com"
+                    value={email}
+                    onChangeText={setEmail}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoComplete="email"
+                    returnKeyType="next"
+                  />
 
-              <Text style={[styles.label, { marginTop: 16 }]}>PASSWORD</Text>
-              <AnimatedInput
-                icon="lock"
-                placeholder="Your password"
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry={!showPassword}
-                autoComplete="password"
-                returnKeyType="done"
-                onSubmitEditing={handleLogin}
-                rightElement={
-                  <Pressable onPress={() => setShowPassword((p) => !p)} style={styles.eyeBtn} hitSlop={8} accessibilityRole="button" accessibilityLabel={showPassword ? "Hide password" : "Show password"}>
-                    <Feather
-                      name={showPassword ? "eye-off" : "eye"}
-                      size={17}
-                      color="rgba(255,255,255,0.35)"
-                    />
-                  </Pressable>
-                }
-              />
+                  <Text style={[styles.label, { marginTop: 16 }]}>PASSWORD</Text>
+                  <AnimatedInput
+                    icon="lock"
+                    placeholder="Your password"
+                    value={password}
+                    onChangeText={setPassword}
+                    secureTextEntry={!showPassword}
+                    autoComplete="password"
+                    returnKeyType="done"
+                    onSubmitEditing={handleLogin}
+                    rightElement={
+                      <Pressable onPress={() => setShowPassword((p) => !p)} style={styles.eyeBtn} hitSlop={8} accessibilityRole="button" accessibilityLabel={showPassword ? "Hide password" : "Show password"}>
+                        <Feather
+                          name={showPassword ? "eye-off" : "eye"}
+                          size={17}
+                          color="rgba(255,255,255,0.35)"
+                        />
+                      </Pressable>
+                    }
+                  />
 
-              {error && (
-                <View style={styles.errorBox}>
-                  <Feather name="alert-circle" size={14} color="#f87171" />
-                  <Text style={styles.errorText}>{error}</Text>
+                  {error && (
+                    <View style={styles.errorBox}>
+                      <Feather name="alert-circle" size={14} color="#f87171" />
+                      <Text style={styles.errorText}>{error}</Text>
+                    </View>
+                  )}
+
+                  <Animated.View style={[{ transform: [{ scale: btnScale }] }, { marginTop: 28 }]}>
+                    <Pressable
+                      onPress={handleLogin}
+                      disabled={loading}
+                      style={({ pressed }) => [styles.submitBtnOuter, { opacity: pressed ? 0.88 : 1 }]}
+                    >
+                      <LinearGradient
+                        colors={["#7c3aed", "#6d28d9", "#5b21b6"]}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 0 }}
+                        style={styles.submitBtn}
+                      >
+                        {loading ? (
+                          <ActivityIndicator color="#FFF" size="small" />
+                        ) : (
+                          <>
+                            <Feather name="log-in" size={16} color="#FFF" />
+                            <Text style={styles.submitText}>Sign In</Text>
+                          </>
+                        )}
+                      </LinearGradient>
+                    </Pressable>
+                  </Animated.View>
                 </View>
-              )}
 
-              <Animated.View style={[{ transform: [{ scale: btnScale }] }, { marginTop: 28 }]}>
                 <Pressable
-                  onPress={handleLogin}
-                  disabled={loading}
-                  style={({ pressed }) => [styles.submitBtnOuter, { opacity: pressed ? 0.88 : 1 }]}
+                  onPress={() => router.push("/forgot-password" as never)}
+                  style={styles.forgotBtn}
+                  hitSlop={8}
                 >
-                  <LinearGradient
-                    colors={["#7c3aed", "#6d28d9", "#5b21b6"]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                    style={styles.submitBtn}
-                  >
-                    {loading ? (
-                      <ActivityIndicator color="#FFF" size="small" />
-                    ) : (
-                      <>
-                        <Feather name="log-in" size={16} color="#FFF" />
-                        <Text style={styles.submitText}>Sign In</Text>
-                      </>
-                    )}
-                  </LinearGradient>
+                  <Text style={styles.forgotText}>Forgot password?</Text>
                 </Pressable>
-              </Animated.View>
-            </View>
 
-            <Pressable
-              onPress={() => router.push("/forgot-password" as never)}
-              style={styles.forgotBtn}
-              hitSlop={8}
-            >
-              <Text style={styles.forgotText}>Forgot password?</Text>
-            </Pressable>
+                <View style={styles.divider}>
+                  <View style={styles.dividerRule} />
+                  <Text style={styles.dividerText}>or</Text>
+                  <View style={styles.dividerRule} />
+                </View>
 
-            <View style={styles.divider}>
-              <View style={styles.dividerRule} />
-              <Text style={styles.dividerText}>or</Text>
-              <View style={styles.dividerRule} />
-            </View>
+                <Pressable
+                  onPress={() => router.replace("/signup")}
+                  style={({ pressed }) => [styles.signupBtn, { opacity: pressed ? 0.7 : 1 }]}
+                >
+                  <Text style={styles.signupText}>
+                    Don't have an account?{" "}
+                    <Text style={styles.signupLink}>Create one free</Text>
+                  </Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <View style={styles.mfaIconWrap}>
+                  <Feather name="shield" size={40} color="#a78bfa" />
+                </View>
+                <Text style={styles.title}>Two-Factor Auth</Text>
+                <Text style={styles.subtitle}>
+                  Enter the 6-digit code from your authenticator app to complete sign-in.
+                </Text>
 
-            <Pressable
-              onPress={() => router.replace("/signup")}
-              style={({ pressed }) => [styles.signupBtn, { opacity: pressed ? 0.7 : 1 }]}
-            >
-              <Text style={styles.signupText}>
-                Don't have an account?{" "}
-                <Text style={styles.signupLink}>Create one free</Text>
-              </Text>
-            </Pressable>
+                <View style={styles.form}>
+                  <Text style={styles.label}>VERIFICATION CODE</Text>
+                  <AnimatedInput
+                    icon="key"
+                    placeholder="000000"
+                    value={totpCode}
+                    onChangeText={(v) => setTotpCode(v.replace(/\D/g, "").slice(0, 6))}
+                    keyboardType="number-pad"
+                    autoCapitalize="none"
+                    returnKeyType="done"
+                    onSubmitEditing={handleMfaSubmit}
+                  />
+
+                  {error && (
+                    <View style={styles.errorBox}>
+                      <Feather name="alert-circle" size={14} color="#f87171" />
+                      <Text style={styles.errorText}>{error}</Text>
+                    </View>
+                  )}
+
+                  <Animated.View style={[{ transform: [{ scale: btnScale }] }, { marginTop: 28 }]}>
+                    <Pressable
+                      onPress={handleMfaSubmit}
+                      disabled={loading || totpCode.length < 6}
+                      style={({ pressed }) => [styles.submitBtnOuter, { opacity: (pressed || totpCode.length < 6) ? 0.6 : 1 }]}
+                    >
+                      <LinearGradient
+                        colors={["#7c3aed", "#6d28d9", "#5b21b6"]}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 0 }}
+                        style={styles.submitBtn}
+                      >
+                        {loading ? (
+                          <ActivityIndicator color="#FFF" size="small" />
+                        ) : (
+                          <>
+                            <Feather name="check-circle" size={16} color="#FFF" />
+                            <Text style={styles.submitText}>Verify</Text>
+                          </>
+                        )}
+                      </LinearGradient>
+                    </Pressable>
+                  </Animated.View>
+                </View>
+
+                <Pressable
+                  onPress={() => { setPhase("credentials"); setError(null); setTotpCode(""); }}
+                  style={styles.forgotBtn}
+                  hitSlop={8}
+                >
+                  <Text style={styles.forgotText}>← Back to sign in</Text>
+                </Pressable>
+              </>
+            )}
           </Animated.View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -367,6 +474,18 @@ const styles = StyleSheet.create({
     marginBottom: 36,
   },
   form: { gap: 0 },
+  mfaIconWrap: {
+    alignSelf: "center",
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: "rgba(139,92,246,0.15)",
+    borderWidth: 1,
+    borderColor: "rgba(139,92,246,0.35)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 20,
+  },
   label: {
     fontSize: 10,
     fontFamily: "Inter_600SemiBold",
