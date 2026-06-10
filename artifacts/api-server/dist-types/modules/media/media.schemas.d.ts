@@ -22,15 +22,15 @@ export declare const MediaItemSchema: z.ZodObject<{
     duration: string;
     youtubeId: string | null;
     thumbnailUrl: string;
+    localVideoUrl: string | null;
+    hlsMasterUrl: string | null;
+    videoSource: string;
     category: string;
     preacher: string;
     publishedAt: string | null;
     importedAt: string;
     viewCount: number;
     featured: boolean;
-    videoSource: string;
-    localVideoUrl: string | null;
-    hlsMasterUrl: string | null;
 }, {
     title: string;
     description: string;
@@ -38,15 +38,15 @@ export declare const MediaItemSchema: z.ZodObject<{
     duration: string;
     youtubeId: string | null;
     thumbnailUrl: string;
+    localVideoUrl: string | null;
+    hlsMasterUrl: string | null;
+    videoSource: string;
     category: string;
     preacher: string;
     publishedAt: string | null;
     importedAt: string;
     viewCount: number;
     featured: boolean;
-    videoSource: string;
-    localVideoUrl: string | null;
-    hlsMasterUrl: string | null;
 }>;
 export declare const ListMediaQuerySchema: z.ZodObject<{
     limit: z.ZodDefault<z.ZodNumber>;
@@ -91,15 +91,15 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
         duration: string;
         youtubeId: string | null;
         thumbnailUrl: string;
+        localVideoUrl: string | null;
+        hlsMasterUrl: string | null;
+        videoSource: string;
         category: string;
         preacher: string;
         publishedAt: string | null;
         importedAt: string;
         viewCount: number;
         featured: boolean;
-        videoSource: string;
-        localVideoUrl: string | null;
-        hlsMasterUrl: string | null;
     }, {
         title: string;
         description: string;
@@ -107,15 +107,15 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
         duration: string;
         youtubeId: string | null;
         thumbnailUrl: string;
+        localVideoUrl: string | null;
+        hlsMasterUrl: string | null;
+        videoSource: string;
         category: string;
         preacher: string;
         publishedAt: string | null;
         importedAt: string;
         viewCount: number;
         featured: boolean;
-        videoSource: string;
-        localVideoUrl: string | null;
-        hlsMasterUrl: string | null;
     }>, "many">;
     total: z.ZodNumber;
     limit: z.ZodNumber;
@@ -123,6 +123,7 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     limit: number;
     offset: number;
+    total: number;
     items: {
         title: string;
         description: string;
@@ -130,20 +131,20 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
         duration: string;
         youtubeId: string | null;
         thumbnailUrl: string;
+        localVideoUrl: string | null;
+        hlsMasterUrl: string | null;
+        videoSource: string;
         category: string;
         preacher: string;
         publishedAt: string | null;
         importedAt: string;
         viewCount: number;
         featured: boolean;
-        videoSource: string;
-        localVideoUrl: string | null;
-        hlsMasterUrl: string | null;
     }[];
-    total: number;
 }, {
     limit: number;
     offset: number;
+    total: number;
     items: {
         title: string;
         description: string;
@@ -151,17 +152,16 @@ export declare const ListMediaResponseSchema: z.ZodObject<{
         duration: string;
         youtubeId: string | null;
         thumbnailUrl: string;
+        localVideoUrl: string | null;
+        hlsMasterUrl: string | null;
+        videoSource: string;
         category: string;
         preacher: string;
         publishedAt: string | null;
         importedAt: string;
         viewCount: number;
         featured: boolean;
-        videoSource: string;
-        localVideoUrl: string | null;
-        hlsMasterUrl: string | null;
     }[];
-    total: number;
 }>;
 export declare const CreateMediaBodySchema: z.ZodObject<{
     youtubeId: z.ZodString;
@@ -181,24 +181,24 @@ export declare const CreateMediaBodySchema: z.ZodObject<{
     duration: string;
     youtubeId: string;
     thumbnailUrl: string;
+    videoSource: "youtube" | "hls" | "local";
     category: string;
     preacher: string;
     featured: boolean;
-    videoSource: "youtube" | "local" | "hls";
-    publishedAt?: string | undefined;
     localVideoUrl?: string | null | undefined;
+    publishedAt?: string | undefined;
 }, {
     title: string;
     youtubeId: string;
     description?: string | undefined;
     duration?: string | undefined;
     thumbnailUrl?: string | undefined;
+    localVideoUrl?: string | null | undefined;
+    videoSource?: "youtube" | "hls" | "local" | undefined;
     category?: string | undefined;
     preacher?: string | undefined;
     publishedAt?: string | undefined;
     featured?: boolean | undefined;
-    videoSource?: "youtube" | "local" | "hls" | undefined;
-    localVideoUrl?: string | null | undefined;
 }>;
 export declare const UpdateMediaBodySchema: z.ZodEffects<z.ZodObject<{
     title: z.ZodOptional<z.ZodString>;

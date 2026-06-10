@@ -86,6 +86,18 @@ export declare function probeContainerIsValid(inputPath: string): Promise<boolea
  */
 export declare function detectMdatWithoutMoov(inputPath: string): Promise<boolean>;
 /**
+ * Verify a locally-downloaded source file is present, non-empty, large enough
+ * to be a valid video container, and does not contain obvious non-video content
+ * (HTML error pages, JSON responses, images, etc.) that slipped past the
+ * upload MIME gate.
+ *
+ * Throws with a structured `{ code }` error on failure — callers map the code
+ * to either CORRUPT_SOURCE (permanent) or DOWNLOAD_TRUNCATED (transient).
+ *
+ * Exported so faststart.service.ts can share the same gate.
+ */
+export declare function validateLocalSourceFile(filePath: string, expectedSizeBytes?: number): Promise<void>;
+/**
  * Recovery pass for MP4 files where the moov atom is at EOF, fragmented,
  * or otherwise unreadable by ffmpeg's HLS muxer. Tries three strategies in
  * sequence, stopping at the first success:
@@ -134,17 +146,30 @@ export declare function runTranscode(req: TranscodeRequest): Promise<TranscodeRe
  */
 export declare function probeUploadedDuration(sourceObjectKey: string): Promise<number | null>;
 /**
- * Download an assembled video from object storage to a temp file and run
- * `probeContainerIsValid` to determine whether its container can be decoded.
+ * Download an assembled video from object storage to a temp file and run a
+ * two-stage validation:
  *
- * Returns `{ valid: true }` when the container is healthy, or when storage
- * is unavailable (probe is skipped rather than blocking the pipeline).
- * Returns `{ valid: false, error }` when ffprobe detects a structural problem
- * (moov not found, invalid data found, partial file, EOF before frame, etc.).
+ *   Stage 0 — validateLocalSourceFile:
+ *     existence, non-zero size, min-size (1 KiB), and magic-bytes check.
+ *     Catches HTML error pages, zero-byte downloads, and obvious non-video
+ *     content before any subprocess is spawned.
  *
- * Non-throwing — any exception is caught and returned as `{ valid: false }`.
- * Callers use the result for diagnostic logging only; faststart.service.ts
- * handles the actual repair (remux recovery) during its own download pass.
+ *   Stage 1 — probeContainerIsValid (ffprobe):
+ *     Verifies the moov atom is present and the container header is parseable.
+ *
+ *   Stage 2 — probeCanDecodeFirstFrame (ffmpeg):
+ *     Decodes one video frame from the first 2 s of mdat to verify the media
+ *     payload is intact — not just the container structure. Catches files
+ *     where moov is valid but mdat is truncated or bit-corrupted.
+ *
+ * Returns `{ valid: true }` when all stages pass, or when storage is
+ * unavailable (probe is skipped rather than blocking the pipeline).
+ * Returns `{ valid: false, error }` when any stage detects a problem.
+ *
+ * Non-throwing — any infrastructure exception is caught and returned as
+ * `{ valid: true }` (fail-open) so a transient download error does not
+ * permanently mark a healthy video as corrupt; faststart and the HLS
+ * transcoder will discover real corruption on their own passes.
  */
 export declare function probeUploadedContainerValidity(objectKey: string): Promise<{
     valid: boolean;

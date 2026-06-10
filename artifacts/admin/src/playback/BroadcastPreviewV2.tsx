@@ -79,7 +79,15 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
   if (video.canPlayType("application/vnd.apple.mpegurl")) {
     let nativeRetried = false;
     const handleNativeError = () => {
-      if (!nativeRetried && video.error?.code === MediaError.MEDIA_ERR_NETWORK) {
+      const code = video.error?.code;
+      // MEDIA_ERR_NETWORK (2): transient network hiccup — one silent reload.
+      // MEDIA_ERR_DECODE  (3): WebKit TV chipsets fire this transiently on
+      //   segment boundaries; one silent reload clears it (same fix applied
+      //   to TV's LiveBroadcastV2.tsx — keep these in sync).
+      if (
+        !nativeRetried &&
+        (code === MediaError.MEDIA_ERR_NETWORK || code === MediaError.MEDIA_ERR_DECODE)
+      ) {
         nativeRetried = true;
         video.load();
         void video.play().catch(() => {});

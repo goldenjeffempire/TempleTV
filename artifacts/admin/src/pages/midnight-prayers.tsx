@@ -168,6 +168,8 @@ export default function MidnightPrayersPage() {
     onSuccess: (data: { videoCount: number }) => {
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/queue"] });
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/state"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       toast({ title: "Queue refreshed", description: `${data.videoCount} videos loaded.` });
     },
     onError: () => toast({ title: "Refresh failed", variant: "destructive" }),

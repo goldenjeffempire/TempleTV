@@ -29,12 +29,28 @@ declare class YtLivePoller extends EventEmitter {
     private timer;
     private running;
     private _subs;
-    private apiCooldownUntilMs;
+    private _lastSafetyNetMs;
+    private _searchCooldownUntilMs;
+    private _enrichCooldownUntilMs;
     getState(): YtLiveState;
     subscribe(fn: Listener): () => void;
     start(): void;
     stop(): void;
     private poll;
+    /**
+     * Fetch concurrent viewer count for a live video via videos.list
+     * (liveStreamingDetails part).  Cost: 1 quota unit per call.
+     *
+     * On error, sets a 30-minute backoff so a transient API problem does not
+     * silently consume quota units every 60 seconds for the rest of the broadcast.
+     * Returns null on any error; callers fall back to the RSS-derived state.
+     */
+    private fetchViewerCount;
+    /**
+     * Safety-net search.list call (100 quota units).
+     * Only invoked by poll() at most once per SAFETY_NET_INTERVAL_MS (2 h)
+     * to catch streams RSS has not yet indexed.
+     */
     private pollApi;
     private pollRss;
     private setState;

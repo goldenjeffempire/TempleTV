@@ -266,16 +266,16 @@ export declare const broadcastService: {
     snapshot(): import("./queue.engine.js").BroadcastSnapshot;
     listQueue(): Promise<(typeof queueTable.$inferSelect)[]>;
     addToQueue(item: z.infer<typeof AddQueueItemSchema>): Promise<{
+        videoId: string | null;
         title: string;
-        durationSecs: number;
         id: string;
         youtubeId: string;
         thumbnailUrl: string;
-        videoSource: string;
+        durationSecs: number;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
+        videoSource: string;
         isActive: boolean;
-        videoId: string | null;
         sortOrder: number;
         addedAt: Date;
         scheduledAt: Date | null;
@@ -283,16 +283,16 @@ export declare const broadcastService: {
         validatorDeactivatedReason: string | null;
     }>;
     removeFromQueue(id: string): Promise<{
+        videoId: string | null;
         title: string;
-        durationSecs: number;
         id: string;
         youtubeId: string;
         thumbnailUrl: string;
-        videoSource: string;
+        durationSecs: number;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
+        videoSource: string;
         isActive: boolean;
-        videoId: string | null;
         sortOrder: number;
         addedAt: Date;
         scheduledAt: Date | null;

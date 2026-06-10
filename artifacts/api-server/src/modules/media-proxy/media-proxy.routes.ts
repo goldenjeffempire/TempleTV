@@ -2,7 +2,6 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web";
 import type { FastifyInstance } from "fastify";
-import { z } from "zod";
 import { env } from "../../config/env.js";
 import { logger } from "../../infrastructure/logger.js";
 

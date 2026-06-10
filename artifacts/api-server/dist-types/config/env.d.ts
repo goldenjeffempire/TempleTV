@@ -101,12 +101,12 @@ declare const Env: z.ZodObject<{
     SEED_ADMIN_PASSWORD: z.ZodOptional<z.ZodString>;
     SEED_ADMIN_FORCE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
 }, "strip", z.ZodTypeAny, {
-    DATABASE_URL: string;
     NODE_ENV: "development" | "test" | "production";
     PORT: number;
     TV_DEV_PORT: number;
     MOBILE_DEV_PORT: number;
     LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
+    DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
     JWT_ACCESS_TTL_SECONDS: number;
@@ -164,6 +164,8 @@ declare const Env: z.ZodObject<{
     CLEANUP_DISABLE: boolean;
     CLEANUP_MAX_PER_SWEEP: number;
     SEED_ADMIN_FORCE: boolean;
+    YOUTUBE_API_KEY?: string | undefined;
+    YOUTUBE_CHANNEL_ID?: string | undefined;
     REPLIT_DEV_DOMAIN?: string | undefined;
     REPLIT_EXPO_DEV_DOMAIN?: string | undefined;
     WEBHOOK_BASE_URL?: string | undefined;
@@ -185,8 +187,6 @@ declare const Env: z.ZodObject<{
     HLS_TOKEN_SECRET?: string | undefined;
     YOUTUBE_WEBHOOK_SECRET?: string | undefined;
     APP_VERSION?: string | undefined;
-    YOUTUBE_API_KEY?: string | undefined;
-    YOUTUBE_CHANNEL_ID?: string | undefined;
     PROD_SYNC_API_URL?: string | undefined;
     API_ORIGIN?: string | undefined;
     RENDER_GIT_COMMIT?: string | undefined;
@@ -201,6 +201,8 @@ declare const Env: z.ZodObject<{
     DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
+    YOUTUBE_API_KEY?: string | undefined;
+    YOUTUBE_CHANNEL_ID?: string | undefined;
     NODE_ENV?: "development" | "test" | "production" | undefined;
     PORT?: number | undefined;
     REPLIT_DEV_DOMAIN?: string | undefined;
@@ -270,8 +272,6 @@ declare const Env: z.ZodObject<{
     SHUTDOWN_PRECLOSE_DELAY_MS?: number | undefined;
     SHUTDOWN_DRAIN_MS?: number | undefined;
     APP_VERSION?: string | undefined;
-    YOUTUBE_API_KEY?: string | undefined;
-    YOUTUBE_CHANNEL_ID?: string | undefined;
     YOUTUBE_QUOTA_DAILY_LIMIT?: number | undefined;
     YOUTUBE_CONTENT_WINDOW_DAYS?: number | undefined;
     YOUTUBE_SYNC_INTERVAL_MINS?: number | undefined;

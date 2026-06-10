@@ -1005,8 +1005,8 @@ function BroadcastV2PageInner() {
   const { data: remediationReport, refetch: refetchRemediation } = useQuery({
     queryKey: ["broadcast-v2-remediation-report"],
     queryFn: () => api.get<RemediationReportData>("/broadcast-v2/remediation-report"),
-    refetchInterval: 5 * 60_000,
-    staleTime: 60_000,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
   });
 
   // Deactivate (remove) a queue item without navigating away.

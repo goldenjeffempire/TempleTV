@@ -18,6 +18,7 @@
 import EventEmitter from "node:events";
 import https from "node:https";
 import { trackQuota, isQuotaExhausted } from "../youtube-sync/youtube-sync.service.js";
+import { logger } from "../../infrastructure/logger.js";
 
 export interface YtLiveState {
   isLive: boolean;

@@ -251,6 +251,7 @@ function tryInitFanout(): void {
         fanoutRetryTimer = null;
         tryInitFanout();
       }, 60_000);
+      fanoutRetryTimer.unref?.();
     });
 }
 
