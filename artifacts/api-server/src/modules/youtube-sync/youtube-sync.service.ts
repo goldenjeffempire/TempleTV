@@ -164,6 +164,11 @@ export function getQuotaStatus(): QuotaState {
     quotaUsed = 0;
     quotaTracker.clear();
     quotaResetAt = nextMidnightUtc();
+    // Also clear warn/crit flags so warnings fire again on the new day.
+    // trackQuota() already does this, but getQuotaStatus() is called on the
+    // /quota-status route before any trackQuota() fires, so we must reset here too.
+    _quotaWarnFired = false;
+    _quotaCritFired = false;
   }
   return {
     used: quotaUsed,
@@ -178,6 +183,20 @@ export function getQuotaStatus(): QuotaState {
 }
 
 async function persistQuota(): Promise<void> {
+  // If midnight has passed but no trackQuota() call has fired yet (which is the
+  // normal reset trigger), apply the reset NOW before snapshotting.  Without
+  // this guard, persistQuota() would stamp yesterday's quota total against
+  // today's UTC date, and restoreQuota() on the next restart would find a
+  // matching date and reload the inflated value — causing the server to wake up
+  // quota-exhausted even on a fresh UTC day.
+  const now = new Date();
+  if (now >= quotaResetAt) {
+    quotaUsed = 0;
+    quotaTracker.clear();
+    quotaResetAt = nextMidnightUtc();
+    _quotaWarnFired = false;
+    _quotaCritFired = false;
+  }
   const snapshot: QuotaSnapshot = {
     date: todayUtc(),
     used: quotaUsed,
