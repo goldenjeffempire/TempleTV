@@ -156,6 +156,8 @@ class QueueIntegrityValidatorImpl {
           vStatus: v.transcodingStatus,
           vFaststart: v.faststartApplied,
           vErrCode: v.transcodingErrorCode,
+          vObjectPath: v.objectPath,
+          vSourceCleanup: v.sourceCleanupStatus,
         })
         .from(q)
         .leftJoin(v, eq(q.videoId, v.id))
@@ -1189,11 +1191,11 @@ class QueueIntegrityValidatorImpl {
                 );
 
                 if (row.videoId2) {
-                  if (row.vLocalUrl) {
-                    // Step 2a: Clear hls_master_url on managed_videos so the
-                    // dead URL is never served and autoEnqueueMissingHls (which
-                    // filters isNull(hlsMasterUrl)) can detect this video for
-                    // re-transcoding. enqueueTranscode also resets
+                  if (row.vLocalUrl && row.vSourceCleanup !== "deleted") {
+                    // Step 2a: Source blob is present and has NOT been cleaned
+                    // up yet. Clear hls_master_url so autoEnqueueMissingHls
+                    // (which filters isNull(hlsMasterUrl)) can detect this
+                    // video for re-transcoding. enqueueTranscode also resets
                     // transcodingStatus → 'queued' in an atomic transaction.
                     await db
                       .update(schema.videosTable)
@@ -1209,18 +1211,27 @@ class QueueIntegrityValidatorImpl {
                       "[queue-validator] AUTO-FIX: HLS_STORAGE_MISSING — cleared hls_master_url and re-enqueued video for transcoding",
                     );
                   } else {
-                    // Step 2b: No source URL — the HLS blob is gone and there
-                    // is nothing to transcode from. Reset transcodingStatus to
-                    // 'none' and clear hls_master_url so the video is not stuck
-                    // in a limbo hls_ready state with no blob and no recovery
-                    // path. The operator must re-upload the source file.
+                    // Step 2b: No source URL, OR the source blob was already
+                    // cleaned up after a previous successful transcode
+                    // (sourceCleanupStatus='deleted'). The HLS blob is gone
+                    // and the source is unavailable — there is nothing to
+                    // transcode from. Reset transcodingStatus to 'none' and
+                    // clear hls_master_url so the video is not stuck in a
+                    // limbo hls_ready state. The operator must re-upload the
+                    // source file to restore this item.
                     await db
                       .update(schema.videosTable)
                       .set({ hlsMasterUrl: null, transcodingStatus: "none" })
                       .where(eq(schema.videosTable.id, row.videoId2));
                     logger.warn(
-                      { videoId: row.videoId2, itemId: row.id },
-                      "[queue-validator] AUTO-FIX: HLS_STORAGE_MISSING — no source URL; " +
+                      {
+                        videoId: row.videoId2,
+                        itemId: row.id,
+                        sourceCleanupStatus: row.vSourceCleanup,
+                        hasLocalUrl: !!row.vLocalUrl,
+                      },
+                      "[queue-validator] AUTO-FIX: HLS_STORAGE_MISSING — source unavailable " +
+                      "(no localVideoUrl or sourceCleanupStatus='deleted'); " +
                       "cleared hls_master_url and reset transcodingStatus to 'none'. " +
                       "Operator must re-upload the source file to restore this item.",
                     );

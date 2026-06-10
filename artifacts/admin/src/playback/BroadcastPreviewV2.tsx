@@ -366,6 +366,17 @@ function classifySourceFailure(
   };
 }
 
+// ── Duration formatting ───────────────────────────────────────────────────────
+
+function formatDuration(totalSecs: number): string {
+  const s = Math.round(totalSecs);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
 // ── URL display helper ────────────────────────────────────────────────────────
 
 function truncateUrl(url: string, max = 55): string {
@@ -422,6 +433,53 @@ export function BroadcastPreviewV2({ className }: Props) {
   }, [muted]);
 
   const server = snapshot.lastServerSnapshot;
+
+  // ── Live progress clock ────────────────────────────────────────────────────
+  // Ticks at 500 ms so elapsed/remaining and the scrub bar update smoothly.
+  // We calibrate the admin browser's wall clock against the server time
+  // embedded in every snapshot frame — identical technique to the TV player —
+  // so the bar tracks real server position without requiring extra API calls.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const clockOffsetRef = useRef<number>(0);
+  const prevServerTimeMsRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 500);
+    return () => clearInterval(id);
+  }, []);
+
+  // Guard: only recalibrate when serverTimeMs genuinely changes so we don't
+  // re-run on every render triggered by the 500 ms clock tick itself.
+  if (server?.serverTimeMs && server.serverTimeMs !== prevServerTimeMsRef.current) {
+    prevServerTimeMsRef.current = server.serverTimeMs;
+    clockOffsetRef.current = server.serverTimeMs - Date.now();
+  }
+
+  const isOnAir =
+    snapshot.state === "PLAYING" ||
+    snapshot.state === "HANDOFF" ||
+    snapshot.state === "PREPARING_NEXT" ||
+    snapshot.state === "LIVE_OVERRIDE_ACTIVE";
+
+  const progressPct = useMemo(() => {
+    const item = server?.current;
+    // No progress bar during live overrides — override items have no
+    // tracked durationSecs so the bar would show NaN/0 incorrectly.
+    if (!item || !isOnAir || server?.override) return null;
+    const durationMs = item.durationSecs * 1000;
+    if (durationMs <= 0) return null;
+    const serverNowMs = nowMs + clockOffsetRef.current;
+    const elapsed = Math.max(0, serverNowMs - item.startsAtMs);
+    return Math.min(elapsed / durationMs, 1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [server, isOnAir, nowMs]);
+
+  const elapsedSecs = progressPct !== null && server?.current
+    ? progressPct * server.current.durationSecs
+    : null;
+  const remainingSecs = elapsedSecs !== null && server?.current
+    ? Math.max(0, server.current.durationSecs - elapsedSecs)
+    : null;
 
   // Resolve the YouTube video ID for the current/override source, if any.
   //
@@ -897,6 +955,17 @@ export function BroadcastPreviewV2({ className }: Props) {
           {title && (
             <p className="text-white text-[11px] font-medium truncate leading-tight">{title}</p>
           )}
+          {/* Elapsed / remaining timer row — visible only when a trackable
+              queue item is playing. Shown as "0:42 · −3:18" so operators
+              know exactly how much of the current item has aired and how
+              long is left before the automatic advance. */}
+          {elapsedSecs !== null && remainingSecs !== null && (
+            <p className="text-white/40 text-[9px] font-mono tabular-nums mt-0.5 leading-none">
+              {formatDuration(elapsedSecs)}
+              <span className="mx-1 opacity-50">·</span>
+              <span className="text-white/30">−{formatDuration(remainingSecs)}</span>
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
           {connected && server?.current ? (
@@ -948,6 +1017,30 @@ export function BroadcastPreviewV2({ className }: Props) {
           )}
         </div>
       </div>
+
+      {/* Progress scrub line — lives at the absolute bottom of the preview
+          card (z-index 25, above the gradient footer). Visible only when
+          a trackable queue item is playing; hidden during overrides (no
+          durationSecs) and all non-PLAYING states (no startsAtMs context).
+          Width animates via CSS transition so the bar moves smoothly at
+          500 ms tick intervals rather than jumping every half-second.     */}
+      {progressPct !== null && (
+        <div
+          aria-hidden
+          className="absolute bottom-0 inset-x-0"
+          style={{ zIndex: 25, height: 2, background: "rgba(255,255,255,0.08)", pointerEvents: "none" }}
+        >
+          <div
+            style={{
+              height: "100%",
+              width: `${progressPct * 100}%`,
+              background: "linear-gradient(90deg, rgba(109,40,217,0.9) 0%, rgba(167,139,250,0.85) 100%)",
+              transition: "width 500ms linear",
+              boxShadow: "0 0 6px rgba(167,139,250,0.45)",
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }

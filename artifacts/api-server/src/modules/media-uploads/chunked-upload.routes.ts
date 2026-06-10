@@ -329,7 +329,26 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
 
           // Probe the blob size in storage_blobs to determine whether
           // completeMultipartUpload ran to completion before the crash.
-          const head = await storage().headObject(row.objectKey).catch(() => ({ exists: false as const }));
+          //
+          // SAFETY: use an explicit try/catch instead of .catch(() => ({ exists: false })).
+          // Collapsing ANY storage error into "blob not found" causes valid, fully-assembled
+          // video rows to be hard-deleted when the DB experiences a transient error during
+          // this headObject query (e.g. a connection hiccup at startup). On storage failure
+          // we skip the session — leaving it in "assembling" — so the next restart can
+          // re-triage it once storage is reachable again. Only confirmed-absent blobs
+          // (head.exists === false with a successful query) are treated as genuinely
+          // interrupted assemblies that need cleanup.
+          let head: { exists: boolean; contentLength?: number } | null = null;
+          try {
+            head = await storage().headObject(row.objectKey);
+          } catch (headErr) {
+            app.log.warn(
+              { err: headErr, sessionId: row.sessionId, objectKey: row.objectKey },
+              "[upload] recovery: headObject failed — skipping session; will re-triage on next restart",
+            );
+            continue; // preserve the video row; do NOT classify as orphaned
+          }
+
           const assemblyComplete =
             head.exists && (head.contentLength ?? 0) === row.sizeBytes && row.sizeBytes > 0;
 
@@ -375,6 +394,33 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             { count: recoveredSessionIds.length, videoIds: recoveredVideoIds },
             "[upload] recovered fully-assembled sessions after server restart — video rows preserved",
           );
+
+          // Re-enqueue each recovered video into the broadcast queue.
+          // If the server crashed AFTER completeMultipartUpload but BEFORE the
+          // enqueueIfMissing call in the background assembly task, the blob is
+          // intact and the video row is valid but the queue slot was never created.
+          // Calling enqueueIfMissing here is idempotent (no-ops if already queued)
+          // and ensures recovered videos always appear in the broadcast queue
+          // without requiring an operator to add them manually.
+          for (const videoId of recoveredVideoIds) {
+            void (async () => {
+              try {
+                const enqResult = await enqueueIfMissing({ videoId, reason: "upload-recovery-on-restart" });
+                if (enqResult.enqueued) {
+                  app.log.info(
+                    { videoId, queueItemId: enqResult.queueItemId },
+                    "[upload] recovery: auto-queued recovered video for broadcast",
+                  );
+                  adminEventBus.push("broadcast-queue-updated", { reason: "upload-recovery-enqueue", videoId });
+                }
+              } catch (enqErr) {
+                app.log.warn(
+                  { err: enqErr, videoId },
+                  "[upload] recovery: enqueueIfMissing failed for recovered video (non-fatal)",
+                );
+              }
+            })();
+          }
         }
 
         // ── Clean up genuinely interrupted sessions ────────────────────────
@@ -2225,8 +2271,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           );
         } catch (err) {
           clearTimeout(watchdogB);
+          const assemblyFailedMs = Date.now() - assemblyStartMsB;
           capturedLogB.error(
-            { err, sessionId, videoId: videoIdB, assemblyMs: Date.now() - assemblyStartMsB },
+            { err, sessionId, videoId: videoIdB, assemblyMs: assemblyFailedMs },
             "[finalize:db_fallback:bg] ASSEMBLY FAILED — resetting session, marking video failed",
           );
           await Promise.allSettled([
@@ -2241,7 +2288,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 // partially-assembled blob on every tick.
                 transcodingErrorCode: "CORRUPT_SOURCE",
                 transcodingErrorMessage:
-                  `Assembly failed after ${Date.now() - assemblyStartMsB} ms — ` +
+                  `Assembly failed after ${assemblyFailedMs} ms — ` +
                   "the blob may be partially written. Reset the session from the " +
                   "upload panel and retry the upload to recover.",
               })
@@ -2251,6 +2298,15 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
               .where(eq(sessions.sessionId, sessionId)),
           ]);
+          // Record server-side telemetry for this db_fallback assembly failure so
+          // the S3 telemetry dashboard captures it alongside Path A failures.
+          // Mirrors the identical call in Path A's outer catch block.
+          uploadTelemetry.serverFail(
+            sessionId,
+            session.sizeBytes,
+            "assembly_failed",
+            err instanceof Error ? err.message : "db_fallback assembly failed",
+          );
           // Invalidate the server-side public catalog cache so TV/mobile
           // clients don't continue to see this video as "queued" for the
           // full cache TTL after it has been marked "failed".

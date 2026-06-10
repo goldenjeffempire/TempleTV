@@ -26,6 +26,18 @@ import Hls from "hls.js";
 import { useV2Broadcast } from "@workspace/player-core/react";
 import { resolveApiOrigin } from "../lib/api";
 
+// ── Time formatting ───────────────────────────────────────────────────────────
+/** Format seconds as "m:ss" (< 1 h) or "h:mm:ss" (≥ 1 h). Tabular digits. */
+function formatDuration(totalSecs: number): string {
+  const s = Math.max(0, Math.floor(totalSecs));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const rem = s % 60;
+  const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
+  const ss = String(rem).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
 // ── Midnight Prayers channel switching ───────────────────────────────────────
 
 interface MPScheduleConfig {
@@ -456,6 +468,27 @@ export function LiveBroadcastV2({
 
   const server = snapshot.lastServerSnapshot;
 
+  // ── Live progress clock ──────────────────────────────────────────────────
+  // Ticks every 500 ms so the progress bar and elapsed/remaining counters
+  // update smoothly without animation-frame overhead.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), 500);
+    return () => clearInterval(id);
+  }, []);
+
+  // Clock-offset calibration: each time a fresh snapshot arrives we
+  // compute how far ahead the server clock is relative to our local clock.
+  // This corrects for NTP drift, timezone mis-sync, and VM clock skew so
+  // the progress bar reflects actual server-side elapsed time, not the
+  // client's potentially-skewed wall clock.
+  const clockOffsetRef = useRef(0);
+  const prevServerTimeMsRef = useRef<number | null>(null);
+  if (server && server.serverTimeMs !== prevServerTimeMsRef.current) {
+    clockOffsetRef.current = server.serverTimeMs - Date.now();
+    prevServerTimeMsRef.current = server.serverTimeMs;
+  }
+
   // ── Override loading tracker (TV/web) ─────────────────────────────────────
   // Tracks whether an HLS/RTMP live override has started producing frames.
   // Cleared whenever LIVE_OVERRIDE_ACTIVE is (re-)entered so each new override
@@ -548,6 +581,27 @@ export function LiveBroadcastV2({
 
   const title = server?.override?.title ?? server?.current?.title ?? "Temple TV Live";
   const isOnAir = !overlay && !!(server?.current || server?.override);
+
+  // Progress metrics — computed after `isOnAir` so the bar only appears
+  // when content is actually playing (not during loading/recovery states).
+  // Override mode (live override active) has no tracked durationSecs so
+  // progressPct stays null and no bar/timer is shown for those items.
+  const progressPct = useMemo(() => {
+    const item = server?.current;
+    if (!item || !isOnAir || server?.override) return null;
+    const durationMs = item.durationSecs * 1000;
+    if (durationMs <= 0) return null;
+    const serverNowMs = nowMs + clockOffsetRef.current;
+    const elapsed = Math.max(0, serverNowMs - item.startsAtMs);
+    return Math.min(elapsed / durationMs, 1);
+  }, [server, isOnAir, nowMs]);
+
+  const elapsedSecs = progressPct !== null && server?.current
+    ? progressPct * server.current.durationSecs
+    : null;
+  const remainingSecs = elapsedSecs !== null && server?.current
+    ? Math.max(0, server.current.durationSecs - elapsedSecs)
+    : null;
 
   const ambientThumb =
     server?.current?.thumbnailUrl ??
@@ -1087,6 +1141,149 @@ export function LiveBroadcastV2({
               </span>
             </div>
           )}
+          {/* Elapsed / remaining time row — only shown when progress is
+              trackable (queue item with known duration, not override mode). */}
+          {elapsedSecs !== null && remainingSecs !== null && (
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "clamp(6px, 0.7vw, 10px)",
+              marginTop: "clamp(8px, 1vh, 12px)",
+            }}>
+              <span style={{
+                fontSize: "clamp(9px, 0.8vw, 12px)",
+                fontWeight: 500,
+                letterSpacing: "0.04em",
+                color: "rgba(255,255,255,0.5)",
+                fontVariantNumeric: "tabular-nums",
+                flexShrink: 0,
+              }}>
+                {formatDuration(elapsedSecs)}
+              </span>
+              {/* Inline mini progress track */}
+              <div style={{
+                flex: 1,
+                maxWidth: "clamp(60px, 10vw, 160px)",
+                height: 2,
+                borderRadius: 999,
+                background: "rgba(255,255,255,0.1)",
+                overflow: "hidden",
+              }}>
+                <div style={{
+                  height: "100%",
+                  width: `${(progressPct ?? 0) * 100}%`,
+                  background: "rgba(167,139,250,0.65)",
+                  borderRadius: 999,
+                  transition: "width 500ms linear",
+                }} />
+              </div>
+              <span style={{
+                fontSize: "clamp(9px, 0.8vw, 12px)",
+                fontWeight: 400,
+                letterSpacing: "0.04em",
+                color: "rgba(255,255,255,0.3)",
+                fontVariantNumeric: "tabular-nums",
+                flexShrink: 0,
+              }}>
+                −{formatDuration(remainingSecs)}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Hero variant minimal info overlay — bottom-left title chip.
+          The "player" variant already has the full gradient footer above;
+          the "hero" variant previously showed nothing. This adds a subtle
+          "Now Playing" label + title so viewers on the home-screen hero
+          know what's airing without covering any content.                  */}
+      {variant === "hero" && isOnAir && (
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            bottom: "var(--tv-safe-v, clamp(14px, 3vh, 28px))",
+            left: "var(--tv-safe-h, clamp(14px, 3vw, 28px))",
+            zIndex: 20,
+            pointerEvents: "none",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-start",
+            gap: "clamp(3px, 0.4vh, 5px)",
+            // Fade in alongside the isOnAir → ON AIR badge so both appear
+            // in sync when the broadcast becomes active.
+            opacity: isOnAir ? 1 : 0,
+            transform: isOnAir ? "translateY(0)" : "translateY(6px)",
+            transition: "opacity 700ms cubic-bezier(0.16,1,0.3,1), transform 700ms cubic-bezier(0.16,1,0.3,1)",
+          }}
+        >
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            marginBottom: 2,
+          }}>
+            <div style={{
+              width: 2,
+              height: "clamp(9px, 1vh, 12px)",
+              borderRadius: 999,
+              background: "rgba(167,139,250,0.7)",
+              flexShrink: 0,
+            }} />
+            <span style={{
+              fontSize: "clamp(8px, 0.7vw, 10px)",
+              fontWeight: 700,
+              letterSpacing: "0.18em",
+              color: "rgba(196,181,253,0.65)",
+              textTransform: "uppercase" as const,
+            }}>
+              Now Playing
+            </span>
+          </div>
+          <p style={{
+            margin: 0,
+            fontSize: "clamp(12px, 1.3vw, 20px)",
+            fontWeight: 700,
+            color: "rgba(255,255,255,0.92)",
+            textShadow: "0 1px 10px rgba(0,0,0,0.85), 0 2px 24px rgba(0,0,0,0.5)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            maxWidth: "clamp(140px, 38vw, 560px)",
+          }}>
+            {title}
+          </p>
+        </div>
+      )}
+
+      {/* Full-width progress bar — scrub line at the very bottom of the
+          container. Shown only in "player" variant when progress is
+          trackable (known queue item with a valid durationSecs). Lives
+          above the gradient footer (zIndex 25) so it is never obscured.
+          The purple glow reinforces the brand identity in dark environments.*/}
+      {variant === "player" && progressPct !== null && (
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            bottom: 0,
+            left: 0,
+            right: 0,
+            zIndex: 25,
+            height: 3,
+            background: "rgba(255,255,255,0.07)",
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            style={{
+              height: "100%",
+              width: `${progressPct * 100}%`,
+              background: "linear-gradient(90deg, rgba(109,40,217,0.85) 0%, rgba(167,139,250,0.8) 100%)",
+              transition: "width 500ms linear",
+              boxShadow: "0 0 8px rgba(167,139,250,0.5)",
+            }}
+          />
         </div>
       )}
 

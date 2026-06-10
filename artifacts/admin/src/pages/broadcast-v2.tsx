@@ -1311,6 +1311,34 @@ function BroadcastV2PageInner() {
     },
   });
 
+  // Remux repair for CORRUPT_SOURCE / structure_invalid items.
+  // Calls POST /broadcast-v2/queue/:id/retry-repair which attempts a stream-copy
+  // remux to rebuild the moov atom without re-encoding. Faster than re-uploading.
+  const retryRepairMutation = useMutation({
+    mutationFn: (itemId: string) =>
+      api.post<{ ok: boolean; videoId: string; message: string }>(
+        `/broadcast-v2/queue/${itemId}/retry-repair`,
+        {},
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      toast.success("Remux repair started — queue will update automatically when complete.");
+    },
+    onError: (err) => {
+      toast.error(
+        err instanceof HttpError
+          ? err.message
+          : "Remux repair request failed — check server logs.",
+      );
+    },
+  });
+
   // Sync library → queue: scans managed_videos for playable rows not yet in
   // broadcast_queue and inserts them. Idempotent — safe to call repeatedly.
   const syncLibraryMutation = useMutation({
@@ -3722,6 +3750,8 @@ function BroadcastV2PageInner() {
                         isReprobing={reprobeMutation.isPending}
                         onReupload={handleReuploadClick}
                         isReuploading={resetForReuploadMutation.isPending}
+                        onRetryRepair={(itemId) => retryRepairMutation.mutate(itemId)}
+                        isRetryingRepair={retryRepairMutation.isPending}
                       />
                     );
                   })}
