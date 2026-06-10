@@ -31,7 +31,7 @@ import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { boostTranscodePriority } from "./transcoder.queue.js";
-import { detectMdatWithoutMoov, probeContainerIsValid, remuxForFaststart } from "./transcoder.service.js";
+import { detectMdatWithoutMoov, probeContainerIsValid, remuxForFaststart, validateLocalSourceFile } from "./transcoder.service.js";
 
 const videos = schema.videosTable;
 
@@ -335,6 +335,29 @@ export async function runFaststart(
           `The video will be processed by the HLS transcoder instead.`,
         ),
         { code: "DOWNLOAD_TRUNCATED" },
+      );
+    }
+
+    // ── Magic-bytes and file-type pre-flight ──────────────────────────────────
+    // Verify the downloaded file is not an HTML error page, JSON response,
+    // image, or other non-video content. validateLocalSourceFile also enforces
+    // the minimum size (1 KiB) so a zero-write caused by a storage edge case
+    // is caught here with a clear diagnostic rather than a misleading
+    // "moov atom not found" from probeContainerIsValid.
+    // Use DOWNLOAD_TRUNCATED (not CORRUPT_UPLOAD) so a transient storage blip
+    // does not permanently mark the video as corrupt and block all retries.
+    try {
+      await validateLocalSourceFile(inputPath);
+    } catch (valErr) {
+      const code = (valErr as { code?: string })?.code === "SOURCE_MISSING"
+        ? "DOWNLOAD_TRUNCATED"
+        : "CORRUPT_UPLOAD";
+      throw Object.assign(
+        new Error(
+          `faststart: source file failed pre-flight validation: ` +
+          `${valErr instanceof Error ? valErr.message : String(valErr)}`,
+        ),
+        { code },
       );
     }
 

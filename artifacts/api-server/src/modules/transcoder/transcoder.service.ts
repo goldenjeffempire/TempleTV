@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { mkdir, readdir, readFile, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { mkdir, open as fsOpen, readdir, readFile, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
@@ -98,6 +98,8 @@ const FFMPEG_CRF = String(env.TRANSCODER_CRF);
 const THUMBNAIL_TIMEOUT_MS = 30_000;
 const PROBE_TIMEOUT_MS = 30_000;
 const RESOLUTION_PROBE_TIMEOUT_MS = 15_000;
+/** Hard deadline for the frame-decode integrity probe in probeCanDecodeFirstFrame. */
+const FRAME_DECODE_TIMEOUT_MS = 30_000;
 // Max concurrent file uploads when copying HLS segments to object storage.
 const UPLOAD_CONCURRENCY = 10;
 // Max concurrent uploads during the progressive in-flight segment uploader.
@@ -911,7 +913,8 @@ export async function probeContainerIsValid(inputPath: string): Promise<boolean>
       clearTimeout(timer);
       // Hard fail when ffprobe exits non-zero OR stderr emits one of the
       // container-corruption signatures that ALSO break the HLS muxer.
-      const containerErrorPattern = /moov atom not found|invalid data found|partial file|EOF before frame|error reading header/i;
+      const containerErrorPattern =
+        /moov atom not found|invalid data found|partial file|EOF before frame|error reading header|no video stream|no streams were found|codec not currently supported in container|output file is empty/i;
       if (code !== 0 || containerErrorPattern.test(err)) {
         settle(false);
         return;
@@ -1019,6 +1022,231 @@ export async function detectMdatWithoutMoov(inputPath: string): Promise<boolean>
   } finally {
     await fd?.close().catch(() => undefined);
   }
+}
+
+/**
+ * Verify a locally-downloaded source file is present, non-empty, large enough
+ * to be a valid video container, and does not contain obvious non-video content
+ * (HTML error pages, JSON responses, images, etc.) that slipped past the
+ * upload MIME gate.
+ *
+ * Throws with a structured `{ code }` error on failure — callers map the code
+ * to either CORRUPT_SOURCE (permanent) or DOWNLOAD_TRUNCATED (transient).
+ *
+ * Exported so faststart.service.ts can share the same gate.
+ */
+export async function validateLocalSourceFile(
+  filePath: string,
+  expectedSizeBytes?: number,
+): Promise<void> {
+  const MIN_VIDEO_SIZE_BYTES = 1024; // 1 KiB — smallest possible valid container
+
+  let fileSize: number;
+  try {
+    fileSize = (await stat(filePath)).size;
+  } catch (statErr) {
+    throw Object.assign(
+      new Error(
+        `Source file does not exist or is not readable at "${filePath}". ` +
+        `Expected the file to be present after download. ` +
+        `Error: ${statErr instanceof Error ? statErr.message : String(statErr)}`,
+      ),
+      { code: "SOURCE_MISSING" },
+    );
+  }
+
+  if (fileSize === 0) {
+    throw Object.assign(
+      new Error(
+        `Source file is empty (0 bytes) at "${filePath}". ` +
+        `The download may have been truncated or the storage record is corrupt. ` +
+        `Re-upload the source file to recover.`,
+      ),
+      { code: "CORRUPT_SOURCE" },
+    );
+  }
+
+  if (fileSize < MIN_VIDEO_SIZE_BYTES) {
+    throw Object.assign(
+      new Error(
+        `Source file is too small to be a valid video container: ` +
+        `${fileSize} bytes at "${filePath}" (minimum ${MIN_VIDEO_SIZE_BYTES} bytes). ` +
+        `The file may be a stub, error response, or corrupt storage record.`,
+      ),
+      { code: "CORRUPT_SOURCE" },
+    );
+  }
+
+  if (expectedSizeBytes != null && expectedSizeBytes > 0 && fileSize !== expectedSizeBytes) {
+    throw new Error(
+      `Source file size mismatch at "${filePath}": ` +
+      `expected ${expectedSizeBytes} bytes (from storage metadata) but found ${fileSize} bytes on disk. ` +
+      `The download was truncated or the storage record is stale.`,
+    );
+  }
+
+  // ── Magic-bytes container signature check ──────────────────────────────────
+  // Read the first 12 bytes to detect obviously-wrong file types before
+  // calling ffprobe. Reject non-video content (HTML, JSON, ZIP, image) that
+  // slipped past the MIME-type gate at upload time. Unrecognised container
+  // box types (MKV, AVI, WebM, MPEG-TS) are logged at debug and passed
+  // through — only content that is definitively NOT a video is rejected.
+  try {
+    const fd = await fsOpen(filePath, "r");
+    try {
+      const header = Buffer.allocUnsafe(12);
+      const { bytesRead } = await fd.read(header, 0, 12, 0);
+      if (bytesRead >= 4) {
+        const sig0 = header[0]!;
+        const sig1 = header[1]!;
+        const sig2 = header[2]!;
+        const sig3 = header[3]!;
+        const sigStr = header.subarray(0, 4).toString("binary");
+        const isHtml  = sigStr.startsWith("<");
+        const isJson  = sigStr.startsWith("{") || sigStr.startsWith("[");
+        const isZip   = sig0 === 0x50 && sig1 === 0x4b;          // PK — ZIP/Office/EPUB
+        const isJpeg  = sig0 === 0xff && sig1 === 0xd8;           // JFIF/EXIF
+        const isPng   = sig0 === 0x89 && sig1 === 0x50 && sig2 === 0x4e && sig3 === 0x47;
+        const isGif   = sigStr.startsWith("GIF");
+        const isPdf   = sigStr.startsWith("%PDF");
+        const isXml   = sigStr.startsWith("<?xm") || sigStr.startsWith("<?XM");
+        const isId3   = sigStr.startsWith("ID3");                 // MP3 ID3 tag
+        const isBmp   = sig0 === 0x42 && sig1 === 0x4d;           // BM
+        const isWebp  = bytesRead >= 12 && header.subarray(8, 12).toString("ascii") === "WEBP";
+
+        if (isHtml || isJson || isZip || isJpeg || isPng || isGif || isPdf || isXml || isId3 || isBmp || isWebp) {
+          const detected =
+            isHtml ? "HTML" : isJson ? "JSON" : isZip ? "ZIP/Office" :
+            isJpeg ? "JPEG image" : isPng ? "PNG image" : isGif ? "GIF image" :
+            isPdf ? "PDF document" : isXml ? "XML/text" : isId3 ? "MP3 audio" :
+            isBmp ? "BMP image" : "WebP image";
+          throw Object.assign(
+            new Error(
+              `Source file at "${filePath}" appears to be ${detected}, not a video container. ` +
+              `Magic bytes: 0x${header.subarray(0, 4).toString("hex")}. ` +
+              `The uploaded file's content does not match its declared MIME type. ` +
+              `Please re-upload a valid video file.`,
+            ),
+            { code: "CORRUPT_SOURCE" },
+          );
+        }
+
+        // Log a debug note for non-MP4 containers (MKV, WebM, MPEG-TS, AVI)
+        // so operators can trace unusual source formats without failing the job.
+        if (bytesRead >= 8) {
+          const boxType = header.subarray(4, 8).toString("ascii");
+          const knownMp4Boxes = new Set(["ftyp", "moov", "mdat", "wide", "free", "skip", "junk", "pnot"]);
+          if (!knownMp4Boxes.has(boxType)) {
+            logger.debug(
+              { filePath, boxType, firstBytes: header.subarray(0, 8).toString("hex") },
+              "transcoder: source file has non-standard MP4 box type — may be MKV/WebM/TS/AVI (ffprobe will verify)",
+            );
+          }
+        }
+      }
+    } finally {
+      await fd.close().catch(() => undefined);
+    }
+  } catch (err) {
+    if ((err as { code?: string }).code === "CORRUPT_SOURCE") throw err;
+    // Any other I/O error reading the header is non-fatal — ffprobe will
+    // discover real corruption on its own (avoids spurious failures on
+    // unusual filesystems or extremely small read budgets).
+    logger.warn(
+      { err, filePath },
+      "transcoder: could not read source file header for magic-bytes check (non-fatal — proceeding to ffprobe)",
+    );
+  }
+}
+
+/**
+ * Attempt to decode the first video frame of a local file to verify that its
+ * media data (mdat) is intact and decodable — not just that the container
+ * structure (moov atom) is parseable.
+ *
+ * This closes the gap that probeContainerIsValid misses: files where moov is
+ * valid (correct stream counts, codec parameters, sample tables) but mdat is
+ * truncated, bit-flipped, or otherwise corrupt. Such files pass the structural
+ * probe because ffprobe reads stream info from moov only and does NOT read
+ * the payload. They then enter the full HLS encode loop and fail after burning
+ * a full 15+ minute transcoding attempt with a decode-error exit.
+ *
+ * Uses ffmpeg (not ffprobe) because only an actual decode pass exercises the
+ * mdat payload. `-t 2.0` limits processing to the first 2 seconds so the
+ * probe completes in < 1 s for normal files regardless of total duration.
+ *
+ * Returns:
+ *   true  — at least one frame decoded successfully, OR the probe is
+ *           unavailable (ffmpeg not on PATH) / times out — fail-open so
+ *           transient slowness does not permanently reject healthy files.
+ *   false — decode explicitly failed (clear media-data corruption signal).
+ */
+async function probeCanDecodeFirstFrame(inputPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const proc = spawn("ffmpeg", [
+      "-v", "error",
+      "-t", "2.0",        // inspect first 2 s of media data only
+      "-i", inputPath,
+      "-vframes", "1",    // decode exactly one video frame
+      "-f", "null",
+      "-",
+    ], { stdio: ["ignore", "ignore", "pipe"] });
+    proc.unref();
+    let stderrTail = "";
+    let settled = false;
+    const settle = (val: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+    const timer = setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch { /* noop */ }
+      logger.warn(
+        { inputPath, timeoutMs: FRAME_DECODE_TIMEOUT_MS },
+        "transcoder: frame-decode probe timed out — treating file as decodable (fail-open)",
+      );
+      settle(true); // fail-open on timeout
+    }, FRAME_DECODE_TIMEOUT_MS);
+    timer.unref();
+    proc.stderr?.on("data", (b: Buffer) => {
+      stderrTail = (stderrTail + b.toString()).slice(-2000);
+    });
+    proc.on("error", () => {
+      // ffmpeg not on PATH — fail open: systems without ffmpeg must not have
+      // all uploads permanently rejected by a missing binary.
+      clearTimeout(timer);
+      settle(true);
+    });
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        settle(true);
+        return;
+      }
+      // Patterns that definitively indicate media-data corruption rather than
+      // a transient environment issue ("Too many open files", "Out of memory").
+      // The regex tests ffmpeg's -v error output only, so these patterns are
+      // reliable markers of actual payload corruption.
+      const mediaCorruptPattern =
+        /moov atom not found|invalid data found when processing|error decoding|decode_slice_header|no decodable DTS|no frames decoded|Output file is empty|invalid nal unit size|error while decoding MB|bytes read mismatch|corrupted input|End of file/i;
+      if (mediaCorruptPattern.test(stderrTail)) {
+        logger.warn(
+          { inputPath, stderrTail: stderrTail.slice(-500) },
+          "transcoder: frame-decode probe failed — media data appears corrupt or undecodable",
+        );
+        settle(false);
+        return;
+      }
+      // Non-zero exit but no clear corruption signal (codec quirk, incomplete
+      // frames at the -t 2.0 boundary, etc.) — fail-open to avoid false-
+      // positive rejections of unusual-but-valid source formats.
+      logger.debug(
+        { inputPath, exitCode: code, stderrTail: stderrTail.slice(-200) },
+        "transcoder: frame-decode probe exited non-zero without a known corruption pattern — treating as decodable",
+      );
+      settle(true);
+    });
+  });
 }
 
 /**
@@ -1367,6 +1595,14 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
     // surfacing later as a misleading "moov atom not found" from ffmpeg.
     await downloadSourceToTempFile(req.sourceObjectKey, sourceTempPath);
 
+    // ── Pre-ffprobe file integrity gate ───────────────────────────────────────
+    // Verify the downloaded file is present, non-empty, meets the minimum size
+    // for a valid video container, and does not contain obvious non-video
+    // content (HTML error pages, JSON responses, images, etc.) that slipped
+    // past the upload MIME gate. Throws with a structured code so the
+    // dispatcher can classify the failure without parsing ffprobe stderr.
+    await validateLocalSourceFile(sourceTempPath);
+
     // Pre-flight container validation.
     //
     // Detects MP4s where the moov atom is at EOF, fragmented, or otherwise
@@ -1417,6 +1653,30 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         );
       }
       activeSourcePath = recovered;
+    }
+
+    // ── Media-data decodability gate ──────────────────────────────────────────
+    // probeContainerIsValid only reads the moov/stream-header structure — it
+    // does NOT read the mdat payload. A file can have a perfectly valid moov
+    // atom (correct stream counts, codec parameters, sample tables) but have
+    // its mdat truncated, bit-flipped, or otherwise corrupt. Such files pass
+    // the structural probe and enter the full HLS encode loop, where ffmpeg
+    // fails with a decode error after burning 15+ minutes of compute.
+    //
+    // probeCanDecodeFirstFrame uses ffmpeg to decode exactly one video frame
+    // from the first 2 s of media data. If the mdat payload is intact this
+    // probe completes in < 1 s. If the mdat is corrupt the ffmpeg decode exits
+    // non-zero with a clear error pattern and we throw CORRUPT_SOURCE.
+    const firstFrameDecodable = await probeCanDecodeFirstFrame(activeSourcePath);
+    if (!firstFrameDecodable) {
+      throw Object.assign(
+        new Error(
+          "Video file passes container structure check but its media data cannot be decoded. " +
+          "The mdat payload is likely truncated, bit-corrupted, or uses an unsupported codec variant. " +
+          "Please re-upload from the original source file.",
+        ),
+        { code: "CORRUPT_SOURCE" },
+      );
     }
 
     // Run duration and audio probes in parallel. Resolution is probed separately
@@ -1941,6 +2201,9 @@ export async function probeUploadedDuration(sourceObjectKey: string): Promise<nu
     const ext = path.extname(sourceObjectKey) || ".mp4";
     const tmpPath = path.join(tmpDir, `source${ext}`);
     await downloadSourceToTempFile(sourceObjectKey, tmpPath);
+    // Guard before ffprobe: a zero-byte or non-video download produces
+    // a confusing "no duration" rather than a clear diagnostic otherwise.
+    await validateLocalSourceFile(tmpPath);
     const dur = await probeDurationSecs(tmpPath);
     if (dur != null) {
       logger.info({ sourceObjectKey, durationSecs: dur }, "probe-duration: ok");
@@ -1955,17 +2218,30 @@ export async function probeUploadedDuration(sourceObjectKey: string): Promise<nu
 }
 
 /**
- * Download an assembled video from object storage to a temp file and run
- * `probeContainerIsValid` to determine whether its container can be decoded.
+ * Download an assembled video from object storage to a temp file and run a
+ * two-stage validation:
  *
- * Returns `{ valid: true }` when the container is healthy, or when storage
- * is unavailable (probe is skipped rather than blocking the pipeline).
- * Returns `{ valid: false, error }` when ffprobe detects a structural problem
- * (moov not found, invalid data found, partial file, EOF before frame, etc.).
+ *   Stage 0 — validateLocalSourceFile:
+ *     existence, non-zero size, min-size (1 KiB), and magic-bytes check.
+ *     Catches HTML error pages, zero-byte downloads, and obvious non-video
+ *     content before any subprocess is spawned.
  *
- * Non-throwing — any exception is caught and returned as `{ valid: false }`.
- * Callers use the result for diagnostic logging only; faststart.service.ts
- * handles the actual repair (remux recovery) during its own download pass.
+ *   Stage 1 — probeContainerIsValid (ffprobe):
+ *     Verifies the moov atom is present and the container header is parseable.
+ *
+ *   Stage 2 — probeCanDecodeFirstFrame (ffmpeg):
+ *     Decodes one video frame from the first 2 s of mdat to verify the media
+ *     payload is intact — not just the container structure. Catches files
+ *     where moov is valid but mdat is truncated or bit-corrupted.
+ *
+ * Returns `{ valid: true }` when all stages pass, or when storage is
+ * unavailable (probe is skipped rather than blocking the pipeline).
+ * Returns `{ valid: false, error }` when any stage detects a problem.
+ *
+ * Non-throwing — any infrastructure exception is caught and returned as
+ * `{ valid: true }` (fail-open) so a transient download error does not
+ * permanently mark a healthy video as corrupt; faststart and the HLS
+ * transcoder will discover real corruption on their own passes.
  */
 export async function probeUploadedContainerValidity(
   objectKey: string,
@@ -1979,8 +2255,37 @@ export async function probeUploadedContainerValidity(
     const ext = extRaw || ".mp4";
     const tmpPath = path.join(tmpDir, `source${ext}`);
     await downloadSourceToTempFile(objectKey, tmpPath);
-    const valid = await probeContainerIsValid(tmpPath);
-    return { valid };
+
+    // Stage 0: existence, size, and magic-bytes gate (no subprocess).
+    try {
+      await validateLocalSourceFile(tmpPath);
+    } catch (valErr) {
+      const errMsg = valErr instanceof Error ? valErr.message : String(valErr);
+      return { valid: false, error: `source file failed pre-flight validation: ${errMsg}` };
+    }
+
+    // Stage 1: structural integrity — moov atom present and parseable.
+    const containerStructureValid = await probeContainerIsValid(tmpPath);
+    if (!containerStructureValid) {
+      return { valid: false, error: "container structure invalid (moov atom missing, partial file, or damaged container header)" };
+    }
+
+    // Stage 2: media-data decodability — mdat payload is intact.
+    // probeContainerIsValid only reads the moov/stream-header; a file can
+    // have a valid moov but a truncated or corrupt mdat that would pass the
+    // structural check yet fail HLS encoding after 15+ minutes of wasted
+    // compute. Decode the first frame to verify the payload.
+    const mediaDataDecodable = await probeCanDecodeFirstFrame(tmpPath);
+    if (!mediaDataDecodable) {
+      return {
+        valid: false,
+        error:
+          "media data undecodable: container structure is valid but the first video frame " +
+          "cannot be decoded — mdat may be truncated, bit-corrupted, or the codec is unsupported",
+      };
+    }
+
+    return { valid: true };
   } catch (err) {
     // Any exception here is an infrastructure failure (download error, tmp
     // directory I/O error, etc.) — NOT evidence of container corruption.
@@ -2024,6 +2329,9 @@ export async function generateQuickThumbnail(
     const ext = path.extname(sourceObjectKey) || ".mp4";
     const sourceTempPath = path.join(scratchDir, `source${ext}`);
     await downloadSourceToTempFile(sourceObjectKey, sourceTempPath);
+    // Guard before ffmpeg: a zero-byte or non-video download would produce a
+    // confusing ffmpeg error; fail with a clear log entry instead.
+    await validateLocalSourceFile(sourceTempPath);
 
     const thumbLocalPath = await generateThumbnail(sourceTempPath, scratchDir);
     if (!thumbLocalPath) return null;
