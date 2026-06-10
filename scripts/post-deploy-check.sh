@@ -51,9 +51,9 @@ FAIL=0
 WARN=0
 FAILURES=()
 
-ok()   { echo -e "  ${GREEN}✓${NC} $*"; ((PASS++)); }
-fail() { echo -e "  ${RED}✗${NC} $*"; ((FAIL++)); FAILURES+=("$*"); }
-warn() { echo -e "  ${YELLOW}⚠${NC} $*"; ((WARN++)); }
+ok()   { echo -e "  ${GREEN}✓${NC} $*"; PASS=$((PASS + 1)); }
+fail() { echo -e "  ${RED}✗${NC} $*"; FAIL=$((FAIL + 1)); FAILURES+=("$*"); }
+warn() { echo -e "  ${YELLOW}⚠${NC} $*"; WARN=$((WARN + 1)); }
 info() { echo -e "  ${CYAN}→${NC} $*"; }
 
 # ── Resolve URLs per environment ──────────────────────────────────────────────
@@ -100,8 +100,8 @@ else
   fail "API /api/healthz → HTTP $HEALTH_STATUS (expected 200)"
 fi
 
-# Response time SLA < 2000ms
-HEALTH_TIME_MS=$(echo "$HEALTH_TIME * 1000 / 1" | bc 2>/dev/null || echo "9999")
+# Response time SLA < 2000ms (node used — bc/python3 not universally available)
+HEALTH_TIME_MS=$(node -e "process.stdout.write(String(Math.floor(parseFloat('${HEALTH_TIME:-9.999}')*1000)))" 2>/dev/null || echo "9999")
 if [ "${HEALTH_TIME_MS:-9999}" -lt 2000 ]; then
   ok "Response time SLA < 2s (actual: ${HEALTH_TIME}s)"
 else
@@ -109,8 +109,7 @@ else
 fi
 
 # Check status field in JSON body
-HEALTH_STATUS_FIELD=$(cat /tmp/health_body.txt | python3 -c \
-  "import sys,json; d=json.load(sys.stdin); print(d.get('status',''))" 2>/dev/null || echo "")
+HEALTH_STATUS_FIELD=$(node -e "try{const d=require('fs').readFileSync('/tmp/health_body.txt','utf8');process.stdout.write((JSON.parse(d).status||'')+'\n')}catch(e){}" 2>/dev/null || echo "")
 if [ "$HEALTH_STATUS_FIELD" = "ok" ]; then
   ok "API reports status=ok"
 else
@@ -120,8 +119,7 @@ fi
 # ── 2. Database connectivity ───────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}2. Database Connectivity${NC}"
-DB_FIELD=$(cat /tmp/health_body.txt | python3 -c \
-  "import sys,json; d=json.load(sys.stdin); print(d.get('db','unknown'))" 2>/dev/null || echo "unknown")
+DB_FIELD=$(node -e "try{const d=require('fs').readFileSync('/tmp/health_body.txt','utf8');const o=JSON.parse(d);process.stdout.write((o.db||'unknown')+'\n')}catch(e){process.stdout.write('unknown\n')}" 2>/dev/null || echo "unknown")
 if [ "$DB_FIELD" = "ok" ] || [ "$DB_FIELD" = "connected" ]; then
   ok "Database connectivity: $DB_FIELD"
 else
@@ -142,23 +140,23 @@ fi
 # ── 4. Admin SPA ───────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}4. Admin Dashboard${NC}"
-ADMIN_STATUS=$(curl -o /dev/null -s -w "%{http_code}" \
-  --max-time "$TIMEOUT" "$ADMIN_URL" 2>/dev/null || echo "000")
+ADMIN_STATUS=$(curl -o /dev/null -s -w "%{http_code}" --max-time "$TIMEOUT" "$ADMIN_URL" 2>/dev/null; true)
+ADMIN_STATUS="${ADMIN_STATUS:0:3}"
 if [ "$ADMIN_STATUS" = "200" ]; then
   ok "Admin dashboard reachable (HTTP $ADMIN_STATUS)"
 else
-  warn "Admin dashboard: HTTP $ADMIN_STATUS (may be behind auth)"
+  warn "Admin dashboard: HTTP $ADMIN_STATUS (may be behind auth or CDN)"
 fi
 
 # ── 5. TV SPA ──────────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}5. Smart TV Web App${NC}"
-TV_STATUS=$(curl -o /dev/null -s -w "%{http_code}" \
-  --max-time "$TIMEOUT" "$TV_URL" 2>/dev/null || echo "000")
+TV_STATUS=$(curl -o /dev/null -s -w "%{http_code}" --max-time "$TIMEOUT" "$TV_URL" 2>/dev/null; true)
+TV_STATUS="${TV_STATUS:0:3}"
 if [ "$TV_STATUS" = "200" ]; then
   ok "TV web app reachable (HTTP $TV_STATUS)"
 else
-  warn "TV web app: HTTP $TV_STATUS (may be CloudFront/CDN)"
+  warn "TV web app: HTTP $TV_STATUS (may be CDN or not yet deployed)"
 fi
 
 # ── 6. SSL certificate check ───────────────────────────────────────────────────
@@ -171,7 +169,7 @@ for HOST in "$(echo "$API_URL" | sed 's|https://||')" "$(echo "$ADMIN_URL" | sed
 
   if [ -n "$CERT_EXPIRY" ]; then
     EXPIRY_EPOCH=$(date -d "$CERT_EXPIRY" +%s 2>/dev/null || \
-      python3 -c "import datetime; print(int(datetime.datetime.strptime('$CERT_EXPIRY', '%b %d %H:%M:%S %Y %Z').timestamp()))" 2>/dev/null || echo "0")
+      node -e "process.stdout.write(String(Math.floor(new Date('$CERT_EXPIRY').getTime()/1000)))" 2>/dev/null || echo "0")
     NOW_EPOCH=$(date +%s)
     DAYS_LEFT=$(( (EXPIRY_EPOCH - NOW_EPOCH) / 86400 ))
 
@@ -202,11 +200,14 @@ fi
 # ── 8. SSE gateway ────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}8. Real-time SSE Gateway${NC}"
+# Use "; true" — not "|| echo 000" — to avoid appending "000" to a valid HTTP
+# code when curl exits non-zero due to --max-time timeout on a streaming SSE.
 SSE_STATUS=$(curl -o /dev/null -s -w "%{http_code}" \
   --max-time 3 \
   -H "Accept: text/event-stream" \
-  "$API_URL/api/broadcast/events" 2>/dev/null || echo "000")
-if [ "$SSE_STATUS" = "200" ] || [ "$SSE_STATUS" = "000" ]; then
+  "$API_URL/api/broadcast/events" 2>/dev/null; true)
+SSE_STATUS="${SSE_STATUS:0:3}"
+if [ "$SSE_STATUS" = "200" ] || [ -z "$SSE_STATUS" ]; then
   ok "SSE gateway /api/broadcast/events (connects)"
 else
   fail "SSE gateway returned HTTP $SSE_STATUS"

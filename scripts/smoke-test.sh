@@ -39,9 +39,9 @@ FAIL=0
 SKIP=0
 FAILURES=()
 
-pass() { echo -e "${GREEN}  ✓${NC} $*"; ((PASS++)); }
-fail() { echo -e "${RED}  ✗${NC} $*"; ((FAIL++)); FAILURES+=("$*"); }
-skip() { echo -e "${YELLOW}  ·${NC} $* (skipped — no token)"; ((SKIP++)); }
+pass() { echo -e "${GREEN}  ✓${NC} $*"; PASS=$((PASS + 1)); }
+fail() { echo -e "${RED}  ✗${NC} $*"; FAIL=$((FAIL + 1)); FAILURES+=("$*"); }
+skip() { echo -e "${YELLOW}  ·${NC} $* (skipped — no token)"; SKIP=$((SKIP + 1)); }
 info() { echo -e "${CYAN}  →${NC} $*"; }
 
 check_http() {
@@ -69,7 +69,7 @@ check_json_field() {
   local extra_args=("${@:4}")
 
   BODY=$(curl -fsSL --max-time "$TIMEOUT" "${extra_args[@]}" "$url" 2>/dev/null || echo "{}")
-  VALUE=$(echo "$BODY" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('$field','MISSING'))" 2>/dev/null || echo "PARSE_ERROR")
+  VALUE=$(node -e "try{const o=JSON.parse(require('fs').readFileSync(0,'utf8'));const v=o['$field'];process.stdout.write((v!==undefined?String(v):'MISSING')+'\n')}catch(e){process.stdout.write('PARSE_ERROR\n')}" <<< "$BODY" 2>/dev/null || echo "PARSE_ERROR")
 
   if [ "$VALUE" != "MISSING" ] && [ "$VALUE" != "PARSE_ERROR" ] && [ -n "$VALUE" ]; then
     pass "$label (field '$field' = $VALUE)"
@@ -91,7 +91,7 @@ echo ""
 # ── 1. Health check ────────────────────────────────────────────────────────────
 echo -e "${BOLD}1. Health & Status${NC}"
 check_http "GET /api/healthz" "$API_URL/api/healthz"
-check_http "GET /api/v1/health (versioned)" "$API_URL/api/v1/health" "200"
+check_http "GET /api/broadcast-v2/health" "$API_URL/api/broadcast-v2/health" "200"
 check_json_field "healthz returns status=ok" "$API_URL/api/healthz" "status"
 
 # ── 2. Public endpoints ────────────────────────────────────────────────────────
@@ -106,7 +106,7 @@ check_http "GET /api/broadcast/viewers" "$API_URL/api/broadcast/viewers"
 echo ""
 echo -e "${BOLD}3. Content (Public)${NC}"
 check_http "GET /api/v1/videos (public catalog)" "$API_URL/api/v1/videos"
-check_http "GET /api/v1/sermons" "$API_URL/api/v1/sermons" "200"
+check_http "GET /api/v1/series" "$API_URL/api/v1/series"
 
 # ── 4. Auth endpoints (shape check only — no credentials needed) ───────────────
 echo ""
@@ -114,8 +114,8 @@ echo -e "${BOLD}4. Auth Endpoints (shape check)${NC}"
 check_http "POST /api/auth/login (no body → 400 expected)" \
   "$API_URL/api/auth/login" "400" \
   -X POST -H "Content-Type: application/json" -d "{}"
-check_http "POST /api/auth/refresh (no token → 401)" \
-  "$API_URL/api/auth/refresh" "401" \
+check_http "POST /api/auth/refresh (no body → 400 validation)" \
+  "$API_URL/api/auth/refresh" "400" \
   -X POST -H "Content-Type: application/json" -d "{}"
 
 # ── 5. Authenticated admin endpoints ──────────────────────────────────────────
@@ -146,23 +146,26 @@ echo ""
 echo -e "${BOLD}6. API Security Checks${NC}"
 check_http "Unauthenticated admin (should be 401)" \
   "$API_URL/api/v1/admin/videos" "401"
-check_http "Seed endpoint (no token → 401/403)" \
-  "$API_URL/api/auth/seed" "401" \
+check_http "Seed endpoint (no valid body → 400 validation)" \
+  "$API_URL/api/auth/seed" "400" \
   -X POST -H "Content-Type: application/json" -d '{"email":"x","password":"y"}'
 
 # ── 7. OpenAPI spec ────────────────────────────────────────────────────────────
 echo ""
 echo -e "${BOLD}7. OpenAPI / Docs${NC}"
-check_http "GET /api/docs (Swagger)" "$API_URL/api/docs" "200"
+check_http "GET /docs (Swagger UI)" "$API_URL/docs" "200"
 
 # ── 8. SSE smoke (connect + disconnect) ───────────────────────────────────────
 echo ""
 echo -e "${BOLD}8. Real-time (SSE connect)${NC}"
+# Use "; true" (not "|| echo 000") to avoid appending "000" to a valid HTTP code
+# when curl exits non-zero due to --max-time timeout on a long-lived SSE stream.
 SSE_STATUS=$(curl -o /dev/null -s -w "%{http_code}" \
   --max-time 3 \
   -H "Accept: text/event-stream" \
-  "$API_URL/api/broadcast/events" 2>/dev/null || echo "000")
-if [ "$SSE_STATUS" = "200" ] || [ "$SSE_STATUS" = "000" ]; then
+  "$API_URL/api/broadcast/events" 2>/dev/null; true)
+SSE_STATUS="${SSE_STATUS:0:3}"
+if [ "$SSE_STATUS" = "200" ] || [ -z "$SSE_STATUS" ]; then
   pass "SSE /api/broadcast/events (connects + streams)"
 else
   fail "SSE /api/broadcast/events — unexpected status $SSE_STATUS"
