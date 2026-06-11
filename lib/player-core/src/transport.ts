@@ -66,6 +66,20 @@ export interface TransportConfig {
    * broadcast desync for VOD HLS content.
    */
   onClockCalibration?: (offsetMs: number) => void;
+  /**
+   * Optional bearer-token factory for telemetry endpoints (`/report-position`,
+   * `/report-stall`, `/natural-end`). When provided, the returned value is
+   * sent as `Authorization: Bearer <token>` on each outgoing POST.
+   *
+   * This is intentionally optional so unauthenticated surfaces (public TV,
+   * anonymous web viewers) can still call these endpoints — the server
+   * accepts them without auth. Authenticated surfaces (admin panel, logged-in
+   * viewers) should supply their access token here so server-side drift
+   * telemetry can be attributed to a specific session when desired.
+   *
+   * Return `null` or `undefined` to send the request without auth.
+   */
+  getAuthToken?: () => string | null | undefined;
 }
 
 /**
@@ -655,9 +669,12 @@ export class V2Transport {
       const url = `${this.cfg.baseUrl}/report-position`;
       const body = JSON.stringify({ itemId, positionMs });
       if (typeof fetch !== "undefined") {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        const token = this.cfg.getAuthToken?.();
+        if (token) headers["Authorization"] = `Bearer ${token}`;
         return (fetch as typeof globalThis.fetch)(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body,
           keepalive: true,
         }).then(() => undefined).catch(() => undefined);

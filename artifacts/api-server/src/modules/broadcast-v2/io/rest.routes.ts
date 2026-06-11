@@ -461,19 +461,36 @@ export async function restRoutes(app: FastifyInstance) {
   // to decide whether to replay events. `no-store` is correct here even
   // though the response is small; the cost is one round-trip per cold
   // start and that's already the design.
-  app.get("/state", {
-    schema: { response: { 429: _429err } },
-    config: {
-      // Cold-start authority for every player surface and the recover-frame
-      // refetch target. Rate-limited to absorb aggressive polling from
-      // reconnecting clients without letting a single bad actor hammer the
-      // server. 120 req/min ≈ 1 req/500 ms — well above any legitimate
-      // polling cadence (keep-alive is 8 s).
-      rateLimit: { max: 120, timeWindow: "1 minute" } },
-  }, async (_req, reply) => {
-    reply.header("Cache-Control", "no-store, max-age=0");
-    return { state: broadcastOrchestrator.snapshot() };
-  });
+  //
+  // In-process state cache: absorbs reconnect-storm bursts when many
+  // clients reconnect simultaneously (e.g. after a brief API restart).
+  // Invalidated immediately on any frame emission (sequence advance,
+  // mode change, item advance) so the value is always authoritative.
+  // The 2 s TTL is a safety-net backstop only — in practice the frame
+  // listener fires within milliseconds of any real state change.
+  {
+    type SnapValue = ReturnType<typeof broadcastOrchestrator.snapshot>;
+    let _stateCache: { snap: SnapValue; expiresAt: number } | null = null;
+    broadcastOrchestrator.on("frame", () => { _stateCache = null; });
+
+    app.get("/state", {
+      schema: { response: { 429: _429err } },
+      config: {
+        // Cold-start authority for every player surface and the recover-frame
+        // refetch target. Rate-limited to absorb aggressive polling from
+        // reconnecting clients without letting a single bad actor hammer the
+        // server. 120 req/min ≈ 1 req/500 ms — well above any legitimate
+        // polling cadence (keep-alive is 15 s).
+        rateLimit: { max: 120, timeWindow: "1 minute" } },
+    }, (_req, reply) => {
+      reply.header("Cache-Control", "no-store, max-age=0");
+      const now = Date.now();
+      if (!_stateCache || _stateCache.expiresAt <= now) {
+        _stateCache = { snap: broadcastOrchestrator.snapshot(), expiresAt: now + 2_000 };
+      }
+      return { state: _stateCache.snap };
+    });
+  }
 
 const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegative().default(0) });
 
@@ -835,7 +852,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   // can be called by all connected clients simultaneously without risk.
   const CHECKPOINT_DRIFT_THRESHOLD_S = 30;
   app.post("/checkpoint", {
-    ...userGuard,
     bodyLimit: 1048576,
     schema: {
       body: z.object({ itemId: z.string().min(1).max(128), positionSecs: z.number().min(0).max(86400) }),
@@ -1050,14 +1066,15 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   // drift sample in the in-process DriftAggregator.
   //
   // This is OPTIONAL telemetry — the broadcast path is entirely unaffected
-  // by whether clients call this endpoint.  Auth required at "user" level
-  // (same as /report-stall) so anonymous viewers don't contribute noise;
-  // a 401 from the client is silently swallowed by the transport.
+  // by whether clients call this endpoint.
+  // No auth required — the transport sends this from every player surface
+  // including unauthenticated TV and web viewers. Auth was previously set
+  // to "user" level here but the transport never included an Authorization
+  // header, causing every position report to return 401.
   //
-  // Rate-limited to 4/min per IP (one per 30 s interval + a small burst
-  // allowance for reconnects/page-loads that fire the reporter immediately).
+  // Rate-limited to 6/min per IP (one per 30 s interval + burst allowance
+  // for reconnects/page-loads that fire the reporter immediately).
   app.post("/report-position", {
-    ...userGuard,
     bodyLimit: 1_024,
     schema: {
       body: z.object({
@@ -1073,7 +1090,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         429: _429err,
       },
     },
-    config: { rateLimit: { max: 4, timeWindow: "1 minute" } },
+    config: { rateLimit: { max: 6, timeWindow: "1 minute" } },
   }, (req, _reply) => {
     const { itemId, positionMs } = req.body as { itemId: string; positionMs: number };
     const snap = broadcastOrchestrator.snapshot();
