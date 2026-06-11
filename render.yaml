@@ -183,21 +183,6 @@ services:
                               # here. Bump to a paid plan + numInstances: 2 when
                               # load requires horizontal scale.
 
-    # ── Path-based deploy filter ───────────────────────────────────────────
-    # Only rebuild this service when API server code, shared libs, or
-    # dependency manifests change. Changes to admin/mobile/tv source files
-    # do NOT trigger an API rebuild, saving pipeline minutes on every commit
-    # that touches only a frontend surface.
-    filter:
-      paths:
-        - artifacts/api-server/**
-        - lib/**
-        - package.json
-        - pnpm-lock.yaml
-        - pnpm-workspace.yaml
-        - render.yaml
-        - scripts/**
-
     # ── Build & start ──────────────────────────────────────────────────────
     # `--prefer-offline` reuses Render's pnpm cache (cuts install from ~90 s
     # → ~25 s on warm builds). `--frozen-lockfile` guarantees reproducible CI

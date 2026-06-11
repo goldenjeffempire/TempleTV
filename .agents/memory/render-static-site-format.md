@@ -35,7 +35,7 @@ Render Blueprint static sites must use `type: web` + `env: static`. Neither `typ
 
 ## Fields NOT supported on static services (`env: static`)
 
-- `filter` / `filter.paths` — path-based deploy filters are only valid on dynamic web/worker services. Causes "filter field not found in the file service" Blueprint error if present on a static service.
+- `filter` / `filter.paths` — NOT supported on ANY service type in Render Blueprints (web, static, worker). Render's dashboard has a separate "Deploy Filters" UI for path-based triggers. Causes "field filter not found in type file.Service" on web services too.
 - `runtime` — must be omitted entirely; `env: static` implies the build target.
 - `plan` — static sites are always free; a `plan` field is ignored or rejected.
 - `numInstances` — static sites are CDN-served, not instanced.
