@@ -32,3 +32,15 @@ Render Blueprint static sites must use `type: web` + `env: static`. Neither `typ
 **Why:** Render's Blueprint parser only recognises `type: web | worker | cron | pserv`. Static sites are web services with `env: static` — this routes the service through Render's static CDN pipeline instead of a dyno. `type: static` and `runtime: static` are not valid Blueprint schema values.
 
 **How to apply:** Any time a render.yaml has a static site (admin SPA, TV SPA, Expo Web), it must use `type: web` + `env: static`. Dynamic Node.js services use `type: web` + `runtime: node`.
+
+## Fields NOT supported on static services (`env: static`)
+
+- `filter` / `filter.paths` — path-based deploy filters are only valid on dynamic web/worker services. Causes "filter field not found in the file service" Blueprint error if present on a static service.
+- `runtime` — must be omitted entirely; `env: static` implies the build target.
+- `plan` — static sites are always free; a `plan` field is ignored or rejected.
+- `numInstances` — static sites are CDN-served, not instanced.
+- `healthCheckPath` — only valid on web services with a running process.
+
+## Fields supported on static services
+
+`name`, `type: web`, `env: static`, `branch`, `rootDir`, `autoDeploy`, `pullRequestPreviewsEnabled`, `buildCommand`, `staticPublishPath`, `envVars`, `headers`, `routes`.

@@ -499,16 +499,6 @@ services:
     rootDir: .
     autoDeploy: true
     pullRequestPreviewsEnabled: false
-    # Only rebuild when admin source or its consumed libraries change.
-    filter:
-      paths:
-        - artifacts/admin/**
-        - lib/api-client-react/**
-        - lib/api-zod/**
-        - lib/api-spec/**
-        - package.json
-        - pnpm-lock.yaml
-        - pnpm-workspace.yaml
     buildCommand: |
       bash ./scripts/render-install.sh && \
       pnpm run verify:render && \
@@ -567,16 +557,6 @@ services:
     rootDir: .
     autoDeploy: true
     pullRequestPreviewsEnabled: false
-    # Only rebuild when mobile/Expo source or its consumed libraries change.
-    filter:
-      paths:
-        - artifacts/mobile/**
-        - lib/api-client-react/**
-        - lib/api-zod/**
-        - lib/api-spec/**
-        - package.json
-        - pnpm-lock.yaml
-        - pnpm-workspace.yaml
     buildCommand: |
       bash ./scripts/render-install.sh && \
       pnpm run verify:render && \
@@ -631,16 +611,6 @@ services:
     rootDir: .
     autoDeploy: true
     pullRequestPreviewsEnabled: false
-    # Only rebuild when TV source or its consumed libraries change.
-    filter:
-      paths:
-        - artifacts/tv/**
-        - lib/api-client-react/**
-        - lib/api-zod/**
-        - lib/api-spec/**
-        - package.json
-        - pnpm-lock.yaml
-        - pnpm-workspace.yaml
     buildCommand: |
       bash ./scripts/render-install.sh && \
       pnpm run verify:render && \
