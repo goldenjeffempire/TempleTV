@@ -360,42 +360,74 @@ export async function videosRoutes(app: FastifyInstance) {
       const isFiltered = !!(search?.trim() || category?.trim() || source);
 
       // ── Cursor / offset decision ──────────────────────────────────────────
-      // newest / oldest: ALWAYS use cursor (keyset) semantics — no OFFSET SQL
-      // is ever emitted for these sort modes regardless of whether the client
-      // passes a `cursor` param.  This eliminates O(page) deep-scan costs.
-      //   • page=1 / no cursor → first page (no keyset WHERE filter)
-      //   • page=N / no cursor → same as page=1 (clients should use nextCursor)
-      //   • any page + cursor  → keyset filter applied from cursor anchor
+      // newest / oldest sort: keyset (cursor) semantics by default.
       //
-      // All other sorts (published, views, title) retain offset pagination
-      // because their sort keys are non-monotonic and cannot be reliably used
-      // as keyset anchors.
+      // Page→cursor aliasing via server-side page-cursor cache:
+      //   • Page 1 (no cursor)  → first page, no keyset filter (start of list).
+      //   • Page N (no cursor)  → look up cached anchor for page N stored from
+      //                           the prior traversal of page N-1. If found →
+      //                           keyset query (no OFFSET). If not found (cold
+      //                           deep-link, cache expired) → OFFSET fallback.
+      //   • Any page + cursor   → keyset filter from the explicit cursor anchor.
+      //
+      // After each cursor-mode response nextCursor is cached as the anchor for
+      // page N+1 (TTL 5 min). Sequential traversal (1→2→3→…) stays OFFSET-free
+      // after the first pass through the catalog.
+      //
+      // Other sorts (published, views, title) always use OFFSET — their sort
+      // keys are non-monotonic and cannot be reliably used as keyset anchors.
+      //
+      // Cursor anchor column: imported_at (not published_at).
+      // published_at is nullable (external YouTube date, sometimes absent or
+      // wrong) and non-monotonic for local uploads. imported_at is always
+      // populated, written once at ingest, and indexed — making it a reliable,
+      // stable keyset anchor for pagination.
       const isCursorSort = sort === "newest" || sort === "oldest";
+
+      // Per-request page-cursor cache key: encodes all dimension parameters so
+      // distinct query shapes (sort, limit, filters) never share anchor slots.
+      const pageCursorKey = (p: number) =>
+        `pgcursor:v1:${sort}:${limit}:${search ?? ""}:${category ?? ""}:${source ?? ""}:p${p}`;
+
       const parsedCursor = rawCursor ? decodeCursor(rawCursor) : null;
-      // useCursor = always true for newest/oldest; false for all other sorts
-      const useCursor = isCursorSort;
+
+      // Resolve effective cursor: explicit param > cached anchor > none (page 1).
+      let effectiveCursor = parsedCursor;
+      let useOffsetFallback = false;
+      if (isCursorSort && !parsedCursor && page > 1) {
+        const storedCursor = await cache().get<string>(pageCursorKey(page)).catch(() => null);
+        if (storedCursor) {
+          effectiveCursor = decodeCursor(storedCursor);
+        } else {
+          // Cold deep-link with no cached anchor for this page → OFFSET fallback.
+          // Happens only on the very first visit to page N without traversing
+          // the preceding pages in this session.  Subsequent sequential requests
+          // through this same query shape will be cursor-based.
+          useOffsetFallback = true;
+        }
+      }
+
+      const useCursor = isCursorSort && !useOffsetFallback;
       const offset = useCursor ? 0 : (page - 1) * limit;
 
       // Compose the base WHERE clause (filters) plus optional cursor clause.
       const baseWhere = buildWhere(search, category, source);
 
       // Cursor keyset filter: page beyond the anchor (imported_at, id) pair.
-      // Applied ONLY when the client supplied a valid cursor token (subsequent
-      // pages). On the first page (no cursor) the filter is absent and the
-      // query returns from the start of the ordered set.
+      // Applied ONLY when an effective cursor is available (not the first page).
       // For "newest" DESC: rows where (imported_at < anchor) OR
       //                    (imported_at = anchor AND id < anchor_id)
       // For "oldest" ASC:  rows where (imported_at > anchor) OR
       //                    (imported_at = anchor AND id > anchor_id)
       let cursorFilter: SQL | undefined;
-      if (parsedCursor) {
-        const anchorTs = new Date(parsedCursor.ts);
+      if (effectiveCursor) {
+        const anchorTs = new Date(effectiveCursor.ts);
         if (sort === "oldest") {
           cursorFilter = or(
             sql`${videos.importedAt} > ${anchorTs}`,
             and(
               sql`${videos.importedAt} = ${anchorTs}`,
-              sql`${videos.id} > ${parsedCursor.id}`,
+              sql`${videos.id} > ${effectiveCursor.id}`,
             ),
           );
         } else {
@@ -404,7 +436,7 @@ export async function videosRoutes(app: FastifyInstance) {
             lt(videos.importedAt, anchorTs),
             and(
               sql`${videos.importedAt} = ${anchorTs}`,
-              sql`${videos.id} < ${parsedCursor.id}`,
+              sql`${videos.id} < ${effectiveCursor.id}`,
             ),
           );
         }
@@ -416,7 +448,7 @@ export async function videosRoutes(app: FastifyInstance) {
 
       const orderBy = buildOrderBy(sort);
 
-      // ── Server-side cache (unfiltered, non-cursor-sort requests only) ──────
+      // ── Server-side cache (unfiltered, offset-mode requests only) ─────────
       if (!isFiltered && !useCursor) {
         const cacheKey = catalogCacheKey({ sort, page, limit });
         // Store payload + etag together so cache hits cost zero SHA-1 work.
@@ -480,13 +512,12 @@ export async function videosRoutes(app: FastifyInstance) {
       const totalPages = useCursor ? -1 : Math.max(1, Math.ceil(total / limit));
 
       // Build next cursor from the last row's importedAt + id (keyset anchor).
-      // Generated for ALL newest/oldest responses (not only cursor mode) so that
-      // first-page (no cursor) clients receive a cursor they can use for the
-      // next page — enabling zero-offset traversal from page 1.
+      // Generated for ALL newest/oldest responses (offset-fallback AND cursor
+      // mode) so clients always receive a cursor for the next page, enabling
+      // zero-OFFSET traversal on the very next request.
       // null when the result set is smaller than `limit` (last page reached).
       let nextCursor: string | null = null;
-      const isCursorableSort = sort === "newest" || sort === "oldest";
-      if (isCursorableSort && rows.length === limit) {
+      if (isCursorSort && rows.length === limit) {
         const lastRow = rows[rows.length - 1];
         if (lastRow) {
           const lastImportedAt = lastRow.importedAt as Date | string;
@@ -495,11 +526,20 @@ export async function videosRoutes(app: FastifyInstance) {
         }
       }
 
+      // Store nextCursor as the keyset anchor for page+1 (TTL 5 min).
+      // Subsequent sequential requests for page N+1 (with no explicit cursor)
+      // will find this anchor and execute a keyset query instead of OFFSET.
+      // Skipped when using the OFFSET fallback path (anchor derived from offset
+      // result may not align perfectly with a keyset boundary if rows changed).
+      if (isCursorSort && !useOffsetFallback && nextCursor !== null) {
+        void cache().set(pageCursorKey(page + 1), nextCursor, 300).catch(() => {});
+      }
+
       const result: CatalogResponse = {
         videos: rows.map(v => toDto(v as unknown as VideoDtoRow)),
         total,
         totalPages,
-        page: useCursor ? 1 : page,
+        page,
         limit,
         nextCursor,
       };
