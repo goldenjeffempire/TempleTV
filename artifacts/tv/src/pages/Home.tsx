@@ -22,11 +22,11 @@ import { useFavorites } from "../hooks/useFavorites";
 
 const CATEGORIES = [
   "Live Service",
-  "Faith",
+  "Teachings",
   "Deliverance",
+  "Faith",
   "Worship",
   "Prophecy",
-  "Teachings",
   "Prayers",
   "Crusades",
   "Conferences",

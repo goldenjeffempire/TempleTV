@@ -7,7 +7,7 @@
  *
  * Layout:
  *  1. Live broadcast hero (16:9, animated ON AIR, viewer count, program title)
- *  2. Category rows (Live Service, Deliverance, Sermons, Prayers, …)
+ *  2. Category rows (Live Service, Sermons, Deliverance, Prayers, …)
  *  3. Error / empty states
  */
 
@@ -50,8 +50,8 @@ import type { Sermon, SermonCategory } from "@/types";
 
 const CATEGORY_ROWS: SermonCategory[] = [
   "Live Service",
-  "Deliverance",
   "Sermons",
+  "Deliverance",
   "Prayers",
   "Crusades",
   "Conferences",

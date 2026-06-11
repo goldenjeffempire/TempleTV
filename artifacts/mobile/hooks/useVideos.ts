@@ -74,7 +74,7 @@ const CATEGORY_KEYWORDS: Record<SermonCategory, string[]> = {
 };
 
 const CATEGORY_ORDER: SermonCategory[] = [
-  "Live Service", "Deliverance", "Sermons",
+  "Live Service", "Sermons", "Deliverance",
   "Prayers", "Crusades", "Conferences", "Testimonies",
 ];
 
