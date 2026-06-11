@@ -7,6 +7,7 @@ import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { ConflictError, NotFoundError } from "../../shared/errors.js";
 import { logger } from "../../infrastructure/logger.js";
+import { cache } from "../../infrastructure/cache.js";
 
 export async function seriesRoutes(app: FastifyInstance) {
   const r = app.withTypeProvider<ZodTypeProvider>();
@@ -51,19 +52,28 @@ export async function seriesRoutes(app: FastifyInstance) {
         "public, max-age=30, s-maxage=30, stale-while-revalidate=60",
       );
 
+      // ── Server-side in-process LRU cache ──────────────────────────────────
+      // Eliminates DB round-trips when multiple clients cold-start within the
+      // same 60-second window (TV, mobile, and web all hit /series on boot).
+      // Key includes all query params so filtered pages are cached separately.
+      const { category, limit, offset } = req.query;
+      const cacheKey = `series:list:v1:${category ?? "all"}:${limit}:${offset}`;
+      const cached = await cache().get<{ series: unknown[]; total: number }>(cacheKey).catch(() => null);
+      if (cached) return cached;
+
       const conditions: SQL[] = [eq(schema.seriesTable.isPublished, true)];
-      if (req.query.category) {
-        conditions.push(eq(schema.seriesTable.category, req.query.category));
+      if (category) {
+        conditions.push(eq(schema.seriesTable.category, category));
       }
       const rows = await db
         .select()
         .from(schema.seriesTable)
         .where(and(...conditions))
         .orderBy(asc(schema.seriesTable.sortOrder), desc(schema.seriesTable.createdAt))
-        .limit(req.query.limit)
-        .offset(req.query.offset);
+        .limit(limit)
+        .offset(offset);
 
-      return {
+      const result = {
         series: rows.map((s) => ({
           ...s,
           createdAt: s.createdAt.toISOString(),
@@ -73,6 +83,8 @@ export async function seriesRoutes(app: FastifyInstance) {
         })),
         total: rows.length,
       };
+      void cache().set(cacheKey, result, 60).catch(() => {});
+      return result;
     },
   );
 

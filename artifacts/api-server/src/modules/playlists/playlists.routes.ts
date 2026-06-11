@@ -32,7 +32,12 @@ export async function playlistsRoutes(app: FastifyInstance) {
         response: { 200: ListPlaylistsResponseSchema, 429: z.object({ error: z.string() }) },
       },
     },
-    async () => playlistsService.list(),
+    async (_req, reply) => {
+      // Playlists are edited infrequently; 30-second public cache cuts DB
+      // round-trips on every mobile/TV cold-start and homepage load.
+      reply.header("Cache-Control", "public, max-age=30, s-maxage=30, stale-while-revalidate=60");
+      return playlistsService.list();
+    },
   );
 
   r.get(
@@ -45,7 +50,14 @@ export async function playlistsRoutes(app: FastifyInstance) {
         response: { 200: PlaylistDetailSchema, 429: z.object({ error: z.string() }) },
       },
     },
-    async (req) => playlistsService.getById(req.params.id),
+    async (req, reply) => {
+      // Set Cache-Control AFTER the service call so the header is only sent
+      // on 2xx responses. Setting it before would cause CDNs to cache 404s
+      // for 60 seconds, blocking retries with valid IDs in the meantime.
+      const result = await playlistsService.getById(req.params.id);
+      reply.header("Cache-Control", "public, max-age=60, s-maxage=60, stale-while-revalidate=120");
+      return result;
+    },
   );
 
   r.post(

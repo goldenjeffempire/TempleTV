@@ -165,7 +165,7 @@ function dbVideoToVideoItem(v: DbVideo): VideoItem {
  * never appear in the public catalogue.
  */
 export async function fetchVideos(): Promise<VideoItem[]> {
-  const res = await fetch(apiUrl("/videos?limit=2000&source=youtube"), {
+  const res = await fetch(apiUrl("/videos?limit=200&source=youtube"), {
     signal: AbortSignal.timeout(12000),
   });
   if (!res.ok) throw new Error("Failed to fetch videos");

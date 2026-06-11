@@ -836,6 +836,42 @@ export async function ensureRuntimeIndexes(): Promise<void> {
       END $$
     `);
 
+    // ── pg_trgm extension + GIN trigram indexes for user ILIKE search ──────
+    // Admin user search uses ILIKE '%query%' on email and display_name.
+    // Leading-wildcard patterns cannot use B-tree indexes — even with the
+    // lower() functional index — so every search is a full sequential scan.
+    // GIN trigram indexes built by pg_trgm resolve this to an index range scan.
+    // Enable the extension first (idempotent); create indexes only if the
+    // extension is available.  Both statements are non-fatal on failure so
+    // environments without superuser access continue to operate without them.
+    await client.query("CREATE EXTENSION IF NOT EXISTS pg_trgm").catch((err: unknown) => {
+      logger.warn({ err }, "db: pg_trgm extension unavailable — trigram indexes skipped (non-fatal)");
+    });
+    await run("idx_users_email_trgm", `
+      CREATE INDEX IF NOT EXISTS idx_users_email_trgm
+        ON users
+        USING gin (lower(email) gin_trgm_ops)
+    `);
+    await run("idx_users_display_name_trgm", `
+      CREATE INDEX IF NOT EXISTS idx_users_display_name_trgm
+        ON users
+        USING gin (lower(display_name) gin_trgm_ops)
+    `);
+
+    // ── Functional COALESCE index for mixed-source catalog sort ────────────
+    // Public /api/videos?sort=newest (no source filter) orders rows by
+    // COALESCE(published_at::timestamptz, imported_at) DESC.  The existing
+    // partial index idx_managed_videos_youtube_catalog only covers youtube rows;
+    // mixed-source queries fall back to a sequential scan + in-memory sort.
+    // published_at is stored as ISO-8601 text in the DB (YouTube API format),
+    // so we must cast it to timestamptz to match imported_at's column type.
+    // broadcast_only is a boolean column — no COALESCE needed in WHERE.
+    await run("idx_managed_videos_coalesce_sort", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_coalesce_sort
+        ON managed_videos (COALESCE(published_at::timestamptz, imported_at) DESC)
+        WHERE broadcast_only IS DISTINCT FROM true
+    `);
+
     logger.info("db: functional and partial indexes ensured");
   } finally {
     client.release();
