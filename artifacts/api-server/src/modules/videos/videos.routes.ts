@@ -360,24 +360,35 @@ export async function videosRoutes(app: FastifyInstance) {
       const isFiltered = !!(search?.trim() || category?.trim() || source);
 
       // ── Cursor / offset decision ──────────────────────────────────────────
-      // Use keyset pagination when `cursor` is provided AND sort is amenable
-      // to it (newest or oldest use imported_at as anchor). For other sorts
-      // or absent cursors, fall back to classic offset pagination.
+      // newest / oldest: ALWAYS use cursor (keyset) semantics — no OFFSET SQL
+      // is ever emitted for these sort modes regardless of whether the client
+      // passes a `cursor` param.  This eliminates O(page) deep-scan costs.
+      //   • page=1 / no cursor → first page (no keyset WHERE filter)
+      //   • page=N / no cursor → same as page=1 (clients should use nextCursor)
+      //   • any page + cursor  → keyset filter applied from cursor anchor
+      //
+      // All other sorts (published, views, title) retain offset pagination
+      // because their sort keys are non-monotonic and cannot be reliably used
+      // as keyset anchors.
+      const isCursorSort = sort === "newest" || sort === "oldest";
       const parsedCursor = rawCursor ? decodeCursor(rawCursor) : null;
-      const useCursor = !!(parsedCursor && (sort === "newest" || sort === "oldest"));
-
+      // useCursor = always true for newest/oldest; false for all other sorts
+      const useCursor = isCursorSort;
       const offset = useCursor ? 0 : (page - 1) * limit;
 
       // Compose the base WHERE clause (filters) plus optional cursor clause.
       const baseWhere = buildWhere(search, category, source);
 
       // Cursor keyset filter: page beyond the anchor (imported_at, id) pair.
+      // Applied ONLY when the client supplied a valid cursor token (subsequent
+      // pages). On the first page (no cursor) the filter is absent and the
+      // query returns from the start of the ordered set.
       // For "newest" DESC: rows where (imported_at < anchor) OR
       //                    (imported_at = anchor AND id < anchor_id)
       // For "oldest" ASC:  rows where (imported_at > anchor) OR
       //                    (imported_at = anchor AND id > anchor_id)
       let cursorFilter: SQL | undefined;
-      if (useCursor && parsedCursor) {
+      if (parsedCursor) {
         const anchorTs = new Date(parsedCursor.ts);
         if (sort === "oldest") {
           cursorFilter = or(
@@ -403,15 +414,9 @@ export async function videosRoutes(app: FastifyInstance) {
         ? and(baseWhere, cursorFilter)
         : (cursorFilter ?? baseWhere);
 
-      // For cursor mode, sort by (imported_at, id) — a stable fully-indexed
-      // keyset. For offset mode use the rich COALESCE expression.
-      const orderBy = useCursor
-        ? (sort === "oldest"
-            ? sql`${videos.importedAt} ASC, ${videos.id} ASC`
-            : sql`${videos.importedAt} DESC, ${videos.id} DESC`)
-        : buildOrderBy(sort);
+      const orderBy = buildOrderBy(sort);
 
-      // ── Server-side cache (unfiltered, offset-mode requests only) ─────────
+      // ── Server-side cache (unfiltered, non-cursor-sort requests only) ──────
       if (!isFiltered && !useCursor) {
         const cacheKey = catalogCacheKey({ sort, page, limit });
         // Store payload + etag together so cache hits cost zero SHA-1 work.

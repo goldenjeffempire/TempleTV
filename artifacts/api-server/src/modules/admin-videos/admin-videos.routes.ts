@@ -225,13 +225,20 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       const effectiveLimit = q.pageSize ?? q.limit;
 
       // ── Cursor / offset decision ────────────────────────────────────────────
-      // Cursor mode activates when `cursor` param is supplied AND sort is
-      // amenable to keyset pagination (newest / oldest use imported_at + id as
-      // anchor). All other sorts (published, views, title) fall back to classic
-      // offset pagination — their sort keys aren't monotonic enough for reliable
-      // keyset behaviour.
+      // newest / oldest: ALWAYS use cursor (keyset) semantics — no OFFSET SQL
+      // is ever emitted for these sort modes regardless of whether the client
+      // passes a `cursor` param.  This eliminates O(page) deep-scan costs.
+      //   • page=1 / no cursor → first page (no keyset WHERE filter)
+      //   • page=N / no cursor → same as page=1 (clients should use nextCursor)
+      //   • any page + cursor  → keyset filter applied from cursor anchor
+      //
+      // All other sorts (published, views, title) retain offset pagination
+      // because their sort keys are non-monotonic and cannot be reliably used
+      // as keyset anchors without materialising the entire preceding result set.
+      const isCursorSort = q.sort === "newest" || q.sort === "oldest";
       const parsedCursor = q.cursor ? decodeAdminCursor(q.cursor) : null;
-      const useCursor = !!(parsedCursor && (q.sort === "newest" || q.sort === "oldest"));
+      // useCursor = always true for newest/oldest; false for all other sorts
+      const useCursor = isCursorSort;
       const offset = useCursor ? 0 : (q.page - 1) * effectiveLimit;
 
       // Always exclude YouTube videos published more than 2 years ago.
@@ -274,9 +281,10 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       }
 
       // Cursor keyset filter (imported_at + id tie-break), applied only when
-      // cursor mode is active. Uses the same operator pattern as the public
-      // /videos route so both surfaces behave consistently.
-      if (useCursor && parsedCursor) {
+      // the client supplied a cursor token (i.e. not the first page). Uses the
+      // same operator pattern as the public /videos route so both surfaces
+      // behave consistently.
+      if (parsedCursor) {
         const anchorTs = new Date(parsedCursor.ts);
         if (q.sort === "oldest") {
           filters.push(
