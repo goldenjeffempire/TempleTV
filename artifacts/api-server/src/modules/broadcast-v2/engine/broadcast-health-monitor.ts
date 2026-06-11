@@ -189,20 +189,21 @@ export async function broadcastHealthMonitorScan(): Promise<void> {
       });
 
       // Storage-aware recovery: if storage itself is unhealthy (write/head/delete
-      // probe circuit open), skipping clearAllBadUrls is correct — bad URLs are
-      // genuinely unreachable because storage is down, not because the orchestrator
-      // is stuck. Clearing the blacklist in that state would just re-serve the same
-      // dead items and cause more stalls. Instead, only do a lighter reload().
-      // Full recovery (stop → clear → re-enable → start) is reserved for when
-      // storage is confirmed healthy and the stall is likely an orchestrator bug.
+      // probe circuit open), use reloadPreservingBadUrlCache() instead of the
+      // full recovery sequence. The full recovery path calls clearAllBadUrls()
+      // and the per-item clearBadUrl() loop inside reloadInner(), which would
+      // immediately re-serve recently-failed URLs — burning their exponential
+      // backoff TTLs and triggering more RECOVERING→SKIP_PENDING cycles while
+      // storage is still down. Preserving the blacklist lets the backoff timers
+      // run out naturally while the storage probe circuit re-opens.
       const storageOk = getStorageHealthStatus().healthy;
       try {
         if (!storageOk) {
           logger.warn(
             { reason, storageOk },
-            "[broadcast-health-monitor] storage probe unhealthy — downgrading full recovery to reload() to preserve bad-URL blacklist",
+            "[broadcast-health-monitor] storage probe unhealthy — downgrading full recovery to reloadPreservingBadUrlCache()",
           );
-          await broadcastOrchestrator.reload().catch((err: unknown) => {
+          await broadcastOrchestrator.reloadPreservingBadUrlCache().catch((err: unknown) => {
             logger.warn({ err }, "[broadcast-health-monitor] storage-degraded reload failed (non-fatal)");
           });
         } else {
@@ -226,10 +227,21 @@ export async function broadcastHealthMonitorScan(): Promise<void> {
       staleReloadCount++;
       lastStaleReloadAtMs = now;
       recoveryInFlight = true;
+      // Storage-aware tier-1: use the same cache-preserving variant when
+      // storage is unhealthy so we don't re-serve dead URLs during a storage
+      // outage. When storage is healthy use the standard reload() (which
+      // re-enables recently-recovered items by clearing their bad-URL entries).
+      const storageOkTier1 = getStorageHealthStatus().healthy;
       try {
-        await broadcastOrchestrator.reload().catch((err: unknown) => {
-          logger.warn({ err }, "[broadcast-health-monitor] stale-reload failed (non-fatal)");
-        });
+        if (!storageOkTier1) {
+          await broadcastOrchestrator.reloadPreservingBadUrlCache().catch((err: unknown) => {
+            logger.warn({ err }, "[broadcast-health-monitor] storage-unhealthy stale-reload failed (non-fatal)");
+          });
+        } else {
+          await broadcastOrchestrator.reload().catch((err: unknown) => {
+            logger.warn({ err }, "[broadcast-health-monitor] stale-reload failed (non-fatal)");
+          });
+        }
       } finally {
         recoveryInFlight = false;
       }

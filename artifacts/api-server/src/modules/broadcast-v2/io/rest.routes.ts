@@ -1014,11 +1014,20 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   }, async (req, _reply) => {
     const { itemId } = req.body as { itemId: string };
 
-    // Thundering-herd dedup: when a video ends, all connected players fire
-    // /natural-end simultaneously. Build a dedup key from itemId + the
-    // orchestrator's current cycleStartedAtMs so that the NEXT cycle of the
-    // same item (same itemId, new anchor) is not suppressed.
+    // Gate 1: early-exit if this itemId is no longer current.
+    // This handles late calls that arrive AFTER the orchestrator has already
+    // advanced (e.g. a network-delayed /natural-end that finally lands after
+    // the queue moved on). naturalItemEnd() would be a no-op at the
+    // orchestrator level, but we can save the DB call and log noise entirely.
     const snap = broadcastOrchestrator.snapshot();
+    if (snap.current !== null && snap.current.id !== itemId) {
+      return { ok: true, advanced: false, reason: "not-current" };
+    }
+
+    // Gate 2: thundering-herd dedup for simultaneous end events.
+    // Build dedup key from itemId + cycleStartedAtMs so the NEXT cycle of the
+    // same item (same itemId, new anchor) is not suppressed. Only ONE of the
+    // concurrent /natural-end calls passes through to the orchestrator.
     const cycleAnchor = snap.current?.startsAtMs ?? 0;
     const dedupKey = `${itemId}:${cycleAnchor}`;
     const now = Date.now();

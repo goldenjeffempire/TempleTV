@@ -69,20 +69,53 @@ export const eventLogRepo = {
   },
 
   /**
-   * Prune event log rows older than `maxAgeMs` milliseconds (default 24 h).
+   * Prune event log rows older than `maxAgeMs` milliseconds (default 24 h)
+   * while preserving at least the last `seqFloor` sequences per channel.
    *
-   * Complements the per-channel sequence-based trim() — that one keeps the
-   * last 1000 events regardless of age. This one clears out long-lived
-   * channels where 1000 events span multiple days and old rows accumulate
-   * indefinitely. Called by a WorkerSupervisor task every 6 h.
+   * The dual guard prevents over-deletion: a low-volume channel might have
+   * only 200 events per day but operators still need the full replay window
+   * for a WS client that disconnects overnight and resumes with a stale
+   * `lastSequence`. The sequence floor (default 5000) guarantees those
+   * replay events are always available regardless of age.
    *
-   * Deletes across ALL channels in one query so a single sweep handles
-   * multi-channel deployments correctly.
+   * Iterates per-channel so each channel gets its own floor calculation.
+   * In the current single-channel deployment this is one iteration; the
+   * structure naturally extends to multi-channel without schema changes.
    */
-  async pruneOldEvents(maxAgeMs = 24 * 60 * 60_000): Promise<void> {
+  async pruneOldEvents(maxAgeMs = 24 * 60 * 60_000, seqFloor = 5000): Promise<void> {
     try {
       const cutoff = new Date(Date.now() - maxAgeMs);
-      await db.delete(t).where(lt(t.createdAt, cutoff));
+      // Get all active channels that have any events older than the cutoff
+      // so we don't iterate channels that have nothing to prune.
+      const channels = await db
+        .selectDistinct({ channelId: t.channelId })
+        .from(t)
+        .where(lt(t.createdAt, cutoff));
+
+      for (const { channelId } of channels) {
+        // Find the sequence floor: the highest sequence in this channel minus
+        // seqFloor. Any row with sequence >= floor is kept even if it's old,
+        // because a reconnecting client with lastSequence = floor-1 needs to
+        // replay those rows. Rows below the floor AND older than cutoff are safe to delete.
+        const [lastSeqRow] = await db
+          .select({ s: t.sequence })
+          .from(t)
+          .where(eq(t.channelId, channelId))
+          .orderBy(desc(t.sequence))
+          .limit(1);
+        const lastSeq = lastSeqRow?.s ?? 0;
+        const floor = Math.max(0, lastSeq - seqFloor);
+
+        if (floor === 0) continue; // fewer than seqFloor events total — nothing safe to prune
+
+        await db.delete(t).where(
+          and(
+            eq(t.channelId, channelId),
+            lt(t.createdAt, cutoff),
+            lt(t.sequence, floor),
+          ),
+        );
+      }
     } catch (err) {
       logger.warn({ err }, "[broadcast-v2] event log prune failed (non-fatal)");
     }

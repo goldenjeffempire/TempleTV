@@ -168,6 +168,8 @@ async function finalizeFromDbFallback(
   // uploads. Non-fatal: SSE emission failures are ignored to keep the assembly loop running.
   const PROGRESS_EMIT_INTERVAL_MS = 5_000;
   let lastProgressEmitMs = Date.now();
+  let bytesAssembled = 0;
+  const totalBytes = session.sizeBytes ?? 0;
 
   const now = new Date();
   // Detect the correct extension from the original filename first, then MIME type.
@@ -254,18 +256,20 @@ async function finalizeFromDbFallback(
 
       // Emit SSE progress every 5 s so the admin panel can render a progress bar.
       // We throttle by wall-clock time rather than chunk count because chunks vary
-      // in size and upload latency. Non-fatal: failures are swallowed so the loop
-      // always continues regardless of SSE/bus health.
+      // in size and upload latency. Payload uses byte-based fields so the consumer
+      // can render a standard bytes-transferred / total-bytes progress bar.
+      // Non-fatal: failures are swallowed so the loop always continues.
+      bytesAssembled += buf.length;
       const nowMs = Date.now();
       if (nowMs - lastProgressEmitMs >= PROGRESS_EMIT_INTERVAL_MS) {
         lastProgressEmitMs = nowMs;
-        const pct = Math.round(((i + 1) / totalChunks) * 100);
+        const pct = totalBytes > 0 ? Math.round((bytesAssembled / totalBytes) * 100) : Math.round(((i + 1) / totalChunks) * 100);
         try {
           adminEventBus.push("upload-assembly-progress", {
             sessionId: session.sessionId,
-            chunksAssembled: i + 1,
-            totalChunks,
-            percentComplete: pct,
+            bytesAssembled,
+            totalBytes,
+            pct,
           });
         } catch {
           // non-fatal — never let SSE emission abort the assembly

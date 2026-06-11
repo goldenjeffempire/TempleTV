@@ -837,6 +837,39 @@ class BroadcastOrchestrator extends EventEmitter {
   }
 
   /**
+   * Reload queue items from the DB but SKIP clearing the bad-URL cache.
+   *
+   * Called by the broadcast health monitor when storage is unhealthy.
+   * Clearing the bad-URL cache while storage is down would immediately
+   * re-serve URLs that just failed (because storage is unreachable), which
+   * burns through their exponential backoff TTLs and triggers more
+   * RECOVERING → SKIP_PENDING cycles instead of fewer.
+   *
+   * Does NOT use the reload() single-flight reloadPromise guard so that its
+   * cache-preserving semantics cannot be silently discarded by coalescing
+   * onto a concurrent standard reload() that would clear the cache.
+   * The reloadInner() mutex (_reloadInProgress) still prevents concurrent
+   * execution; a storage-unhealthy reload that arrives while a normal reload
+   * is in flight will silently return early — which is acceptable because
+   * the normal reload will have already refreshed the item list.
+   */
+  async reloadPreservingBadUrlCache(): Promise<void> {
+    const delay = Math.max(
+      0,
+      BroadcastOrchestrator.RELOAD_COOLDOWN_MS - (Date.now() - this.lastReloadCompletedAt),
+    );
+    await (
+      delay > 0
+        ? new Promise<void>(resolve => setTimeout(resolve, delay)).then(() =>
+            this.reloadInner({ preserveBadUrlCache: true }),
+          )
+        : this.reloadInner({ preserveBadUrlCache: true })
+    ).finally(() => {
+      this.lastReloadCompletedAt = Date.now();
+    });
+  }
+
+  /**
    * Rebuild this.itemOffsets from the current this.items array and update
    * this.cycleDurationMs. Must be called after any change to this.items or
    * to any item's durationSecs field.
@@ -855,7 +888,7 @@ class BroadcastOrchestrator extends EventEmitter {
     this.cycleDurationMs = acc;
   }
 
-  private async reloadInner(): Promise<void> {
+  private async reloadInner(opts?: { preserveBadUrlCache?: boolean }): Promise<void> {
     if (this._reloadInProgress) {
       logger.debug("[broadcast-v2] reloadInner: concurrent call suppressed by mutex");
       return;
@@ -940,8 +973,15 @@ class BroadcastOrchestrator extends EventEmitter {
     // immediately — not held out for the remaining 45-second TTL.  Clearing here
     // means the NEXT snapshot() call will project those items as current/next
     // instead of skipping them, giving seamless recovery without operator action.
-    for (const item of resolved) {
-      if (item.primaryUrl) clearBadUrl(item.primaryUrl);
+    //
+    // Skipped when opts.preserveBadUrlCache=true (called from health monitor when
+    // storage is unhealthy): clearing bad URLs while storage is down just re-serves
+    // recently-failed items and burns through their exponential backoff TTLs,
+    // causing more RECOVERING→SKIP_PENDING cycles instead of fewer.
+    if (!opts?.preserveBadUrlCache) {
+      for (const item of resolved) {
+        if (item.primaryUrl) clearBadUrl(item.primaryUrl);
+      }
     }
 
     // Reset the proactive-probe tracking set on every successful reload.
@@ -1114,7 +1154,8 @@ class BroadcastOrchestrator extends EventEmitter {
       // fresh reload so the next snapshot() can return a playable item.
       // scheduleSelfHealReload() is async-deferred (never re-enters
       // reloadInner() synchronously) and rate-limited at RELOAD_COOLDOWN_MS.
-      clearAllBadUrls();
+      // Skipped when opts.preserveBadUrlCache=true (storage-unhealthy reload).
+      if (!opts?.preserveBadUrlCache) clearAllBadUrls();
       void reEnableAllSuspended().catch((err: unknown) => {
         logger.warn({ err }, "[broadcast-v2] stuck-recovery: reEnableAllSuspended failed (non-fatal)");
       });
