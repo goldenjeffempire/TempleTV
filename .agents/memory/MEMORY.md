@@ -1,3 +1,4 @@
+- [Render Blueprint static site format](render-static-site-format.md) — `type: web` + `env: static`; neither `type: static` nor `runtime: static` are valid Blueprint schema values.
 - [Broadcast-v2 hardening sprint](broadcast-v2-hardening-sprint.md) — 8 fixes: worker circuit-open SSE+email alert, health monitor overrun detection, tighter STALE/RECOVERY defaults (3/7 min), naturalItemEnd durationWriteInFlight dedup, API_ORIGIN production warn, audio probe timeout ops-alert.
 - [Production fixes — unhandled rejections + push OOM](production-fixes-unhandled-rejection.md) — poll() outer try/catch; cleanup.service void .catch(); push-delivery paginated (500/page keyset) + return bug fixed.
 - [Platform audit sprint 115 — false positive patterns](sprint-115-false-positive-patterns.md) — 4 real fixes applied; 15+ confirmed false positives across admin SPA, broadcast-v2, mobile; key patterns documented.
