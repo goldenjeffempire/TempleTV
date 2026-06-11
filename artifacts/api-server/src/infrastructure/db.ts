@@ -766,6 +766,15 @@ export async function ensureRuntimeIndexes(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_push_tokens_platform_token
         ON push_tokens (platform, token)
     `);
+    // sent_notifications: notification status dashboard and retry-worker
+    // queries filter by status ('pending','sending','failed') and order by
+    // sent_at DESC. A (status, sent_at DESC) composite lets those queries
+    // use an index range scan instead of a full table scan across the
+    // ever-growing notification history.
+    await run("idx_sent_notifications_status_sent_at", `
+      CREATE INDEX IF NOT EXISTS idx_sent_notifications_status_sent_at
+        ON sent_notifications (status, sent_at DESC)
+    `);
 
     // ── Performance hot-path indexes (post-audit additions) ────────────────
     // Transcoder dispatcher poll: SELECT … FROM transcoding_jobs WHERE status

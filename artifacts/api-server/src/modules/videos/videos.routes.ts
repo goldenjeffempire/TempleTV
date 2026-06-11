@@ -500,8 +500,11 @@ export async function videosRoutes(app: FastifyInstance) {
         .join(",")}`;
       const etag = `"${createHash("sha1").update(fingerprint).digest("hex").slice(0, 16)}"`;
 
-      // Cache unfiltered responses (payload + pre-computed etag).
-      if (!isFiltered) {
+      // Cache unfiltered, offset-mode responses (payload + pre-computed etag).
+      // Cursor-mode responses are intentionally excluded: their page/limit key
+      // overlaps with offset-mode keys (e.g. both use page=1, limit=20) but
+      // return a different slice, so writing them would poison the offset cache.
+      if (!isFiltered && !useCursor) {
         const cacheKey = catalogCacheKey({ sort, page, limit });
         const entry: CachedCatalogEntry = { payload: result, etag };
         cache().set(cacheKey, entry, 30).catch(() => {});

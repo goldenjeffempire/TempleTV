@@ -97,14 +97,23 @@ const ListQuerySchema = z.object({
     .enum(["none", "queued", "encoding", "processing", "hls_ready", "ready", "failed"])
     .optional(),
   sort: z.enum(["newest", "oldest", "published", "views", "title"]).default("newest"),
+  // Optional opaque cursor for keyset pagination. When provided with sort=newest
+  // or sort=oldest the handler uses (imported_at, id) keyset logic and skips the
+  // COUNT query. Ignored for other sort modes (published, views, title) which
+  // still use classic offset pagination.
+  cursor: z.string().max(256).optional(),
 });
 
 const ListResponseSchema = z.object({
   videos: z.array(VideoRowSchema),
-  total: z.number().int().nonnegative(),
-  totalPages: z.number().int().nonnegative(),
+  total: z.number().int(),
+  totalPages: z.number().int(),
   page: z.number().int().min(1),
   limit: z.number().int().min(1),
+  // Opaque cursor pointing to the start of the next page. null when the
+  // current page is the last page (fewer rows returned than `limit`).
+  // Only populated in cursor mode (sort=newest|oldest + cursor param provided).
+  nextCursor: z.string().nullable(),
 });
 
 const PatchBodySchema = z.object({
@@ -116,6 +125,28 @@ const PatchBodySchema = z.object({
   metadataLocked: z.boolean().optional(),
   broadcastOnly: z.boolean().optional(),
 }).strict();
+
+// ── Keyset cursor helpers ──────────────────────────────────────────────────
+// Cursor = base64url( JSON { ts: importedAt.getTime(), id } ).
+// Opaque to callers — internals may change without breaking the contract.
+interface AdminCursor { ts: number; id: string }
+
+function encodeAdminCursor(ts: Date | string, id: string): string {
+  const ms = ts instanceof Date ? ts.getTime() : new Date(ts).getTime();
+  return Buffer.from(JSON.stringify({ ts: ms, id })).toString("base64url");
+}
+
+function decodeAdminCursor(raw: string): AdminCursor | null {
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as unknown;
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const p = parsed as Record<string, unknown>;
+    if (typeof p.ts !== "number" || typeof p.id !== "string") return null;
+    return { ts: p.ts, id: p.id };
+  } catch {
+    return null;
+  }
+}
 
 function toDto(row: typeof videos.$inferSelect): z.infer<typeof VideoRowSchema> {
   const yt = row.youtubeId?.startsWith("local-") ? null : row.youtubeId;
@@ -192,7 +223,16 @@ export async function adminVideosRoutes(app: FastifyInstance) {
     async (req) => {
       const q = req.query;
       const effectiveLimit = q.pageSize ?? q.limit;
-      const offset = (q.page - 1) * effectiveLimit;
+
+      // ── Cursor / offset decision ────────────────────────────────────────────
+      // Cursor mode activates when `cursor` param is supplied AND sort is
+      // amenable to keyset pagination (newest / oldest use imported_at + id as
+      // anchor). All other sorts (published, views, title) fall back to classic
+      // offset pagination — their sort keys aren't monotonic enough for reliable
+      // keyset behaviour.
+      const parsedCursor = q.cursor ? decodeAdminCursor(q.cursor) : null;
+      const useCursor = !!(parsedCursor && (q.sort === "newest" || q.sort === "oldest"));
+      const offset = useCursor ? 0 : (q.page - 1) * effectiveLimit;
 
       // Always exclude YouTube videos published more than 2 years ago.
       // Non-YouTube (local/HLS) content is always visible regardless of date.
@@ -233,12 +273,43 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         filters.push(inArray(videos.transcodingStatus, vals));
       }
 
+      // Cursor keyset filter (imported_at + id tie-break), applied only when
+      // cursor mode is active. Uses the same operator pattern as the public
+      // /videos route so both surfaces behave consistently.
+      if (useCursor && parsedCursor) {
+        const anchorTs = new Date(parsedCursor.ts);
+        if (q.sort === "oldest") {
+          filters.push(
+            or(
+              sql`${videos.importedAt} > ${anchorTs}`,
+              and(
+                sql`${videos.importedAt} = ${anchorTs}`,
+                sql`${videos.id} > ${parsedCursor.id}`,
+              ),
+            ) as SQL,
+          );
+        } else {
+          // newest (DESC)
+          filters.push(
+            or(
+              sql`${videos.importedAt} < ${anchorTs}`,
+              and(
+                sql`${videos.importedAt} = ${anchorTs}`,
+                sql`${videos.id} < ${parsedCursor.id}`,
+              ),
+            ) as SQL,
+          );
+        }
+      }
+
       const where = filters.length > 0 ? and(...filters) : undefined;
 
       let orderBy: SQL;
       switch (q.sort) {
         case "oldest":
-          orderBy = asc(videos.importedAt);
+          orderBy = useCursor
+            ? sql`${videos.importedAt} ASC, ${videos.id} ASC`
+            : asc(videos.importedAt);
           break;
         case "published":
           // Must use the same SAFE_PUB_AT guard — direct ::timestamptz on a
@@ -252,15 +323,22 @@ export async function adminVideosRoutes(app: FastifyInstance) {
           orderBy = asc(videos.title);
           break;
         default:
-          orderBy = desc(videos.importedAt);
+          // newest
+          orderBy = useCursor
+            ? sql`${videos.importedAt} DESC, ${videos.id} DESC`
+            : desc(videos.importedAt);
       }
 
       // Primary path: full SELECT * (fast, includes every column).
       // Fallback path: explicit safe projection when the production DB is missing
       // late-added columns (metadata_locked, faststart_applied). The fallback uses
       // hardcoded `false` for those columns so PostgreSQL never sees their names.
+      // Cursor mode skips the COUNT query (returns total=-1 as sentinel).
       type VideoRow = typeof videos.$inferSelect;
       const [rows, totalRows] = await (async (): Promise<[VideoRow[], { c: number | bigint }[]]> => {
+        const countPromise = useCursor
+          ? Promise.resolve([{ c: -1 as number | bigint }])
+          : db.select({ c: count() }).from(videos).where(where as SQL | undefined);
         try {
           return await Promise.all([
             db
@@ -270,14 +348,14 @@ export async function adminVideosRoutes(app: FastifyInstance) {
               .orderBy(orderBy)
               .limit(effectiveLimit)
               .offset(offset),
-            db
-              .select({ c: count() })
-              .from(videos)
-              .where(where as SQL | undefined),
+            countPromise,
           ]);
         } catch (err: unknown) {
           if (!isUndefinedColumnError(err)) throw err;
           req.log.warn("[admin-videos] DB schema missing column — falling back to safe projection");
+          const countFallback = useCursor
+            ? Promise.resolve([{ c: -1 as number | bigint }])
+            : db.select({ c: count() }).from(videos).where(where as SQL | undefined);
           return [
             await db
               .select(SAFE_VIDEO_COLS)
@@ -286,21 +364,31 @@ export async function adminVideosRoutes(app: FastifyInstance) {
               .orderBy(orderBy)
               .limit(effectiveLimit)
               .offset(offset) as unknown as VideoRow[],
-            await db
-              .select({ c: count() })
-              .from(videos)
-              .where(where as SQL | undefined),
+            await countFallback,
           ];
         }
       })();
 
       const total = Number(totalRows[0]?.c ?? 0);
+      const totalPages = useCursor ? -1 : Math.max(1, Math.ceil(total / effectiveLimit));
+
+      // Build next cursor from the last row's importedAt + id (keyset anchor).
+      // null when the result set is smaller than `limit` (last page reached).
+      let nextCursor: string | null = null;
+      if (useCursor && rows.length === effectiveLimit) {
+        const lastRow = rows[rows.length - 1];
+        if (lastRow) {
+          nextCursor = encodeAdminCursor(lastRow.importedAt, lastRow.id);
+        }
+      }
+
       return {
         videos: rows.map(toDto),
         total,
-        totalPages: Math.ceil(total / effectiveLimit),
-        page: q.page,
+        totalPages,
+        page: useCursor ? 1 : q.page,
         limit: effectiveLimit,
+        nextCursor,
       };
     },
   );

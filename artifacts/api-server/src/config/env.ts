@@ -172,7 +172,7 @@ const Env = z.object({
   // the PostgreSQL server before giving up with a connection-timeout error.
   // 10 s is generous for a co-located Replit DB; lower to 5 s on low-latency
   // links, raise to 15–20 s if the DB host lives in a remote region.
-  DB_POOL_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+  DB_POOL_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
 
   // Maximum wall-clock time (ms) a single SQL statement may run before
   // PostgreSQL cancels it. Protects the pool from runaway full-table-scans,
