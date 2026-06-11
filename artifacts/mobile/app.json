@@ -27,7 +27,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.templetv.app",
       "googleServicesFile": "./GoogleService-Info.plist",
-      "buildNumber": "202606100001",
+      "buildNumber": "202606110001",
       "requireFullScreen": false,
       "config": {
         "usesNonExemptEncryption": false

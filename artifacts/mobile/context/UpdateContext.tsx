@@ -176,6 +176,11 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     const sub = AppState.addEventListener("change", (status: AppStateStatus) => {
       if (status === "active") {
         void runOTACheck();
+        // Also run the store version check — throttled to every 6 h by
+        // shouldPollVersionCheck() unless clearVersionCheckTimestamp() was
+        // called first (e.g. after tapping an app_update push notification),
+        // in which case it fires immediately on foreground.
+        void runVersionCheck();
       }
     });
 
