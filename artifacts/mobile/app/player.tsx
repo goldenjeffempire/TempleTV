@@ -63,6 +63,7 @@ import { useFavorites } from "@/hooks/useFavorites";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { useBroadcastSync } from "@/hooks/useBroadcastSync";
+import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import { useVideos } from "@/hooks/useVideos";
 import {
   playbackQueue,
@@ -468,6 +469,16 @@ export default function PlayerScreen() {
   // the YouTube live path — that is handled by the LiveBroadcastSupervisor
   // which already calls playLive() and sets PlayerContext.isLive=true.
   const isBroadcastV2 = isLive && !( !!( params.youtubeId ?? params.videoId ) && !hlsUrl );
+
+  // V2 broadcast snapshot — reads the singleton FSM session (same connection as
+  // BroadcastHlsPlayer). No extra WS socket; just adds a React listener.
+  // Used to surface the current program title in the live metadata section.
+  const { snapshot: v2BroadcastSnapshot } = useV2BroadcastNative({
+    baseUrl: `${apiBase}/api/broadcast-v2`,
+  });
+  const broadcastProgramTitle = isBroadcastV2
+    ? (v2BroadcastSnapshot.lastServerSnapshot?.current?.title ?? null)
+    : null;
 
   // Sync PlayerContext.isBroadcastMode with whether the V2 broadcast engine
   // is active. Without this, the MiniPlayer and any context consumer that
@@ -1263,8 +1274,8 @@ export default function PlayerScreen() {
                   </>
                 )}
               </View>
-              <Text style={[styles.channelName, { color: c.foreground }]} accessibilityRole="header">
-                Temple TV
+              <Text style={[styles.channelName, { color: c.foreground }]} numberOfLines={2} accessibilityRole="header">
+                {broadcastProgramTitle ?? "Temple TV"}
               </Text>
               <Text style={[styles.channelSub, { color: c.mutedForeground }]}>JCTM Ministries</Text>
             </View>

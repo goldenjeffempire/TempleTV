@@ -1,5 +1,6 @@
 import React, { useRef } from "react";
 import { Pressable, StyleSheet, Text, View, Platform, useColorScheme } from "react-native";
+import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { BlurView } from "expo-blur";
@@ -8,6 +9,10 @@ import { useColors } from "@/hooks/useColors";
 import { LiveBadge } from "@/components/LiveBadge";
 import { usePlayer, usePlayerProgress } from "@/context/PlayerContext";
 import { navigateToSermon, navigateToPlayer } from "@/utils/navigation";
+import { useV2BroadcastNative } from "@workspace/player-core/react-native";
+import { getApiBase } from "@/lib/apiBase";
+
+const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
 
 export function MiniPlayer() {
   const c = useColors();
@@ -24,6 +29,17 @@ export function MiniPlayer() {
     playNext,
   } = usePlayer();
   const { currentTime, duration } = usePlayerProgress();
+
+  // V2 broadcast snapshot — resolves the current program title and thumbnail.
+  // Attaches to the singleton session (no extra WS connection).
+  const apiBase = getApiBase() ?? "";
+  const { snapshot: v2Snapshot } = useV2BroadcastNative({
+    baseUrl: `${apiBase}/api/broadcast-v2`,
+  });
+  const v2Current = v2Snapshot.lastServerSnapshot?.current;
+  const broadcastTitle = isBroadcastMode ? (v2Current?.title ?? null) : null;
+  const broadcastThumb = isBroadcastMode ? (v2Current?.thumbnailUrl ?? null) : null;
+
   // Guard against rapid double-taps pushing duplicate /player entries onto
   // the navigation stack. Locks for 600 ms — long enough to cover a
   // touchscreen bounce or an impatient double-tap, short enough that a
@@ -32,17 +48,25 @@ export function MiniPlayer() {
 
   if (!currentSermon && !isLive && !isBroadcastMode) return null;
 
-  const title = isLive ? "Temple TV Live" : isBroadcastMode ? "Temple TV" : currentSermon?.title ?? "";
+  const title = isLive
+    ? "Temple TV Live"
+    : isBroadcastMode
+      ? (broadcastTitle ?? "Temple TV")
+      : currentSermon?.title ?? "";
+
   const subtitle = isLive
     ? "Watch Now"
     : isBroadcastMode
-      ? "ON AIR"
+      ? "ON AIR · Live Broadcast"
       : isRadioMode
         ? "Radio Mode"
         : currentSermon?.preacher ?? "";
+
+  // Thumbnail — broadcast > VOD sermon > null
+  const thumbUri = broadcastThumb ?? currentSermon?.thumbnailUrl ?? null;
+
   const progress = duration > 0 ? Math.min(1, currentTime / duration) : 0;
-  // Round 6: never show a playback-position bar on live or broadcast surfaces.
-  // Broadcast queue items are a continuous channel feed — same rule as live.
+  // Never show a playback-position bar on live or broadcast surfaces.
   const showProgress = !isLive && !isBroadcastMode && duration > 0;
 
   const handleToggle = () => {
@@ -61,19 +85,9 @@ export function MiniPlayer() {
     setTimeout(() => { navigatingRef.current = false; }, 600);
 
     if (isLive) {
-      navigateToPlayer(
-        { live: "true", title: "Temple TV Live", preacher: "Temple TV JCTM" },
-      );
+      navigateToPlayer({ live: "true", title: "Temple TV Live", preacher: "Temple TV JCTM" });
     } else if (isBroadcastMode) {
-      // Round 6 (Pass 3): re-entering /player from MiniPlayer while the
-      // broadcast channel is still tuned must preserve broadcast intent.
-      // The /player route reads `broadcastMode=true`, fetches the current
-      // server-side broadcast item via SSE, and resyncs to the live
-      // position. Without this branch the same sermon would re-open as a
-      // VOD with seek/scrub controls — defeating the channel semantics.
-      navigateToPlayer(
-        { broadcastMode: "true" },
-      );
+      navigateToPlayer({ broadcastMode: "true" });
     } else if (currentSermon) {
       navigateToSermon(currentSermon);
     }
@@ -95,15 +109,47 @@ export function MiniPlayer() {
         onPress={handlePress}
         style={({ pressed }) => [styles.inner, { opacity: pressed ? 0.85 : 1 }]}
       >
+        {/* ── Info ─────────────────────────────────────────────────────── */}
         <View style={styles.info}>
-          {/* Round 6: ON AIR badge for both live and broadcast — both
-              are channel feeds, not on-demand playback. */}
-          {(isLive || isBroadcastMode) && <LiveBadge size="small" />}
-          {isRadioMode && !isLive && !isBroadcastMode && (
+          {/* Artwork / thumbnail */}
+          {thumbUri ? (
+            <View style={styles.artworkWrap}>
+              <Image
+                source={{ uri: thumbUri }}
+                placeholder={PLACEHOLDER}
+                style={styles.artwork}
+                contentFit="cover"
+                transition={200}
+              />
+              {/* Live dot overlay on artwork */}
+              {(isLive || isBroadcastMode) && (
+                <View style={styles.artworkLiveDot} />
+              )}
+            </View>
+          ) : (
+            /* Fallback icon when no thumbnail is available */
+            <View style={[styles.artworkFallback, { backgroundColor: c.muted }]}>
+              {(isLive || isBroadcastMode) ? (
+                <Feather name="radio" size={16} color={c.primary} />
+              ) : isRadioMode ? (
+                <Feather name="radio" size={16} color={c.primary} />
+              ) : (
+                <Feather name="play" size={16} color={c.mutedForeground} />
+              )}
+            </View>
+          )}
+
+          {/* Live / Radio badge — only when no thumbnail */}
+          {!thumbUri && (isLive || isBroadcastMode) && (
+            <LiveBadge size="small" />
+          )}
+          {!thumbUri && isRadioMode && !isLive && !isBroadcastMode && (
             <View style={[styles.radioBadge, { backgroundColor: c.primary }]}>
               <Feather name="radio" size={10} color="#FFF" />
             </View>
           )}
+
+          {/* Title + subtitle */}
           <View style={styles.textContainer}>
             <Text style={[styles.title, { color: c.foreground }]} numberOfLines={1}>
               {title}
@@ -113,6 +159,8 @@ export function MiniPlayer() {
             </Text>
           </View>
         </View>
+
+        {/* ── Controls ─────────────────────────────────────────────────── */}
         <View style={styles.controls}>
           <Pressable
             onPress={handleToggle}
@@ -123,8 +171,7 @@ export function MiniPlayer() {
           >
             <Feather name={isPlaying ? "pause" : "play"} size={22} color={c.foreground} />
           </Pressable>
-          {/* Round 6: skip-forward is hidden in broadcast mode too — a
-              real TV channel viewer can't skip the current program. */}
+          {/* Skip-forward hidden in broadcast/live mode — real TV channel semantics. */}
           {!isLive && !isBroadcastMode && (
             <Pressable
               onPress={handleNext}
@@ -141,18 +188,9 @@ export function MiniPlayer() {
     </View>
   );
 
-  // Bottom positioning math — sits just above the bottom tab bar.
-  //
-  // The classic Tab bar (react-navigation) renders at `49pt + insets.bottom`
-  // tall: a constant 49pt for the icons/labels plus the device's bottom
-  // safe-area inset (home indicator on iPhone X+, gesture nav on modern
-  // Android). The previous hard-coded `bottom: 80` ignored the inset, so
-  // on iPhone 14+ (insets.bottom ≈ 34) the mini-player sat ~3pt BELOW the
-  // tab bar's top edge — visibly clipped by the tab chrome.
-  //
-  // Formula: 49 (tab) + insets.bottom (system) + 4 (visual gap). On web
-  // the tab bar is a fixed 84pt with no system inset, so we keep the
-  // original constant.
+  // Bottom positioning — sits just above the bottom tab bar.
+  // Tab bar = 49pt constant + insets.bottom (home indicator / gesture nav).
+  // +4 visual gap. Web keeps the original constant (tab bar = fixed 84pt).
   const bottomOffset = Platform.OS === "web" ? 84 : 53 + insets.bottom;
 
   if (Platform.OS === "ios") {
@@ -182,8 +220,6 @@ export function MiniPlayer() {
 const styles = StyleSheet.create({
   container: {
     position: "absolute",
-    // `bottom` is set inline from `bottomOffset` so it can include the
-    // device's safe-area bottom inset (home indicator on iPhone X+, etc.).
     left: 8,
     right: 8,
     borderRadius: 16,
@@ -202,28 +238,56 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
-  info: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
+  info: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10, minWidth: 0 },
+
+  // Artwork
+  artworkWrap: {
+    position: "relative",
+    flexShrink: 0,
+  },
+  artwork: {
+    width: 42,
+    height: 42,
+    borderRadius: 8,
+  },
+  artworkLiveDot: {
+    position: "absolute",
+    bottom: 3,
+    right: 3,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#ef4444",
+    borderWidth: 1.5,
+    borderColor: "#fff",
+  },
+  artworkFallback: {
+    width: 42,
+    height: 42,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+
   radioBadge: {
     width: 24,
     height: 24,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
+    flexShrink: 0,
   },
-  textContainer: { flex: 1 },
+
+  textContainer: { flex: 1, minWidth: 0 },
   title: { fontSize: 14, fontFamily: "Inter_600SemiBold" },
-  subtitle: { fontSize: 12, fontFamily: "Inter_400Regular" },
-  controls: { flexDirection: "row", alignItems: "center", gap: 4 },
-  // Tap targets: 44×44pt is the iOS HIG minimum; Android Material guidance
-  // is 48dp. We use 44 across the board (close enough to 48dp at typical
-  // densities) and keep `hitSlop={8}` on top to add another ~16pt of slop
-  // in each axis — putting the *effective* tappable area at 60×60, well
-  // above both platform minimums even for users with motor impairments.
-  // The icon glyph itself stays at 22/20pt so the visual weight matches
-  // the rest of the bar.
+  subtitle: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 1 },
+
+  controls: { flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0 },
+  // 44×44pt meets iOS HIG minimum; hitSlop={8} extends effective area to ~60×60pt.
   controlBtn: {
     width: 44,
     height: 44,

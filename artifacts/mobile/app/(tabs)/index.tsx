@@ -2,15 +2,13 @@
  * Home / Watch Screen — Temple TV Mobile
  *
  * Production-grade home screen. All content is API-driven:
- *  • Live broadcast state via useBroadcastSync (WS + SSE)
+ *  • Live broadcast state via V2 player-core singleton (WS transport)
  *  • Video catalog via useVideos (GET /api/videos, AsyncStorage cache)
  *
  * Layout:
- *  1. Live broadcast hero (when broadcast is active) or latest-sermon hero
- *  2. Category rows (Deliverance, Sermons, Prayers, Crusades, Conferences, Testimonies)
- *  3. Full catalog row at the bottom
- *
- * Zero mock/stub data. Zero YouTube RSS calls.
+ *  1. Live broadcast hero (16:9, animated ON AIR, viewer count, program title)
+ *  2. Category rows (Live Service, Deliverance, Sermons, Prayers, …)
+ *  3. Error / empty states
  */
 
 import type { ErrorBoundaryProps } from "expo-router";
@@ -20,8 +18,9 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   return <ErrorFallback error={error} resetError={retry} />;
 }
 
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Animated,
   FlatList,
   Image,
   Pressable,
@@ -108,72 +107,65 @@ interface HeroSectionProps {
 const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSectionProps) {
   const c = useColors();
   const { width } = useWindowDimensions();
-  const heroHeight = Math.round(width * 0.58);
+  // True 16:9 aspect ratio for the hero — matches broadcast video native aspect.
+  const heroHeight = Math.round(width * 0.5625);
   const apiBase = getApiBase() ?? "";
-  // Read broadcast mode and data-saver from PlayerContext:
-  //   isBroadcastMode=true  → full player screen is open; hero yields FSM control
-  //   dataSaver=true        → avoid pre-loading stream in background to conserve data
-  // When both are false the hero's BroadcastBuffers act as the FSM primary driver,
-  // advancing the session to PLAYING before the user taps Watch Now — making the
-  // Watch Now transition instant (warm FSM + warm OS HLS cache, no "Preparing
-  // Video" overlay, just a brief corner spinner).
-  const { isBroadcastMode, dataSaver } = usePlayer();
 
-  // Use the V2 FSM snapshot as the single source of truth for broadcast state.
-  // The singleton session is already running (created at app boot). Calling the
-  // hook here adds a React listener to the existing session — no extra network
-  // connection is made. This replaces the old v1-WS (useBroadcastSync) approach
-  // where a temporary disconnection could make the Hero believe the broadcast was
-  // off-air even while V2 was playing normally, causing the V2PlayerContainer to
-  // unmount and forcing an HLS reload on every v1-WS reconnect.
+  const { isBroadcastMode } = usePlayer();
+
+  // V2 FSM singleton — attaches a React listener to the already-running session.
+  // No extra WS connection. Replaces v1-WS (useBroadcastSync) which caused hero
+  // flicker on every reconnect even when V2 was playing normally.
   const { snapshot: v2Snapshot } = useV2BroadcastNative({
     baseUrl: `${apiBase}/api/broadcast-v2`,
   });
   const v2Server = v2Snapshot.lastServerSnapshot;
 
-  // STRICT POLICY: the homepage hero only ever represents an uploaded /
-  // local platform broadcast. YouTube items — including YouTube live
-  // overrides — are NEVER promoted to the hero (no preview, no ON-AIR
-  // badge, no "live" hero state, no YouTube imagery). They remain
-  // accessible from the Library and from the full player page where the
-  // YouTube iframe path can render them correctly.
+  // Animated pulse for the ON AIR dot — gives the "live" feel.
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, { toValue: 0.25, duration: 750, useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 750, useNativeDriver: true }),
+      ]),
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [pulseAnim]);
+
+  // STRICT POLICY: YouTube items are never promoted to the hero.
+  // Only uploaded/local platform broadcasts get the hero treatment.
   const hasUploadedBroadcast = !!(
     v2Server?.current &&
     v2Server.current.source?.kind !== "youtube"
   );
   const hasActiveBroadcast = hasUploadedBroadcast;
 
-  // Only the fallback sermon title is shown in the hero —
-  // titles of actively-broadcasting videos are intentionally not displayed.
-  const fallbackTitle = fallbackSermon?.title ?? "Temple TV";
-  // Thumbnail: prefer the V2 snapshot thumbnail for the current item so it
-  // matches what the V2 player is actually airing. Falls back to the latest
-  // local sermon poster so the hero surface is never a bare gradient box.
+  // Current program title from V2 snapshot — shown when broadcast is active.
+  const broadcastTitle = hasActiveBroadcast ? (v2Server?.current?.title ?? null) : null;
+
+  // Live viewer count from the V2 transport heartbeat.
+  const viewerCount = v2Snapshot.viewerCount;
+
+  // Fallback title for the off-air hero (latest sermon).
+  const fallbackTitle = fallbackSermon?.title ?? "";
+
+  // Thumbnail: broadcast thumbnail > fallback sermon poster > null (gradient only).
   const thumbUrl =
     hasUploadedBroadcast && v2Server?.current?.thumbnailUrl
       ? v2Server.current.thumbnailUrl
       : fallbackSermon?.thumbnailUrl ?? null;
 
-  // True only when there is genuinely nothing to navigate to — no active
-  // broadcast AND no fallback sermon in the library. Both hero Pressables
-  // use this to avoid a silent no-op press that confuses viewers into thinking
-  // the button is broken. The state is transient: as soon as library data or
-  // a broadcast snapshot arrives the button re-enables automatically.
+  // Disable both Pressables when there is genuinely nothing to navigate to.
   const watchNowDisabled = !hasActiveBroadcast && !fallbackSermon;
 
   const handleTuneIn = useCallback(() => {
     if (hasActiveBroadcast) {
-      // Navigate to the broadcast player. The V2 engine resolves its own
-      // source — both isLive+isHls and isLive+!isHls player.tsx branches
-      // route to BroadcastHlsPlayer which ignores initialUrl entirely.
-      // positionSecs is also ignored (V2 self-syncs from server clock).
-      // Pass thumbUrl so watch history and the share sheet have an image.
       navigateToLive("", "Temple TV", 0, undefined, thumbUrl ?? undefined);
     } else if (fallbackSermon) {
       navigateToSermon(fallbackSermon);
     }
-    // watchNowDisabled guards against this being called with neither — both
-    // Pressables are disabled when that condition is true.
   }, [hasActiveBroadcast, fallbackSermon, thumbUrl]);
 
   return (
@@ -185,12 +177,7 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
       accessibilityLabel={hasActiveBroadcast ? "Watch Now — live broadcast" : "Watch latest sermon"}
       accessibilityState={{ disabled: watchNowDisabled }}
     >
-      {/* Background — always show the thumbnail image as the base layer so
-          the hero is never a bare black box.  When a broadcast is active the
-          V2 player renders on top; once HLS handshake completes the video
-          covers the poster naturally. This prevents "ON AIR + pure black box"
-          while the player is in BOOTSTRAP / SYNCING or the orchestrator has
-          no resolved source yet. */}
+      {/* Base layer — thumbnail keeps hero from ever being a bare black box */}
       {thumbUrl ? (
         <Image
           source={{ uri: thumbUrl }}
@@ -198,17 +185,11 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
           resizeMode="cover"
         />
       ) : (
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: "#1a0030" }]} />
+        <View style={[StyleSheet.absoluteFill, { backgroundColor: "#0f0020" }]} />
       )}
-      {/* V2 player overlay — ALWAYS mounted (muted, minimal) regardless of
-          broadcast state. This keeps the singleton FSM session warm and the
-          A/B expo-av Video nodes alive at all times. Previously this was
-          conditional on hasUploadedBroadcast (derived from v1 WS), which
-          caused the A/B Video nodes to be destroyed and force an HLS reload
-          on every v1-WS reconnect — even when V2 was playing normally.
-          V2PlayerContainer handles off-air gracefully in minimal mode
-          (renders nothing visible). The outer pointerEvents="none" ensures
-          all hero touch events still reach the Pressable above. */}
+
+      {/* V2 broadcast video — ALWAYS mounted (muted, minimal) to keep the singleton
+          FSM session warm. pointerEvents="none" lets hero touch events reach the Pressable. */}
       <View style={[StyleSheet.absoluteFill, { pointerEvents: "none" }]}>
         <V2PlayerContainer
           baseUrl={`${apiBase}/api/broadcast-v2`}
@@ -217,22 +198,40 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
         />
       </View>
 
-      {/* Gradient overlay */}
+      {/* 4-stop gradient — stronger hold at bottom for text legibility */}
       <LinearGradient
-        colors={["transparent", "rgba(0,0,0,0.85)"]}
+        colors={[
+          "transparent",
+          "transparent",
+          "rgba(0,0,0,0.5)",
+          "rgba(0,0,0,0.92)",
+        ]}
+        locations={[0, 0.25, 0.62, 1]}
         style={[StyleSheet.absoluteFill, { justifyContent: "flex-end" }]}
         start={{ x: 0, y: 0 }}
         end={{ x: 0, y: 1 }}
       >
         <View style={styles.heroContent}>
-          {/* Badges */}
+          {/* ── Badges row ── */}
           <View style={styles.heroBadges}>
             {hasActiveBroadcast && (
               <View style={styles.onAirBadge}>
-                <View style={styles.onAirDot} />
+                <Animated.View style={[styles.onAirDot, { opacity: pulseAnim }]} />
                 <Text style={styles.onAirText}>ON AIR</Text>
               </View>
             )}
+
+            {hasActiveBroadcast && viewerCount != null && viewerCount > 0 && (
+              <View style={styles.viewerBadge}>
+                <Feather name="users" size={9} color="rgba(255,255,255,0.75)" />
+                <Text style={styles.viewerText}>
+                  {viewerCount >= 1000
+                    ? `${(viewerCount / 1000).toFixed(1)}k`
+                    : String(viewerCount)}{" watching"}
+                </Text>
+              </View>
+            )}
+
             {!hasActiveBroadcast && fallbackSermon?.category && (
               <View style={[styles.categoryBadge, { backgroundColor: c.primary + "cc" }]}>
                 <Text style={styles.categoryBadgeText}>{fallbackSermon.category}</Text>
@@ -240,25 +239,32 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
             )}
           </View>
 
-          {/* Title — only shown for the fallback sermon, never for broadcasts */}
-          {!hasActiveBroadcast && (
+          {/* ── Program / sermon title ── */}
+          {hasActiveBroadcast && broadcastTitle ? (
+            <Text style={styles.heroTitle} numberOfLines={2}>
+              {broadcastTitle}
+            </Text>
+          ) : !hasActiveBroadcast && fallbackTitle ? (
             <Text style={styles.heroTitle} numberOfLines={2}>
               {fallbackTitle}
             </Text>
-          )}
+          ) : null}
 
-          {/* CTA Button — hidden when neither broadcast nor sermon is available
-              so viewers never see an unresponsive tap target. The outer hero
-              Pressable is also disabled in this state (watchNowDisabled). */}
+          {/* ── CTA button ── */}
           {!watchNowDisabled && (
             <Pressable
               onPress={handleTuneIn}
-              style={[styles.heroBtn, { backgroundColor: c.primary }]}
+              style={({ pressed }) => [
+                styles.heroBtn,
+                { backgroundColor: c.primary, opacity: pressed ? 0.88 : 1 },
+              ]}
               accessibilityRole="button"
               accessibilityLabel={hasActiveBroadcast ? "Watch live broadcast" : "Watch sermon"}
             >
-              <Feather name="play" size={14} color="#fff" />
-              <Text style={styles.heroBtnText}>Watch Now</Text>
+              <Feather name="play" size={13} color="#fff" />
+              <Text style={styles.heroBtnText}>
+                {hasActiveBroadcast ? "Watch Live" : "Watch Now"}
+              </Text>
             </Pressable>
           )}
         </View>
@@ -280,12 +286,7 @@ const CategoryRow = React.memo(function CategoryRow({
 
   return (
     <View style={styles.rowContainer}>
-      <SectionHeader
-        title={category}
-        onSeeAll={() =>
-          router.push({ pathname: "/(tabs)/library", params: { category } })
-        }
-      />
+      <SectionHeader title={category} />
       <FlatList
         horizontal
         data={sermons.slice(0, 10)}
@@ -336,13 +337,8 @@ export default function WatchScreen() {
 
   const { sermons, byCategory, loading, error, refetch, isStale, refreshFailed } = useVideos();
 
-  // Latest sermon as hero fallback (newest first).
-  //
-  // STRICT POLICY: the hero must never display YouTube-sourced imagery —
-  // including in the off-air / fallback state. We therefore prefer a
-  // local-platform sermon with a thumbnail; only if no local item is
-  // available do we drop the thumbnail entirely (the hero shows the
-  // branded gradient instead) rather than fall back to a YouTube poster.
+  // Hero fallback — prefer a local sermon with a thumbnail so the hero is
+  // never a bare gradient. YouTube-sourced items are explicitly excluded.
   const fallbackSermon = useMemo<Sermon | null>(() => {
     const localOnly = sermons.filter((s) => s.videoSource === "local");
     return (
@@ -352,7 +348,6 @@ export default function WatchScreen() {
     );
   }, [sermons]);
 
-  // Non-empty category rows
   const categoryRows = useMemo(
     () =>
       CATEGORY_ROWS.map((cat) => ({
@@ -379,11 +374,10 @@ export default function WatchScreen() {
         }
       />
 
-      {/* Stale cache indicator — three states:
+      {/* Stale cache banner — three states:
           1. isStale + refreshing:  "Showing cached content — refreshing…"
           2. isStale + failed:      "Couldn't refresh — showing saved content" + retry
-          3. network offline:       hidden (NetworkBanner already covers this)
-          Dismissed automatically when fresh data arrives (isStale → false). */}
+          3. offline:               hidden (NetworkBanner already covers this) */}
       {isStale && !loading && networkConnected && (
         <View style={[
           styles.staleBanner,
@@ -483,28 +477,49 @@ export default function WatchScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  // Hero
+
+  // ── Hero ────────────────────────────────────────────────────────────────────
   heroContent: {
     padding: 20,
+    paddingBottom: 24,
     gap: 10,
   },
-  heroBadges: { flexDirection: "row", gap: 8, alignItems: "center" },
+  heroBadges: { flexDirection: "row", gap: 8, alignItems: "center", flexWrap: "wrap" },
   onAirBadge: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 7,
     backgroundColor: "#7c3aed",
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  onAirDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: "#fff",
+  },
+  onAirText: {
+    fontSize: 11,
+    fontWeight: "800",
+    color: "#fff",
+    letterSpacing: 1.2,
+  },
+  viewerBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    backgroundColor: "rgba(0,0,0,0.48)",
     borderRadius: 6,
     paddingHorizontal: 8,
     paddingVertical: 4,
   },
-  onAirDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "#fff",
+  viewerText: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.88)",
   },
-  onAirText: { fontSize: 10, fontWeight: "700", color: "#fff", letterSpacing: 0.5 },
   categoryBadge: {
     borderRadius: 6,
     paddingHorizontal: 8,
@@ -513,28 +528,31 @@ const styles = StyleSheet.create({
   categoryBadgeText: { fontSize: 10, fontWeight: "700", color: "#fff" },
   heroTitle: {
     fontSize: 22,
-    fontWeight: "700",
+    fontWeight: "800",
     color: "#fff",
     lineHeight: 28,
-    letterSpacing: -0.3,
+    letterSpacing: -0.4,
+    textShadowColor: "rgba(0,0,0,0.6)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 8,
   },
   heroBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
     alignSelf: "flex-start",
-    paddingHorizontal: 18,
-    paddingVertical: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 11,
     borderRadius: 24,
   },
   heroBtnText: { fontSize: 14, fontWeight: "700", color: "#fff" },
 
-  // Content
+  // ── Content ─────────────────────────────────────────────────────────────────
   content: { paddingTop: 24, gap: 32 },
   rowContainer: { gap: 0 },
   rowContent: { paddingHorizontal: 16 },
 
-  // Skeleton
+  // ── Skeletons ────────────────────────────────────────────────────────────────
   skeletonHeader: {
     height: 18,
     width: 120,
@@ -544,7 +562,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
 
-  // Error
+  // ── Error ───────────────────────────────────────────────────────────────────
   errorWrap: {
     margin: 16,
     borderRadius: 12,
@@ -563,7 +581,7 @@ const styles = StyleSheet.create({
   },
   retryText: { color: "#fff", fontWeight: "600", fontSize: 14 },
 
-  // Stale cache indicator
+  // ── Stale cache indicator ────────────────────────────────────────────────────
   staleBanner: {
     flexDirection: "row",
     alignItems: "center",
@@ -594,7 +612,7 @@ const styles = StyleSheet.create({
     textDecorationLine: "underline",
   },
 
-  // Empty
+  // ── Empty state ──────────────────────────────────────────────────────────────
   emptyState: {
     alignItems: "center",
     paddingVertical: 60,

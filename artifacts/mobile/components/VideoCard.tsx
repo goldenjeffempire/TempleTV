@@ -2,18 +2,21 @@
  * VideoCard — Reusable sermon/video card component.
  *
  * Supports two layouts:
- *  • default (vertical): thumbnail top, details below — for grid/row usage
- *  • horizontal: thumbnail left, details right — for list usage
+ *  • default (vertical): thumbnail top, details below — for horizontal scroll rows
+ *  • horizontal: thumbnail left, details right — for list/related usage
+ *
+ * Uses expo-image for intelligent caching, progressive loading, and smooth
+ * transitions — significantly faster repeat loads vs React Native's Image.
  */
 
 import React from "react";
 import {
-  Image,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
 import type { Sermon } from "@/types";
@@ -60,13 +63,10 @@ export const VideoCard = React.memo(function VideoCard({
         <View style={styles.horzThumbWrap}>
           <Image
             source={sermon.thumbnailUrl ? { uri: sermon.thumbnailUrl } : PLACEHOLDER}
+            placeholder={PLACEHOLDER}
             style={styles.horzThumb}
-            defaultSource={PLACEHOLDER}
-            // Fast-loading: skip the default 300 ms cross-fade so cached
-            // thumbnails appear instantly; render progressively as bytes
-            // arrive instead of waiting for the full JPEG to decode.
-            fadeDuration={0}
-            progressiveRenderingEnabled
+            contentFit="cover"
+            transition={150}
           />
           {(sermon.youtubeLiveStatus || showLiveBadge) && (
             <View style={styles.badgeTopLeft}>
@@ -91,12 +91,14 @@ export const VideoCard = React.memo(function VideoCard({
           >
             {sermon.title}
           </Text>
-          <Text
-            style={[styles.horzPreacher, { color: c.mutedForeground }]}
-            numberOfLines={1}
-          >
-            {sermon.preacher}
-          </Text>
+          {!!sermon.preacher && (
+            <Text
+              style={[styles.horzPreacher, { color: c.mutedForeground }]}
+              numberOfLines={1}
+            >
+              {sermon.preacher}
+            </Text>
+          )}
           <View style={styles.horzMeta}>
             {!!sermon.category && sermon.category !== "All" && (
               <View style={[styles.categoryTag, { backgroundColor: c.primary + "22" }]}>
@@ -118,7 +120,7 @@ export const VideoCard = React.memo(function VideoCard({
     );
   }
 
-  // Vertical (card) layout
+  // ── Vertical (card) layout ────────────────────────────────────────────────
   return (
     <Pressable
       onPress={onPress}
@@ -134,11 +136,10 @@ export const VideoCard = React.memo(function VideoCard({
       <View style={styles.cardThumbWrap}>
         <Image
           source={sermon.thumbnailUrl ? { uri: sermon.thumbnailUrl } : PLACEHOLDER}
+          placeholder={PLACEHOLDER}
           style={styles.cardThumb}
-          defaultSource={PLACEHOLDER}
-          // Fast-loading: instant paint from cache + progressive render.
-          fadeDuration={0}
-          progressiveRenderingEnabled
+          contentFit="cover"
+          transition={150}
         />
         {(sermon.youtubeLiveStatus || showLiveBadge) && (
           <View style={styles.badgeTopLeft}>
@@ -153,9 +154,14 @@ export const VideoCard = React.memo(function VideoCard({
             <Text style={styles.durationText}>{sermon.duration}</Text>
           </View>
         )}
-        <View style={styles.playOverlay}>
-          <Feather name="play-circle" size={32} color="rgba(255,255,255,0.85)" />
-        </View>
+        {/* Play overlay — only rendered when thumbnail is present */}
+        {sermon.thumbnailUrl && (
+          <View style={styles.playOverlay}>
+            <View style={styles.playCircle}>
+              <Feather name="play" size={14} color="#fff" style={{ marginLeft: 2 }} />
+            </View>
+          </View>
+        )}
       </View>
 
       {/* Details */}
@@ -166,24 +172,35 @@ export const VideoCard = React.memo(function VideoCard({
         >
           {sermon.title}
         </Text>
-        <Text
-          style={[styles.cardPreacher, { color: c.mutedForeground }]}
-          numberOfLines={1}
-        >
-          {sermon.preacher}
-        </Text>
-        {!!sermon.views && (
-          <Text style={[styles.views, { color: c.mutedForeground }]}>
-            {formatViews(sermon.views)} views
+        {!!sermon.preacher && (
+          <Text
+            style={[styles.cardPreacher, { color: c.mutedForeground }]}
+            numberOfLines={1}
+          >
+            {sermon.preacher}
           </Text>
         )}
+        <View style={styles.cardMeta}>
+          {!!sermon.category && sermon.category !== "All" && (
+            <View style={[styles.categoryTag, { backgroundColor: c.primary + "18" }]}>
+              <Text style={[styles.categoryTagText, { color: c.primary }]}>
+                {sermon.category}
+              </Text>
+            </View>
+          )}
+          {!!sermon.views && (
+            <Text style={[styles.views, { color: c.mutedForeground }]}>
+              {formatViews(sermon.views)}
+            </Text>
+          )}
+        </View>
       </View>
     </Pressable>
   );
 });
 
 const styles = StyleSheet.create({
-  // Horizontal (list) layout
+  // ── Horizontal (list) layout ──────────────────────────────────────────────
   horzContainer: {
     flexDirection: "row",
     alignItems: "center",
@@ -201,12 +218,12 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   horzThumb: { width: "100%", height: "100%" },
-  horzDetails: { flex: 1, gap: 4 },
+  horzDetails: { flex: 1, gap: 4, minWidth: 0 },
   horzTitle: { fontSize: 14, fontWeight: "600", lineHeight: 20 },
   horzPreacher: { fontSize: 12 },
-  horzMeta: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  horzMeta: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 2 },
 
-  // Vertical (card) layout
+  // ── Vertical (card) layout ────────────────────────────────────────────────
   cardContainer: {
     borderRadius: 12,
     overflow: "hidden",
@@ -217,20 +234,29 @@ const styles = StyleSheet.create({
     width: "100%",
     aspectRatio: 16 / 9,
     backgroundColor: "#111",
-    position: "relative",
   },
   cardThumb: { width: "100%", height: "100%" },
   playOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.25)",
   },
-  cardDetails: { padding: 10, gap: 3 },
+  playCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.7)",
+  },
+  cardDetails: { padding: 10, gap: 4 },
   cardTitle: { fontSize: 13, fontWeight: "600", lineHeight: 18 },
   cardPreacher: { fontSize: 11 },
+  cardMeta: { flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 2 },
 
-  // Shared
+  // ── Shared ────────────────────────────────────────────────────────────────
   badgeTopLeft: {
     position: "absolute",
     top: 6,
@@ -256,7 +282,7 @@ const styles = StyleSheet.create({
   categoryTag: {
     paddingHorizontal: 7,
     paddingVertical: 2,
-    borderRadius: 6,
+    borderRadius: 5,
   },
   categoryTagText: { fontSize: 10, fontWeight: "600" },
   views: { fontSize: 11 },
