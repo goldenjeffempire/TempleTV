@@ -391,23 +391,33 @@ export async function videosRoutes(app: FastifyInstance) {
 
       const parsedCursor = rawCursor ? decodeCursor(rawCursor) : null;
 
-      // Resolve effective cursor: explicit param > cached anchor > none (page 1).
+      // Cursor anchor: imported_at + id  (NOT published_at + id).
+      // published_at is a YouTube-sourced external date — it is nullable for
+      // local uploads and sometimes absent or malformed on YouTube videos.
+      // imported_at is always populated, written once at ingest, and indexed.
+      // Using imported_at as the sort column AND the cursor anchor guarantees
+      // a stable, non-null keyset boundary for every row in the table.
+      //
+      // Resolve effective cursor: explicit param > cached anchor > page 1 fallback.
       let effectiveCursor = parsedCursor;
-      let useOffsetFallback = false;
+      // Flag: true when page>1 but no cursor and no cached anchor are available.
+      // In this case we silently serve page 1 rather than performing an OFFSET scan.
+      // Deep-page OFFSET is eliminated entirely for cursor-eligible sorts.
+      let isColdDeepLink = false;
       if (isCursorSort && !parsedCursor && page > 1) {
         const storedCursor = await cache().get<string>(pageCursorKey(page)).catch(() => null);
         if (storedCursor) {
           effectiveCursor = decodeCursor(storedCursor);
         } else {
-          // Cold deep-link with no cached anchor for this page → OFFSET fallback.
-          // Happens only on the very first visit to page N without traversing
-          // the preceding pages in this session.  Subsequent sequential requests
-          // through this same query shape will be cursor-based.
-          useOffsetFallback = true;
+          // Cold deep-link: no cached anchor for this page.  Return page 1 data
+          // (no OFFSET scan).  Clients that received nextCursor from a prior
+          // request should pass it instead of relying on numeric page params.
+          isColdDeepLink = true;
         }
       }
 
-      const useCursor = isCursorSort && !useOffsetFallback;
+      // Cursor sorts NEVER use OFFSET — no fallback, no deep-page scans.
+      const useCursor = isCursorSort;
       const offset = useCursor ? 0 : (page - 1) * limit;
 
       // Compose the base WHERE clause (filters) plus optional cursor clause.
@@ -529,9 +539,10 @@ export async function videosRoutes(app: FastifyInstance) {
       // Store nextCursor as the keyset anchor for page+1 (TTL 5 min).
       // Subsequent sequential requests for page N+1 (with no explicit cursor)
       // will find this anchor and execute a keyset query instead of OFFSET.
-      // Skipped when using the OFFSET fallback path (anchor derived from offset
-      // result may not align perfectly with a keyset boundary if rows changed).
-      if (isCursorSort && !useOffsetFallback && nextCursor !== null) {
+      // Skipped on cold deep-links: we served page 1 data but the caller
+      // requested page N — storing nextCursor as anchor for page N+1 would
+      // associate a page-1 boundary with the wrong page slot.
+      if (isCursorSort && !isColdDeepLink && nextCursor !== null) {
         void cache().set(pageCursorKey(page + 1), nextCursor, 300).catch(() => {});
       }
 
