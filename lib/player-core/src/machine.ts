@@ -48,7 +48,11 @@ function resolvePositionSecs(
   const kind = "source" in item
     ? (item as V2Item).source.kind
     : (item as V2Override).kind;
-  if (kind === "hls") {
+  // Seekable VOD kinds: hls, mp4, dash.
+  // NOT seekable: youtube (iframe, no native seek), rtmp (live stream, no VOD position).
+  // Without this, every device watching MP4 content starts from position 0
+  // regardless of when they joined — the primary cause of broadcast desync.
+  if (kind === "hls" || kind === "mp4" || kind === "dash") {
     // Apply server-calibrated clock: Date.now() + clockOffsetMs ≈ serverTime.
     // startsAtMs is always in server time (set by the orchestrator), so the
     // elapsed calculation must also be in server time or the position drifts
@@ -80,6 +84,7 @@ function resolvePositionSecs(
     }
     return elapsed;
   }
+  // youtube and rtmp: no VOD seek position — callers treat 0 as "don't seek".
   return 0;
 }
 
@@ -697,42 +702,35 @@ export class PlayerMachine {
         this.emit({ type: "play", bufferId: activeId, positionSecs });
         this.transition("PREPARING_ACTIVE");
       } else if (this.snapshot.state === "PLAYING") {
-        // Drift correction for long-running 24/7 clients. The server
-        // periodically recalibrates the cycle anchor (checkpoint restoration
-        // after restart). If startsAtMs for this same item shifts by more
-        // than 5 s between successive snapshots the cycle was genuinely
-        // recalibrated — re-seek to the authoritative wall-clock position.
+        // Periodic sync correction on every incoming snapshot (keepalive every
+        // 15 s, plus belt-and-suspenders REST fetches after item.advanced).
         //
-        // The 5 s threshold (raised from 2 s) avoids false-positive seeks
-        // caused by the small time difference between a WS-pushed snapshot and
-        // a REST snapshot requested by the transport a few seconds later.
+        // The previous approach only corrected when startsAtMs shifted > 5 s
+        // between consecutive snapshots — this only caught server restarts and
+        // never corrected ongoing playback drift between devices (e.g. HLS
+        // segment boundary misalignment, late joiners starting from wrong
+        // position, or gradual decode-timing divergence).
         //
-        // Loop-transition guard: when a single-item queue wraps, the server
-        // fires item.advanced and a new snapshot whose startsAtMs is ~D ms
-        // in the future (new loop just started). positionSecs would be ≈ 0,
-        // seeking the video back to the beginning while it is still naturally
-        // finishing the previous pass. We suppress the seek if the new
-        // startsAtMs is strictly in the future (haven't entered the new loop
-        // yet) or within the first 4 s of the new loop — the preloaded
-        // inactive buffer and the `ended` event will handle the handoff.
-        if (prevServerSnapshot?.current?.id === server.current.id) {
-          const driftMs = Math.abs(server.current.startsAtMs - prevServerSnapshot.current.startsAtMs);
-          if (driftMs > 5000) {
-            const nowMs = Date.now() + this.clockOffsetMs;
-            // resolvePositionSecs returns 0 for non-HLS sources so we never
-            // seek a playing MP4 back to position 0 during a drift correction.
-            // The guard below (positionSecs > 0) skips the emit entirely for
-            // non-HLS, preserving continuous playback without interruption.
-            const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs, this.clockOffsetMs);
-            if (positionSecs > 0) {
-              // Suppress if we are in the loop-transition window: the new
-              // startsAtMs is ≤ 4 s old.  The natural `ended` + A/B swap path
-              // will produce a seamless loop without any seek.
-              const inLoopTransitionWindow = (nowMs - server.current.startsAtMs) < 4_000;
-              if (!inLoopTransitionWindow) {
-                this.emit({ type: "play", bufferId: activeId, positionSecs });
-              }
-            }
+        // Now: emit a `play` intent on every snapshot. The adapter's 4 s dead
+        // band (web) suppresses the actual seek when the playhead is already
+        // close to the expected position, so in-sync devices feel nothing.
+        // Drifted devices (> 4 s off) are corrected automatically on the next
+        // keepalive cycle without waiting for a server reload.
+        //
+        // resolvePositionSecs returns 0 for non-seekable sources (youtube, rtmp),
+        // so the positionSecs > 0 guard below prevents seeking those to position 0.
+        //
+        // Loop-transition guard: when a single-item queue wraps, startsAtMs is
+        // set to a moment ≤ 4 s ago. positionSecs ≈ 0, which would re-seek the
+        // video back to the start while it is still naturally finishing the
+        // previous pass. Suppress seeks for the first 4 s of a new loop anchor —
+        // the preloaded inactive buffer and the `ended` event handle the handoff.
+        const positionSecs = resolvePositionSecs(server.current, server.current.startsAtMs, this.clockOffsetMs);
+        if (positionSecs > 0) {
+          const nowMs = Date.now() + this.clockOffsetMs;
+          const inLoopTransitionWindow = (nowMs - server.current.startsAtMs) < 4_000;
+          if (!inLoopTransitionWindow) {
+            this.emit({ type: "play", bufferId: activeId, positionSecs });
           }
         }
       } else if (this.snapshot.state === "FATAL") {

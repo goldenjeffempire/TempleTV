@@ -503,7 +503,11 @@ function replayStateToAdapter(snap: PlayerSnapshot, adapter: IntentHandler, cloc
       ? (activeItem as V2Item).source.kind
       : (activeItem as V2Override).kind;
     let positionSecs = 0;
-    if (sourceKind === "hls" && startsAtMs) {
+    // Seek to the wall-clock position for all seekable VOD sources (hls, mp4, dash).
+    // Not seekable: youtube (iframe), rtmp (live stream).
+    // Without this, SPA remounts (tab switches, page navigation) on MP4 content
+    // restart from position 0 instead of the correct wall-clock elapsed position.
+    if ((sourceKind === "hls" || sourceKind === "mp4" || sourceKind === "dash") && startsAtMs) {
       const elapsed = Math.max(0, (nowMs - startsAtMs) / 1000);
       const dur = "durationSecs" in activeItem
         ? (activeItem as V2Item).durationSecs
