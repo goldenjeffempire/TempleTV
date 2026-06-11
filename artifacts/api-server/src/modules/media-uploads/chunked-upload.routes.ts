@@ -163,6 +163,12 @@ async function finalizeFromDbFallback(
   totalChunks: number,
   log: FastifyInstance["log"],
 ): Promise<{ localVideoUrl: string | null; objectKey: string; storageBackend: "db" | "db_fallback" }> {
+  // Emit assembly progress SSE events every 5 s so the admin panel can show
+  // a real progress bar instead of a silent spinner for up to ~90 min on large
+  // uploads. Non-fatal: SSE emission failures are ignored to keep the assembly loop running.
+  const PROGRESS_EMIT_INTERVAL_MS = 5_000;
+  let lastProgressEmitMs = Date.now();
+
   const now = new Date();
   // Detect the correct extension from the original filename first, then MIME type.
   // Without this, non-MP4 uploads (WebM, MOV, MKV…) get a ".bin" extension which
@@ -245,6 +251,26 @@ async function finalizeFromDbFallback(
         body: buf,
       });
       parts.push({ partNumber: i + 1, etag });
+
+      // Emit SSE progress every 5 s so the admin panel can render a progress bar.
+      // We throttle by wall-clock time rather than chunk count because chunks vary
+      // in size and upload latency. Non-fatal: failures are swallowed so the loop
+      // always continues regardless of SSE/bus health.
+      const nowMs = Date.now();
+      if (nowMs - lastProgressEmitMs >= PROGRESS_EMIT_INTERVAL_MS) {
+        lastProgressEmitMs = nowMs;
+        const pct = Math.round(((i + 1) / totalChunks) * 100);
+        try {
+          adminEventBus.push("upload-assembly-progress", {
+            sessionId: session.sessionId,
+            chunksAssembled: i + 1,
+            totalChunks,
+            percentComplete: pct,
+          });
+        } catch {
+          // non-fatal — never let SSE emission abort the assembly
+        }
+      }
     }
 
     if (parts.length === 0) {

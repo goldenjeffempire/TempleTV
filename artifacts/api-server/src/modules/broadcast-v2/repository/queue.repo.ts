@@ -225,7 +225,27 @@ function proxyExternalSource<T extends Pick<V2Source, "kind" | "url">>(
 // which is acceptable. Persistent blacklisting belongs in the DB layer and is
 // future work.
 
-export const BAD_URL_TTL_MS = 90_000; // 90 seconds — reduces thrashing on transient network errors
+export const BAD_URL_TTL_MS = 90_000; // 90 seconds — base TTL for first failure
+
+// ── Exponential backoff TTL schedule ────────────────────────────────────────
+// URLs that repeatedly fail get exponentially longer blacklist windows so a
+// genuinely broken source doesn't flood the orchestrator's snapshot() logic
+// with fruitless retries every 90 s. After 4+ failures the URL stays out of
+// rotation for 10 minutes — long enough to expire while the transcoder
+// produces a replacement HLS stream, or for an operator to swap the source.
+//
+// The per-URL failure counts live in `badUrlFailureCounts` (separate from
+// badUrlSkipCounts which is per-itemId). Counts are cleared on clearBadUrl()
+// and clearAllBadUrls() so a manual operator clear gives a clean slate.
+function badUrlTtlForCount(count: number): number {
+  if (count <= 1) return 90_000;   // 90 s
+  if (count === 2) return 180_000; // 3 min
+  if (count === 3) return 300_000; // 5 min
+  return 600_000;                   // 10 min (4+)
+}
+
+// url → consecutive failure count (for TTL escalation)
+const badUrlFailureCounts = new Map<string, number>();
 
 /**
  * How long a repeatedly-failing item is kept out of broadcast rotation.
@@ -239,7 +259,15 @@ export const SUSPENSION_TTL_MS = 5 * 60_000; // 5 minutes
 // url → expiresAtMs
 const badUrlCache = new Map<string, number>();
 
-/** Mark a source URL as recently confirmed unreachable. */
+/** Mark a source URL as recently confirmed unreachable.
+ *
+ * Uses exponential backoff: each successive call for the same URL doubles
+ * the blacklist window (90 s → 3 min → 5 min → 10 min) so genuinely broken
+ * sources don't re-enter rotation every 90 s and cause cascading RECOVERING
+ * → SKIP_PENDING cycles. The per-URL failure count is reset by clearBadUrl()
+ * or clearAllBadUrls() so an operator "clear blocks" action always gives a
+ * clean slate.
+ */
 export function markBadUrl(url: string): void {
   const now = Date.now();
   // Lazy GC: trim expired entries on every write to keep the map bounded.
@@ -249,8 +277,13 @@ export function markBadUrl(url: string): void {
       if (exp < now) badUrlCache.delete(u);
     }
   }
-  badUrlCache.set(url, now + BAD_URL_TTL_MS);
-  logger.info({ url, ttlMs: BAD_URL_TTL_MS }, "[broadcast-v2] URL marked bad — will skip in snapshots");
+  // Increment the per-URL failure count and pick the corresponding TTL.
+  const prevCount = badUrlFailureCounts.get(url) ?? 0;
+  const newCount = prevCount + 1;
+  badUrlFailureCounts.set(url, newCount);
+  const ttlMs = badUrlTtlForCount(newCount);
+  badUrlCache.set(url, now + ttlMs);
+  logger.info({ url, ttlMs, failureCount: newCount }, "[broadcast-v2] URL marked bad — will skip in snapshots");
 }
 
 /**
@@ -280,14 +313,18 @@ export function markBadUrlWithTtl(url: string, ttlMs: number): void {
   );
 }
 
-/** Clear a URL from the bad cache (e.g. after a queue reload with new sources). */
+/** Clear a URL from the bad cache (e.g. after a queue reload with new sources).
+ * Also resets the per-URL failure count so the next failure starts fresh at 90 s TTL. */
 export function clearBadUrl(url: string): void {
   badUrlCache.delete(url);
+  badUrlFailureCounts.delete(url);
 }
 
-/** Flush the entire bad-URL cache (e.g. operator-triggered "clear blocks"). */
+/** Flush the entire bad-URL cache (e.g. operator-triggered "clear blocks").
+ * Also resets all per-URL failure counts so every URL gets a clean slate. */
 export function clearAllBadUrls(): void {
   badUrlCache.clear();
+  badUrlFailureCounts.clear();
 }
 
 /** True if the URL is currently blacklisted and should not be served. */

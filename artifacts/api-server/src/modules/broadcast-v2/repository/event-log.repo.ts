@@ -68,6 +68,26 @@ export const eventLogRepo = {
     return row?.s ?? 0;
   },
 
+  /**
+   * Prune event log rows older than `maxAgeMs` milliseconds (default 24 h).
+   *
+   * Complements the per-channel sequence-based trim() — that one keeps the
+   * last 1000 events regardless of age. This one clears out long-lived
+   * channels where 1000 events span multiple days and old rows accumulate
+   * indefinitely. Called by a WorkerSupervisor task every 6 h.
+   *
+   * Deletes across ALL channels in one query so a single sweep handles
+   * multi-channel deployments correctly.
+   */
+  async pruneOldEvents(maxAgeMs = 24 * 60 * 60_000): Promise<void> {
+    try {
+      const cutoff = new Date(Date.now() - maxAgeMs);
+      await db.delete(t).where(lt(t.createdAt, cutoff));
+    } catch (err) {
+      logger.warn({ err }, "[broadcast-v2] event log prune failed (non-fatal)");
+    }
+  },
+
   /** Trim event log to the last MAX_RETENTION_PER_CHANNEL rows per channel. */
   async trim(channelId: string): Promise<void> {
     try {

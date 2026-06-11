@@ -80,9 +80,13 @@ export async function wsRoutes(app: FastifyInstance) {
         return;
       }
       wsConnectionsPerIp.set(ip, current + 1);
-      // Register decrement immediately (before any awaits) so a premature
-      // close during synchronous setup still releases the counter.
+      // Register decrement on BOTH close AND error events — a WebSocket error
+      // (e.g. OS-level TCP RST, abrupt proxy reset) may fire only "error"
+      // without a subsequent "close" on some Node/ws versions. The idempotent
+      // releaseCounter() guard (released flag) ensures the count is decremented
+      // exactly once even when both events fire for the same socket.
       socket.on("close", releaseCounter);
+      socket.on("error", releaseCounter);
     }
     activeWsConnections.inc({ surface: "broadcast-v2", ...SERVICE_LABELS });
     wsCounter.inc();
@@ -206,16 +210,23 @@ export async function wsRoutes(app: FastifyInstance) {
         // the async replayFrom call can reach the client before the recover
         // and snapshot frames, causing out-of-order FSM transitions.
         //
-        // FRAME_QUEUE_MAX: mirrors the SSE gateway's 500-frame cap. During
-        // an unusually long DB replay (slow Postgres, high event volume) the
-        // live "frame" events emitted by the orchestrator accumulate here.
-        // Without a cap, a burst of thousands of events could exhaust heap
-        // memory on the Node process. When the cap is exceeded we drop the
-        // oldest frame (shift) so the client receives the most-recent events
-        // and the post-replay snapshot re-aligns any skipped state.
-        const FRAME_QUEUE_MAX = 500;
+        // FRAME_QUEUE_MAX: raised from 500 → 1000 frames so that an unusually
+        // slow DB replay (high event volume, Postgres congestion) doesn't silently
+        // drop live frames that arrived while the await was in-flight. The
+        // post-replay snapshot re-aligns any remaining skipped state, so dropping
+        // the oldest frame (shift) is always safe. A warning is emitted at 80 %
+        // capacity so operators can spot abnormally long replays in the logs
+        // before frames start being dropped.
+        const FRAME_QUEUE_MAX = 1000;
+        const FRAME_QUEUE_WARN = 800;
         const frameQueue: V2ServerFrame[] = [];
         const bufferFrame = (f: V2ServerFrame) => {
+          if (frameQueue.length >= FRAME_QUEUE_WARN && frameQueue.length < FRAME_QUEUE_MAX) {
+            logger.warn(
+              { ip, queueLen: frameQueue.length, max: FRAME_QUEUE_MAX },
+              "[broadcast-v2/ws] frame buffer near capacity during DB replay — DB may be slow",
+            );
+          }
           if (frameQueue.length >= FRAME_QUEUE_MAX) frameQueue.shift();
           frameQueue.push(f);
         };

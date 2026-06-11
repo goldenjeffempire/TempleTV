@@ -38,6 +38,7 @@ import { sendBroadcastWebhookSync } from "../webhook/webhook.service.js";
 import { sendAdminAlert } from "../../mail/mail.service.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
+import { getStorageHealthStatus } from "../../../infrastructure/storage-health-monitor.js";
 
 // ── Module-level state ────────────────────────────────────────────────────────
 
@@ -187,10 +188,28 @@ export async function broadcastHealthMonitorScan(): Promise<void> {
         logger.warn({ err }, "[broadcast-health-monitor] webhook notification failed (non-fatal)");
       });
 
+      // Storage-aware recovery: if storage itself is unhealthy (write/head/delete
+      // probe circuit open), skipping clearAllBadUrls is correct — bad URLs are
+      // genuinely unreachable because storage is down, not because the orchestrator
+      // is stuck. Clearing the blacklist in that state would just re-serve the same
+      // dead items and cause more stalls. Instead, only do a lighter reload().
+      // Full recovery (stop → clear → re-enable → start) is reserved for when
+      // storage is confirmed healthy and the stall is likely an orchestrator bug.
+      const storageOk = getStorageHealthStatus().healthy;
       try {
-        await broadcastOrchestrator.initiateFullRecovery(
-          `broadcast-health-monitor: ${reason}`,
-        );
+        if (!storageOk) {
+          logger.warn(
+            { reason, storageOk },
+            "[broadcast-health-monitor] storage probe unhealthy — downgrading full recovery to reload() to preserve bad-URL blacklist",
+          );
+          await broadcastOrchestrator.reload().catch((err: unknown) => {
+            logger.warn({ err }, "[broadcast-health-monitor] storage-degraded reload failed (non-fatal)");
+          });
+        } else {
+          await broadcastOrchestrator.initiateFullRecovery(
+            `broadcast-health-monitor: ${reason}`,
+          );
+        }
       } finally {
         recoveryInFlight = false;
       }

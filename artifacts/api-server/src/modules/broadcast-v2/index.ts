@@ -9,6 +9,7 @@ import { mediaIntegrityScanner } from "./engine/media-integrity-scanner.js";
 import { queueIntegrityValidator } from "./engine/queue-integrity-validator.js";
 import { orphanCleanupWorker } from "./engine/orphan-cleanup.js";
 import { workerSupervisor } from "./engine/worker-supervisor.js";
+import { eventLogRepo } from "./repository/event-log.repo.js";
 import { broadcastFanout } from "./io/broadcast-fanout.js";
 import { installYouTubeAutoOverride, uninstallYouTubeAutoOverride } from "../youtube-live/auto-override.js";
 import { faststartRecoveryWorker } from "./engine/faststart-recovery.js";
@@ -225,16 +226,33 @@ function startSupervisedWorkers(): void {
     backoffMs: [30_000, 60_000, 5 * 60_000],
   });
 
+  // Event log pruner: deletes broadcast_event_log rows older than 24 h so
+  // the table stays bounded regardless of uptime. Complements the per-channel
+  // sequence-based trim (which keeps the last 1000 events per channel but
+  // doesn't delete by age). Runs every 6 h with a 30 min initial delay so it
+  // starts after the system is fully warmed up. Non-fatal: any failure is
+  // logged and retried on the next scheduled run.
+  workerSupervisor.spawn({
+    name: "event-log-pruner",
+    fn: () => eventLogRepo.pruneOldEvents(),
+    intervalMs: 6 * 60 * 60_000,
+    initialDelayMs: 30 * 60_000,
+    backoffMs: [5 * 60_000, 15 * 60_000, 30 * 60_000],
+  });
+
   // Queue integrity validator: validates active queue on demand; also runs
-  // every 5 min so new additions are caught without manual invocation.
-  // Note: the bus bridge (above) also triggers a run 3 s after every
-  // broadcast-queue-updated event — including transcoding failures — so
-  // corrupt/failed items are deactivated well within the 5-min window.
+  // every 2 min so new additions and transcoding completions are caught
+  // quickly without waiting for the bus bridge trigger. The bus bridge
+  // (above) also triggers a run 3 s after every broadcast-queue-updated
+  // event — including transcoding failures — so corrupt/failed items are
+  // deactivated well within the 2-min window. Reduced from 5 min to 2 min
+  // and initial delay from 30 s to 10 s so fresh uploads are validated within
+  // minutes of being queued.
   workerSupervisor.spawn({
     name: "queue-integrity-validator",
     fn: () => queueIntegrityValidator.validate(),
-    intervalMs: 5 * 60_000,
-    initialDelayMs: 30_000,
+    intervalMs: 2 * 60_000,
+    initialDelayMs: 10_000,
     backoffMs: [5_000, 15_000, 30_000],
     onCircuitOpen: makeCircuitOpenCallback("queue-integrity-validator"),
   });

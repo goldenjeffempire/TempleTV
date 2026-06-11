@@ -71,12 +71,33 @@ function checkIdempotency(key: string): boolean {
   seenIdempotencyKeys.set(key, now);
   return true;
 }
+
+// ── naturalItemEnd dedup ──────────────────────────────────────────────────────
+// When a video ends, every connected player simultaneously POSTs /natural-end.
+// This causes a thundering-herd: 50+ concurrent HTTP requests all entering the
+// orchestrator's naturalItemEnd() in the same event-loop drain cycle. Although
+// the orchestrator is safe (the first call advances cycleStartedAtMs and all
+// subsequent callers get `snap.current.id !== itemId`), the burst still creates
+// unnecessary DB connections (persistCheckpoint), log noise, and CPU pressure.
+//
+// This dedup map short-circuits the route handler itself: only ONE request per
+// `${itemId}:${cycleAnchor}` passes through to the orchestrator within a 10 s
+// window. The rest return `{ ok: true, advanced: false, reason: "dedup" }`.
+// 10 s covers the typical "all players fire within 2-3 s of each other" window
+// while being short enough that a legitimate second call on the NEXT cycle
+// (same itemId, next loop iteration) is not suppressed.
+const naturalEndDedup = new Map<string, number>();
+const NATURAL_END_DEDUP_TTL_MS = 10_000;
+
 // Scheduled GC: sweep both maps every 10 minutes regardless of traffic
 // so stale entries don't accumulate during quiet periods (e.g. overnight).
 const _idempotencyGcTimer = setInterval(() => {
   const now = Date.now();
   for (const [k, ts] of seenIdempotencyKeys) {
     if (now - ts > IDEMPOTENCY_TTL_MS) seenIdempotencyKeys.delete(k);
+  }
+  for (const [k, ts] of naturalEndDedup) {
+    if (now - ts > NATURAL_END_DEDUP_TTL_MS) naturalEndDedup.delete(k);
   }
 }, 10 * 60_000);
 // Allow Node to exit cleanly even if this module is loaded in a test context.
@@ -992,6 +1013,21 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
   }, async (req, _reply) => {
     const { itemId } = req.body as { itemId: string };
+
+    // Thundering-herd dedup: when a video ends, all connected players fire
+    // /natural-end simultaneously. Build a dedup key from itemId + the
+    // orchestrator's current cycleStartedAtMs so that the NEXT cycle of the
+    // same item (same itemId, new anchor) is not suppressed.
+    const snap = broadcastOrchestrator.snapshot();
+    const cycleAnchor = snap.current?.startsAtMs ?? 0;
+    const dedupKey = `${itemId}:${cycleAnchor}`;
+    const now = Date.now();
+    const lastSeen = naturalEndDedup.get(dedupKey);
+    if (lastSeen !== undefined && now - lastSeen < NATURAL_END_DEDUP_TTL_MS) {
+      return { ok: true, advanced: false, reason: "dedup" };
+    }
+    naturalEndDedup.set(dedupKey, now);
+
     const result = await broadcastOrchestrator.naturalItemEnd(itemId);
     return { ok: true, ...result };
   });
