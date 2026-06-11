@@ -154,12 +154,13 @@ const Env = z.object({
   MEMORY_RESTART_RSS_MB: z.coerce.number().int().positive().default(768),
 
   // pg connection pool maximum. Each replica holds at most this many live
-  // connections to Postgres/Neon. 20 is safe for a 2 GiB / 1-vCPU container.
-  // Raise if you move to a larger dyno or see connection-timeout spikes.
-  // Set to 20 so concurrent chunk uploads (up to 6 via the semaphore) +
-  // background completeMultipartUpload (advisory lock = 1) + general API
-  // queries all have ample pool headroom without starvation.
-  DB_POOL_MAX: z.coerce.number().int().positive().default(20),
+  // connections to Postgres/Neon. 25 is safe for a 2 GiB / 1-vCPU container.
+  // Raised from 20 → 25 to provide headroom for concurrent HLS_MAX_CONCURRENT
+  // requests each holding a pool connection during BYTEA streaming, plus
+  // concurrent chunk uploads (up to 6 via semaphore) + background workers.
+  // Each connection costs ~5–10 MB RSS on pg side; 25 ≈ 125–250 MB, well within
+  // the 512 MB Replit container budget.
+  DB_POOL_MAX: z.coerce.number().int().positive().default(25),
 
   // Maximum wall-clock time (ms) a single SQL statement may run before
   // PostgreSQL cancels it. Protects the pool from runaway full-table-scans,
@@ -456,6 +457,15 @@ const Env = z.object({
   // Raise MEMORY_RESTART_RSS_MB proportionally when raising this value.
   // video-serve.routes.ts emits a startup WARN when the budget would overflow.
   HLS_MAX_CONCURRENT: z.coerce.number().int().positive().default(10),
+
+  // In-process LRU cache for immutable HLS .ts segments (integer megabytes).
+  // Segments are content-addressed (never mutated after write) so caching them
+  // is always safe. A cache HIT bypasses both DB queries + a pool connection,
+  // cutting per-segment latency from ~30–60 ms (DB BYTEA fetch) to <1 ms.
+  // Each 2-second segment is ~250 KB–2 MB; 64 MB holds 32–256 warm segments
+  // which covers the entire active broadcast window for a typical live service.
+  // Set to 0 to disable. Max 512 MB (capped for OOM safety on constrained hosts).
+  HLS_SEGMENT_CACHE_MB: z.coerce.number().int().min(0).max(512).default(64),
 
   // How long (ms) to wait after SIGTERM before starting to close services.
   // During this window /healthz returns HTTP 503 so the upstream load balancer

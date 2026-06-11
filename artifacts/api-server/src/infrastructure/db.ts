@@ -749,6 +749,29 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         WHERE is_active = true
     `);
 
+    // ── HLS storage + analytics hot-path indexes (performance audit) ───────
+    // storage_blobs deleteByPrefix() + bulk-delete use starts_with(key, prefix).
+    // The primary key is a plain B-Tree; PostgreSQL will NOT use it for LIKE
+    // 'prefix%' or starts_with() patterns without a text_pattern_ops index.
+    // This index is an alternative access path for prefix scans used by:
+    //   • abortMultipartUpload (deletes _parts/{uploadId}/* rows)
+    //   • video deletion (deletes transcoded/{videoId}/* rows)
+    //   • orphan cleanup worker (scans transcoded/* keys)
+    await run("idx_storage_blobs_key_tpo", `
+      CREATE INDEX IF NOT EXISTS idx_storage_blobs_key_tpo
+        ON storage_blobs USING btree (key text_pattern_ops)
+    `);
+    // viewer_sessions concurrent-analytics covering index.
+    // getConcurrentViewers() runs a time-bucket CTE that LEFT JOINs viewer_sessions
+    // on a started_at range AND evaluates (ended_at, last_heartbeat_at) in CASE
+    // expressions. A composite index on these three columns lets the planner
+    // use an index-only scan for both the join predicate and the per-bucket
+    // CASE expressions, avoiding heap fetches for each matched session row.
+    await run("idx_viewer_sessions_concurrent_analytics", `
+      CREATE INDEX IF NOT EXISTS idx_viewer_sessions_concurrent_analytics
+        ON viewer_sessions (started_at DESC, ended_at, last_heartbeat_at)
+    `);
+
     // ── Check constraints (DO-block pattern for idempotency) ───────────────
     // ALTER TABLE ADD CONSTRAINT has no IF NOT EXISTS; use a DO block.
     await client.query(`

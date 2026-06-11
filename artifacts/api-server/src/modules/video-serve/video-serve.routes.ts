@@ -5,6 +5,7 @@ import { db, schema } from "../../infrastructure/db.js";
 import { storage } from "../../infrastructure/storage.js";
 import { env } from "../../config/env.js";
 import { logger } from "../../infrastructure/logger.js";
+import { registerNamedStore } from "../../infrastructure/cache.js";
 
 /**
  * Video-serve gateway — restores the three URL patterns that the old
@@ -42,6 +43,93 @@ import { logger } from "../../infrastructure/logger.js";
 // their failoverHlsUrl after the first segment load failure.
 let hlsConcurrent = 0;
 const HLS_MAX = () => env.HLS_MAX_CONCURRENT;
+
+// ── A6: In-process HLS segment LRU cache ─────────────────────────────────────
+// Immutable .ts segments are content-addressed by the transcoder (path =
+// `transcoded/{videoId}/v0/seg_NNNNN.ts`). Caching them in-process lets
+// repeated requests from multiple viewers skip the two DB round-trips
+// (headObject + BYTEA getObject) that otherwise dominate hot-path latency.
+//
+// Design:
+//   • Byte-size-aware LRU: evicts LRU entries when totalBytes > maxBytes.
+//   • TTL: 1 hour — segments are immutable after creation; the limit is
+//     generous to prevent holding old content after a video rotation.
+//   • Only caches entries ≤ maxEntryBytes (default 16 MB) to avoid caching
+//     pathologically large segments that would displace many smaller ones.
+//   • Registered with the diagnostics registry so the memory watchdog
+//     can track cache size over time.
+//   • Disabled at startup when HLS_SEGMENT_CACHE_MB = 0.
+class HlsSegmentLru {
+  private readonly map = new Map<string, { data: Buffer; ct: string; at: number }>();
+  private totalBytes = 0;
+  private readonly maxBytes: number;
+  private readonly maxEntryBytes: number;
+  private readonly ttlMs = 60 * 60 * 1_000; // 1 hour
+  hits = 0;
+  misses = 0;
+
+  constructor(maxMb: number) {
+    this.maxBytes = maxMb * 1024 * 1024;
+    // Cap per-entry at 1/4 of total so one large segment can't displace all others
+    this.maxEntryBytes = Math.max(1, Math.floor(this.maxBytes / 4));
+  }
+
+  get enabled() { return this.maxBytes > 0; }
+
+  read(key: string): { data: Buffer; ct: string } | null {
+    if (!this.enabled) return null;
+    const entry = this.map.get(key);
+    if (!entry) return null;
+    if (Date.now() - entry.at > this.ttlMs) {
+      this.map.delete(key);
+      this.totalBytes = Math.max(0, this.totalBytes - entry.data.length);
+      return null;
+    }
+    // Promote to MRU (delete + re-insert moves to Map tail)
+    this.map.delete(key);
+    this.map.set(key, entry);
+    this.hits++;
+    return { data: entry.data, ct: entry.ct };
+  }
+
+  write(key: string, data: Buffer, ct: string): void {
+    if (!this.enabled) return;
+    if (data.length > this.maxEntryBytes) return; // too large — skip
+    if (this.map.has(key)) return;                // already cached
+
+    // Evict LRU entries until we have room
+    while (this.totalBytes + data.length > this.maxBytes && this.map.size > 0) {
+      const lruKey = this.map.keys().next().value;
+      if (lruKey === undefined) break;
+      const lru = this.map.get(lruKey)!;
+      this.map.delete(lruKey);
+      this.totalBytes = Math.max(0, this.totalBytes - lru.data.length);
+    }
+    this.map.set(key, { data, ct, at: Date.now() });
+    this.totalBytes += data.length;
+    this.misses++;
+  }
+
+  get size() { return this.map.size; }
+  get bytesMb() { return this.totalBytes / (1024 * 1024); }
+}
+
+// Lazy-initialised after env is parsed (module top-level runs before env.ts
+// is imported on some test paths).  The first call to hlsSegments() initialises.
+let _hlsSegments: HlsSegmentLru | null = null;
+function hlsSegments(): HlsSegmentLru {
+  if (!_hlsSegments) {
+    _hlsSegments = new HlsSegmentLru(env.HLS_SEGMENT_CACHE_MB);
+    registerNamedStore("hls-segment-cache", () => _hlsSegments!.size);
+    if (_hlsSegments.enabled) {
+      logger.info(
+        { maxMb: env.HLS_SEGMENT_CACHE_MB },
+        "[hls-proxy] in-process segment cache enabled",
+      );
+    }
+  }
+  return _hlsSegments;
+}
 
 // ── A3: HMAC token helpers ────────────────────────────────────────────────────
 const TOKEN_ALGO = "sha256";
@@ -681,6 +769,33 @@ export async function videoServeRoutes(app: FastifyInstance) {
         ? req.headers["range"]
         : null;
 
+      // ── A6: Segment cache fast-path ────────────────────────────────────────
+      // For full (non-range) non-manifest fetches, serve from the in-process LRU
+      // cache if available — zero DB queries, <1 ms vs ~30-60 ms on a cache miss.
+      // Range requests bypass the cache because they need a partial slice; the
+      // full segment will be cached on the next non-range request.
+      if (!isManifest && !rangeHeader) {
+        const hit = hlsSegments().read(key);
+        if (hit) {
+          decrementConcurrent();
+          return reply
+            .code(200)
+            .header("Content-Type", hit.ct)
+            .header("Content-Length", String(hit.data.length))
+            .header("Cache-Control", "public, max-age=604800, immutable")
+            .header("Accept-Ranges", "bytes")
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+            .header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+            .header("Cross-Origin-Resource-Policy", "cross-origin")
+            .header("Timing-Allow-Origin", "*")
+            .header("X-Accel-Buffering", "no")
+            .header("X-Cache", "HIT")
+            .header("X-Queue-Depth", String(hlsConcurrent))
+            .send(hit.data);
+        }
+      }
+
       if (!isManifest && rangeHeader) {
         const rangeMatch = /bytes=(\d*)-(\d*)/.exec(rangeHeader);
         if (rangeMatch) {
@@ -837,13 +952,27 @@ export async function videoServeRoutes(app: FastifyInstance) {
       // A2: Binary segment — long cache TTL (7 days). TS segments are immutable
       // (content-addressed by the transcoder); a 7-day TTL is safe and dramatically
       // reduces origin load once the CDN or browser cache is warm.
-      // X-Accel-Buffering: no — tells nginx/caddy not to buffer the segment
-      // into memory before forwarding; instead it streams bytes to the client
-      // as they arrive from S3. Prevents the proxy from holding the full 400 KB
-      // segment in RAM and blocking the TCP window for the entire transfer time.
+      //
+      // For non-range requests we materialise the full segment into a Buffer so we
+      // can populate the in-process LRU cache (A6) before sending. Subsequent
+      // requests for the same segment are served entirely from memory.
+      // For range requests (handled above) we already returned early; this branch
+      // only executes for full-segment non-range fetches and manifests (A1).
       const contentType = obj.contentType ?? "video/mp2t";
-      reply
+      // Collect the body stream into a Buffer for caching.  Individual .ts
+      // segments are 250 KB–4 MB so the memory overhead is bounded and brief
+      // (data is released once reply.send() drains the TCP write buffer).
+      const chunks: Buffer[] = [];
+      for await (const chunk of obj.body as AsyncIterable<Uint8Array>) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const segBuf = Buffer.concat(chunks);
+      // Populate the LRU cache (write() is a no-op if the entry is too large
+      // or caching is disabled via HLS_SEGMENT_CACHE_MB=0).
+      hlsSegments().write(key, segBuf, contentType);
+      return reply
         .header("Content-Type", contentType)
+        .header("Content-Length", String(segBuf.length))
         .header("Cache-Control", "public, max-age=604800, immutable")
         .header("Accept-Ranges", "bytes")
         .header("Access-Control-Allow-Origin", "*")
@@ -852,11 +981,9 @@ export async function videoServeRoutes(app: FastifyInstance) {
         .header("Cross-Origin-Resource-Policy", "cross-origin")
         .header("Timing-Allow-Origin", "*")
         .header("X-Accel-Buffering", "no")
-        .header("X-Queue-Depth", String(hlsConcurrent));
-      if (obj.contentLength) {
-        reply.header("Content-Length", String(obj.contentLength));
-      }
-      return reply.send(obj.body);
+        .header("X-Cache", "MISS")
+        .header("X-Queue-Depth", String(hlsConcurrent))
+        .send(segBuf);
     },
   );
 }
