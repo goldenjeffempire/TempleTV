@@ -240,12 +240,18 @@ function decodeCursor(raw: string): CatalogCursor | null {
 const SAFE_PUB_AT = sql`CASE WHEN ${videos.publishedAt} ~ '^[0-9]{4}' THEN NULLIF(${videos.publishedAt}, '')::timestamptz ELSE NULL END`;
 
 function buildOrderBy(sort: string) {
-  // For "newest" / "oldest" prefer the video's own publish date (YouTube date) so
-  // that the library order matches the channel chronologically.  Local uploads
-  // that have no publishedAt fall back to importedAt so they still sort sensibly.
+  // newest / oldest: use imported_at as the canonical sort key so that the
+  // ordering is identical between offset mode and cursor mode.  Both paths
+  // build nextCursor from (imported_at, id); they MUST sort by the same column
+  // or following a nextCursor from an offset-mode page would produce
+  // duplicate / missing rows.
+  //
+  // "published" retains the COALESCE(published_at, imported_at) expression
+  // (explicit user intent to see content by publication date) — that sort is
+  // not eligible for cursor pagination so no consistency requirement applies.
   switch (sort) {
     case "oldest":
-      return sql`COALESCE(${SAFE_PUB_AT}, ${videos.importedAt}) ASC`;
+      return sql`${videos.importedAt} ASC, ${videos.id} ASC`;
     case "published":
       return sql`${SAFE_PUB_AT} DESC NULLS LAST`;
     case "views":
@@ -253,7 +259,7 @@ function buildOrderBy(sort: string) {
     case "title":
       return asc(videos.title);
     default: // "newest"
-      return sql`COALESCE(${SAFE_PUB_AT}, ${videos.importedAt}) DESC`;
+      return sql`${videos.importedAt} DESC, ${videos.id} DESC`;
   }
 }
 

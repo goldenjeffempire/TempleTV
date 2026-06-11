@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { eq, and, gt, lt, isNull, isNotNull, or } from "drizzle-orm";
 import { logger } from "../../infrastructure/logger.js";
 import { nanoid } from "nanoid";
-import { db, schema } from "../../infrastructure/db.js";
+import { db, schema, pgPool } from "../../infrastructure/db.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from "./jwt.js";
 import {
@@ -62,19 +62,18 @@ const PRUNE_AFTER_DAYS = 30;
  */
 export async function pruneAllExpiredRefreshTokens(): Promise<number> {
   const cutoff = new Date(Date.now() - PRUNE_AFTER_DAYS * 24 * 60 * 60 * 1000);
-  const deleted = await db
-    .delete(refreshTokensTable)
-    .where(
-      or(
-        lt(refreshTokensTable.expiresAt, cutoff),
-        and(
-          isNotNull(refreshTokensTable.revokedAt),
-          lt(refreshTokensTable.revokedAt, cutoff),
-        ),
-      ),
-    )
-    .returning({ id: refreshTokensTable.id });
-  const count = deleted.length;
+  // Use the raw pg pool instead of Drizzle's .returning() so we get the
+  // driver-level rowCount without materialising deleted row IDs in memory.
+  // On a large backlog, .returning({ id }) would build an array of thousands
+  // of UUID strings before we just call .length on it — O(n) memory for O(1)
+  // work.  pgPool.query() returns rowCount directly at O(1).
+  const result = await pgPool.query(
+    `DELETE FROM refresh_tokens
+       WHERE expires_at < $1
+          OR (revoked_at IS NOT NULL AND revoked_at < $1)`,
+    [cutoff],
+  );
+  const count = result.rowCount ?? 0;
   if (count > 0) {
     logger.info({ pruned: count }, "[auth] pruneAllExpiredRefreshTokens: rows deleted");
   }
