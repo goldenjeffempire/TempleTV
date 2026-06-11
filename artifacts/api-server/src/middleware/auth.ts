@@ -56,11 +56,17 @@ async function getCachedSessionsValidAfter(userId: string): Promise<Date | null>
     if (cached) return cached.validAfter;
     // No stale cache entry — cold-start DB failure. Fail open (allow all
     // tokens) to avoid locking every user out during a transient PG blip
-    // at startup. Log a WARN so this is visible in production monitoring.
+    // at startup. Cache a null sentinel with ~5 s effective TTL so that
+    // burst traffic during a DB outage doesn't spawn a DB query per request
+    // — without this every concurrent request hits the already-failing pool.
+    // The sentinel expires and is retried after 5 s; if the DB is still down
+    // the stale cached null is returned instead (fail-open preserved).
+    // Log a WARN so this is visible in production monitoring.
     logger.warn(
       { userId },
       "[auth] sessions_valid_after: DB unavailable and no cache entry — failing open until DB recovers",
     );
+    _svaCache.set(userId, { validAfter: null, cachedAt: Date.now() - (_SVA_TTL_MS - 5_000) });
     return null;
   }
 }

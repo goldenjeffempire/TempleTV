@@ -410,7 +410,11 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
             <span className="tt-btn-label">Settings</span>
           </button>
 
-          <Clock />
+          {/* offsetMs corrects for client ↔ server clock skew so the home
+              screen clock shows the same time as the broadcast server. The
+              offset is recomputed on every broadcastCurrent update (≈ every
+              30 s) and the Clock interval picks it up via useEffect dep. */}
+          <Clock offsetMs={broadcastCurrent ? Date.now() - broadcastCurrent.serverTimeMs : 0} />
         </div>
       </div>
 

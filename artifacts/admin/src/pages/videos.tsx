@@ -1063,14 +1063,16 @@ export default function VideosPage() {
                     className="shrink-0"
                     onClick={(e) => e.stopPropagation()}
                   />
-                  {/* Thumbnail */}
-                  <div className="flex-shrink-0 w-20 h-12 rounded overflow-hidden bg-black">
-                    {v.thumbnailUrl ? (
-                      <img src={v.thumbnailUrl} alt={`Thumbnail for ${v.title}`} className="w-full h-full object-contain" loading="lazy" decoding="async" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        <Video size={18} className="text-muted-foreground/30" />
-                      </div>
+                  {/* Thumbnail — placeholder icon sits permanently in the
+                      background; the img covers it and self-hides on a
+                      broken/404 src so the icon is always visible as
+                      fallback without any React state per row. */}
+                  <div className="flex-shrink-0 w-20 h-12 rounded overflow-hidden bg-black relative">
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <Video size={18} className="text-muted-foreground/30" />
+                    </div>
+                    {v.thumbnailUrl && (
+                      <img src={v.thumbnailUrl} alt={`Thumbnail for ${v.title}`} className="absolute inset-0 w-full h-full object-contain" loading="lazy" decoding="async" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                     )}
                   </div>
 

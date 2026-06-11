@@ -398,6 +398,100 @@ function LiveBroadcastHlsPlayer({
   );
 }
 
+// ── VOD HLS wrapper — adds a "Video unavailable" error screen ─────────────────
+
+/**
+ * Wraps HlsVideoPlayer for VOD playback and converts an `onSkipItem` call
+ * (fired after MAX_RETRIES exhaustion) into a user-facing error screen
+ * instead of silently freezing on a loading spinner.
+ */
+function VodHlsPlayer({
+  hlsUrl,
+  title,
+  onBack,
+  startPositionSecs,
+  onProgress,
+}: {
+  hlsUrl: string;
+  title: string;
+  onBack: () => void;
+  startPositionSecs: number;
+  onProgress?: (s: number) => void;
+}) {
+  const [videoFailed, setVideoFailed] = useState(false);
+
+  if (videoFailed) {
+    return (
+      <div
+        style={{
+          position: "relative", width: "100%", height: "100%",
+          background: "#0a0a0f",
+          display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center",
+          gap: 24, color: "#fff", fontFamily: "inherit",
+        }}
+      >
+        {/* Back button — always reachable regardless of error state */}
+        <button
+          onClick={onBack}
+          style={{
+            position: "absolute",
+            top: "var(--tv-safe-v, 24px)", left: "var(--tv-safe-h, 32px)",
+            zIndex: 50, background: "rgba(0,0,0,0.6)",
+            border: "1px solid rgba(255,255,255,0.15)", borderRadius: 50,
+            width: 44, height: 44,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            cursor: "pointer", color: "#fff", fontSize: 20,
+          }}
+          aria-label="Back"
+        >
+          ←
+        </button>
+
+        <div style={{ fontSize: 56, opacity: 0.2, lineHeight: 1 }}>⚠</div>
+        <div style={{ textAlign: "center", maxWidth: 480 }}>
+          <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 10 }}>
+            Video unavailable
+          </div>
+          <div style={{ fontSize: 16, color: "rgba(255,255,255,0.45)", lineHeight: 1.5 }}>
+            This content could not be loaded after multiple attempts.
+            Please select a different video.
+          </div>
+        </div>
+        <button
+          // eslint-disable-next-line jsx-a11y/no-autofocus
+          autoFocus
+          onClick={onBack}
+          style={{
+            marginTop: 8, padding: "12px 36px",
+            background: "rgba(106,13,173,0.75)",
+            border: "1px solid rgba(168,85,247,0.5)",
+            borderRadius: 8, color: "#fff",
+            fontSize: 16, fontWeight: 600, cursor: "pointer",
+            outline: "none",
+          }}
+          onFocus={(e) => { (e.currentTarget as HTMLButtonElement).style.boxShadow = "0 0 0 3px rgba(168,85,247,0.6)"; }}
+          onBlur={(e)  => { (e.currentTarget as HTMLButtonElement).style.boxShadow = "none"; }}
+        >
+          ← Go back
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <HlsVideoPlayer
+      hlsUrl={hlsUrl}
+      title={title}
+      onBack={onBack}
+      startPositionSecs={startPositionSecs}
+      isLive={false}
+      onProgress={onProgress}
+      onSkipItem={() => setVideoFailed(true)}
+    />
+  );
+}
+
 // ── Public router ─────────────────────────────────────────────────────────────
 
 export function Player({
@@ -420,12 +514,11 @@ export function Player({
       );
     }
     return (
-      <HlsVideoPlayer
+      <VodHlsPlayer
         hlsUrl={hlsUrl}
         title={title}
         onBack={onBack}
         startPositionSecs={startPositionSecs}
-        isLive={false}
         onProgress={onProgress}
       />
     );

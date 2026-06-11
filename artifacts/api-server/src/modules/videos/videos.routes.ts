@@ -100,7 +100,11 @@ const PublicVideoSchema = z.object({
 });
 
 const ListQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(2000).default(50),
+  // Capped at 200 (was 2000): fetching 2000 full video rows including
+  // descriptions causes significant event-loop lag and memory pressure
+  // during JSON serialization. 200 is more than sufficient for any
+  // paginated UI; callers needing bulk export should use the admin API.
+  limit: z.coerce.number().int().min(1).max(200).default(50),
   page: z.coerce.number().int().min(1).default(1),
   search: z.string().trim().max(200).optional(),
   category: z.string().trim().max(100).optional(),

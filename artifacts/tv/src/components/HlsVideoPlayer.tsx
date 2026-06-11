@@ -233,6 +233,25 @@ export function HlsVideoPlayer({
         return;
       }
       let mediaErrCount = 0;
+      // Detect constrained TV chipsets (2017-2019 Tizen/webOS) that cannot
+      // sustain a 30 s VRAM buffer without exhausting GPU memory after 2-3
+      // hours of 24/7 playback. Same heuristic as LiveBroadcastV2 for
+      // consistent behaviour across both the live and VOD player surfaces:
+      //   • jsHeapSizeLimit ≤ 256 MiB — MediaTek / Mstar budget SoCs
+      //   • Tizen UA year ≤ 2019     — Samsung pre-2020 smart TVs
+      //   • webOS UA year  ≤ 2019    — LG pre-2020 smart TVs
+      const isConstrainedTv = (() => {
+        try {
+          const heapLimit = (performance as { memory?: { jsHeapSizeLimit?: number } }).memory?.jsHeapSizeLimit ?? Infinity;
+          if (heapLimit <= 256 * 1024 * 1024) return true;
+          const ua = navigator.userAgent ?? "";
+          const tizenYear = /Tizen[/ ](201[0-9])/.exec(ua)?.[1];
+          if (tizenYear && parseInt(tizenYear, 10) <= 2019) return true;
+          const webosYear = /Web0S[;/ ](\d{4})/.exec(ua)?.[1] ?? /webOS.com\/(\d{4})/.exec(ua)?.[1];
+          if (webosYear && parseInt(webosYear, 10) <= 2019) return true;
+        } catch { /* ignore — defensive IIFE */ }
+        return false;
+      })();
       const hls = new HlsLib({
         enableWorker: true,
         workerPath: undefined,  // inline Web Worker (no external script needed)
@@ -242,12 +261,13 @@ export function HlsVideoPlayer({
         // on Samsung Tizen / LG webOS after hours of continuous 24/7 playback
         // (these chipsets have ~1.5–2 GB total and keep YUV textures in GPU
         // memory proportional to the buffered segment count).
+        // Constrained chipsets get a 20 s cap — same as LiveBroadcastV2.
         // backBufferLength 0: broadcast TV never seeks backward — freeing back-
         // buffer VRAM immediately after the playhead advances gives a
         // significant long-session stability improvement on TV hardware.
-        maxBufferLength: 30,
+        maxBufferLength: isConstrainedTv ? 20 : 30,
         backBufferLength: 0,
-        maxMaxBufferLength: 60,
+        maxMaxBufferLength: isConstrainedTv ? 20 : 60,
         startLevel: -1,              // auto-select by bandwidth probe
         capLevelToPlayerSize: true,  // don't load 1080p into a small container
         debug: false,
