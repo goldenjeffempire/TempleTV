@@ -218,9 +218,10 @@ export function useVideos(): UseVideosResult {
           setLoading(false);
         }
       }
-      // Fetch full catalog (limit=2000) so home-screen category grids
-      // show the complete Temple TV library, not just the newest 500.
-      const resp = await fetchVideos({ limit: 2000, sort: "newest" });
+      // Fetch full catalog (limit=500) so home-screen category grids
+      // show the complete Temple TV library. The API cap is 500; requesting
+      // more returns a 400 which surfaces as "Couldn't load videos".
+      const resp = await fetchVideos({ limit: 500, sort: "newest" });
       // Defensive: API contract says `videos` is always an array, but a 200
       // with a malformed body (proxy injecting HTML, partial CDN response)
       // should NOT silently wipe the catalog. Throw so the existing catch

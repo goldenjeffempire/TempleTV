@@ -100,11 +100,12 @@ const PublicVideoSchema = z.object({
 });
 
 const ListQuerySchema = z.object({
-  // Capped at 200 (was 2000): fetching 2000 full video rows including
-  // descriptions causes significant event-loop lag and memory pressure
-  // during JSON serialization. 200 is more than sufficient for any
-  // paginated UI; callers needing bulk export should use the admin API.
-  limit: z.coerce.number().int().min(1).max(200).default(50),
+  // Capped at 500: the mobile home screen loads the full catalog in one
+  // request for client-side category filtering. At ~435 videos the payload
+  // is ~1 MB — acceptable for a one-shot cold-start fetch. Callers needing
+  // bulk export should use the admin API. Was briefly lowered to 200 which
+  // caused a 400 → "Couldn't load videos" error on the mobile home screen.
+  limit: z.coerce.number().int().min(1).max(500).default(50),
   page: z.coerce.number().int().min(1).default(1),
   search: z.string().trim().max(200).optional(),
   category: z.string().trim().max(100).optional(),
