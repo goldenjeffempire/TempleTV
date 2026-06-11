@@ -492,9 +492,8 @@ services:
   # paths is immutable + 1y; the SPA shell (/index.html) gets no-store so
   # deploys are picked up on next page load.
 
-  - type: web
+  - type: static
     name: temple-tv-admin
-    runtime: static
     branch: main
     rootDir: .
     autoDeploy: true
@@ -560,9 +559,8 @@ services:
         source: /*
         destination: /index.html
 
-  - type: web
+  - type: static
     name: temple-tv-web
-    runtime: static
     branch: main
     rootDir: .
     autoDeploy: true
@@ -624,9 +622,8 @@ services:
         source: /*
         destination: /index.html
 
-  - type: web
+  - type: static
     name: temple-tv-tv
-    runtime: static
     branch: main
     rootDir: .
     autoDeploy: true
