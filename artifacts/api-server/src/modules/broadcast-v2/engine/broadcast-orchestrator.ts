@@ -181,6 +181,13 @@ interface CachedQueueItem {
 class BroadcastOrchestrator extends EventEmitter {
   readonly channelId = "main";
   private items: CachedQueueItem[] = [];
+  /**
+   * Pre-computed cumulative item offsets (ms) for O(log N) snapshot lookup.
+   * itemOffsets[i] = sum of durationSecs * 1000 for items[0..i-1].
+   * Rebuilt by rebuildItemOffsets() whenever this.items or any item's
+   * durationSecs changes (reloadInner, naturalItemEnd).
+   */
+  private itemOffsets: number[] = [];
   private cycleStartedAtMs = Date.now();
   private cycleDurationMs = 0;
   private mode: V2Mode = "queue";
@@ -782,6 +789,17 @@ class BroadcastOrchestrator extends EventEmitter {
   /** Single in-flight reload promise so every caller (bus bridge, REST
    *  /reload, self-heal poll) coalesces onto the same DB read. */
   private reloadPromise: Promise<void> | null = null;
+  /**
+   * Hard mutex preventing re-entrant calls to reloadInner().
+   * reload() is protected by the reloadPromise single-flight guard, but
+   * start() calls reloadInner() directly. If start()'s reloadInner() is
+   * extremely slow (cold DB pool), and a self-heal timer fires and calls
+   * reload() → reloadInner() before start() has set this.started=true
+   * (which is what suppresses the timers), the two would overlap.
+   * This boolean guard eliminates that window: the second concurrent caller
+   * silently returns and the first finishes uninterrupted.
+   */
+  private _reloadInProgress = false;
 
   /**
    * Timestamp of when the last reload completed. Used together with
@@ -818,7 +836,31 @@ class BroadcastOrchestrator extends EventEmitter {
     return this.reloadPromise;
   }
 
+  /**
+   * Rebuild this.itemOffsets from the current this.items array and update
+   * this.cycleDurationMs. Must be called after any change to this.items or
+   * to any item's durationSecs field.
+   *
+   * itemOffsets[i] is the wall-clock offset (ms from cycle start) at which
+   * items[i] begins. snapshot() uses a binary search over this array to
+   * find the current slot in O(log N) instead of O(N).
+   */
+  private rebuildItemOffsets(): void {
+    let acc = 0;
+    this.itemOffsets = this.items.map((item) => {
+      const offset = acc;
+      acc += item.durationSecs * 1000;
+      return offset;
+    });
+    this.cycleDurationMs = acc;
+  }
+
   private async reloadInner(): Promise<void> {
+    if (this._reloadInProgress) {
+      logger.debug("[broadcast-v2] reloadInner: concurrent call suppressed by mutex");
+      return;
+    }
+    this._reloadInProgress = true;
     this.reloadAttempts += 1;
     const prev = this.snapshot();
     const prevCurrentId = prev.current?.id ?? null;
@@ -838,6 +880,7 @@ class BroadcastOrchestrator extends EventEmitter {
       this.lastReloadAtMs = Date.now();
       this.lastReloadOk = false;
       this.lastReloadError = err instanceof Error ? err.message : String(err);
+      this._reloadInProgress = false;
       throw err;
     }
 
@@ -954,7 +997,8 @@ class BroadcastOrchestrator extends EventEmitter {
     this.lastReloadOk = true;
     this.lastReloadError = null;
     this.reloadSuccesses += 1;
-    this.cycleDurationMs = this.items.reduce((s, r) => s + r.durationSecs * 1000, 0);
+    // Rebuild itemOffsets and cycleDurationMs from the freshly-loaded items.
+    this.rebuildItemOffsets();
 
     // Reset dead-air tracking state whenever items load successfully.
     //
@@ -1027,12 +1071,24 @@ class BroadcastOrchestrator extends EventEmitter {
     // advance for >30s past start. Mirrors the /readyz stuck-detection rule.
     // 1 = stuck, 0 = healthy. Allows alert rules without re-implementing logic.
     const startedAtMs = this.startedAtWallMs;
-    const stuck =
+    const nowMs = Date.now();
+    // stuck-at-boot: started, items loaded, but sequence never advanced past
+    // 0 within 30 s. Catches the initial "nothing plays" failure mode.
+    const stuckAtZero =
       this.started &&
       this.sequence === 0 &&
       this.items.length > 0 &&
       startedAtMs > 0 &&
-      Date.now() - startedAtMs > 30_000;
+      nowMs - startedAtMs > 30_000;
+    // stuck-mid-run: sequence advanced at least once, but has not advanced
+    // again in longer than STALE_MS. This catches mid-broadcast hangs that
+    // sequence === 0 would never flag (sequence is already > 0).
+    const stuckAdvancing =
+      this.started &&
+      this.sequence > 0 &&
+      this.items.length > 0 &&
+      nowMs - this.lastSequenceAdvanceMs > env.BROADCAST_HEALTH_MONITOR_STALE_MS;
+    const stuck = stuckAtZero || stuckAdvancing;
     broadcastQueueStuck.set({ channel: this.channelId, ...SERVICE_LABELS }, stuck ? 1 : 0);
     // Fire a Sentry alert the first time the stuck condition is detected (and
     // at most once per 5 minutes while it persists) so on-call engineers are
@@ -1233,6 +1289,7 @@ class BroadcastOrchestrator extends EventEmitter {
         })
         .catch((err) => logger.warn({ err }, "[broadcast-v2] silent anchor persist failed"));
     }
+    this._reloadInProgress = false;
   }
 
   // ── Snapshot building ──────────────────────────────────────────────────
@@ -1271,47 +1328,84 @@ class BroadcastOrchestrator extends EventEmitter {
       // most clients render `override` directly.
     } else if (this.items.length > 0 && this.cycleDurationMs > 0) {
       const elapsed = ((now - this.cycleStartedAtMs) % this.cycleDurationMs + this.cycleDurationMs) % this.cycleDurationMs;
-      let acc = 0;
-      // Find the item whose time-slot contains `elapsed`. If `toItem()`
-      // returns null for that slot (unresolvable URL), scan forward through
-      // the remaining slots to find the first playable item. The auto-skip
-      // in tick() will advance the cycle anchor on the next tick, but until
-      // then we want to surface *some* valid current item so the FSM can
-      // transition out of SYNCING and the overlay can show "Off air" only
-      // when the entire queue is unresolvable — not on a single bad item.
+      // Binary search for the slot containing `elapsed` using the pre-computed
+      // itemOffsets array — O(log N) instead of O(N). Falls back to the full
+      // linear scan if itemOffsets is stale (mismatched length), which can
+      // happen in the brief window between items changing and rebuildItemOffsets
+      // completing (practically zero, but belt-and-suspenders).
       let foundIdx = -1;
       let foundStartsAtMs = 0;
-      for (let i = 0; i < this.items.length; i++) {
-        const span = this.items[i]!.durationSecs * 1000;
-        if (elapsed < acc + span) {
-          // This is the current time-slot. Try to project it.
-          const startsAtMs = now - (elapsed - acc);
-          const projected = this.projectItem(this.items[i]!, startsAtMs);
-          if (projected !== null) {
-            current = projected;
-            foundIdx = i;
-            foundStartsAtMs = startsAtMs;
-          } else {
-            // Slot unresolvable (bad-URL cache) — scan forward for the first
-            // valid item. Use a virtual wall-clock cursor so next/nextNext
-            // stay temporally consistent with the item we eventually bind.
-            let scanCursor = now + (span - (elapsed - acc)); // start of next slot
-            for (let j = 1; j < this.items.length; j++) {
-              const si = (i + j) % this.items.length;
-              const scan = this.projectItem(this.items[si]!, scanCursor);
-              if (scan !== null) {
-                current = scan;
-                foundIdx = si;
-                foundStartsAtMs = scanCursor;
-                break;
-              }
-              scanCursor += this.items[si]!.durationSecs * 1000;
-            }
+
+      const findSlot = (): void => {
+        // Prefer O(log N) binary search when offsets are up-to-date.
+        if (this.itemOffsets.length === this.items.length && this.items.length > 0) {
+          let lo = 0, hi = this.items.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (this.itemOffsets[mid]! <= elapsed) lo = mid;
+            else hi = mid - 1;
           }
-          break;
+          const i = lo;
+          const acc = this.itemOffsets[i]!;
+          const span = this.items[i]!.durationSecs * 1000;
+          if (elapsed < acc + span) {
+            const startsAtMs = now - (elapsed - acc);
+            const projected = this.projectItem(this.items[i]!, startsAtMs);
+            if (projected !== null) {
+              current = projected;
+              foundIdx = i;
+              foundStartsAtMs = startsAtMs;
+            } else {
+              // Slot unresolvable (bad-URL cache) — scan forward for the first
+              // valid item. Use a virtual wall-clock cursor so next/nextNext
+              // stay temporally consistent with the item we eventually bind.
+              let scanCursor = now + (span - (elapsed - acc));
+              for (let j = 1; j < this.items.length; j++) {
+                const si = (i + j) % this.items.length;
+                const scan = this.projectItem(this.items[si]!, scanCursor);
+                if (scan !== null) {
+                  current = scan;
+                  foundIdx = si;
+                  foundStartsAtMs = scanCursor;
+                  break;
+                }
+                scanCursor += this.items[si]!.durationSecs * 1000;
+              }
+            }
+            return;
+          }
         }
-        acc += span;
-      }
+        // Fallback: O(N) linear scan (itemOffsets stale or empty).
+        let acc = 0;
+        for (let i = 0; i < this.items.length; i++) {
+          const span = this.items[i]!.durationSecs * 1000;
+          if (elapsed < acc + span) {
+            const startsAtMs = now - (elapsed - acc);
+            const projected = this.projectItem(this.items[i]!, startsAtMs);
+            if (projected !== null) {
+              current = projected;
+              foundIdx = i;
+              foundStartsAtMs = startsAtMs;
+            } else {
+              let scanCursor = now + (span - (elapsed - acc));
+              for (let j = 1; j < this.items.length; j++) {
+                const si = (i + j) % this.items.length;
+                const scan = this.projectItem(this.items[si]!, scanCursor);
+                if (scan !== null) {
+                  current = scan;
+                  foundIdx = si;
+                  foundStartsAtMs = scanCursor;
+                  break;
+                }
+                scanCursor += this.items[si]!.durationSecs * 1000;
+              }
+            }
+            break;
+          }
+          acc += span;
+        }
+      };
+      findSlot();
       // Project next / nextNext relative to whichever item ended up as current.
       // Scan forward past any bad-URL items so the client always receives the
       // nearest two *playable* items to preload — even when multiple consecutive
@@ -1881,9 +1975,6 @@ class BroadcastOrchestrator extends EventEmitter {
       // bad-URL TTL expiry promotes an item without a full DB reload).
       this.deadAirDetectedAtMs = null;
     }
-    // NOTE: consecutiveSkips is intentionally NOT reset here. It resets only
-    // in naturalItemEnd() (confirmed successful play) so the dead-air counter
-    // is not cleared the instant a new item becomes current but before it plays.
     // Drift-correct self-heal is handled by selfHealStaleTimer (SELF_HEAL_STALE_MS)
     // which runs outside the tick loop so no DB work ever happens inside tick().
 
@@ -1908,6 +1999,14 @@ class BroadcastOrchestrator extends EventEmitter {
       };
       this.lastCurrentItemId = snap.current.id;
       this.preloadFiredForId = null;
+      // A different item is now current: reset the consecutive-skip counter.
+      // Previously this reset only in naturalItemEnd() (confirmed play), but
+      // that delays the reset for the entire duration of the next item —
+      // even a clean skip-then-play sequence kept the counter at 2, leaving
+      // the dead_air.detected state stale until the hour-long sermon ends.
+      // Resetting here means: once playback successfully moves to a new item,
+      // the counter is cleared immediately.
+      this.consecutiveSkips = 0;
 
       // ── Forward-scan anchor fix ───────────────────────────────────────────
       // When snapshot() cannot project the item whose elapsed time-slot is
@@ -2211,7 +2310,9 @@ class BroadcastOrchestrator extends EventEmitter {
             const idx = this.items.findIndex((i) => i.id === itemId);
             if (idx !== -1 && this.items[idx]) {
               this.items[idx] = { ...this.items[idx]!, durationSecs: actualDurationSecs };
-              this.cycleDurationMs = this.items.reduce((s, r) => s + r.durationSecs * 1000, 0);
+              // Rebuild itemOffsets so the next snapshot() binary search uses
+              // the corrected duration.  Also updates cycleDurationMs.
+              this.rebuildItemOffsets();
             }
           })
           .catch((err) =>

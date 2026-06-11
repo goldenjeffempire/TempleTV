@@ -90,8 +90,20 @@ export async function wsRoutes(app: FastifyInstance) {
     const socketRef = socket as unknown as { terminate?(): void };
     _activeSockets.add(socketRef);
 
+    // 512 KiB — if the client's receive buffer exceeds this the TCP window
+    // is closed and every send() blocks Node's UV loop. Close proactively so
+    // the kernel send-buffer is freed before it consumes process RSS.
+    const WS_BUFFER_THRESHOLD = 512 * 1024;
     const send = (frame: V2ServerFrame) => {
       try {
+        if ((socket.bufferedAmount ?? 0) > WS_BUFFER_THRESHOLD) {
+          logger.warn(
+            { ip, bufferedAmount: socket.bufferedAmount },
+            "[broadcast-v2/ws] client receive buffer overflow — closing slow connection",
+          );
+          try { socket.close(1008, "Client receive buffer overflow"); } catch { /* already closed */ }
+          return;
+        }
         socket.send(JSON.stringify(frame));
       } catch {
         /* client gone */

@@ -86,7 +86,13 @@ export async function broadcastHealthMonitorScan(): Promise<void> {
   const currentItemDurationMs = snap.current != null
     ? snap.current.durationSecs * 1000
     : 0;
-  const PLAYBACK_GRACE_MS = env.BROADCAST_HEALTH_MONITOR_STALE_MS;
+  // Hard cap: the grace period during which the monitor is blind (item
+  // still within its expected time slot) can never exceed 5 minutes,
+  // regardless of the STALE_MS env-var value. Without this cap, setting
+  // BROADCAST_HEALTH_MONITOR_STALE_MS=30min would give a 30-minute blind
+  // period per item, and a 3-hour sermon could suppress the monitor for
+  // 3h + 30min. The 5-minute cap is independent of item duration.
+  const PLAYBACK_GRACE_MS = Math.min(env.BROADCAST_HEALTH_MONITOR_STALE_MS, 5 * 60_000);
 
   // Overrun detection: if the current item has been playing for MORE than
   // its expected duration PLUS 3× the grace period, the item has silently
@@ -190,6 +196,9 @@ export async function broadcastHealthMonitorScan(): Promise<void> {
       }
     } else if (sinceLastReload > STALE_MS || lastStaleReloadAtMs === 0) {
       // ── Tier 1: Stale reload ────────────────────────────────────────────────
+      // Use the same recoveryInFlight flag as tier 2 so concurrent monitor
+      // ticks (possible when the scan takes longer than the 60-second interval)
+      // cannot stack up multiple simultaneous reload() calls.
       logger.warn(
         { reason, advanceAgeMs, itemCount, sequence },
         "[broadcast-health-monitor] stale sequence detected — triggering reload",
@@ -197,10 +206,14 @@ export async function broadcastHealthMonitorScan(): Promise<void> {
       lastAlertReason = reason;
       staleReloadCount++;
       lastStaleReloadAtMs = now;
-
-      await broadcastOrchestrator.reload().catch((err: unknown) => {
-        logger.warn({ err }, "[broadcast-health-monitor] stale-reload failed (non-fatal)");
-      });
+      recoveryInFlight = true;
+      try {
+        await broadcastOrchestrator.reload().catch((err: unknown) => {
+          logger.warn({ err }, "[broadcast-health-monitor] stale-reload failed (non-fatal)");
+        });
+      } finally {
+        recoveryInFlight = false;
+      }
     }
   }
 }

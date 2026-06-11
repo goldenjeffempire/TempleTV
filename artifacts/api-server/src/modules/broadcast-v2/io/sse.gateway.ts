@@ -219,10 +219,25 @@ export async function sseRoutes(app: FastifyInstance) {
 
     // Switch from the buffer to the live listener, flushing any frames that
     // arrived during the DB replay await so no events are silently dropped.
+    //
+    // ORDER MATTERS — must be: flush → on(onFrame) → off(bufferFrame).
+    //
+    // Why: Node.js EventEmitter dispatches synchronously; only macrotasks
+    // (setInterval, setTimeout) can interleave. Since the orchestrator's
+    // tick uses setInterval it cannot fire between two consecutive lines
+    // in the same synchronous call stack. Therefore:
+    //   1. Flush the queue while bufferFrame is still registered (no new
+    //      frames can arrive during this synchronous loop).
+    //   2. Register onFrame (from here, live frames go directly to send).
+    //   3. Remove bufferFrame in the very next line — no gap between 2 & 3,
+    //      so no frame can be emitted into the void between them.
+    //
+    // The WRONG order (off → flush → on) creates a micro-gap between off
+    // and on where a live frame is lost entirely.
     const onFrame = (frame: V2ServerFrame) => send(frame);
-    broadcastOrchestrator.off("frame", bufferFrame);
     for (const f of frameQueue) send(f);
     broadcastOrchestrator.on("frame", onFrame);
+    broadcastOrchestrator.off("frame", bufferFrame);
 
     // Guard: if the client disconnected during the async replay phase, `req.raw`
     // is already destroyed. The `close` event already fired (setting `aborted`)
