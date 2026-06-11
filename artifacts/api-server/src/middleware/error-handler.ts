@@ -18,12 +18,19 @@ export function registerErrorHandler(app: FastifyInstance) {
     const requestId = req.id;
 
     if (err instanceof ZodError) {
+      // Sanitize: only expose the human-readable message and the field path.
+      // Never send `code`, `expected`, `received`, `unionErrors`, or other
+      // Zod internals — they reveal internal schema structure to callers.
+      const sanitizedErrors = err.issues.map((issue) => ({
+        message: issue.message,
+        path: issue.path.length > 0 ? issue.path.join(".") : undefined,
+      }));
       const body: ProblemDetails = {
         type: "https://templetv.api/errors/validation",
         title: "Validation failed",
         status: 400,
         code: "VALIDATION_ERROR",
-        errors: err.issues,
+        errors: sanitizedErrors,
         requestId,
       };
       return reply.code(400).send(body);

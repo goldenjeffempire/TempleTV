@@ -13,6 +13,7 @@ import {
   UpdatePlaylistBodySchema,
 } from "./playlists.schemas.js";
 import { playlistsService } from "./playlists.service.js";
+import { cache } from "../../infrastructure/cache.js";
 
 const idParam = z.object({ id: z.string().min(1) });
 const playlistVideoParams = z.object({
@@ -33,10 +34,16 @@ export async function playlistsRoutes(app: FastifyInstance) {
       },
     },
     async (_req, reply) => {
-      // Playlists are edited infrequently; 30-second public cache cuts DB
-      // round-trips on every mobile/TV cold-start and homepage load.
       reply.header("Cache-Control", "public, max-age=30, s-maxage=30, stale-while-revalidate=60");
-      return playlistsService.list();
+      // In-process LRU cache: avoids a DB round-trip when multiple clients
+      // cold-start within the same 30-second window (TV, mobile, and web all
+      // hit /playlists on boot). Identical pattern to series.routes.ts.
+      const cacheKey = "playlists:list:v1";
+      const cached = await cache().get<unknown>(cacheKey).catch(() => null);
+      if (cached) return cached;
+      const result = await playlistsService.list();
+      await cache().set(cacheKey, result, 30).catch(() => null);
+      return result;
     },
   );
 
@@ -51,10 +58,15 @@ export async function playlistsRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      // Set Cache-Control AFTER the service call so the header is only sent
-      // on 2xx responses. Setting it before would cause CDNs to cache 404s
-      // for 60 seconds, blocking retries with valid IDs in the meantime.
+      // Cache-Control set AFTER the service call so CDNs never cache 404s.
+      const cacheKey = `playlists:detail:v1:${req.params.id}`;
+      const cached = await cache().get<unknown>(cacheKey).catch(() => null);
+      if (cached) {
+        reply.header("Cache-Control", "public, max-age=60, s-maxage=60, stale-while-revalidate=120");
+        return cached;
+      }
       const result = await playlistsService.getById(req.params.id);
+      await cache().set(cacheKey, result, 60).catch(() => null);
       reply.header("Cache-Control", "public, max-age=60, s-maxage=60, stale-while-revalidate=120");
       return result;
     },
@@ -74,6 +86,7 @@ export async function playlistsRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const created = await playlistsService.create(req.body);
+      await cache().del("playlists:list:v1").catch(() => null);
       reply.code(201);
       return created;
     },
@@ -92,7 +105,14 @@ export async function playlistsRoutes(app: FastifyInstance) {
         security: [{ bearerAuth: [] }],
       },
     },
-    async (req) => playlistsService.update(req.params.id, req.body),
+    async (req) => {
+      const result = await playlistsService.update(req.params.id, req.body);
+      await Promise.all([
+        cache().del("playlists:list:v1").catch(() => null),
+        cache().del(`playlists:detail:v1:${req.params.id}`).catch(() => null),
+      ]);
+      return result;
+    },
   );
 
   r.delete(
@@ -110,7 +130,14 @@ export async function playlistsRoutes(app: FastifyInstance) {
         security: [{ bearerAuth: [] }],
       },
     },
-    async (req) => playlistsService.delete(req.params.id),
+    async (req) => {
+      const result = await playlistsService.delete(req.params.id);
+      await Promise.all([
+        cache().del("playlists:list:v1").catch(() => null),
+        cache().del(`playlists:detail:v1:${req.params.id}`).catch(() => null),
+      ]);
+      return result;
+    },
   );
 
   r.post(
@@ -128,6 +155,10 @@ export async function playlistsRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const added = await playlistsService.addVideo(req.params.id, req.body.videoId);
+      await Promise.all([
+        cache().del("playlists:list:v1").catch(() => null),
+        cache().del(`playlists:detail:v1:${req.params.id}`).catch(() => null),
+      ]);
       reply.code(201);
       return added;
     },
@@ -148,7 +179,14 @@ export async function playlistsRoutes(app: FastifyInstance) {
         security: [{ bearerAuth: [] }],
       },
     },
-    async (req) => playlistsService.removeVideo(req.params.id, req.params.videoId),
+    async (req) => {
+      const result = await playlistsService.removeVideo(req.params.id, req.params.videoId);
+      await Promise.all([
+        cache().del("playlists:list:v1").catch(() => null),
+        cache().del(`playlists:detail:v1:${req.params.id}`).catch(() => null),
+      ]);
+      return result;
+    },
   );
 
   r.post(
@@ -164,6 +202,10 @@ export async function playlistsRoutes(app: FastifyInstance) {
         security: [{ bearerAuth: [] }],
       },
     },
-    async (req) => playlistsService.reorder(req.params.id, req.body.videoIds),
+    async (req) => {
+      const result = await playlistsService.reorder(req.params.id, req.body.videoIds);
+      await cache().del(`playlists:detail:v1:${req.params.id}`).catch(() => null);
+      return result;
+    },
   );
 }

@@ -9,6 +9,14 @@ import { ConflictError, NotFoundError } from "../../shared/errors.js";
 import { logger } from "../../infrastructure/logger.js";
 import { cache } from "../../infrastructure/cache.js";
 
+// Monotonic generation counter — incremented on every admin mutation so all
+// currently-cached series list variants become unreachable (orphaned keys expire
+// naturally by their 60s TTL). Avoids needing prefix/wildcard cache deletion.
+let seriesListGen = 0;
+function bustSeriesListCache() {
+  seriesListGen++;
+}
+
 export async function seriesRoutes(app: FastifyInstance) {
   const r = app.withTypeProvider<ZodTypeProvider>();
 
@@ -57,7 +65,7 @@ export async function seriesRoutes(app: FastifyInstance) {
       // same 60-second window (TV, mobile, and web all hit /series on boot).
       // Key includes all query params so filtered pages are cached separately.
       const { category, limit, offset } = req.query;
-      const cacheKey = `series:list:v1:${category ?? "all"}:${limit}:${offset}`;
+      const cacheKey = `series:list:v1:g${seriesListGen}:${category ?? "all"}:${limit}:${offset}`;
       const cached = await cache().get<{ series: unknown[]; total: number }>(cacheKey).catch(() => null);
       if (cached) return cached;
 
@@ -231,6 +239,7 @@ export async function seriesRoutes(app: FastifyInstance) {
         }
         throw err;
       }
+      bustSeriesListCache();
       logger.info(
         { seriesId: series.id, title: series.title, createdBy: req.principal?.email ?? "admin" },
         "[series] series created",
@@ -266,6 +275,7 @@ export async function seriesRoutes(app: FastifyInstance) {
         .where(eq(schema.seriesTable.id, req.params.id))
         .returning();
       if (!updated) throw new NotFoundError(`Series ${req.params.id} not found`);
+      bustSeriesListCache();
       return reply.send({
         ...updated,
         createdAt: updated.createdAt.toISOString(),
@@ -292,6 +302,7 @@ export async function seriesRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       await db.delete(schema.seriesTable).where(eq(schema.seriesTable.id, req.params.id));
+      bustSeriesListCache();
       logger.info(
         { seriesId: req.params.id, deletedBy: req.principal?.email ?? "admin" },
         "[series] series deleted (cascade)",
@@ -383,6 +394,7 @@ export async function seriesRoutes(app: FastifyInstance) {
         }
       }
 
+      bustSeriesListCache();
       logger.info(
         { seriesId: req.params.id, videoId, episodeNumber: resolvedEpNum, addedBy: req.principal?.email ?? "admin" },
         "[series] episode added",
@@ -420,7 +432,7 @@ export async function seriesRoutes(app: FastifyInstance) {
           .set({ episodeCount: sql`greatest(episode_count - 1, 0)`, updatedAt: new Date() })
           .where(eq(schema.seriesTable.id, req.params.id));
       });
-
+      bustSeriesListCache();
       return reply.code(204).send();
     },
   );

@@ -361,10 +361,21 @@ export async function buildApp(): Promise<FastifyInstance> {
       if (path === "/hot") return true;
       if (path === "/message") return true;
       if (path.startsWith("/assets/")) return true;
-      // Broadcast v2 real-time paths — use startsWith with both API prefixes
-      // to prevent bypass via a crafted path like /api/v1/admin/foo/broadcast-v2/state
-      // that contains the substring but is not a real broadcast-v2 route.
-      if (path.startsWith("/api/broadcast-v2/") || path.startsWith("/api/v1/broadcast-v2/")) return true;
+      // Broadcast v2 real-time paths — exempt GET/HEAD polling (state, health,
+      // guide, sync-reference) and SSE/WS upgrades which fire dozens of times
+      // per minute per client. POST mutations (report-stall, report-position,
+      // natural-end, skip, reload, …) are NOT exempted so their per-route
+      // config.rateLimit overrides actually take effect and cap DB churn.
+      if (path.startsWith("/api/broadcast-v2/") || path.startsWith("/api/v1/broadcast-v2/")) {
+        if (req.method === "GET" || req.method === "HEAD") return true;
+        // WebSocket upgrade (e.g. /api/broadcast-v2/ws)
+        const wsUpgrade = req.headers["upgrade"];
+        if (typeof wsUpgrade === "string" && wsUpgrade.toLowerCase() === "websocket") return true;
+        // SSE connections
+        const sseAccept = req.headers["accept"];
+        if (typeof sseAccept === "string" && sseAccept.includes("text/event-stream")) return true;
+        // POST/PATCH/DELETE → fall through to per-route rate limits
+      }
       // Midnight Prayers real-time paths
       if (path.startsWith("/api/midnight-prayers/") || path.startsWith("/api/v1/midnight-prayers/")) return true;
       // HLS segments + media proxy (high-volume streaming).

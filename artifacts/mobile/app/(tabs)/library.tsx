@@ -91,7 +91,8 @@ function navigateToSermon(sermon: Sermon, orderedList?: readonly Sermon[]) {
   });
 }
 
-function CategoryPill({
+// Memoized so re-renders from search input / sort state don't repaint all pills
+const CategoryPill = React.memo(function CategoryPill({
   category,
   active,
   onPress,
@@ -122,9 +123,10 @@ function CategoryPill({
       </Text>
     </Pressable>
   );
-}
+});
 
-function ModePill({
+// Memoized: mode toggles only flip one pill — the others should be stable
+const ModePill = React.memo(function ModePill({
   label,
   icon,
   active,
@@ -153,7 +155,13 @@ function ModePill({
       </Text>
     </Pressable>
   );
-}
+});
+
+// Fixed height for the horizontal SermonCard variant:
+// horizontalThumbWrap (68) + horizontalCard padding top+bottom (12+12 = 24) = 92.
+// LIST_ITEM_GAP matches the `gap: 10` in styles.list so offset maths stay accurate.
+const SERMON_CARD_HEIGHT = 92;
+const LIST_ITEM_GAP = 10;
 
 const ContinueWatchingRow = React.memo(function ContinueWatchingRow({ items }: { items: ContinueWatchingItem[] }) {
   const c = useColors();
@@ -770,7 +778,13 @@ export default function LibraryScreen() {
               showsVerticalScrollIndicator={false}
               removeClippedSubviews={Platform.OS === "android"}
               maxToRenderPerBatch={10}
-              windowSize={10}
+              windowSize={7}
+              initialNumToRender={10}
+              getItemLayout={(_data, index) => ({
+                length: SERMON_CARD_HEIGHT,
+                offset: (SERMON_CARD_HEIGHT + LIST_ITEM_GAP) * index,
+                index,
+              })}
               keyboardDismissMode="on-drag"
               keyboardShouldPersistTaps="handled"
             />
