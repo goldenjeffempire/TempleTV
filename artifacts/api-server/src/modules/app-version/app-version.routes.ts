@@ -448,7 +448,7 @@ export async function appVersionRoutes(app: FastifyInstance) {
 
       return {
         ok:           true as const,
-        delivered:    result.recipients ?? 0,
+        delivered:    result.delivered ?? result.recipients ?? 0,
         failedTokens: 0,
       };
     },

@@ -336,3 +336,12 @@ export async function markVersionCheckDone(): Promise<void> {
     // Non-critical
   }
 }
+
+/** Clear the rate-limit timestamp so the next `shouldPollVersionCheck()` returns true. */
+export async function clearVersionCheckTimestamp(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(LAST_CHECK_KEY);
+  } catch {
+    // Non-critical
+  }
+}

@@ -29,6 +29,7 @@ import {
   checkForOTAUpdate,
   checkStoreVersion,
   clearBannerSnooze,
+  clearVersionCheckTimestamp,
   isBannerSnoozed,
   markVersionCheckDone,
   semverLt,
@@ -122,9 +123,9 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
 
   // ── Store version check ────────────────────────────────────────────────────
 
-  const runVersionCheck = useCallback(async () => {
+  const runVersionCheck = useCallback(async (force = false) => {
     if (Platform.OS === "web") return;
-    if (!(await shouldPollVersionCheck())) return;
+    if (!force && !(await shouldPollVersionCheck())) return;
 
     const result: VersionCheckResult | null = await checkStoreVersion();
     await markVersionCheckDone();
@@ -157,7 +158,7 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     try {
       lastOtaCheckRef.current = 0;          // force OTA check
       await AsyncStorage_clearBannerSnooze(); // force banner visible
-      await Promise.all([runOTACheck(), runVersionCheck()]);
+      await Promise.all([runOTACheck(), runVersionCheck(true)]);
     } finally {
       setPartial({ isChecking: false });
     }
@@ -203,9 +204,10 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       sub = N.addNotificationReceivedListener((notification) => {
         const data = notification.request.content.data as Record<string, unknown>;
         if (data?.type === "app_update") {
-          // Force a fresh version check immediately
-          markVersionCheckDone().catch(() => {}).finally(() => {
-            void runVersionCheck();
+          // Clear the rate-limit timestamp so the upcoming runVersionCheck actually fires,
+          // then run it with force=true to bypass any remaining throttle window.
+          clearVersionCheckTimestamp().catch(() => {}).finally(() => {
+            void runVersionCheck(true);
           });
         }
       });

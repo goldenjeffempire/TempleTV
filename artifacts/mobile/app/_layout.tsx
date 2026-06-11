@@ -382,13 +382,15 @@ function RootLayoutNav() {
             break;
           }
           case "app_update": {
-          // App update notification — trigger a version check; the
-          // UpdateContext listener handles it; no navigation needed.
-          import("@/services/appUpdate")
-            .then(({ markVersionCheckDone }) => markVersionCheckDone())
-            .catch(() => {});
-          break;
-        }
+            // Clear the rate-limit so UpdateContext's AppState-active listener
+            // (or a direct runVersionCheck call) fires immediately when the
+            // app foregrounds. Do NOT call markVersionCheckDone here — that
+            // would set LAST_CHECK_KEY = now and block the upcoming check.
+            import("@/services/appUpdate")
+              .then(({ clearVersionCheckTimestamp }) => clearVersionCheckTimestamp())
+              .catch(() => {});
+            break;
+          }
           case "prayer":
           case "announcement":
           default:
