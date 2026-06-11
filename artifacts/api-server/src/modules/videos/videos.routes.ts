@@ -469,9 +469,13 @@ export async function videosRoutes(app: FastifyInstance) {
       const totalPages = useCursor ? -1 : Math.max(1, Math.ceil(total / limit));
 
       // Build next cursor from the last row's importedAt + id (keyset anchor).
+      // Generated for ALL newest/oldest responses (not only cursor mode) so that
+      // first-page (no cursor) clients receive a cursor they can use for the
+      // next page — enabling zero-offset traversal from page 1.
       // null when the result set is smaller than `limit` (last page reached).
       let nextCursor: string | null = null;
-      if (useCursor && rows.length === limit) {
+      const isCursorableSort = sort === "newest" || sort === "oldest";
+      if (isCursorableSort && rows.length === limit) {
         const lastRow = rows[rows.length - 1];
         if (lastRow) {
           const lastImportedAt = lastRow.importedAt as Date | string;

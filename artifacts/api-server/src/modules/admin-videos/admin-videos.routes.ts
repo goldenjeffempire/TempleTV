@@ -373,9 +373,13 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       const totalPages = useCursor ? -1 : Math.max(1, Math.ceil(total / effectiveLimit));
 
       // Build next cursor from the last row's importedAt + id (keyset anchor).
+      // Generated for ALL newest/oldest responses (not only cursor mode) so that
+      // first-page (no cursor) clients receive a cursor they can use for the
+      // next page — enabling zero-offset traversal from page 1.
       // null when the result set is smaller than `limit` (last page reached).
       let nextCursor: string | null = null;
-      if (useCursor && rows.length === effectiveLimit) {
+      const isCursorableSort = q.sort === "newest" || q.sort === "oldest";
+      if (isCursorableSort && rows.length === effectiveLimit) {
         const lastRow = rows[rows.length - 1];
         if (lastRow) {
           nextCursor = encodeAdminCursor(lastRow.importedAt, lastRow.id);

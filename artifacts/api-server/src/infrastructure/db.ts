@@ -469,12 +469,15 @@ export async function ensureRuntimeIndexes(): Promise<void> {
   const client = await pool.connect();
 
   // Helper: run one DDL statement, log success/failure per-index, never throw.
+  // INFO on success so operators can confirm which indexes were created vs
+  // already existed. ERROR on failure so it surfaces in alerting dashboards
+  // without terminating the overall startup sequence (non-fatal).
   const run = async (name: string, sql: string): Promise<void> => {
     try {
       await client.query(sql);
-      logger.debug({ index: name }, "db: index ensured");
+      logger.info({ index: name }, `db: index ensured — ${name}`);
     } catch (err) {
-      logger.warn({ err, index: name }, `db: failed to ensure index ${name} (non-fatal)`);
+      logger.error({ err, index: name }, `db: failed to ensure index ${name} (non-fatal)`);
     }
   };
 
