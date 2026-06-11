@@ -548,15 +548,25 @@ export class V2Transport {
     } else {
       smoothed = this.clockOffsetMs * 0.85 + rawOffset * 0.15;
     }
-    // Only notify when the rounded integer changes — avoids calling
-    // setClockOffsetMs on every heartbeat when the offset is stable.
-    if (Math.round(smoothed) !== Math.round(this.clockOffsetMs)) {
-      this.clockOffsetMs = smoothed;
+    // 2 ms hysteresis band: only notify when the rounded offset has moved by
+    // at least 2 ms from the last notified value.  A 1 ms threshold (strict
+    // integer inequality) fires on every ≥0.5 ms EMA step — on a stable WiFi
+    // connection with ±2 ms RTT noise the EMA oscillates between two adjacent
+    // integers every heartbeat, causing setClockOffsetMs to re-seek the
+    // playhead by ≈1 ms on every 10-second tick. Over a 2-hour service the
+    // cumulative error is negligible but the micro-seek count exceeds 700
+    // calls, each of which can produce a brief visual stutter on slower
+    // decoder pipelines (Tizen TV, older Android).
+    //
+    // A 2 ms dead band absorbs this noise: a real clock correction (NTP step,
+    // sleep/wake, timezone change) always exceeds 2 ms and triggers the
+    // notification; sub-RTT measurement jitter on a stable connection does not.
+    const prevRounded = Math.round(this.clockOffsetMs);
+    const newRounded = Math.round(smoothed);
+    // Always update the internal float so the EMA accumulates precision.
+    this.clockOffsetMs = smoothed;
+    if (Math.abs(newRounded - prevRounded) >= 2) {
       this.cfg.onClockCalibration?.(smoothed);
-    } else {
-      // Store the refined float even when we don't notify, so the EMA
-      // accumulates precision across frames rather than rounding each step.
-      this.clockOffsetMs = smoothed;
     }
   }
 
