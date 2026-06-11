@@ -24,6 +24,16 @@ import { logger } from "../../infrastructure/logger.js";
 
 const editorGuard = { preHandler: requireAuth("editor") } as const;
 
+// All open midnight-prayers SSE connections. Populated by the /events handler
+// and force-closed by closeAllMidnightPrayersSseSessions() during shutdown.
+const openMidnightPrayersSseCleanups = new Set<() => void>();
+
+export function closeAllMidnightPrayersSseSessions(): void {
+  for (const cleanup of openMidnightPrayersSseCleanups) {
+    try { cleanup(); } catch { /* ignore */ }
+  }
+}
+
 export async function midnightPrayersRoutes(app: FastifyInstance) {
 
   // ── GET /state ────────────────────────────────────────────────────────────
@@ -95,10 +105,12 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
     const query = req.query as Record<string, string>;
     const epochMs = query["epochMs"] ? Number(query["epochMs"]) : undefined;
 
+    let lastMpSseWriteOkMs = Date.now();
     const send = (frame: MPServerFrame) => {
       try {
         const seq = "sequence" in frame ? frame.sequence : Date.now();
-        reply.raw.write(`id: ${seq}\nevent: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`);
+        const ok = reply.raw.write(`id: ${seq}\nevent: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`);
+        if (ok) lastMpSseWriteOkMs = Date.now();
       } catch { /* client gone */ }
     };
 
@@ -112,14 +124,40 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
     // Keepalive ping every 25 s — prevents proxy/LB idle-timeout from silently
     // closing the stream. .unref() so this never blocks graceful SIGTERM drain.
     const heartbeat = setInterval(() => {
-      try { reply.raw.write(": ping\n\n"); } catch { /* client gone */ }
+      try {
+        const ok = reply.raw.write(": ping\n\n");
+        if (ok) lastMpSseWriteOkMs = Date.now();
+      } catch { /* client gone */ }
     }, 25_000);
     heartbeat.unref();
 
-    req.raw.on("close", () => {
+    // Zombie detection: half-open TCP (no FIN) keeps the socket open
+    // indefinitely. Check writability every 30 s; destroy the socket if no
+    // successful write has occurred in 90 s (= 3.6× the heartbeat period).
+    // Destroying fires the "close" event, unblocking the Promise below and
+    // triggering the close handler that calls unsubscribe() + clearInterval().
+    const zombieCheck = setInterval(() => {
+      const idleMs = Date.now() - lastMpSseWriteOkMs;
+      const writable = !reply.raw.socket?.destroyed && reply.raw.socket?.writable;
+      if (!writable || idleMs > 90_000) {
+        clearInterval(zombieCheck);
+        try { reply.raw.destroy(); } catch { /* ignore */ }
+      }
+    }, 30_000);
+    zombieCheck.unref();
+
+    let mpSseClosed = false;
+    const mpCleanup = () => {
+      if (mpSseClosed) return;
+      mpSseClosed = true;
+      openMidnightPrayersSseCleanups.delete(mpCleanup);
       unsubscribe();
       clearInterval(heartbeat);
-    });
+      clearInterval(zombieCheck);
+    };
+    openMidnightPrayersSseCleanups.add(mpCleanup);
+    req.raw.on("close", mpCleanup);
+    req.raw.on("error", mpCleanup);
 
     // Keep the handler alive (Fastify won't auto-close the stream)
     await new Promise<void>((resolve) => {

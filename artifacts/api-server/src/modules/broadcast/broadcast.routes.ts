@@ -845,9 +845,11 @@ export async function broadcastRoutes(app: FastifyInstance) {
         ...sseCorsHeaders(req),
       });
 
+      let lastBcastSseWriteOkMs = Date.now();
       const emit = (eventName: string, data: unknown) => {
         try {
-          reply.raw.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
+          const ok = reply.raw.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
+          if (ok) lastBcastSseWriteOkMs = Date.now();
         } catch {
           /* connection already gone */
         }
@@ -922,12 +924,23 @@ export async function broadcastRoutes(app: FastifyInstance) {
 
       const heartbeat = setInterval(() => {
         try {
-          reply.raw.write(": ping\n\n");
+          const ok = reply.raw.write(": ping\n\n");
+          if (ok) lastBcastSseWriteOkMs = Date.now();
         } catch {
           /* already gone */
         }
       }, 15_000);
       heartbeat.unref?.();
+
+      // Zombie detection: half-open TCP (silent disconnect without FIN) keeps
+      // the socket alive indefinitely. Check writability every 30 s and force-
+      // close if no successful write in 90 s (= 6 missed 15 s heartbeats).
+      const zombieCheck = setInterval(() => {
+        const idleMs = Date.now() - lastBcastSseWriteOkMs;
+        const writable = !reply.raw.socket?.destroyed && reply.raw.socket?.writable;
+        if (!writable || idleMs > 90_000) cleanup();
+      }, 30_000);
+      zombieCheck.unref?.();
 
       let broadcastSseClosed = false;
       const cleanup = () => {
@@ -935,6 +948,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
         broadcastSseClosed = true;
         openBroadcastSseCleanups.delete(cleanup);
         clearInterval(heartbeat);
+        clearInterval(zombieCheck);
         broadcastEngine.off("event", onBroadcastEvent);
         overrideBus.off("change", onOverrideChange);
         reactionBus.off("live-reaction", onReaction);

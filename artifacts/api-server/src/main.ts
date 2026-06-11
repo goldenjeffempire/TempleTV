@@ -807,6 +807,21 @@ async function main() {
         const { stopChatPingInterval } = await import("./modules/realtime/chat.routes.js");
         stopChatPingInterval();
       } catch { /* non-fatal */ }
+      // Force-close graphics, midnight-prayers, and youtube-live SSE sessions.
+      // These modules don't have the volume of v1/realtime SSE but share the
+      // same zombie risk; closing them here ensures app.close() drains quickly.
+      try {
+        const { closeAllGraphicsSseSessions } = await import("./modules/graphics/graphics.routes.js");
+        closeAllGraphicsSseSessions();
+      } catch { /* non-fatal */ }
+      try {
+        const { closeAllMidnightPrayersSseSessions } = await import("./modules/midnight-prayers/midnight-prayers.routes.js");
+        closeAllMidnightPrayersSseSessions();
+      } catch { /* non-fatal */ }
+      try {
+        const { closeAllYoutubeLiveSseSessions } = await import("./modules/youtube-live/youtube-live.routes.js");
+        closeAllYoutubeLiveSseSessions();
+      } catch { /* non-fatal */ }
       // Stop the prod-sync poll timer (setInterval) so it does not keep the
       // event loop alive or spawn ffprobe child processes after shutdown.
       try {

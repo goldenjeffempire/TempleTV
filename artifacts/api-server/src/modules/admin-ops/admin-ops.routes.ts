@@ -3366,10 +3366,11 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       // travels through all proxy layers, confirming the stream is live.
       reply.raw.write(": ok\n\n");
 
+      let lastAdminSseWriteOkMs = Date.now();
       const send = (event: string, data: unknown) => {
         try {
-          reply.raw.write(`event: ${event}\n`);
-          reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+          const ok = reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+          if (ok) lastAdminSseWriteOkMs = Date.now();
         } catch {
           /* socket gone — close handler will clean up */
         }
@@ -3404,12 +3405,22 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       // Client stale threshold remains 45 s (= 9 missed beats at 5 s).
       const heartbeat = setInterval(() => {
         try {
-          reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ ts: Date.now() })}\n\n`);
+          const ok = reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ ts: Date.now() })}\n\n`);
+          if (ok) lastAdminSseWriteOkMs = Date.now();
         } catch {
           /* ignore — close handler will clean up */
         }
       }, 5_000);
       heartbeat.unref?.();
+
+      // Zombie detection: half-open TCP keeps socket open silently.
+      // Close if no successful write in 90 s (= 18 missed 5 s heartbeats).
+      const zombieCheck = setInterval(() => {
+        const idleMs = Date.now() - lastAdminSseWriteOkMs;
+        const writable = !reply.raw.socket?.destroyed && reply.raw.socket?.writable;
+        if (!writable || idleMs > 90_000) cleanup();
+      }, 30_000);
+      zombieCheck.unref?.();
 
       let adminSseClosed = false;
       const cleanup = () => {
@@ -3417,6 +3428,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         adminSseClosed = true;
         openAdminSseCleanups.delete(cleanup);
         clearInterval(heartbeat);
+        clearInterval(zombieCheck);
         broadcastEngine.off("event", onEvent);
         adminEventBus.off("admin-event", onAdminEvent);
         sseCounter.dec();

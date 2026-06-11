@@ -15,6 +15,16 @@ import { sseCorsHeaders } from "../../lib/sse-cors.js";
  */
 export class GraphicsBus extends EventEmitter {}
 export const graphicsBus = new GraphicsBus();
+
+// All open graphics SSE connections. Populated by the /events handler and
+// force-closed by closeAllGraphicsSseSessions() during graceful shutdown.
+const openGraphicsSseCleanups = new Set<() => void>();
+
+export function closeAllGraphicsSseSessions(): void {
+  for (const cleanup of openGraphicsSseCleanups) {
+    try { cleanup(); } catch { /* ignore */ }
+  }
+}
 graphicsBus.setMaxListeners(1024);
 
 export interface GraphicsEvent {
@@ -110,11 +120,12 @@ export async function graphicsRoutes(app: FastifyInstance) {
         ...sseCorsHeaders(req),
       });
 
+      let lastGraphicsSseWriteOkMs = Date.now();
       const send = (evt: GraphicsEvent) => {
         if (evt.channelId !== channelId && evt.channelId !== "all") return;
         try {
-          reply.raw.write(`event: ${evt.type}\n`);
-          reply.raw.write(`data: ${JSON.stringify(evt)}\n\n`);
+          const ok = reply.raw.write(`event: ${evt.type}\ndata: ${JSON.stringify(evt)}\n\n`);
+          if (ok) lastGraphicsSseWriteOkMs = Date.now();
         } catch { /* ignore */ }
       };
 
@@ -142,15 +153,33 @@ export async function graphicsRoutes(app: FastifyInstance) {
 
       graphicsBus.on("event", send);
       const heartbeat = setInterval(() => {
-        try { reply.raw.write(": ping\n\n"); } catch { /* ignore */ }
+        try {
+          const ok = reply.raw.write(": ping\n\n");
+          if (ok) lastGraphicsSseWriteOkMs = Date.now();
+        } catch { /* ignore */ }
       }, 15_000);
       heartbeat.unref?.();
 
+      // Zombie detection: half-open TCP keeps socket open silently.
+      // Close if no successful write in 90 s (= 6 missed 15 s heartbeats).
+      const zombieCheck = setInterval(() => {
+        const idleMs = Date.now() - lastGraphicsSseWriteOkMs;
+        const writable = !reply.raw.socket?.destroyed && reply.raw.socket?.writable;
+        if (!writable || idleMs > 90_000) cleanup();
+      }, 30_000);
+      zombieCheck.unref?.();
+
+      let graphicsSseClosed = false;
       const cleanup = () => {
+        if (graphicsSseClosed) return;
+        graphicsSseClosed = true;
+        openGraphicsSseCleanups.delete(cleanup);
         clearInterval(heartbeat);
+        clearInterval(zombieCheck);
         graphicsBus.off("event", send);
         try { reply.raw.end(); } catch { /* ignore */ }
       };
+      openGraphicsSseCleanups.add(cleanup);
       req.raw.on("close", cleanup);
       req.raw.on("error", cleanup);
     },

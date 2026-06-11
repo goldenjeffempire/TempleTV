@@ -7699,6 +7699,7 @@ packages:
 
   shaka-player@4.16.26:
     resolution: {integrity: sha512-qoSQyqaBsARb+yDc2D9ab7D+4THP0bIAE6/7syCteZY7VtC7RVbHlQ8os8VfU2GAzYWqv9mik1ywDjRuQdvtSg==}
+    engines: {node: '>=18'}
 
   shallowequal@1.1.0:
     resolution: {integrity: sha512-y0m1JoUZSlPAjXVtPPW70aZWfIL/dSP7AFkRnniLCrK/8MDKog3TySTBmckD+RObVxH0v4Tox67+F14PdED2oQ==}

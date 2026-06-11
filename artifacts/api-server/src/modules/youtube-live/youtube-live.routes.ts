@@ -14,6 +14,16 @@ import { requireAuth } from "../../middleware/auth.js";
  * the current cached state; GET /events streams state-change events.
  */
 
+// All open youtube-live SSE connections. Populated by the /events handler
+// and force-closed by closeAllYoutubeLiveSseSessions() during shutdown.
+const openYoutubeLiveSseCleanups = new Set<() => void>();
+
+export function closeAllYoutubeLiveSseSessions(): void {
+  for (const cleanup of openYoutubeLiveSseCleanups) {
+    try { cleanup(); } catch { /* ignore */ }
+  }
+}
+
 export async function youtubeLiveRoutes(app: FastifyInstance) {
   // Start the poller on route registration so the first REST call has
   // a real answer within one poll interval rather than returning stale
@@ -134,12 +144,13 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
     });
 
     let closed = false;
+    let lastYtLiveSseWriteOkMs = Date.now();
 
     const writeState = () => {
       if (closed) return;
       const s = ytPoller.getState();
       try {
-        reply.raw.write(`event: state\ndata: ${JSON.stringify({
+        const ok = reply.raw.write(`event: state\ndata: ${JSON.stringify({
           isLive: s.isLive,
           videoId: s.videoId,
           title: s.title,
@@ -147,6 +158,7 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
           checkedAt: s.checkedAt,
           detectionMethod: s.detectionMethod,
         })}\n\n`);
+        if (ok) lastYtLiveSseWriteOkMs = Date.now();
       } catch {
         /* ignore — cleanup runs */
       }
@@ -161,19 +173,35 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
 
     const heartbeat = setInterval(() => {
       if (closed) return;
-      try { reply.raw.write(": ping\n\n"); } catch { /* ignore */ }
+      try {
+        const ok = reply.raw.write(": ping\n\n");
+        if (ok) lastYtLiveSseWriteOkMs = Date.now();
+      } catch { /* ignore */ }
     }, 25_000);
     // Unref so this timer never blocks graceful shutdown — the req.raw
     // "close" / "error" handlers will clearInterval if the client disconnects,
     // and SIGTERM will drain the server regardless of this timer.
     heartbeat.unref();
 
+    // Zombie detection: half-open TCP keeps socket open silently.
+    // Close if no successful write in 90 s (= 3.6× the 25 s heartbeat).
+    const zombieCheck = setInterval(() => {
+      const idleMs = Date.now() - lastYtLiveSseWriteOkMs;
+      const writable = !reply.raw.socket?.destroyed && reply.raw.socket?.writable;
+      if (!writable || idleMs > 90_000) cleanup();
+    }, 30_000);
+    zombieCheck.unref();
+
     const cleanup = () => {
+      if (closed) return;
       closed = true;
+      openYoutubeLiveSseCleanups.delete(cleanup);
       unsub();
       clearInterval(heartbeat);
+      clearInterval(zombieCheck);
       try { reply.raw.end(); } catch { /* ignore */ }
     };
+    openYoutubeLiveSseCleanups.add(cleanup);
     req.raw.on("close", cleanup);
     req.raw.on("error", cleanup);
   });
