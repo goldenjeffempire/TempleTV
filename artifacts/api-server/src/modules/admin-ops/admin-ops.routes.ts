@@ -760,7 +760,27 @@ async function lastCompletedJob(): Promise<{
   }
 }
 
-async function dbCounts() {
+type DbCountsResult = {
+  videos: number;
+  localVideos: number;
+  playlists: number;
+  activeScheduleEntries: number;
+  registeredDevices: number;
+};
+
+// 5-second in-process cache for dbCounts().
+// The /ops/status endpoint is polled by the admin dashboard on every page
+// load and on every SSE reconnect. Without caching, each call fires 5
+// concurrent COUNT queries even though the numbers change on the order of
+// minutes, not seconds. This eliminates the DB round-trips on repeated
+// dashboard loads while keeping numbers fresh enough for the ops panel.
+const DB_COUNTS_CACHE_TTL_MS = 5_000;
+let dbCountsCache: { data: DbCountsResult; ts: number } | null = null;
+
+async function dbCounts(): Promise<DbCountsResult> {
+  if (dbCountsCache && Date.now() - dbCountsCache.ts < DB_COUNTS_CACHE_TTL_MS) {
+    return dbCountsCache.data;
+  }
   // Best-effort; if any single count fails, fall back to 0 so the panel
   // still renders. Uses raw SQL so we don't need to import every drizzle
   // schema here.
@@ -784,7 +804,9 @@ async function dbCounts() {
       n("schedule_entries", "is_active = true"),
       n("devices").catch(() => 0),
     ]);
-  return { videos, localVideos, playlists, activeScheduleEntries, registeredDevices };
+  const data: DbCountsResult = { videos, localVideos, playlists, activeScheduleEntries, registeredDevices };
+  dbCountsCache = { data, ts: Date.now() };
+  return data;
 }
 
 function buildSseBusStatus(): z.infer<typeof SSEBusStatusSchema> {

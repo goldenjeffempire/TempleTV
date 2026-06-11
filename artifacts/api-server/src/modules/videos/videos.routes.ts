@@ -330,6 +330,7 @@ export async function videosRoutes(app: FastifyInstance) {
           return reply
             .header("Cache-Control", "public, s-maxage=30, max-age=30, stale-while-revalidate=60")
             .header("ETag", cached.etag)
+            .header("Vary", "Accept-Encoding")
             .header("X-Cache", "HIT")
             .send(cached.payload);
         }
@@ -408,6 +409,7 @@ export async function videosRoutes(app: FastifyInstance) {
       return reply
         .header("Cache-Control", cacheControl)
         .header("ETag", etag)
+        .header("Vary", "Accept-Encoding")
         .header("X-Cache", "MISS")
         .send(result);
     },

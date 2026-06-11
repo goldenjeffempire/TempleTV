@@ -101,6 +101,12 @@ export interface FetchVideosOptions {
    * appear in the public catalogue.
    */
   source?: "youtube" | "local";
+  /**
+   * Optional ETag from a previous successful fetch. When supplied and the
+   * server responds 304 Not Modified, fetchVideos returns null — the caller
+   * should keep displaying its cached data unchanged.
+   */
+  ifNoneMatch?: string;
 }
 
 // ─── Broadcast types ─────────────────────────────────────────────────────────
@@ -154,8 +160,12 @@ export interface ApiChannel {
 /**
  * Fetch the public video catalog. Returns up to `limit` videos (default 200).
  * Maps query params to server filter/sort.
+ *
+ * Returns null when the server responds 304 Not Modified (caller should keep
+ * displaying its currently-cached data unchanged). This only occurs when
+ * `opts.ifNoneMatch` is set to the ETag from the previous successful fetch.
  */
-export async function fetchVideos(opts: FetchVideosOptions = {}): Promise<VideosResponse> {
+export async function fetchVideos(opts: FetchVideosOptions = {}): Promise<VideosResponse | null> {
   const params = new URLSearchParams();
   params.set("limit", String(opts.limit ?? 200));
   if (opts.page && opts.page > 1) params.set("page", String(opts.page));
@@ -169,7 +179,15 @@ export async function fetchVideos(opts: FetchVideosOptions = {}): Promise<Videos
   }
   if (opts.source) params.set("source", opts.source);
 
-  const res = await publicFetch(`/api/videos?${params.toString()}`);
+  const fetchHeaders: Record<string, string> = {};
+  if (opts.ifNoneMatch) fetchHeaders["If-None-Match"] = opts.ifNoneMatch;
+
+  const res = await publicFetch(`/api/videos?${params.toString()}`, {
+    headers: fetchHeaders,
+  });
+
+  // 304 Not Modified — content unchanged, caller should use cached data.
+  if (res.status === 304) return null;
   if (!res.ok) {
     // Server-error fallback: on 5xx try /featured so the home screen at least
     // shows top videos instead of an empty error wall. Only fires for the
@@ -196,7 +214,22 @@ export async function fetchVideos(opts: FetchVideosOptions = {}): Promise<Videos
   const videos = data.videos ?? data.data ?? [];
   const total = data.total ?? videos.length;
   const totalPages = data.totalPages ?? 1;
+  // Store the ETag for the unfiltered page-1 catalog so callers can supply it
+  // in subsequent background-refresh calls to receive a 304 when unchanged.
+  const isUnfilteredFirstPage = !opts.search && !opts.category && (!opts.page || opts.page === 1) && !opts.source;
+  const etag = res.headers.get("etag");
+  if (etag && isUnfilteredFirstPage) _lastCatalogEtag = etag;
   return { videos, total, totalPages, page: opts.page ?? 1, limit: opts.limit ?? 200 };
+}
+
+// Session-level ETag from the most recent unfiltered page-1 catalog fetch.
+// Enables If-None-Match conditional GETs on background refresh cycles — the
+// server returns 304 when the library is unchanged, saving ~30 KB of parsing.
+let _lastCatalogEtag: string | null = null;
+
+/** Returns the ETag from the most recent successful unfiltered catalog fetch, or null. */
+export function getLastCatalogEtag(): string | null {
+  return _lastCatalogEtag;
 }
 
 /**

@@ -158,17 +158,37 @@ function dbVideoToVideoItem(v: DbVideo): VideoItem {
   };
 }
 
+// Session-level ETag for the TV catalog endpoint. Enables 304 Not Modified
+// responses on the 5-minute background refresh cycles when the library
+// hasn't changed — avoids re-parsing ~30 KB of JSON on every poll.
+// Not persisted across app launches; localStorage handles cross-session
+// caching. Reset on each page reload/cold start.
+let tvCatalogEtag: string | null = null;
+
 /**
  * Fetch YouTube-sourced videos from the public catalogue endpoint.
  * The TV Library mirrors the mobile Library and lists only YouTube content —
  * locally-uploaded files are reserved for the 24/7 Broadcasting module and
  * never appear in the public catalogue.
+ *
+ * Returns null when the server replies 304 Not Modified — callers should
+ * keep displaying their currently-cached content unchanged.
  */
-export async function fetchVideos(): Promise<VideoItem[]> {
+export async function fetchVideos(): Promise<VideoItem[] | null> {
+  const headers: HeadersInit = {};
+  if (tvCatalogEtag) headers["If-None-Match"] = tvCatalogEtag;
+
   const res = await fetch(apiUrl("/videos?limit=200&source=youtube"), {
+    headers,
     signal: AbortSignal.timeout(12000),
   });
+
+  if (res.status === 304) return null;
   if (!res.ok) throw new Error("Failed to fetch videos");
+
+  const etag = res.headers.get("etag");
+  if (etag) tvCatalogEtag = etag;
+
   const data = await res.json() as { videos: DbVideo[] };
   return (data.videos ?? []).map(dbVideoToVideoItem);
 }

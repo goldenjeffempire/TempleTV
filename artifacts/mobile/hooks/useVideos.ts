@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { fetchVideos, type ApiVideo } from "@/services/api";
+import { fetchVideos, getLastCatalogEtag, type ApiVideo } from "@/services/api";
 import { useBroadcastSync } from "@/hooks/useBroadcastSync";
 import type { Sermon, SermonCategory, SortMode } from "@/types";
 
@@ -28,6 +28,12 @@ const CACHE_KEY = "@temple_tv/videos_v2";
 // shimmer is suppressed for the same window. Library mutations still bypass
 // this via the `libraryRevision` SSE/WS bump, so freshness isn't impacted.
 const CACHE_TTL_MS = 30 * 60 * 1000;
+
+// Page size for the 2-stage catalog fetch. First page paints the UI in
+// ~80-120 ms on mobile networks; remaining pages are fetched in the
+// background and merged silently so the full library is available for
+// search and category grids within a second.
+const CATALOG_PAGE_SIZE = 100;
 
 const CATEGORY_MAP: Record<string, SermonCategory> = {
   live_service: "Live Service",
@@ -201,9 +207,14 @@ export function useVideos(): UseVideosResult {
   // streak. Incremented each time a retry timer is scheduled; resets to 0
   // on component mount (so each fresh session gets its own 3-attempt budget).
   const autoRetryRef = useRef(0);
+  // Monotonically-increasing generation counter. Bumped at the top of every
+  // load() call so in-flight background page fetches can detect that a newer
+  // load superseded them and bail out before overwriting fresher state.
+  const loadGenRef = useRef(0);
   const { libraryRevision } = useBroadcastSync();
 
   const load = useCallback(async (silent = false) => {
+    const gen = ++loadGenRef.current;
     if (!silent) setLoading(true);
     setError(null);
     try {
@@ -218,27 +229,70 @@ export function useVideos(): UseVideosResult {
           setLoading(false);
         }
       }
-      // Fetch full catalog (limit=500) so home-screen category grids
-      // show the complete Temple TV library. The API cap is 500; requesting
-      // more returns a 400 which surfaces as "Couldn't load videos".
-      const resp = await fetchVideos({ limit: 500, sort: "newest" });
+      // ── Stage 1: first page — instant paint ─────────────────────────────
+      // Fetch the first page (CATALOG_PAGE_SIZE items) so the home-screen
+      // category grids show real content as fast as possible. The totalPages
+      // field in the response tells us how many additional pages to fetch.
+      //
+      // On background refreshes (silent=true) we pass the session ETag so
+      // the server can return 304 Not Modified when the library hasn't
+      // changed — sparing the app ~30 KB of JSON parsing on every 5-min poll.
+      //
       // Defensive: API contract says `videos` is always an array, but a 200
       // with a malformed body (proxy injecting HTML, partial CDN response)
-      // should NOT silently wipe the catalog. Throw so the existing catch
-      // path below preserves cached/prior data and surfaces the stale banner.
-      if (!Array.isArray(resp?.videos)) {
+      // should NOT silently wipe the catalog. Throw so the catch path below
+      // preserves cached/prior data and surfaces the stale banner.
+      const firstPage = await fetchVideos({
+        limit: CATALOG_PAGE_SIZE,
+        page: 1,
+        sort: "newest",
+        ifNoneMatch: silent ? (getLastCatalogEtag() ?? undefined) : undefined,
+      });
+      // 304 Not Modified — library unchanged; keep current data as-is.
+      if (firstPage === null) {
+        setLoading(false);
+        return;
+      }
+      if (!Array.isArray(firstPage?.videos)) {
         throw new Error("Malformed videos response: expected array");
       }
-      const mapped = resp.videos.map((v, i) => apiVideoToSermon(v, i));
-      setSermons(mapped);
+      if (gen !== loadGenRef.current) return; // superseded by a newer load()
+      const allMapped = firstPage.videos.map((v, i) => apiVideoToSermon(v, i));
+      setSermons([...allMapped]);
       hasDataRef.current = true;
       setIsStale(false);
       setRefreshFailed(false);
       setLastFetchedAt(new Date());
       setLoading(false);
       loadedRef.current = true;
-      await writeCache(mapped);
+
+      // ── Stage 2: remaining pages — background merge ──────────────────────
+      // Fetch pages 2..N silently and progressively append to the list so
+      // the full library is available for search and category grids.
+      // Cap at 10 pages (1 000 items) as a safety guard.
+      const totalPages = Math.min(firstPage.totalPages ?? 1, 10);
+      for (let p = 2; p <= totalPages; p++) {
+        if (gen !== loadGenRef.current) return; // newer load superseded us
+        try {
+          const nextPage = await fetchVideos({ limit: CATALOG_PAGE_SIZE, page: p, sort: "newest" });
+          if (nextPage === null || !Array.isArray(nextPage?.videos) || nextPage.videos.length === 0) break;
+          if (gen !== loadGenRef.current) return;
+          const offset = allMapped.length;
+          nextPage.videos.forEach((v, i) => allMapped.push(apiVideoToSermon(v, offset + i)));
+          setSermons([...allMapped]);
+        } catch {
+          // Background page failure is non-fatal: keep the items we have.
+          break;
+        }
+      }
+
+      // Write full merged catalog to the cache so the next cold start is
+      // instant with the complete library.
+      if (gen === loadGenRef.current) {
+        await writeCache(allMapped);
+      }
     } catch (err) {
+      if (gen !== loadGenRef.current) return;
       if (hasDataRef.current) {
         // We already have cached or previously-fetched data to show.
         // Flip the stale banner to "Couldn't refresh" instead of blowing
@@ -469,6 +523,10 @@ export function usePaginatedVideos(opts: {
       sort: apiSort as "newest" | "oldest" | "views",
       source,
     });
+    // resp is null only when ifNoneMatch was supplied and server returned 304;
+    // fetchPage never passes ifNoneMatch so this path is unreachable in
+    // practice, but the null guard satisfies the updated return-type contract.
+    if (!resp) throw new Error("Unexpected empty catalog response");
     const mapped = resp.videos.map((v, i) => apiVideoToSermon(v, (pageNum - 1) * PAGE_SIZE + i));
     if (replace) {
       setSermons(mapped);

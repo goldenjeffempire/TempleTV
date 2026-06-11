@@ -155,6 +155,11 @@ export function useSermons() {
       fetchVideos()
         .then((videos) => {
           if (!cancelled) {
+            // null = 304 Not Modified — library unchanged, keep current data.
+            if (videos === null) {
+              setLoading(false);
+              return;
+            }
             const categorized = categorize(videos);
             setSermons(categorized);
             setLoading(false);
@@ -183,7 +188,8 @@ export function useSermons() {
     let cancelled = false;
     fetchVideos()
       .then((videos) => {
-        if (!cancelled) {
+        if (!cancelled && videos !== null) {
+          // null = 304 Not Modified — library unchanged, nothing to update.
           const categorized = categorize(videos);
           setSermons(categorized);
           writeCatalogCache(categorized);

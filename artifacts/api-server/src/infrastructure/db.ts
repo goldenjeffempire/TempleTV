@@ -895,6 +895,40 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         WHERE broadcast_only IS DISTINCT FROM true
     `);
 
+    // ── Local-upload browse sort — admin library page ───────────────────────
+    // Admin /api/v1/admin/videos?source=local sorts by imported_at DESC.
+    // The existing idx_managed_videos_transcode_pending only covers queued
+    // rows; a general local+imported_at index enables fast pagination for the
+    // admin video library filtered by video_source='local'.
+    await run("idx_managed_videos_local_browse", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_local_browse
+        ON managed_videos (imported_at DESC)
+        WHERE video_source = 'local'
+    `);
+
+    // ── Series membership lookup ────────────────────────────────────────────
+    // Series pages (GET /api/series/:id/videos) join managed_videos ON
+    // series_id = :id. Without an index the query does a full table scan.
+    // This partial index covers only non-null series_id values which are the
+    // only rows that will ever be looked up this way.
+    await run("idx_managed_videos_series_id", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_series_id
+        ON managed_videos (series_id)
+        WHERE series_id IS NOT NULL
+    `);
+
+    // ── Catalog category + sort composite ──────────────────────────────────
+    // /api/videos?category=X&sort=newest filters by lower(category) and then
+    // orders by COALESCE(published_at::timestamptz, imported_at) DESC.
+    // The planner currently uses idx_managed_videos_category_lower for the
+    // filter and then sorts in memory. A composite covering index avoids the
+    // in-memory sort step for category-filtered pages (mobile/TV grids).
+    await run("idx_managed_videos_category_coalesce_sort", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_category_coalesce_sort
+        ON managed_videos (lower(category), COALESCE(published_at::timestamptz, imported_at) DESC)
+        WHERE broadcast_only IS DISTINCT FROM true
+    `);
+
     logger.info("db: functional and partial indexes ensured");
   } finally {
     client.release();
