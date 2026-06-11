@@ -61,6 +61,7 @@ interface ServiceBlock {
   type: string;
   name: string;
   runtime: string;
+  env: string;
   body: string;
   startLine: number;
 }
@@ -76,11 +77,13 @@ function sliceServices(text: string): ServiceBlock[] {
     const typeMatch = body.match(/^\s*- type:\s*(\S+)/m);
     const nameMatch = body.match(/^\s{4}name:\s*(\S+)/m);
     const runtimeMatch = body.match(/^\s{4}runtime:\s*(\S+)/m);
+    const envMatch = body.match(/^\s{4}env:\s*(\S+)/m);
     if (typeMatch && nameMatch) {
       services.push({
         type: typeMatch[1],
         name: nameMatch[1],
         runtime: runtimeMatch?.[1] ?? "",
+        env: envMatch?.[1] ?? "",
         body,
         startLine: current.startIdx + 1,
       });
@@ -210,7 +213,7 @@ for (const expected of EXPECTED_SERVICES) {
 }
 
 const STATIC_SPAS = services.filter(
-  (s) => s.runtime === "static" && EXPECTED_SERVICES.includes(s.name as never),
+  (s) => s.env === "static" && EXPECTED_SERVICES.includes(s.name as never),
 );
 
 if (STATIC_SPAS.length !== 3) {
@@ -221,11 +224,12 @@ if (STATIC_SPAS.length !== 3) {
 
 // ────────────────────────────────────────────────────────────────────────────
 // Invariant 1: no static SPA may declare a PORT envVar (Render's CDN serves
-// static files; PORT is dead config and misleads the next operator).
+// static files via `env: static`; PORT is dead config and misleads the next
+// operator).
 // ────────────────────────────────────────────────────────────────────────────
 for (const spa of STATIC_SPAS) {
   if (/^\s+- key:\s*PORT\s*$/m.test(spa.body)) {
-    fail(`[${spa.name}] static service declares PORT envVar — must be removed (CDN-served, no port to bind)`);
+    fail(`[${spa.name}] static service declares PORT envVar — must be removed (CDN-served via env: static, no port to bind)`);
   }
 }
 
