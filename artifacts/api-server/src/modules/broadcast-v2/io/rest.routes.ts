@@ -482,11 +482,22 @@ export async function restRoutes(app: FastifyInstance) {
         // server. 120 req/min ≈ 1 req/500 ms — well above any legitimate
         // polling cadence (keep-alive is 15 s).
         rateLimit: { max: 120, timeWindow: "1 minute" } },
-    }, (_req, reply) => {
+    }, (req, reply) => {
       reply.header("Cache-Control", "no-store, max-age=0");
       const now = Date.now();
       if (!_stateCache || _stateCache.expiresAt <= now) {
         _stateCache = { snap: broadcastOrchestrator.snapshot(), expiresAt: now + 2_000 };
+      }
+      // ETag based on sequence so clients can send If-None-Match for
+      // conditional GET — avoids re-parsing an identical snapshot body when
+      // the broadcast has not advanced since the last fetch (e.g. reconnect
+      // storms where the queue is paused or the same item is still playing).
+      const seq = (_stateCache.snap as { sequence?: number }).sequence ?? 0;
+      const etag = `W/"seq-${seq}"`;
+      reply.header("ETag", etag);
+      const ifNoneMatch = req.headers["if-none-match"] as string | undefined;
+      if (ifNoneMatch && (ifNoneMatch === etag || ifNoneMatch === "*")) {
+        return reply.code(304).send();
       }
       return { state: _stateCache.snap };
     });
@@ -717,7 +728,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   registerNamedStore("broadcast-v2-stall-cooldown", () => stallActionCooldown.size);
 
   app.post("/report-stall", {
-    ...userGuard,
     bodyLimit: 1048576,
     schema: {
       body: ReportStallCommand,
@@ -1017,7 +1027,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   // advances the anchor; subsequent calls for the same itemId are no-ops
   // because the anchor has already moved past that item.
   app.post("/natural-end", {
-    ...userGuard,
     bodyLimit: 1048576,
     schema: {
       body: z.object({ itemId: z.string().min(1).max(128) }),

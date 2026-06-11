@@ -43,6 +43,16 @@ export interface UseV2BroadcastOptions {
   attachYouTube?: (video: HTMLVideoElement, url: string) => () => void;
   enabled?: boolean;
   /**
+   * Optional factory that returns the current auth token (or null/undefined
+   * when unauthenticated). When provided, POST /report-stall, /natural-end,
+   * and /checkpoint requests include an `Authorization: Bearer` header so
+   * the server can attribute telemetry signals to authenticated sessions.
+   *
+   * On anonymous surfaces (public TV, web viewer) omit or return null — the
+   * server accepts both with and without auth on all player signal endpoints.
+   */
+  getAuthToken?: () => string | null | undefined;
+  /**
    * Whether this player instance should fire `report-stall` to the server
    * when it reaches SKIP_PENDING (all local retries exhausted).
    *
@@ -100,6 +110,13 @@ interface BroadcastSession {
   connectedListeners: Set<(c: boolean) => void>;
   /** Cleanup returned by machine.subscribe(). */
   machineUnsub: () => void;
+  /**
+   * Mutable ref for the optional auth token getter. Wired by the hook from
+   * UseV2BroadcastOptions.getAuthToken in a useEffect so session-level
+   * callbacks (natural-end POST) always use the freshest token without
+   * needing to re-create the callback closure on every token refresh.
+   */
+  _authGetterRef: { current: (() => string | null | undefined) | undefined };
 }
 
 /** Singleton sessions keyed by baseUrl. Persist across React component
@@ -326,6 +343,10 @@ function createSession(baseUrl: string): BroadcastSession {
   // anchor immediately.  Without this, every connected player gets pulled
   // back onto the just-finished item by the next server snapshot (which
   // still shows the old item as `current` with `endsAtMs` in the future).
+  // Mutable ref so the hook can wire the current auth token factory from
+  // UseV2BroadcastOptions.getAuthToken without re-creating this callback.
+  const authGetterRef: { current: (() => string | null | undefined) | undefined } = { current: undefined };
+
   machine.setNaturalEndCallback((itemId: string) => {
     // Retry with backoff — the server MUST receive this signal or it keeps
     // presenting the ended item as `current`, causing every client's 30 s
@@ -340,9 +361,12 @@ function createSession(baseUrl: string): BroadcastSession {
     const naturalEndRetryDelays = [2_000, 4_000, 8_000];
     const doPost = (attempt: number): void => {
       if (transport.isStopped) return;
+      const _nt = authGetterRef.current?.();
+      const _nh: Record<string, string> = { "Content-Type": "application/json" };
+      if (_nt) _nh["Authorization"] = `Bearer ${_nt}`;
       void fetch(`${baseUrl}/natural-end`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: _nh,
         body: JSON.stringify({ itemId }),
         signal: AbortSignal.timeout(8_000),
       }).catch(() => {
@@ -383,6 +407,7 @@ function createSession(baseUrl: string): BroadcastSession {
     snapshotListeners: new Set(),
     connectedListeners: new Set(),
     machineUnsub,
+    _authGetterRef: authGetterRef,
   };
 
   return session;
@@ -526,12 +551,12 @@ function replayStateToAdapter(snap: PlayerSnapshot, adapter: IntentHandler, cloc
 // ── React hook ──────────────────────────────────────────────────────────────
 
 export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResult {
-  const { baseUrl, attachHls, attachYouTube, enabled = true, enableStallReport = true } = opts;
+  const { baseUrl, attachHls, attachYouTube, enabled = true, enableStallReport = true, getAuthToken } = opts;
 
   // Keep latest option values in a ref so callbacks don't need to be
   // recreated when they change.
-  const optsRef = useRef({ attachHls, attachYouTube, enableStallReport });
-  optsRef.current = { attachHls, attachYouTube, enableStallReport };
+  const optsRef = useRef({ attachHls, attachYouTube, enableStallReport, getAuthToken });
+  optsRef.current = { attachHls, attachYouTube, enableStallReport, getAuthToken };
 
   const elsRef = useRef<{ A: HTMLVideoElement | null; B: HTMLVideoElement | null }>({
     A: null,
@@ -603,6 +628,16 @@ export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResul
     };
   }, [session]);
 
+  // Keep the session-level auth getter ref current with the hook option so
+  // the natural-end callback always uses the freshest token. A separate
+  // effect (vs folding into the subscriber effect above) re-runs whenever
+  // getAuthToken changes identity — e.g. after a token refresh in the admin
+  // panel — without triggering a full re-subscribe.
+  useEffect(() => {
+    if (!session) return;
+    session._authGetterRef.current = getAuthToken;
+  }, [session, getAuthToken]);
+
   // Per-hook stall reporting.  Kept separate from the session singleton so
   // that `enableStallReport` can differ between hook instances (admin preview
   // uses false; viewer surfaces use true) sharing the same baseUrl.
@@ -615,9 +650,12 @@ export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResul
       const itemId = s.lastServerSnapshot?.current?.id ?? null;
       if (!itemId || itemId === lastReportedId) return;
       lastReportedId = itemId;
+      const _srt = session._authGetterRef.current?.();
+      const _srh: Record<string, string> = { "Content-Type": "application/json" };
+      if (_srt) _srh["Authorization"] = `Bearer ${_srt}`;
       void fetch(`${baseUrl}/report-stall`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: _srh,
         body: JSON.stringify({ itemId }),
         // 8-second timeout mirrors the transport's snapshot fetch timeout.
         // Without this the fetch can hang indefinitely, blocking the .catch()
@@ -657,9 +695,12 @@ export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResul
           escapeTimer = setTimeout(() => {
             escapeTimer = null;
             if (pendingItemId) {
+              const _evt = session._authGetterRef.current?.();
+              const _evh: Record<string, string> = { "Content-Type": "application/json" };
+              if (_evt) _evh["Authorization"] = `Bearer ${_evt}`;
               void fetch(`${baseUrl}/report-stall`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: _evh,
                 body: JSON.stringify({ itemId: pendingItemId }),
                 signal: AbortSignal.timeout(5_000),
               }).catch(() => {});

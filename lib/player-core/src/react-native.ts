@@ -35,6 +35,15 @@ import type { PlayerEvent, PlayerSnapshot } from "./types.js";
 export interface UseV2BroadcastNativeOptions {
   baseUrl: string;
   enabled?: boolean;
+  /**
+   * Optional factory that returns the current auth token (or null/undefined
+   * when unauthenticated). When provided, POST /report-stall and /natural-end
+   * requests include an `Authorization: Bearer` header so the server can
+   * attribute telemetry signals to authenticated sessions.
+   *
+   * On anonymous surfaces omit or return null — the server accepts both.
+   */
+  getAuthToken?: () => string | null | undefined;
 }
 
 export interface UseV2BroadcastNativeResult {
@@ -120,6 +129,12 @@ interface NativeSession {
    * the reconnect feels instantaneous to the user.
    */
   forceReconnectDebounce: ReturnType<typeof setTimeout> | null;
+  /**
+   * Mutable ref for the optional auth token getter. Wired by the hook from
+   * UseV2BroadcastNativeOptions.getAuthToken so natural-end and report-stall
+   * callbacks always use the freshest token without re-creating closures.
+   */
+  _authGetterRef: { current: (() => string | null | undefined) | undefined };
 }
 
 /** Singleton sessions keyed by baseUrl. Transport persists across React
@@ -215,6 +230,10 @@ function getOrCreateSession(baseUrl: string): NativeSession {
   // durationSecs slot expires, notify the server so it advances its cycle
   // anchor immediately.  Without this, every connected player gets pulled
   // back onto the just-finished item by the next server snapshot.
+  // Mutable ref so the hook can wire the current auth token factory without
+  // re-creating these callbacks (mirrors the web react.ts pattern).
+  const authGetterRef: { current: (() => string | null | undefined) | undefined } = { current: undefined };
+
   machine.setNaturalEndCallback((itemId: string) => {
     // Retry with backoff — the server MUST receive this signal or it keeps
     // presenting the ended item as `current`, causing every client's 30 s
@@ -230,9 +249,12 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     const naturalEndRetryDelays = [2_000, 4_000, 8_000];
     const doPost = (attempt: number): void => {
       if (transport.isStopped) return;
+      const _nt = authGetterRef.current?.();
+      const _nh: Record<string, string> = { "Content-Type": "application/json" };
+      if (_nt) _nh["Authorization"] = `Bearer ${_nt}`;
       void fetch(`${baseUrl}/natural-end`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: _nh,
         body: JSON.stringify({ itemId }),
         signal: AbortSignal.timeout(8_000),
       }).catch(() => {
@@ -271,6 +293,7 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     machineUnsub,
     hookCount: 0,
     forceReconnectDebounce: null,
+    _authGetterRef: authGetterRef,
     // Placeholder — overwritten below once the escapeValveTimer closure is set up.
     cleanup: () => {},
   };
@@ -301,9 +324,12 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     // so a mass-CDN-failure event that stalls thousands of devices simultaneously
     // doesn't produce a thundering herd that exhausts the server rate-limiter.
     void new Promise<void>((resolve) => setTimeout(resolve, Math.random() * 5_000)).then(() => {
+      const _rst = authGetterRef.current?.();
+      const _rsh: Record<string, string> = { "Content-Type": "application/json" };
+      if (_rst) _rsh["Authorization"] = `Bearer ${_rst}`;
       return fetch(`${baseUrl}/report-stall`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: _rsh,
         body: JSON.stringify({ itemId }),
         signal: AbortSignal.timeout(8_000),
       }).catch(() => {
@@ -373,7 +399,7 @@ function getOrCreateSession(baseUrl: string): NativeSession {
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useV2BroadcastNative(opts: UseV2BroadcastNativeOptions): UseV2BroadcastNativeResult {
-  const { baseUrl, enabled = true } = opts;
+  const { baseUrl, enabled = true, getAuthToken } = opts;
 
   // Get (or lazily create) the singleton session for this baseUrl.
   const session = enabled ? getOrCreateSession(baseUrl) : null;
@@ -382,6 +408,12 @@ export function useV2BroadcastNative(opts: UseV2BroadcastNativeOptions): UseV2Br
     () => session?.snapshot ?? EMPTY_SNAPSHOT,
   );
   const [connected, setConnected] = useState<boolean>(session?.connected ?? false);
+
+  // Keep the session-level auth getter ref current with the hook option.
+  useEffect(() => {
+    if (!session) return;
+    session._authGetterRef.current = getAuthToken;
+  }, [session, getAuthToken]);
 
   // Subscribe to live session state changes.
   // Cleanup only removes the listeners — transport & machine stay running.

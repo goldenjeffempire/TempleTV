@@ -22,7 +22,7 @@ import Hls from "hls.js";
 import { useV2Broadcast } from "@workspace/player-core/react";
 import type { V2Source, V2SourceKind } from "@workspace/player-core";
 import { apiBase } from "@/lib/api-base";
-import { api, HttpError } from "@/lib/api";
+import { api, HttpError, tokenStore } from "@/lib/api";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -396,7 +396,12 @@ export function BroadcastPreviewV2({ className }: Props) {
   // for real viewers. A preview failure (storage credentials unavailable in
   // the admin browser, CORS, or any other admin-environment issue) is not
   // evidence that the source is broken for TV/mobile/web viewers.
-  const { snapshot, connected, attach } = useV2Broadcast({ baseUrl, attachHls, enableStallReport: false });
+  const { snapshot, connected, attach } = useV2Broadcast({
+    baseUrl,
+    attachHls,
+    enableStallReport: false,
+    getAuthToken: () => tokenStore.getAccess() || null,
+  });
   const [muted, setMuted] = useState(true);
   const aRef = useRef<HTMLVideoElement>(null);
   const bRef = useRef<HTMLVideoElement>(null);
