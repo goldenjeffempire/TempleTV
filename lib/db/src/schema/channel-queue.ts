@@ -1,4 +1,6 @@
-import { pgTable, text, timestamp, integer, boolean, index } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, boolean, index, check, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { videosTable } from "./videos.js";
 
 /**
  * Channel Queue — broadcast queue for non-primary Temple TV channels.
@@ -14,7 +16,7 @@ export const channelQueueTable = pgTable(
   {
     id: text("id").primaryKey(),
     channelId: text("channel_id").notNull(),
-    videoId: text("video_id"),
+    videoId: text("video_id").references(() => videosTable.id, { onDelete: "set null" }),
     youtubeId: text("youtube_id").notNull(),
     title: text("title").notNull(),
     thumbnailUrl: text("thumbnail_url").notNull().default(""),
@@ -29,6 +31,14 @@ export const channelQueueTable = pgTable(
   (t) => [
     index("idx_channel_queue_channel_active_sort").on(t.channelId, t.isActive, t.sortOrder),
     index("idx_channel_queue_video_id").on(t.videoId),
+    // Dedupe: at most one active queue item per (channel, video) pair.
+    // Mirrors the same partial unique index on broadcast_queue.
+    uniqueIndex("uq_channel_queue_channel_video_active")
+      .on(t.channelId, t.videoId)
+      .where(sql`${t.videoId} IS NOT NULL AND ${t.isActive} = true`),
+    // Reject non-local video sources — channel queue only accepts local uploads
+    // and prod-sync items, not raw YouTube watch URLs.
+    check("chk_channel_queue_no_youtube_urls", sql`${t.localVideoUrl} NOT LIKE '%youtube.com/watch%' AND ${t.localVideoUrl} NOT LIKE '%youtu.be/%'`),
   ],
 );
 

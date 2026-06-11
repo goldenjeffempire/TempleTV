@@ -230,6 +230,22 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
     }
   };
 
+  // Detect constrained TV chipsets (2017-2019 Tizen/webOS) that cannot sustain
+  // a 30 s VRAM buffer without exhausting GPU memory after 2-3 hours of 24/7
+  // playback. Heuristics: jsHeapSizeLimit ≤ 256 MiB or Tizen/webOS UA year ≤ 2019.
+  const isConstrainedTv = (() => {
+    try {
+      const heapLimit = (performance as { memory?: { jsHeapSizeLimit?: number } }).memory?.jsHeapSizeLimit ?? Infinity;
+      if (heapLimit <= 256 * 1024 * 1024) return true;
+      const ua = navigator.userAgent ?? "";
+      const tizenYear = /Tizen[/ ](201[0-9])/.exec(ua)?.[1];
+      if (tizenYear && parseInt(tizenYear, 10) <= 2019) return true;
+      const webosYear = /Web0S[;/ ](\d{4})/.exec(ua)?.[1] ?? /webOS.com\/(\d{4})/.exec(ua)?.[1];
+      if (webosYear && parseInt(webosYear, 10) <= 2019) return true;
+    } catch { /* ignore */ }
+    return false;
+  })();
+
   const hls = new Hls({
     // ── Latency / buffer ─────────────────────────────────────────────
     lowLatencyMode: false,          // stability over latency for broadcast replay
@@ -241,8 +257,8 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
     // VRAM immediately after the playhead advances gives a significant
     // long-session stability improvement on TV hardware.
     backBufferLength: 0,
-    maxBufferLength: 30,            // build 30 s ahead — ample for smooth relay
-    maxMaxBufferLength: 60,         // cap at 60 s on very fast connections
+    maxBufferLength: isConstrainedTv ? 20 : 30,   // constrained TVs get 20 s cap to prevent VRAM OOM
+    maxMaxBufferLength: isConstrainedTv ? 20 : 60, // no growth headroom on constrained chipsets
     highBufferWatchdogPeriod: 3,    // nudge stalled high-buffer streams every 3 s
 
     // ── ABR / quality ────────────────────────────────────────────────
@@ -361,11 +377,28 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
   // audio (separately buffered) continues unaffected.
   const onFsChange = () => {
     if (!document.fullscreenElement) return;
-    // Double rAF: first ensures the browser has committed the fullscreen
-    // layout; second gives hls.js a tick to observe the new dimensions.
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      hls.currentLevel = -1; // re-trigger auto ABR at fullscreen dimensions
-    }));
+    // Use ResizeObserver instead of double-rAF: the observer fires exactly
+    // when the video element's bounding box reflects the new fullscreen
+    // dimensions, which is guaranteed to be AFTER the browser has committed
+    // layout. On Tizen/webOS the layout pipeline can be slower than two
+    // animation frames so double-rAF occasionally reads the stale pre-
+    // fullscreen size, locking quality at the wrong level for the session.
+    // The observer disconnects itself after the first resize event so it
+    // doesn't interfere with later dynamic resizes during normal playback.
+    // Falls back to double-rAF when ResizeObserver is not available (e.g.
+    // older Tizen 2.x where the polyfill is absent).
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => {
+        ro.disconnect();
+        hls.currentLevel = -1; // re-trigger auto ABR at fullscreen dimensions
+      });
+      ro.observe(video);
+    } else {
+      // Fallback for chipsets without ResizeObserver support.
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        hls.currentLevel = -1;
+      }));
+    }
   };
   document.addEventListener("fullscreenchange", onFsChange);
   document.addEventListener("webkitfullscreenchange", onFsChange);

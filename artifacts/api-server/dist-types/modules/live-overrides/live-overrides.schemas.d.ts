@@ -13,28 +13,28 @@ export declare const LiveOverrideSchema: z.ZodObject<{
     autoStarted: z.ZodBoolean;
     createdAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    title: string;
     id: string;
-    isActive: boolean;
+    title: string;
+    startedAt: string;
     createdAt: string;
+    isActive: boolean;
     hlsStreamUrl: string | null;
     youtubeVideoId: string | null;
     rtmpIngestKey: string | null;
     streamNotes: string | null;
-    startedAt: string;
     endsAt: string | null;
     scheduledFor: string | null;
     autoStarted: boolean;
 }, {
-    title: string;
     id: string;
-    isActive: boolean;
+    title: string;
+    startedAt: string;
     createdAt: string;
+    isActive: boolean;
     hlsStreamUrl: string | null;
     youtubeVideoId: string | null;
     rtmpIngestKey: string | null;
     streamNotes: string | null;
-    startedAt: string;
     endsAt: string | null;
     scheduledFor: string | null;
     autoStarted: boolean;
@@ -55,28 +55,28 @@ export declare const LiveStatusSchema: z.ZodObject<{
         autoStarted: z.ZodBoolean;
         createdAt: z.ZodString;
     }, "strip", z.ZodTypeAny, {
-        title: string;
         id: string;
-        isActive: boolean;
+        title: string;
+        startedAt: string;
         createdAt: string;
+        isActive: boolean;
         hlsStreamUrl: string | null;
         youtubeVideoId: string | null;
         rtmpIngestKey: string | null;
         streamNotes: string | null;
-        startedAt: string;
         endsAt: string | null;
         scheduledFor: string | null;
         autoStarted: boolean;
     }, {
-        title: string;
         id: string;
-        isActive: boolean;
+        title: string;
+        startedAt: string;
         createdAt: string;
+        isActive: boolean;
         hlsStreamUrl: string | null;
         youtubeVideoId: string | null;
         rtmpIngestKey: string | null;
         streamNotes: string | null;
-        startedAt: string;
         endsAt: string | null;
         scheduledFor: string | null;
         autoStarted: boolean;
@@ -84,15 +84,15 @@ export declare const LiveStatusSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     isLive: boolean;
     active: {
-        title: string;
         id: string;
-        isActive: boolean;
+        title: string;
+        startedAt: string;
         createdAt: string;
+        isActive: boolean;
         hlsStreamUrl: string | null;
         youtubeVideoId: string | null;
         rtmpIngestKey: string | null;
         streamNotes: string | null;
-        startedAt: string;
         endsAt: string | null;
         scheduledFor: string | null;
         autoStarted: boolean;
@@ -100,15 +100,15 @@ export declare const LiveStatusSchema: z.ZodObject<{
 }, {
     isLive: boolean;
     active: {
-        title: string;
         id: string;
-        isActive: boolean;
+        title: string;
+        startedAt: string;
         createdAt: string;
+        isActive: boolean;
         hlsStreamUrl: string | null;
         youtubeVideoId: string | null;
         rtmpIngestKey: string | null;
         streamNotes: string | null;
-        startedAt: string;
         endsAt: string | null;
         scheduledFor: string | null;
         autoStarted: boolean;

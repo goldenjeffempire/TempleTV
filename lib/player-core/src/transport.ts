@@ -317,10 +317,30 @@ export class V2Transport {
    */
   private sseCleanup: (() => void) | null = null;
 
+  /**
+   * Stored reference to the `online` event handler so it can be removed in
+   * `stop()`, breaking the window → handler → transport closure and allowing
+   * GC to reclaim the instance on Single-Page-App unmount.
+   */
+  private onlineHandler: (() => void) | null = null;
+
   constructor(private readonly cfg: TransportConfig) {
     // Restore lastSequence from sessionStorage so page reloads resume
     // event-log replay rather than starting from sequence 0.
     this.lastSequence = loadStoredSequence();
+    // Reset wsFailStreak on browser/device network-regain so the transport
+    // immediately probes WebSocket again rather than waiting for 5 SSE cycles
+    // (~2-5 minutes) of sub-optimal SSE-only mode after a connectivity drop.
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      this.onlineHandler = () => {
+        if (this.wsFailStreak > 0) {
+          this.wsFailStreak = 0;
+          this.wsPreferSseUntilWsOpens = false;
+          this.sseReconnectCount = 0;
+        }
+      };
+      window.addEventListener("online", this.onlineHandler);
+    }
   }
 
   start(): void {
@@ -335,6 +355,10 @@ export class V2Transport {
     this.stopHeartbeatWatchdog();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    if (this.onlineHandler && typeof window !== "undefined") {
+      window.removeEventListener("online", this.onlineHandler);
+      this.onlineHandler = null;
+    }
     // Deterministic teardown: null handlers before closing so we don't
     // double-emit onConnectionChange(false) (RN polyfills can fire
     // onclose synchronously). We emit it ourselves at the end.
@@ -948,6 +972,9 @@ export class V2Transport {
           if (!retry?.ok) return;
           const retryBody = (await retry.json()) as { state?: unknown };
           if (retryBody.state) {
+            // Sequence guard (same as primary path): discard stale responses.
+            const retrySeq = (retryBody.state as { sequence?: number }).sequence ?? 0;
+            if (retrySeq > 0 && retrySeq < this.lastSequence) return;
             // Cache the state so subsequent outages can serve it immediately.
             saveSnapshotCache(retryBody.state as V2Snapshot);
             // Calibrate the clock BEFORE dispatching so the FSM's first
@@ -964,6 +991,15 @@ export class V2Transport {
       // the primary path so we don't fire onPlayerEvent into a dead session.
       if (this.stopped) return;
       if (body.state) {
+        // Sequence guard: discard a stale REST response if a newer frame
+        // already arrived via WS/SSE while the fetch was in flight. Without
+        // this guard the REST response could roll the FSM back to an older
+        // server state — visible as a brief video restart or position jump.
+        // A sequence of 0/undefined never discards (could be first boot).
+        const stateSeq = (body.state as { sequence?: number }).sequence ?? 0;
+        if (stateSeq > 0 && stateSeq < this.lastSequence) {
+          return; // stale REST response — a newer WS/SSE frame is already applied
+        }
         // Cache the state so subsequent outages can serve it immediately.
         saveSnapshotCache(body.state as V2Snapshot);
         // Calibrate the clock BEFORE dispatching so the FSM's first

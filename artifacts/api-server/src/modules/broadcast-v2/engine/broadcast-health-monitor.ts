@@ -97,9 +97,16 @@ export async function broadcastHealthMonitorScan(): Promise<void> {
   // technically "within the window".  Without this, a 30-minute placeholder-
   // duration item whose video is only 20 minutes would suppress the health
   // monitor for up to 30 min + GRACE even though naturalItemEnd was missed.
+  // "Massively overdue" threshold must account for actual item duration so
+  // short-form content (<60 s clips) doesn't trigger a false stale-reload
+  // at 3 × GRACE (which can be 9 min) when the item is only 10 s long.
+  // Formula: at least 1× GRACE, or 1.5× the item's own duration — whichever
+  // is larger — so both short items and long placeholder-duration items are
+  // handled correctly.
   const itemMassivelyOverdue =
     snap.current != null &&
-    currentItemElapsedMs > currentItemDurationMs + 3 * PLAYBACK_GRACE_MS;
+    currentItemElapsedMs >
+      currentItemDurationMs + Math.max(PLAYBACK_GRACE_MS, currentItemDurationMs * 1.5);
 
   const withinPlaybackWindow =
     snap.current != null &&

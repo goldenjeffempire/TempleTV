@@ -7,6 +7,7 @@ import type { FastifyInstance } from "fastify";
 export declare class GraphicsBus extends EventEmitter {
 }
 export declare const graphicsBus: GraphicsBus;
+export declare function closeAllGraphicsSseSessions(): void;
 export interface GraphicsEvent {
     type: "graphic-activated" | "graphic-deactivated" | "graphics-snapshot";
     channelId: string;

@@ -86,6 +86,12 @@ export const videosTable = pgTable("managed_videos", {
   //       faststart itself failed → raw upload, moov at EOF → NOT seekable
   //       → must NOT enter the live broadcast rotation.
   faststartApplied: boolean("faststart_applied").notNull().default(false),
+  // Number of times the faststart job has been attempted for this video.
+  // Written by faststart.service.ts on each attempt. Used by the orchestrator
+  // to rate-limit automatic re-queuing of faststart jobs for repeatedly-failing
+  // sources (e.g. corrupt containers that pass the validity gate but always
+  // fail the moov-relocation step). Resets to 0 on a new upload (new objectPath).
+  faststartAttempts: integer("faststart_attempts").notNull().default(0),
   // When true, this video was uploaded for internal broadcast use only and
   // will NOT appear in the public library (TV, mobile, web catalogue).
   // Set automatically to true for all new uploads. Admin can set to false

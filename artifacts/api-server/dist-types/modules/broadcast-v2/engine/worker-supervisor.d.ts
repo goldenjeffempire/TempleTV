@@ -5,6 +5,15 @@ export interface WorkerConfig {
     backoffMs?: readonly number[];
     maxConsecutiveFailures?: number;
     initialDelayMs?: number;
+    /**
+     * Called once, synchronously, the moment the circuit breaker opens.
+     * Use this to fire SSE ops-alerts or out-of-band email from the caller
+     * without creating an import cycle between worker-supervisor and the
+     * notification layer.
+     *
+     * Must never throw — WorkerSupervisor wraps the call in try/catch.
+     */
+    onCircuitOpen?: (name: string, consecutiveFailures: number) => void;
 }
 export interface WorkerHealth {
     name: string;

@@ -155,7 +155,14 @@ const BUFFERING_STALL_THRESHOLD_MS = 15_000;
  * In both cases the right recovery is to retry rather than HANDOFF (which would
  * rebind the same item with a worse position, looping).
  */
-const HLS_QUICK_FINISH_THRESHOLD_MS = 5_000;
+// Lowered from 5 000 ms to 3 000 ms: genuine stream endings near 5 s were
+// being misclassified as spurious "quick finishes" and triggering extra retries.
+// The HLS_END_GUARD_MS (8 000 ms) provides enough clearance above this threshold
+// that clamped seeks can never land within the new 3 s quick-finish window.
+// Additionally, the didJustFinish guard now requires positionMillis > 0 to
+// exclude the zero-play edge case where ExoPlayer fires didJustFinish before
+// reporting any position (e.g. after a stale seek on a newly-loaded manifest).
+const HLS_QUICK_FINISH_THRESHOLD_MS = 3_000;
 
 /**
  * Minimum margin (ms) between the seek target and the actual encoded end of
@@ -1019,7 +1026,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           onVideoReady?.();
         }
 
-        if (status.didJustFinish) {
+        if (status.didJustFinish && (status.positionMillis ?? 0) > 0) {
           clearBufferingWatchdog();
 
           // ── HLS quick-finish guard ──────────────────────────────────

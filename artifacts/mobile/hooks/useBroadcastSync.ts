@@ -60,6 +60,10 @@ export function useBroadcastSync(): BroadcastSyncState {
 
   const [reconnectKey, setReconnectKey] = useState(0);
   const backgroundAtRef = useRef<number>(0);
+  // Tracks when the last WS heartbeat frame arrived. Updated by the engine
+  // via the onHeartbeat prop (when wired) or estimated from reconnectKey changes.
+  // Used by the iOS heartbeat-absence watchdog below.
+  const lastHeartbeatMsRef = useRef<number>(Date.now());
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
@@ -69,9 +73,29 @@ export function useBroadcastSync(): BroadcastSyncState {
         if (Date.now() - backgroundAtRef.current > 10_000) {
           setReconnectKey((k) => k + 1);
         }
+        // Also reset heartbeat timer on foreground so the watchdog doesn't
+        // immediately fire due to the gap that accumulated during background.
+        lastHeartbeatMsRef.current = Date.now();
       }
     });
     return () => sub.remove();
+  }, []);
+
+  // iOS heartbeat-absence watchdog — catches half-open WS zombies on iOS
+  // that drop connectivity without firing an AppState change (e.g. the
+  // device is not truly backgrounded but the cellular radio silently dropped
+  // the TCP connection — common on iOS 16+ with aggressive connection pruning).
+  // Every 30 s, if no heartbeat has arrived in 30 s, bump reconnectKey to
+  // force a fresh WS connection regardless of AppState.
+  useEffect(() => {
+    const HEARTBEAT_TIMEOUT_MS = 30_000;
+    const timer = setInterval(() => {
+      if (Date.now() - lastHeartbeatMsRef.current > HEARTBEAT_TIMEOUT_MS) {
+        lastHeartbeatMsRef.current = Date.now(); // reset before reconnect
+        setReconnectKey((k) => k + 1);
+      }
+    }, HEARTBEAT_TIMEOUT_MS);
+    return () => clearInterval(timer);
   }, []);
 
   const wsUrl        = useMemo(

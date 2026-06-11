@@ -223,6 +223,15 @@ export class PlayerMachine {
   private sourceExpiryTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
+   * Item ID that was active when `sourceExpiryTimer` was last scheduled.
+   * Guards against a superseded timer firing a snapshot request after the
+   * active item has already changed — the timer was scheduled for a URL that
+   * is no longer in use, so the request would be a no-op at best or cause a
+   * stale-snapshot FSM rollback at worst.
+   */
+  private sourceExpiryItemId: string | null = null;
+
+  /**
    * The ID of the last item that fired a natural `ended` event on the active
    * buffer.  Used as a post-HANDOFF guard: prevents `onSnapshot()` from
    * re-binding the just-finished item when the server's snapshot still shows
@@ -344,7 +353,8 @@ export class PlayerMachine {
   private scheduleSourceExpiryWatch(item: V2Item | V2Override): void {
     this.clearSourceExpiryTimer();
     if (!("source" in item)) return; // V2Override has no expiresAtMs
-    const expiresAtMs = (item as V2Item).source.expiresAtMs;
+    const v2item = item as V2Item;
+    const expiresAtMs = v2item.source.expiresAtMs;
     if (!expiresAtMs) return;
     // Use server-calibrated clock for the expiry calculation.
     const nowMs = Date.now() + this.clockOffsetMs;
@@ -354,8 +364,18 @@ export class PlayerMachine {
     // Only schedule for URLs expiring within 10 minutes — longer lifetimes
     // are covered by the normal snapshot-push and reconnect cycle.
     if (fireInMs > 10 * 60_000) return;
+    // Tag the timer with the item ID so the callback can bail out if the
+    // active item has already changed by the time the timer fires.
+    const itemId = v2item.id;
+    this.sourceExpiryItemId = itemId;
     this.sourceExpiryTimer = setTimeout(() => {
       this.sourceExpiryTimer = null;
+      // Guard: only request a snapshot if this item is still the active one.
+      // If the active item changed (HANDOFF, server skip, override), the URL
+      // refresh is irrelevant and the request would be wasted or cause a
+      // stale-snapshot FSM rollback.
+      if (this.sourceExpiryItemId !== itemId) return;
+      this.sourceExpiryItemId = null;
       this.onNeedSnapshotCb?.();
     }, fireInMs);
   }
@@ -365,6 +385,7 @@ export class PlayerMachine {
       clearTimeout(this.sourceExpiryTimer);
       this.sourceExpiryTimer = null;
     }
+    this.sourceExpiryItemId = null;
   }
 
   /**
@@ -573,11 +594,20 @@ export class PlayerMachine {
             return;
           }
           // 3 retries exhausted — give up and let the server state win.
+          // But only re-bind if the server has confirmed a genuinely NEW
+          // item. If server.current still shows the just-ended item the
+          // naturalEnd POST hasn't been processed yet — stay dark and wait
+          // for the next server frame rather than replaying the ended video.
+          const exhaustedEndedId = this.lastEndedItemId;
           this.naturalEndRetries = 0;
           this.lastEndedItemId = null;
           this.lastEndedAtMs = null;
           this.lastEndedItemStartsAtMs = null;
-          // Fall through to bindActive below (last resort after ~90 s).
+          if (server.current.id === exhaustedEndedId) {
+            this.onNeedSnapshotCb?.();
+            return;
+          }
+          // Fall through to bindActive below (server has advanced).
         } else {
           return;
         }
@@ -683,13 +713,18 @@ export class PlayerMachine {
               FATAL_AUTO_RECOVERY_MS * Math.pow(2, this.fatalAttemptCount - 1),
               FATAL_BACKOFF_MAX_MS,
             );
+            // Per-client jitter: spread reconnects across ±15% of the backoff
+            // window so a fleet of clients sharing a broken source don't all
+            // hammer the server in lockstep every 30 s. Cap at 5 s to keep
+            // the spread proportional on the short initial retry.
+            const fatalJitterMs = Math.random() * Math.min(fatalBackoffMs * 0.15, 5_000);
             this.fatalRecoveryTimer = setTimeout(() => {
               this.fatalRecoveryTimer = null;
               if (this.snapshot.state === "FATAL") {
                 this.transition("SYNCING");
                 this.onNeedSnapshotCb?.();
               }
-            }, fatalBackoffMs);
+            }, fatalBackoffMs + fatalJitterMs);
           }
           return;
         }
@@ -1172,7 +1207,7 @@ export class PlayerMachine {
       (current as V2Item).id === (item as V2Item).id &&
       "startsAtMs" in current &&
       "startsAtMs" in item &&
-      (current as V2Item).startsAtMs === (item as V2Item).startsAtMs
+      Math.abs((current as V2Item).startsAtMs - (item as V2Item).startsAtMs) <= 2_000
     ) return;
     this.emit({ type: "bind", bufferId: id, item });
     if (id === "A") this.set({ bufferA: item });

@@ -16,4 +16,5 @@
  *   POST /queue/refresh – force video list reload (editor+)
  */
 import type { FastifyInstance } from "fastify";
+export declare function closeAllMidnightPrayersSseSessions(): void;
 export declare function midnightPrayersRoutes(app: FastifyInstance): Promise<void>;

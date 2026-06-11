@@ -1,8 +1,9 @@
 import { pgTable, text, timestamp, integer, index } from "drizzle-orm/pg-core";
+import { videosTable } from "./videos.js";
 
 export const transcodingJobsTable = pgTable("transcoding_jobs", {
   id: text("id").primaryKey(),
-  videoId: text("video_id").notNull(),
+  videoId: text("video_id").notNull().references(() => videosTable.id, { onDelete: "cascade" }),
   videoPath: text("video_path").notNull(),
   status: text("status").notNull().default("queued"),
   priority: integer("priority").notNull().default(0),

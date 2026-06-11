@@ -1,9 +1,10 @@
 import { pgTable, text, timestamp, integer, boolean, index, check, uniqueIndex } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import { videosTable } from "./videos.js";
 
 export const broadcastQueueTable = pgTable("broadcast_queue", {
   id: text("id").primaryKey(),
-  videoId: text("video_id"),
+  videoId: text("video_id").references(() => videosTable.id, { onDelete: "set null" }),
   youtubeId: text("youtube_id").notNull().default(""),
   title: text("title").notNull(),
   thumbnailUrl: text("thumbnail_url").notNull().default(""),

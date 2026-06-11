@@ -964,6 +964,8 @@ function BroadcastV2PageInner() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
     } catch (e) {
       const detail =
         e instanceof HttpError

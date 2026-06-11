@@ -127,6 +127,19 @@ class TranscoderDispatcher {
     // (10 s) so the reset always completes before a new job is claimed.
     void this.resetOrphanedJobs();
 
+    // Periodic stuck-job watchdog — runs every 10 min (unref'd so it never
+    // prevents graceful shutdown). Complements the startup-only resetOrphanedJobs
+    // by resetting jobs that became stuck mid-encode in long-running deployments
+    // (e.g. SIGKILL swallowed, zombie ffmpeg left alive, DB write timed out).
+    // Unlike resetOrphanedJobs, this increments the attempt counter so that
+    // jobs that time out repeatedly are permanently failed after maxAttempts.
+    const stuckWatchdogTimer = setInterval(() => {
+      void (async () => {
+        try { await this.resetStuckJobs(); } catch { /* logged inside */ }
+      })();
+    }, 10 * 60_000);
+    stuckWatchdogTimer.unref();
+
     // Purge any leftover scratch directories from a previous process that
     // was SIGKILL-ed (the finally block in runTranscode never ran). Each
     // job gets its own subdirectory under scratchRoot named by jobId so

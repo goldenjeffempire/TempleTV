@@ -45,6 +45,7 @@ import { storage } from "../../infrastructure/storage.js";
 import { uploadSessions } from "../media-uploads/upload-sessions.js";
 import { cache } from "../../infrastructure/cache.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
+import { broadcastOrchestrator } from "../broadcast-v2/engine/broadcast-orchestrator.js";
 import { adminEventBus } from "./admin-event-bus.js";
 import { verifyAccessToken } from "../auth/jwt.js";
 import { requireRole } from "../auth/rbac.js";
@@ -276,6 +277,21 @@ const OpsStatusSchema = z.object({
   generatedAt: z.string(),
   environment: z.string(),
   overallStatus: z.enum(["ok", "degraded", "critical"]),
+  // Process health snapshot — reported alongside the structural status so
+  // operators can detect memory pressure without opening a separate endpoint.
+  process: z.object({
+    memoryRssMb: z.number(),
+    heapUsedMb: z.number(),
+    uptimeSecs: z.number(),
+  }).optional(),
+  // Broadcast-v2 orchestrator snapshot — exposes mode + sequence for dashboards.
+  broadcastV2: z.object({
+    started: z.boolean(),
+    mode: z.string(),
+    sequence: z.number().int(),
+    itemCount: z.number().int(),
+    uptimeMs: z.number().int(),
+  }).optional(),
   checks: z.array(
     z.object({
       key: z.string(),
@@ -1202,10 +1218,25 @@ export async function adminOpsRoutes(app: FastifyInstance) {
           ? "degraded"
           : "ok";
 
+      const memUsage = process.memoryUsage();
+      const v2Started = broadcastOrchestrator.isStarted();
+      const v2StartedAt = broadcastOrchestrator.getStartedAtMs();
       return {
         generatedAt: new Date().toISOString(),
         environment: env.NODE_ENV,
         overallStatus,
+        process: {
+          memoryRssMb: Math.round(memUsage.rss / 1024 / 1024),
+          heapUsedMb: Math.round(memUsage.heapUsed / 1024 / 1024),
+          uptimeSecs: Math.round(process.uptime()),
+        },
+        broadcastV2: {
+          started: v2Started,
+          mode: v2Started ? (broadcastOrchestrator.snapshot().mode ?? "unknown") : "stopped",
+          sequence: broadcastOrchestrator.getSequence(),
+          itemCount: broadcastOrchestrator.getItemCount(),
+          uptimeMs: v2StartedAt > 0 ? Math.max(0, Date.now() - v2StartedAt) : 0,
+        },
         checks,
         metrics: {
           uptimeSecs: uptimeSec(),

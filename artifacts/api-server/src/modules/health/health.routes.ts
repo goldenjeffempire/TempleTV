@@ -30,6 +30,16 @@ const HealthSchema = z.object({
     viewerCount: z.number().int().nonnegative(),
     hasCurrent: z.boolean(),
   }),
+  // Structured broadcast-v2 orchestrator metrics for production monitoring.
+  // Exposes the minimum fields needed for uptime dashboards and alerting rules
+  // without leaking internal state that changes on every snapshot tick.
+  broadcastEngine: z.object({
+    ok: z.boolean(),
+    mode: z.string(),
+    sequence: z.number().int(),
+    uptimeMs: z.number().int(),
+    itemCount: z.number().int(),
+  }),
 });
 
 const startedAt = Date.now();
@@ -195,8 +205,17 @@ export async function healthRoutes(app: FastifyInstance) {
           hasCurrent: snap.current !== null,
         },
       };
+      const v2Started = broadcastOrchestrator.isStarted();
+      const v2StartedAtMs = broadcastOrchestrator.getStartedAtMs();
+      const v2EngineBody = {
+        ok: v2Started && v2Status !== "down" && v2Status !== "stuck",
+        mode: v2Started ? (broadcastOrchestrator.snapshot().mode ?? "unknown") : "stopped",
+        sequence: broadcastOrchestrator.getSequence(),
+        uptimeMs: v2StartedAtMs > 0 ? Math.max(0, Date.now() - v2StartedAtMs) : 0,
+        itemCount: broadcastOrchestrator.getItemCount(),
+      };
       if (status === "down") reply.code(503);
-      return body;
+      return { ...body, broadcastEngine: v2EngineBody };
     },
   );
 

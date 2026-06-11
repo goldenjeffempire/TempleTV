@@ -232,6 +232,15 @@ declare class BroadcastOrchestrator extends EventEmitter {
     private currentItemProbeAmbiguousFailures;
     /** Item ID under observation — resets failure counters on item advance. */
     private currentItemProbeId;
+    /**
+     * Guards the fire-and-forget duration write-back in naturalItemEnd().
+     * Prevents two near-simultaneous client reports for the same item from
+     * issuing redundant concurrent DB writes (both would write the same value,
+     * but the double-write wastes a DB round-trip and produces noisy logs).
+     * Entries are removed in .finally() so subsequent item cycles are never
+     * permanently blocked.
+     */
+    private readonly durationWriteInFlight;
     constructor();
     /**
      * Boot the orchestrator. NEVER throws — any failure falls back to a safe

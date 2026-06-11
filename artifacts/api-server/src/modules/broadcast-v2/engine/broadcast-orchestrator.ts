@@ -1094,12 +1094,17 @@ class BroadcastOrchestrator extends EventEmitter {
       //
       //   3. Fresh start — No persisted state exists; start from now (item 0).
 
-      // Consume both one-shot fields so subsequent drift-poll reloads never
-      // accidentally re-apply the boot anchor and reset a live cycle position.
+      // Save both one-shot fields into locals before potentially consuming them.
+      // Only null them out when items are present so that an empty-queue reload
+      // (queue temporarily drained) doesn't consume the boot anchor.  Without
+      // this guard the anchor would be gone by the time items are re-added and
+      // the next reload could no longer restore the correct cycle position.
       const restoredAnchor = this.restoredCycleAnchor;
       const cpSavedAtMs = this.checkpointSavedAtMs;
-      this.restoredCycleAnchor = null;
-      this.checkpointSavedAtMs = null;
+      if (this.items.length > 0) {
+        this.restoredCycleAnchor = null;
+        this.checkpointSavedAtMs = null;
+      }
 
       if (restoredAnchor !== null && this.items.length > 0) {
         // PRIMARY: cycle epoch from runtime state — most accurate, zero arithmetic.

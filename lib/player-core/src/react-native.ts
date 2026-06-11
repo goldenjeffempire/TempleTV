@@ -297,22 +297,27 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     const itemId = s.lastServerSnapshot?.current?.id ?? null;
     if (!itemId || itemId === stallLastReportedId) return;
     stallLastReportedId = itemId;
-    void fetch(`${baseUrl}/report-stall`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ itemId }),
-      signal: AbortSignal.timeout(8_000),
-    }).catch(() => {
-      // Best-effort — reset guard after a short cooldown so the next
-      // SKIP_PENDING cycle can retry.  Resetting immediately on every
-      // failure (the previous behaviour) broke the "exactly once per item"
-      // guarantee: on poor-signal devices where rapid SKIP_PENDING cycles
-      // occur, each snapshot within the stall burst re-entered the guard
-      // and fired another POST, producing a thundering herd that exhausted
-      // the server's rate limiter and drained the device battery.
-      // The 5 s cooldown means at most one retry per 5 s per stalled item —
-      // enough for one more POST if the first truly failed, without flooding.
-      setTimeout(() => { stallLastReportedId = null; }, 5_000);
+    // Jitter: spread POST /report-stall calls 0–5 s across the client fleet
+    // so a mass-CDN-failure event that stalls thousands of devices simultaneously
+    // doesn't produce a thundering herd that exhausts the server rate-limiter.
+    void new Promise<void>((resolve) => setTimeout(resolve, Math.random() * 5_000)).then(() => {
+      return fetch(`${baseUrl}/report-stall`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemId }),
+        signal: AbortSignal.timeout(8_000),
+      }).catch(() => {
+        // Best-effort — reset guard after a short cooldown so the next
+        // SKIP_PENDING cycle can retry.  Resetting immediately on every
+        // failure (the previous behaviour) broke the "exactly once per item"
+        // guarantee: on poor-signal devices where rapid SKIP_PENDING cycles
+        // occur, each snapshot within the stall burst re-entered the guard
+        // and fired another POST, producing a thundering herd that exhausted
+        // the server's rate limiter and drained the device battery.
+        // The 5 s cooldown means at most one retry per 5 s per stalled item —
+        // enough for one more POST if the first truly failed, without flooding.
+        setTimeout(() => { stallLastReportedId = null; }, 5_000);
+      });
     });
   };
 
