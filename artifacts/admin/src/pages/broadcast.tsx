@@ -27,6 +27,7 @@ import {
 } from "@/lib/upload-queue";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useSSEEvent } from "@/contexts/sse-context";
+import { useSseGatedInterval } from "@/hooks/useSseGatedInterval";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -1523,6 +1524,14 @@ function TestBroadcastDialog({ open, onOpenChange, onAdded }: TestBroadcastDialo
 
 export default function BroadcastPage() {
   const qc = useQueryClient();
+
+  // ── SSE-gated poll intervals ───────────────────────────────────────────────
+  // Suppress HTTP polling while SSE is healthy; fall back when unavailable.
+  // A 15-second grace period on reconnect avoids a burst of requests on brief blips.
+  const sseGated15s = useSseGatedInterval(15_000);
+  const sseGated30s = useSseGatedInterval(30_000);
+  const sseGated60s = useSseGatedInterval(60_000);
+
   const [addOpen, setAddOpen] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
   const [videoSearch, setVideoSearch] = useState("");
@@ -1560,18 +1569,21 @@ export default function BroadcastPage() {
   } = useQuery({
     queryKey: ["broadcast-queue"],
     queryFn: () => api.get<{ items: BroadcastQueueItem[] }>("/admin/broadcast"),
-    // Boost to 5s when any item is actively transcoding so status badges
-    // stay current during the faststart/encoding pipeline.
+    // When actively transcoding: always poll at 5 s so encoding badges update
+    // in real time (this page's SSE handler does not invalidate broadcast-queue
+    // on transcoding-update, so HTTP polling is the only refresh path).
+    // When idle and SSE is connected: suppress polling (push-invalidation handles
+    // freshness). When SSE is unavailable: fall back to 15 s.
     refetchInterval: (query) => {
       const data = query.state.data;
-      if (!data) return 15_000;
-      const hasLiveTranscoding = data.items.some(
+      const hasLiveTranscoding = data?.items.some(
         (i) =>
           i.transcodingStatus === "encoding" ||
           i.transcodingStatus === "processing" ||
           i.transcodingStatus === "queued",
-      );
-      return hasLiveTranscoding ? 5_000 : 15_000;
+      ) ?? false;
+      if (hasLiveTranscoding) return 5_000;
+      return sseGated15s;
     },
     staleTime: 4_000,
   });
@@ -1580,7 +1592,7 @@ export default function BroadcastPage() {
   const { data: v2State } = useQuery({
     queryKey: ["broadcast-v2-state"],
     queryFn: () => api.get<V2StateResponse>("/broadcast-v2/state"),
-    refetchInterval: 15_000,
+    refetchInterval: sseGated15s,
   });
 
   // V2 health — orchestrator status panel (public endpoint, no auth needed)
@@ -1588,7 +1600,7 @@ export default function BroadcastPage() {
     queryKey: ["broadcast-v2-health"],
     queryFn: () =>
       api.get<V2HealthResponse>("/broadcast-v2/health").catch(() => null),
-    refetchInterval: 15_000,
+    refetchInterval: sseGated15s,
     staleTime: 12_000,
   });
 
@@ -1602,6 +1614,9 @@ export default function BroadcastPage() {
       api
         .get<V2SourceHealthResponse>("/broadcast-v2/source-health")
         .catch(() => null),
+    // Always poll at 5 s when sources are blocked (countdown badges must stay
+    // current). When idle and SSE is connected: no polling. When SSE is down:
+    // fall back to 30 s.
     refetchInterval: (query) => {
       const d = query.state.data;
       const hasBlocked = d
@@ -1609,7 +1624,8 @@ export default function BroadcastPage() {
             (h) => h.status === "bad" && h.badUntilMs && h.badUntilMs > Date.now(),
           )
         : false;
-      return hasBlocked ? 5_000 : 30_000;
+      if (hasBlocked) return 5_000;
+      return sseGated30s;
     },
   });
 
@@ -1618,7 +1634,7 @@ export default function BroadcastPage() {
     queryKey: ["broadcast-health"],
     queryFn: () =>
       api.get<HealthResponse>("/admin/broadcast/health").catch(() => null),
-    refetchInterval: 60_000,
+    refetchInterval: sseGated60s,
     enabled: (queue?.items.length ?? 0) > 0,
   });
 

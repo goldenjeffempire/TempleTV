@@ -66,6 +66,7 @@ import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { apiBase } from "@/lib/api-base";
 import { api, HttpError } from "@/lib/api";
 import { useSSE, useSSEEvent } from "@/contexts/sse-context";
+import { useSseGatedInterval } from "@/hooks/useSseGatedInterval";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
@@ -369,11 +370,14 @@ interface TranscodingPanelJob {
  */
 function TranscodingProgressPanel() {
   const qc = useQueryClient();
+  // SSE-gated: suppress polling while connected (transcoding-update SSE fires
+  // on every job state change); fall back to 15 s when SSE is unavailable.
+  const transcodingInterval = useSseGatedInterval(15_000);
 
   const { data } = useQuery({
     queryKey: ["broadcast-v2-transcoding-panel"],
     queryFn: () => api.get<{ jobs: TranscodingPanelJob[] }>("/admin/transcoding/queue"),
-    refetchInterval: 15_000,
+    refetchInterval: transcodingInterval,
     staleTime: 10_000,
     select: (d) => ({
       active: d.jobs.filter((j) => ["queued", "encoding", "processing"].includes(j.status)),
@@ -999,6 +1003,16 @@ function BroadcastV2PageInner() {
   const sse = useSSE();
   const qc = useQueryClient();
 
+  // ── SSE-gated poll intervals ───────────────────────────────────────────────
+  // Return `false` (no polling) while SSE is connected — push-invalidation via
+  // useSSEEvent handlers keeps data fresh in real time. Fall back to the
+  // specified cadence when the SSE channel is unavailable.
+  // A 15-second grace period suppresses polling on brief reconnects so a quick
+  // SSE blip never triggers a burst of HTTP requests.
+  const sseGated30s = useSseGatedInterval(30_000);
+  const sseGated60s = useSseGatedInterval(60_000);
+  const sseGated120s = useSseGatedInterval(120_000);
+
   // ── WS-connected → SSE instant reconnect ────────────────────────────────
   // When the V2 broadcast WebSocket reconnects it proves the API server is
   // up. If the admin SSE bus is still in reconnecting/degraded/offline state
@@ -1034,6 +1048,10 @@ function BroadcastV2PageInner() {
   const [consecutiveSkipsDismissed, setConsecutiveSkipsDismissed] = useState(false);
   // Launch Checklist modal.
   const [showChecklist, setShowChecklist] = useState(false);
+  // Live Preview panel collapse — defaults open so operators see the preview
+  // immediately on load. When collapsed, BroadcastPreviewV2 is unmounted,
+  // releasing its WebSocket connection and all HLS.js resources.
+  const [previewExpanded, setPreviewExpanded] = useState(true);
   // Confirmation dialog for the destructive "Force failover" operator action.
   const [showSkipConfirm, setShowSkipConfirm] = useState(false);
   const [showReloadConfirm, setShowReloadConfirm] = useState(false);
@@ -1091,7 +1109,7 @@ function BroadcastV2PageInner() {
     queryKey: ["broadcast-queue"],
     queryFn: () => api.get<{ items: BroadcastQueueRow[] }>("/admin/broadcast"),
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    refetchInterval: sseGated30s,
   });
 
   // Engine health — polls every 30 s. SSE events (broadcast-queue-updated,
@@ -1100,7 +1118,7 @@ function BroadcastV2PageInner() {
   const { data: engineHealth, isError: engineHealthError } = useQuery({
     queryKey: ["broadcast-v2-engine-health"],
     queryFn: () => api.get<EngineHealth>("/broadcast-v2/health"),
-    refetchInterval: 30_000,
+    refetchInterval: sseGated30s,
     staleTime: 25_000,
   });
 
@@ -1111,7 +1129,7 @@ function BroadcastV2PageInner() {
   const { data: diagnostics, refetch: refetchDiagnostics } = useQuery({
     queryKey: ["broadcast-v2-diagnostics"],
     queryFn: () => api.get<DiagnosticsReport>("/broadcast-v2/diagnostics"),
-    refetchInterval: 30_000,
+    refetchInterval: sseGated30s,
     staleTime: 25_000,
   });
 
@@ -1141,7 +1159,7 @@ function BroadcastV2PageInner() {
   const { data: remediationReport, refetch: refetchRemediation } = useQuery({
     queryKey: ["broadcast-v2-remediation-report"],
     queryFn: () => api.get<RemediationReportData>("/broadcast-v2/remediation-report"),
-    refetchInterval: 60_000,
+    refetchInterval: sseGated60s,
     staleTime: 30_000,
   });
 
@@ -1170,7 +1188,7 @@ function BroadcastV2PageInner() {
   const { data: webhookStatus, refetch: refetchWebhookStatus } = useQuery({
     queryKey: ["broadcast-v2-webhook-status"],
     queryFn: () => api.get<WebhookStatusData>("/broadcast-v2/webhook/status"),
-    refetchInterval: 120_000,
+    refetchInterval: sseGated120s,
     staleTime: 60_000,
   });
   const testWebhookMutation = useMutation({
@@ -1585,7 +1603,7 @@ function BroadcastV2PageInner() {
   const { data: queueSyncStatus } = useQuery({
     queryKey: ["broadcast-v2-queue-sync-status"],
     queryFn: () => api.get<QueueSyncStatus>("/broadcast-v2/queue-sync-status"),
-    refetchInterval: 60_000,
+    refetchInterval: sseGated60s,
     staleTime: 45_000,
   });
 
@@ -1702,6 +1720,10 @@ function BroadcastV2PageInner() {
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+    // A new video added to the library (or reset for re-upload) changes the
+    // count of videos missing from the broadcast queue — refresh the sync-status
+    // banner immediately so the "X videos not in queue" count stays accurate.
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
   });
 
   // Real-time stall counter — incremented the instant a stall report fires a
@@ -2809,17 +2831,31 @@ function BroadcastV2PageInner() {
       <div className="grid gap-6 md:grid-cols-[2fr_1fr]">
         <Card className="overflow-hidden">
           <CardHeader className="pb-2 pt-4">
-            <CardTitle className="text-sm flex items-center gap-2">
-              <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" aria-hidden="true" />
-              Live Preview
-            </CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" aria-hidden="true" />
+                Live Preview
+              </CardTitle>
+              <button
+                onClick={() => setPreviewExpanded((e) => !e)}
+                className="rounded p-1 hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                title={previewExpanded ? "Collapse preview (releases WebSocket + HLS resources)" : "Expand preview"}
+                aria-expanded={previewExpanded}
+              >
+                {previewExpanded
+                  ? <ChevronUp className="h-4 w-4" />
+                  : <ChevronDown className="h-4 w-4" />}
+              </button>
+            </div>
           </CardHeader>
-          <CardContent className="pb-4">
-            <BroadcastPreviewV2 className="w-full aspect-video" />
-            <p className="mt-2 text-[11px] text-muted-foreground">
-              Mirrors exactly what viewers see on TV, web, and mobile. Audio is muted by default — unmute with the volume button to monitor.
-            </p>
-          </CardContent>
+          {previewExpanded && (
+            <CardContent className="pb-4">
+              <BroadcastPreviewV2 className="w-full aspect-video" />
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                Mirrors exactly what viewers see on TV, web, and mobile. Audio is muted by default — unmute with the volume button to monitor.
+              </p>
+            </CardContent>
+          )}
         </Card>
 
         <Card>

@@ -139,6 +139,10 @@ const KNOWN_EVENTS = [
   // Viewer-slope monitor events — emitted when sustained viewer-count drops
   // are detected (degraded) and when counts recover (recovered).
   "stream-health-degraded", "stream-health-recovered",
+  // Chunked-upload assembly progress — emitted during the server-side
+  // multi-part assembly phase so the upload queue panel can show a
+  // "Assembling…" progress bar while the server reassembles chunks.
+  "upload-assembly-progress",
 ];
 
 function summarize(event: string, data: unknown): string | null {
