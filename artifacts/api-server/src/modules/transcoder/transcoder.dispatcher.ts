@@ -181,19 +181,21 @@ class TranscoderDispatcher {
         return; // root doesn't exist yet — nothing to clean
       }
       const cutoffMs = Date.now() - 3_600_000; // 1 hour
-      let removed = 0;
-      for (const entry of entries) {
-        const full = path.join(scratchRoot, entry);
-        try {
+      const results = await Promise.allSettled(
+        entries.map(async (entry) => {
+          const full = path.join(scratchRoot, entry);
           const s = await stat(full);
           if (s.isDirectory() && s.mtimeMs < cutoffMs) {
             await rm(full, { recursive: true, force: true });
-            removed++;
+            return 1;
           }
-        } catch {
-          // ignore — may have been cleaned by a parallel replica
-        }
-      }
+          return 0;
+        }),
+      );
+      const removed = results.reduce(
+        (sum, r) => sum + (r.status === "fulfilled" ? r.value : 0),
+        0,
+      );
       if (removed > 0) {
         logger.info({ removed, scratchRoot }, "transcoder: purged orphaned scratch directories");
       }

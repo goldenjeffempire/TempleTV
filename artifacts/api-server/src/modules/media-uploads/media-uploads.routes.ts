@@ -8,7 +8,9 @@ import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { uploadSessions, type UploadSession } from "./upload-sessions.js";
 import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
+import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
 import { generateQuickThumbnail, probeUploadedContainerValidity, probeUploadedDuration } from "../transcoder/transcoder.service.js";
+import { env } from "../../config/env.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
@@ -25,22 +27,18 @@ const dbSessions = schema.uploadSessionsTable;
  * is still the primary store; this is a durability write-through.
  */
 async function persistSessionToDb(session: UploadSession): Promise<void> {
-  try {
-    await db.insert(dbSessions).values({
-      sessionId: session.sessionId,
-      uploadId: session.uploadId,
-      objectKey: session.objectKey,
-      title: session.title,
-      contentType: session.contentType,
-      sizeBytes: session.sizeBytes,
-      totalChunks: session.totalParts,
-      chunkSize: session.partSize,
-      storageBackend: "db",
-      status: "uploading",
-    }).onConflictDoNothing();
-  } catch (err) {
-    logger.warn({ err, sessionId: session.sessionId }, "[upload-sessions] db persist failed (non-fatal)");
-  }
+  await db.insert(dbSessions).values({
+    sessionId: session.sessionId,
+    uploadId: session.uploadId,
+    objectKey: session.objectKey,
+    title: session.title,
+    contentType: session.contentType,
+    sizeBytes: session.sizeBytes,
+    totalChunks: session.totalParts,
+    chunkSize: session.partSize,
+    storageBackend: "db",
+    status: "uploading",
+  }).onConflictDoNothing();
 }
 
 /**
@@ -318,14 +316,22 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
       });
 
       // F02: persist to DB so session survives a server restart.
-      // Log on failure so operators know the session is in-memory only and
-      // would be lost on a restart before any chunk arrives.
-      persistSessionToDb(session).catch((err: unknown) => {
+      // Await and return 500 on failure so the client can retry rather than
+      // silently proceeding with a session that would be lost on restart.
+      try {
+        await persistSessionToDb(session);
+      } catch (err) {
         req.log.error(
           { err, sessionId: session.sessionId },
-          "[s3-multipart-init] failed to persist session to DB — session in-memory only until recovered",
+          "[s3-multipart-init] failed to persist session to DB — aborting init so client can retry",
         );
-      });
+        uploadSessions.remove(session.sessionId);
+        void storage().abortMultipartUpload({ key: objectKey, uploadId }).catch(() => {});
+        throw Object.assign(
+          new Error("Failed to register upload session — please retry."),
+          { statusCode: 500 },
+        );
+      }
 
       req.log.info(
         { sessionId: session.sessionId, uploadId, objectKey, totalParts, sizeBytes: body.sizeBytes },
@@ -575,6 +581,7 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
           videoId: row.id,
           videoPath: body.objectKey,
         });
+        if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
       } catch (err) {
         transcodingWarning =
           err instanceof Error ? err.message : "Transcoding job could not be queued — re-enqueue from the Operations tab.";

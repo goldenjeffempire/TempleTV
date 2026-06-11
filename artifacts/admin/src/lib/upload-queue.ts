@@ -218,13 +218,17 @@ async function pollFinalizeStatus(
   signal: AbortSignal,
   onProgress?: (percent: number) => void,
 ): Promise<string | null> {
-  // 2-second interval: snappy feedback when finalize-status transitions to
-  // "completed" without burning too many requests on long assemblies.
-  const POLL_INTERVAL_MS = 2_000;
+  // Exponential backoff: start at 2 s, double each poll during "assembling"
+  // (the O(n²) bytea-concat phase that can take minutes for large files),
+  // cap at 10 s. Reset to 2 s for non-assembling states ("uploading",
+  // "completed") so transitions are detected snappily.
+  let pollIntervalMs = 2_000;
+  const POLL_MIN_MS = 2_000;
+  const POLL_MAX_MS = 10_000;
   while (!signal.aborted) {
     // Wait for the next poll tick, aborting early if the signal fires.
     await new Promise<void>((resolve) => {
-      const t = setTimeout(resolve, POLL_INTERVAL_MS);
+      const t = setTimeout(resolve, pollIntervalMs);
       signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
     });
     if (signal.aborted) return null;
@@ -248,7 +252,13 @@ async function pollFinalizeStatus(
       if (body.status === "completed" && body.videoId) return body.videoId;
       // Server released the lock (previous finalize failed) — let the caller retry.
       if (body.status === "uploading") return null;
-      // "assembling" — keep polling.
+      // "assembling" — back off exponentially (large files take minutes).
+      // Any other status resets to the base interval for snappy detection.
+      if (body.status === "assembling") {
+        pollIntervalMs = Math.min(pollIntervalMs * 2, POLL_MAX_MS);
+      } else {
+        pollIntervalMs = POLL_MIN_MS;
+      }
     } catch {
       // Network hiccup — keep polling until deadline.
     }
