@@ -1,4 +1,3 @@
-import { useV2Broadcast } from "@workspace/player-core/react";
 import { BroadcastPreviewV2 } from "@/playback/BroadcastPreviewV2";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorBoundary } from "@/components/shared/error-boundary";
@@ -372,7 +371,7 @@ function TranscodingProgressPanel() {
   const qc = useQueryClient();
   // SSE-gated: suppress polling while connected (transcoding-update SSE fires
   // on every job state change); fall back to 15 s when SSE is unavailable.
-  const transcodingInterval = useSseGatedInterval(15_000);
+  const transcodingInterval = useSseGatedInterval(false, 15_000);
 
   const { data } = useQuery({
     queryKey: ["broadcast-v2-transcoding-panel"],
@@ -993,40 +992,58 @@ function ViewerSyncCard({ health }: { health: EngineHealth | undefined }) {
  *  - listens for `broadcast-queue-updated` to auto-reload the v2 orchestrator
  *    so the queue snapshot always reflects DB mutations within ~1 frame.
  */
+
+// V2 broadcast snapshot — local type alias matching the server wire type from
+// broadcast-v2/domain/types.ts (V2Snapshot). Defined here so BroadcastV2PageInner
+// reads live state via REST (/broadcast-v2/state) without importing
+// @workspace/player-core/react, which carries a persistent WebSocket transport
+// that should only mount inside BroadcastPreviewV2 when the preview is expanded.
+interface V2Snapshot {
+  channelId: string;
+  sequence: number;
+  serverTimeMs: number;
+  mode: "queue" | "override" | "failover" | "offline_hold";
+  current: {
+    id: string; title: string; thumbnailUrl: string | null;
+    durationSecs: number;
+    source: { kind: string; url: string; expiresAtMs: number | null };
+    startsAtMs: number; endsAtMs: number;
+  } | null;
+  next: {
+    id: string; title: string; thumbnailUrl: string | null;
+    durationSecs: number;
+    source: { kind: string; url: string; expiresAtMs: number | null };
+    startsAtMs: number; endsAtMs: number;
+  } | null;
+  nextNext: {
+    id: string; title: string; thumbnailUrl: string | null;
+    durationSecs: number;
+    source: { kind: string; url: string; expiresAtMs: number | null };
+    startsAtMs: number; endsAtMs: number;
+  } | null;
+  override: {
+    id: string; title: string; kind: string; url: string;
+    startedAtMs: number; endsAtMs: number | null; resumeQueueOnEnd: boolean;
+  } | null;
+  failover: { active: boolean; reason: string | null };
+  offAirReason: "empty" | "all_blocked" | null;
+}
+
 function BroadcastV2PageInner() {
   const apiOrigin = apiBase().replace(/\/$/, "");
-  const baseUrl = `${apiOrigin}/broadcast-v2`;
-  // enableStallReport: false — operator console must never affect the broadcast
-  // stream. Admin preview failures are environment-local and must not block
-  // sources for real viewers (TV, mobile, web).
-  const { snapshot, connected: transportConnected } = useV2Broadcast({ baseUrl, enableStallReport: false });
   const sse = useSSE();
   const qc = useQueryClient();
 
   // ── SSE-gated poll intervals ───────────────────────────────────────────────
   // Return `false` (no polling) while SSE is connected — push-invalidation via
-  // useSSEEvent handlers keeps data fresh in real time. Fall back to the
-  // specified cadence when the SSE channel is unavailable.
+  // useSSEEvent handlers keeps data fresh in real time. Fall back to these
+  // safety-net cadences when SSE is unavailable.
   // A 15-second grace period suppresses polling on brief reconnects so a quick
   // SSE blip never triggers a burst of HTTP requests.
-  const sseGated30s = useSseGatedInterval(30_000);
-  const sseGated60s = useSseGatedInterval(60_000);
-  const sseGated120s = useSseGatedInterval(120_000);
+  const sseGated60s = useSseGatedInterval(false, 60_000);
+  const sseGated120s = useSseGatedInterval(false, 120_000);
+  const sseGated180s = useSseGatedInterval(false, 180_000);
 
-  // ── WS-connected → SSE instant reconnect ────────────────────────────────
-  // When the V2 broadcast WebSocket reconnects it proves the API server is
-  // up. If the admin SSE bus is still in reconnecting/degraded/offline state
-  // at that moment, skip the health-check polling cycle and try immediately.
-  // This collapses the "Admin live bus reconnecting" banner window from
-  // "up to 8s (health-check interval)" to "one token-fetch round-trip".
-  const prevTransportConnected = useRef(false);
-  useEffect(() => {
-    const rising = transportConnected && !prevTransportConnected.current;
-    prevTransportConnected.current = transportConnected;
-    if (rising && sse.state !== "connected") {
-      sse.forceReconnect();
-    }
-  }, [transportConnected, sse]);
   const [busy, setBusy] = useState<string | null>(null);
   // Dismissible stuck-engine banner. Reset whenever the stuck condition
   // resolves (sequence > 0) so the banner reappears if the engine gets
@@ -1048,10 +1065,11 @@ function BroadcastV2PageInner() {
   const [consecutiveSkipsDismissed, setConsecutiveSkipsDismissed] = useState(false);
   // Launch Checklist modal.
   const [showChecklist, setShowChecklist] = useState(false);
-  // Live Preview panel collapse — defaults open so operators see the preview
-  // immediately on load. When collapsed, BroadcastPreviewV2 is unmounted,
-  // releasing its WebSocket connection and all HLS.js resources.
-  const [previewExpanded, setPreviewExpanded] = useState(true);
+  // Live Preview panel — collapsed by default so no WS/HLS resources are
+  // allocated until the operator explicitly opens the preview. When expanded,
+  // BroadcastPreviewV2 mounts its own transport (WS + HLS.js) for the preview.
+  // Collapsing unmounts it immediately, releasing all those resources.
+  const [previewExpanded, setPreviewExpanded] = useState(false);
   // Confirmation dialog for the destructive "Force failover" operator action.
   const [showSkipConfirm, setShowSkipConfirm] = useState(false);
   const [showReloadConfirm, setShowReloadConfirm] = useState(false);
@@ -1071,6 +1089,7 @@ function BroadcastV2PageInner() {
       // 15 s).  The SSE handler already provides the push-based invalidation,
       // but firing it here eagerly prevents a stale "stuck" UI after skip /
       // reload / failover / clear-failover commands.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-live-state"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
@@ -1109,7 +1128,7 @@ function BroadcastV2PageInner() {
     queryKey: ["broadcast-queue"],
     queryFn: () => api.get<{ items: BroadcastQueueRow[] }>("/admin/broadcast"),
     staleTime: 15_000,
-    refetchInterval: sseGated30s,
+    refetchInterval: sseGated60s,
   });
 
   // Engine health — polls every 30 s. SSE events (broadcast-queue-updated,
@@ -1118,7 +1137,7 @@ function BroadcastV2PageInner() {
   const { data: engineHealth, isError: engineHealthError } = useQuery({
     queryKey: ["broadcast-v2-engine-health"],
     queryFn: () => api.get<EngineHealth>("/broadcast-v2/health"),
-    refetchInterval: sseGated30s,
+    refetchInterval: sseGated60s,
     staleTime: 25_000,
   });
 
@@ -1129,7 +1148,7 @@ function BroadcastV2PageInner() {
   const { data: diagnostics, refetch: refetchDiagnostics } = useQuery({
     queryKey: ["broadcast-v2-diagnostics"],
     queryFn: () => api.get<DiagnosticsReport>("/broadcast-v2/diagnostics"),
-    refetchInterval: sseGated30s,
+    refetchInterval: sseGated120s,
     staleTime: 25_000,
   });
 
@@ -1159,7 +1178,7 @@ function BroadcastV2PageInner() {
   const { data: remediationReport, refetch: refetchRemediation } = useQuery({
     queryKey: ["broadcast-v2-remediation-report"],
     queryFn: () => api.get<RemediationReportData>("/broadcast-v2/remediation-report"),
-    refetchInterval: sseGated60s,
+    refetchInterval: sseGated120s,
     staleTime: 30_000,
   });
 
@@ -1188,9 +1207,21 @@ function BroadcastV2PageInner() {
   const { data: webhookStatus, refetch: refetchWebhookStatus } = useQuery({
     queryKey: ["broadcast-v2-webhook-status"],
     queryFn: () => api.get<WebhookStatusData>("/broadcast-v2/webhook/status"),
-    refetchInterval: sseGated120s,
+    refetchInterval: sseGated180s,
     staleTime: 60_000,
   });
+
+  // V2 live broadcast state — REST source of truth for the current/next/mode
+  // snapshot at page scope. BroadcastPreviewV2 keeps its own WS transport only
+  // while the preview panel is expanded. SSE push-invalidation (broadcast-queue-
+  // updated) keeps this fresh in real time; the 60 s fallback is a safety net.
+  const { data: v2LiveState } = useQuery({
+    queryKey: ["broadcast-v2-live-state"],
+    queryFn: () => api.get<{ state: V2Snapshot }>("/broadcast-v2/state"),
+    refetchInterval: sseGated60s,
+    staleTime: 50_000,
+  });
+
   const testWebhookMutation = useMutation({
     mutationFn: () => api.post<WebhookTestResult>("/broadcast-v2/webhook/test", {}),
     onSuccess: (data) => {
@@ -1614,6 +1645,7 @@ function BroadcastV2PageInner() {
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useSSEEvent("broadcast-queue-updated", () => {
     void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-live-state"] });
     // Refresh engine health immediately so the operator sees
     // an accurate state right after any queue mutation (add/remove/reorder).
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
@@ -1895,7 +1927,7 @@ function BroadcastV2PageInner() {
     // No toast when issues clear — diagnostics refresh is sufficient.
   });
 
-  const server = snapshot.lastServerSnapshot;
+  const server = v2LiveState?.state ?? null;
   const queueItems = queueData?.items ?? [];
   const activeQueueCount = queueItems.filter((i) => i.isActive).length;
 
@@ -2123,12 +2155,10 @@ function BroadcastV2PageInner() {
 
 
   // Combined "live link health" indicator.
-  const fullyConnected = transportConnected && sse.state === "connected";
-  const partiallyConnected = transportConnected || sse.state === "connected";
+  const fullyConnected = sse.state === "connected";
+  const partiallyConnected = sse.state !== "offline";
   const linkLabel = fullyConnected
     ? "Live"
-    : partiallyConnected
-    ? "Partial"
     : sse.state === "reconnecting" || sse.state === "connecting"
     ? "Reconnecting"
     : sse.state === "degraded"
@@ -2234,7 +2264,7 @@ function BroadcastV2PageInner() {
       label: "Transport connected",
       pass: fullyConnected,
       warn: partiallyConnected && !fullyConnected,
-      detail: linkLabel === "Live" ? "WS + SSE both connected" : linkLabel,
+      detail: linkLabel === "Live" ? "SSE connected" : linkLabel,
     },
     {
       label: "HLS transcoding ready",
@@ -2437,16 +2467,15 @@ function BroadcastV2PageInner() {
           {linkLabel}
         </Badge>
         <Badge
-          variant={snapshot.state === "FATAL" ? "destructive" : "outline"}
-          className={snapshot.state === "FATAL" ? "gap-1" : undefined}
-          title={snapshot.state === "FATAL" ? "The broadcast player has entered a terminal failure state. It will auto-retry after a backoff period. If items have missing HLS, use 'Prepare HLS' to queue transcoding." : undefined}
+          variant={engineHealth?.ok === false ? "destructive" : "outline"}
+          className={engineHealth?.ok === false ? "gap-1" : undefined}
+          title={engineHealth?.ok === false ? "The broadcast engine is unhealthy. Check Engine Diagnostics and use Prepare HLS if items have no playable source." : undefined}
         >
-          {snapshot.state === "FATAL" && <AlertTriangle className="h-3 w-3" />}
-          FSM: {snapshot.state}
+          {engineHealth?.ok === false && <AlertTriangle className="h-3 w-3" />}
+          Mode: {server?.mode ?? engineHealth?.mode ?? "—"}
         </Badge>
         {server && (
           <>
-            <Badge variant="secondary">Mode: {server.mode}</Badge>
             <Badge variant="outline">Seq: {server.sequence}</Badge>
             <Badge variant="outline">{activeQueueCount} active</Badge>
             {server.failover.active && (
@@ -2543,18 +2572,16 @@ function BroadcastV2PageInner() {
           className="flex items-center gap-2 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/30 dark:text-amber-200"
         >
           <RotateCw className="h-4 w-4 animate-spin" />
-          {transportConnected
-            ? "Admin live bus reconnecting — queue updates may be delayed."
-            : sse.state === "connected"
-            ? "Broadcast preview reconnecting — playback continues from last known state."
-            : "Reconnecting to live services…"}
+          {sse.state === "reconnecting" || sse.state === "connecting"
+            ? "Reconnecting to live services — queue updates may be delayed."
+            : "Connection degraded — queue updates may be delayed."}
         </div>
       )}
 
       {/* FATAL + missing HLS correlation alert — explains the root cause when
           the player FSM has entered FATAL state because items in the queue
           have no playable source. Guides the operator to Prepare HLS. */}
-      {snapshot.state === "FATAL" && pendingHlsCount > 0 && (
+      {engineHealth?.ok === false && pendingHlsCount > 0 && (
         <div
           role="alert"
           className="flex items-start gap-3 rounded-md border border-red-300/60 bg-red-50 px-4 py-3 text-sm text-red-900 dark:border-red-700/60 dark:bg-red-950/30 dark:text-red-200"

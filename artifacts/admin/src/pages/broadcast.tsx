@@ -1528,9 +1528,9 @@ export default function BroadcastPage() {
   // ── SSE-gated poll intervals ───────────────────────────────────────────────
   // Suppress HTTP polling while SSE is healthy; fall back when unavailable.
   // A 15-second grace period on reconnect avoids a burst of requests on brief blips.
-  const sseGated15s = useSseGatedInterval(15_000);
-  const sseGated30s = useSseGatedInterval(30_000);
-  const sseGated60s = useSseGatedInterval(60_000);
+  const sseGated15s = useSseGatedInterval(false, 15_000);
+  const sseGated30s = useSseGatedInterval(false, 30_000);
+  const sseGated60s = useSseGatedInterval(false, 60_000);
 
   const [addOpen, setAddOpen] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
@@ -1593,6 +1593,7 @@ export default function BroadcastPage() {
     queryKey: ["broadcast-v2-state"],
     queryFn: () => api.get<V2StateResponse>("/broadcast-v2/state"),
     refetchInterval: sseGated15s,
+    staleTime: 12_000,
   });
 
   // V2 health — orchestrator status panel (public endpoint, no auth needed)
@@ -1627,6 +1628,7 @@ export default function BroadcastPage() {
       if (hasBlocked) return 5_000;
       return sseGated30s;
     },
+    staleTime: 4_000,
   });
 
   // v1 health for broken-source badges (structural check, not runtime cache)
@@ -1635,6 +1637,7 @@ export default function BroadcastPage() {
     queryFn: () =>
       api.get<HealthResponse>("/admin/broadcast/health").catch(() => null),
     refetchInterval: sseGated60s,
+    staleTime: 55_000,
     enabled: (queue?.items.length ?? 0) > 0,
   });
 
@@ -1648,6 +1651,7 @@ export default function BroadcastPage() {
         videos: { id: string; title: string; duration?: number; thumbnailUrl?: string }[];
       }>(`/admin/videos?${p}`);
     },
+    staleTime: 30_000,
     enabled: addOpen,
   });
 
