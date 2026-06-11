@@ -1,6 +1,6 @@
 import { pgTable, text, timestamp, integer, boolean, index, check, uniqueIndex } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { videosTable } from "./videos.js";
+import { videosTable } from "./videos";
 
 export const broadcastQueueTable = pgTable("broadcast_queue", {
   id: text("id").primaryKey(),

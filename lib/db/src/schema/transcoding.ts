@@ -1,5 +1,5 @@
 import { pgTable, text, timestamp, integer, index } from "drizzle-orm/pg-core";
-import { videosTable } from "./videos.js";
+import { videosTable } from "./videos";
 
 export const transcodingJobsTable = pgTable("transcoding_jobs", {
   id: text("id").primaryKey(),
