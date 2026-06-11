@@ -41,30 +41,44 @@ interface IssuedTokens {
 }
 
 // Prune expired or revoked refresh tokens older than PRUNE_AFTER_DAYS days.
-// Runs opportunistically on every token issue — a lightweight background
-// DELETE that prevents the refresh_tokens table from growing without bound.
-// Non-fatal: any DB error is logged and swallowed.
+//
+// Two variants:
+//   - pruneAllExpiredRefreshTokens()  → global sweep across ALL users;
+//     intended for the background worker that runs every 5 minutes.
+//     Exported so main.ts can register it with workerSupervisor.
+//   - (internal) per-user path removed from the login hot path.
+//     Centralising pruning in a single periodic worker avoids a DB write
+//     on every login / token-refresh, keeps the hot path lean, and ensures
+//     the table is cleaned even for users who haven't logged in recently.
 const PRUNE_AFTER_DAYS = 30;
-async function pruneExpiredRefreshTokens(userId: string): Promise<void> {
-  try {
-    const cutoff = new Date(Date.now() - PRUNE_AFTER_DAYS * 24 * 60 * 60 * 1000);
-    await db
-      .delete(refreshTokensTable)
-      .where(
+
+/**
+ * Delete all refresh token rows (across ALL users) that are either:
+ *   - past their expiresAt, or
+ *   - revoked and whose revokedAt is older than PRUNE_AFTER_DAYS days.
+ *
+ * Returns the number of rows deleted (for telemetry). Non-fatal — any DB
+ * error is logged and re-thrown so the worker supervisor can track failures.
+ */
+export async function pruneAllExpiredRefreshTokens(): Promise<number> {
+  const cutoff = new Date(Date.now() - PRUNE_AFTER_DAYS * 24 * 60 * 60 * 1000);
+  const deleted = await db
+    .delete(refreshTokensTable)
+    .where(
+      or(
+        lt(refreshTokensTable.expiresAt, cutoff),
         and(
-          eq(refreshTokensTable.userId, userId),
-          or(
-            lt(refreshTokensTable.expiresAt, cutoff),
-            and(
-              isNotNull(refreshTokensTable.revokedAt),
-              lt(refreshTokensTable.revokedAt, cutoff),
-            ),
-          ),
+          isNotNull(refreshTokensTable.revokedAt),
+          lt(refreshTokensTable.revokedAt, cutoff),
         ),
-      );
-  } catch (err) {
-    logger.warn({ err, userId }, "[auth] pruneExpiredRefreshTokens failed (non-fatal)");
+      ),
+    )
+    .returning({ id: refreshTokensTable.id });
+  const count = deleted.length;
+  if (count > 0) {
+    logger.info({ pruned: count }, "[auth] pruneAllExpiredRefreshTokens: rows deleted");
   }
+  return count;
 }
 
 async function issueTokens(
@@ -85,9 +99,6 @@ async function issueTokens(
     ip: ctx?.ip ?? null,
     userAgent: ctx?.userAgent ?? null,
   });
-
-  // Fire-and-forget: prune stale rows for this user to keep the table lean.
-  void pruneExpiredRefreshTokens(user.id);
 
   return {
     tokens: {
@@ -284,8 +295,6 @@ export const authService = {
         userAgent: ctx?.userAgent ?? null,
       });
     });
-
-    void pruneExpiredRefreshTokens(user.id);
 
     return {
       accessToken: newAccessToken,

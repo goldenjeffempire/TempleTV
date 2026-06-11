@@ -64,11 +64,22 @@ if (usingPooler) {
   );
 }
 
+logger.info(
+  {
+    max: env.DB_POOL_MAX,
+    idleTimeoutMs: env.DB_POOL_IDLE_TIMEOUT_MS,
+    connectTimeoutMs: env.DB_POOL_CONNECT_TIMEOUT_MS,
+    statementTimeoutMs: env.DB_STATEMENT_TIMEOUT_MS,
+    usingPooler,
+  },
+  "db: pool configuration",
+);
+
 const pool = new Pool({
   connectionString: env.DATABASE_URL,
   max: env.DB_POOL_MAX,
-  idleTimeoutMillis: 30_000,
-  connectionTimeoutMillis: 10_000,
+  idleTimeoutMillis: env.DB_POOL_IDLE_TIMEOUT_MS,
+  connectionTimeoutMillis: env.DB_POOL_CONNECT_TIMEOUT_MS,
   application_name: "temple-tv-api",
   ...(stmtTimeoutOption ? { options: stmtTimeoutOption } : {}),
 });
@@ -725,6 +736,35 @@ export async function ensureRuntimeIndexes(): Promise<void> {
     await run("idx_broadcast_queue_all_sort", `
       CREATE INDEX IF NOT EXISTS idx_broadcast_queue_all_sort
         ON broadcast_queue (sort_order ASC, added_at ASC)
+    `);
+
+    // ── User activity hot-path composite indexes ───────────────────────────
+    // user_watch_history: most calls filter by user_id then sort/limit by
+    // watched_at DESC ("recent history"). Without this composite index each
+    // per-user query is a partial index scan + sort over all of a user's rows.
+    await run("idx_user_watch_history_user_watched", `
+      CREATE INDEX IF NOT EXISTS idx_user_watch_history_user_watched
+        ON user_watch_history (user_id, watched_at DESC)
+    `);
+    // device_watch_history: same pattern — device_id + watched_at DESC for
+    // the "continue watching" feed on TV/mobile surfaces.
+    await run("idx_device_watch_history_device_watched", `
+      CREATE INDEX IF NOT EXISTS idx_device_watch_history_device_watched
+        ON device_watch_history (device_id, watched_at DESC)
+    `);
+    // user_favorites: user_id + created_at DESC for "my favourites" feed.
+    // The unique index on (user_id, video_id) covers equality lookups; this
+    // composite covers the feed query (WHERE user_id = ? ORDER BY created_at).
+    await run("idx_user_favorites_user_created", `
+      CREATE INDEX IF NOT EXISTS idx_user_favorites_user_created
+        ON user_favorites (user_id, created_at DESC)
+    `);
+    // push_tokens: a covering (platform, token) index supports the delivery
+    // worker's "WHERE platform = ? AND token NOT IN (revoked)" path that
+    // selects all active tokens for a given platform in one index scan.
+    await run("idx_push_tokens_platform_token", `
+      CREATE INDEX IF NOT EXISTS idx_push_tokens_platform_token
+        ON push_tokens (platform, token)
     `);
 
     // ── Performance hot-path indexes (post-audit additions) ────────────────

@@ -3638,4 +3638,134 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     },
   );
 
+  // ── GET /admin/diagnostics/slow-queries ───────────────────────────────────
+  // Returns the slowest SQL queries captured by pg_stat_statements (if the
+  // extension is installed), falling back to the in-process slow-request ring
+  // buffer when the extension is unavailable.
+  //
+  // pg_stat_statements is read-only; calling RESET is intentionally not exposed
+  // here (operators can run `SELECT pg_stat_statements_reset()` directly if
+  // needed). The ring buffer snapshot comes from the existing slow-request-
+  // capture infrastructure already used by the diagnostics panel.
+  r.get(
+    "/diagnostics/slow-queries",
+    {
+      preHandler: requireAuth("admin"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Slowest SQL queries from pg_stat_statements + in-process request ring buffer",
+        querystring: z.object({
+          limit: z.coerce.number().int().min(1).max(100).default(20),
+          minMs: z.coerce.number().int().nonnegative().default(500),
+        }),
+        response: {
+          200: z.object({
+            pgStatStatements: z.object({
+              available: z.boolean(),
+              queries: z.array(z.object({
+                query: z.string(),
+                calls: z.number(),
+                totalTimeMs: z.number(),
+                meanTimeMs: z.number(),
+                maxTimeMs: z.number(),
+                stddevTimeMs: z.number(),
+                rows: z.number(),
+                sharedBlksHit: z.number(),
+                sharedBlksRead: z.number(),
+              })),
+            }),
+            slowRequests: z.object({
+              available: z.boolean(),
+              requests: z.array(z.object({
+                method: z.string(),
+                url: z.string(),
+                statusCode: z.number(),
+                durationMs: z.number(),
+                capturedAt: z.number(),
+              })),
+            }),
+            checkedAt: z.string(),
+          }),
+          429: z.object({ error: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => {
+      const { limit, minMs } = req.query;
+
+      // ── pg_stat_statements ────────────────────────────────────────────────
+      let pgStatAvailable = false;
+      const pgStatQueries: Array<{
+        query: string; calls: number; totalTimeMs: number; meanTimeMs: number;
+        maxTimeMs: number; stddevTimeMs: number; rows: number;
+        sharedBlksHit: number; sharedBlksRead: number;
+      }> = [];
+
+      try {
+        // Check if extension is installed before querying — avoids a 42P01 error
+        // on DBs that don't have pg_stat_statements enabled.
+        const extCheck = await db.execute(
+          sql`SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements' LIMIT 1`,
+        );
+        pgStatAvailable = (extCheck.rows?.length ?? 0) > 0;
+
+        if (pgStatAvailable) {
+          const rows = await db.execute(sql`
+            SELECT
+              query,
+              calls,
+              total_exec_time       AS total_time_ms,
+              mean_exec_time        AS mean_time_ms,
+              max_exec_time         AS max_time_ms,
+              stddev_exec_time      AS stddev_time_ms,
+              rows,
+              shared_blks_hit,
+              shared_blks_read
+            FROM pg_stat_statements
+            WHERE mean_exec_time >= ${minMs}
+            ORDER BY mean_exec_time DESC
+            LIMIT ${limit}
+          `);
+          for (const r of rows.rows ?? []) {
+            pgStatQueries.push({
+              query: String(r["query"] ?? ""),
+              calls: Number(r["calls"] ?? 0),
+              totalTimeMs: Math.round(Number(r["total_time_ms"] ?? 0) * 100) / 100,
+              meanTimeMs: Math.round(Number(r["mean_time_ms"] ?? 0) * 100) / 100,
+              maxTimeMs: Math.round(Number(r["max_time_ms"] ?? 0) * 100) / 100,
+              stddevTimeMs: Math.round(Number(r["stddev_time_ms"] ?? 0) * 100) / 100,
+              rows: Number(r["rows"] ?? 0),
+              sharedBlksHit: Number(r["shared_blks_hit"] ?? 0),
+              sharedBlksRead: Number(r["shared_blks_read"] ?? 0),
+            });
+          }
+        }
+      } catch (err) {
+        req.log.warn({ err }, "[diagnostics/slow-queries] pg_stat_statements query failed (non-fatal)");
+      }
+
+      // ── In-process slow-request ring buffer ───────────────────────────────
+      const ringBuffer = getSlowRequestsSnapshot();
+      const slowRequests = ringBuffer
+        .filter((r) => r.durationMs >= minMs)
+        .sort((a, b) => b.durationMs - a.durationMs)
+        .slice(0, limit)
+        .map((r) => ({
+          method: r.method,
+          url: r.path,
+          statusCode: r.statusCode,
+          durationMs: r.durationMs,
+          capturedAt: new Date(r.at).getTime(),
+        }));
+
+      return {
+        pgStatStatements: { available: pgStatAvailable, queries: pgStatQueries },
+        slowRequests: { available: ringBuffer.length > 0, requests: slowRequests },
+        checkedAt: new Date().toISOString(),
+      };
+    },
+  );
+
 }

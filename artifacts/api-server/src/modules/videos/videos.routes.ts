@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { and, asc, count, desc, eq, sql, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, lt, or, sql, type SQL } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { db, schema } from "../../infrastructure/db.js";
 import { cache } from "../../infrastructure/cache.js";
@@ -114,6 +114,11 @@ const ListQuerySchema = z.object({
   // backward compatibility but "local" will always yield zero results since
   // locally-uploaded files are reserved for the 24/7 broadcast feed).
   source: z.enum(["youtube", "local"]).optional(),
+  // Opaque keyset cursor for efficient deep pagination (sort=newest / oldest
+  // only). Returned as `nextCursor` in list responses. When provided, bypasses
+  // OFFSET scanning — the DB can index-seek directly to the next page boundary.
+  // Fall back to offset pagination when cursor is absent or sort ≠ newest/oldest.
+  cursor: z.string().max(200).optional(),
 });
 
 const ListResponseSchema = z.object({
@@ -122,6 +127,11 @@ const ListResponseSchema = z.object({
   totalPages: z.number().int(),
   page: z.number().int(),
   limit: z.number().int(),
+  // Opaque keyset cursor pointing to the item after the last result.
+  // null when there are no more pages. Pass as `cursor=` on the next request
+  // (with the same sort/filter params) to continue from this position without
+  // an OFFSET scan. Ignored by clients that use page-based pagination.
+  nextCursor: z.string().nullable(),
 });
 
 type CatalogResponse = z.infer<typeof ListResponseSchema>;
@@ -143,7 +153,8 @@ function catalogCacheKey(params: {
   page: number;
   limit: number;
 }): string {
-  return `videos:catalog2:g${catalogGeneration}:${params.sort}:${params.page}:${params.limit}`;
+  // catalog3: bumped from catalog2 to evict pre-nextCursor cached entries.
+  return `videos:catalog3:g${catalogGeneration}:${params.sort}:${params.page}:${params.limit}`;
 }
 
 /**
@@ -159,9 +170,9 @@ export async function invalidateVideosCatalogCache(): Promise<void> {
   // Proactively evict the most-hit cache variant from the previous generation.
   // New requests compute keys using the incremented generation and always miss,
   // so correctness is guaranteed even if this del fails.
-  // NOTE: key prefix must be "catalog2" to match catalogCacheKey() output.
+  // NOTE: key prefix must be "catalog3" to match catalogCacheKey() output.
   const c = cache();
-  await c.del(`videos:catalog2:g${oldGen}:newest:1:50`).catch(() => {});
+  await c.del(`videos:catalog3:g${oldGen}:newest:1:50`).catch(() => {});
 }
 
 type VideoDtoRow = Pick<typeof videos.$inferSelect,
@@ -191,6 +202,33 @@ function toDto(v: VideoDtoRow) {
     hlsMasterUrl: v.hlsMasterUrl,
     youtubeLiveStatus: liveStatus,
   };
+}
+
+// ── Keyset cursor helpers ─────────────────────────────────────────────────────
+// Cursors are opaque base64url-encoded JSON so clients never depend on their
+// structure. The payload encodes the last row's `imported_at` timestamp and
+// `id` — both are stable, indexed, and never null, making them reliable
+// keyset anchors for the "newest" and "oldest" sort orders.
+// For other sort orders (views, title, published) we fall back to offset
+// pagination since those sort keys aren't suitable keyset anchors.
+interface CatalogCursor { ts: string; id: string }
+
+function encodeCursor(ts: Date | string, id: string): string {
+  const tsStr = ts instanceof Date ? ts.toISOString() : ts;
+  return Buffer.from(JSON.stringify({ ts: tsStr, id } satisfies CatalogCursor)).toString("base64url");
+}
+
+function decodeCursor(raw: string): CatalogCursor | null {
+  try {
+    const obj = JSON.parse(Buffer.from(raw, "base64url").toString()) as unknown;
+    if (typeof obj !== "object" || obj === null) return null;
+    const { ts, id } = obj as Record<string, unknown>;
+    if (typeof ts !== "string" || typeof id !== "string") return null;
+    if (isNaN(Date.parse(ts))) return null;
+    return { ts, id };
+  } catch {
+    return null;
+  }
 }
 
 // Safe cast for the text `published_at` column.  Production has rows whose
@@ -312,14 +350,63 @@ export async function videosRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { limit, page, search, category, sort, source } = req.query;
+      const { limit, page, search, category, sort, source, cursor: rawCursor } = req.query;
       const isFiltered = !!(search?.trim() || category?.trim() || source);
-      const offset = (page - 1) * limit;
-      const where = buildWhere(search, category, source);
-      const orderBy = buildOrderBy(sort);
 
-      // ── Server-side cache (unfiltered requests only) ──────────────────────
-      if (!isFiltered) {
+      // ── Cursor / offset decision ──────────────────────────────────────────
+      // Use keyset pagination when `cursor` is provided AND sort is amenable
+      // to it (newest or oldest use imported_at as anchor). For other sorts
+      // or absent cursors, fall back to classic offset pagination.
+      const parsedCursor = rawCursor ? decodeCursor(rawCursor) : null;
+      const useCursor = !!(parsedCursor && (sort === "newest" || sort === "oldest"));
+
+      const offset = useCursor ? 0 : (page - 1) * limit;
+
+      // Compose the base WHERE clause (filters) plus optional cursor clause.
+      const baseWhere = buildWhere(search, category, source);
+
+      // Cursor keyset filter: page beyond the anchor (imported_at, id) pair.
+      // For "newest" DESC: rows where (imported_at < anchor) OR
+      //                    (imported_at = anchor AND id < anchor_id)
+      // For "oldest" ASC:  rows where (imported_at > anchor) OR
+      //                    (imported_at = anchor AND id > anchor_id)
+      let cursorFilter: SQL | undefined;
+      if (useCursor && parsedCursor) {
+        const anchorTs = new Date(parsedCursor.ts);
+        if (sort === "oldest") {
+          cursorFilter = or(
+            sql`${videos.importedAt} > ${anchorTs}`,
+            and(
+              sql`${videos.importedAt} = ${anchorTs}`,
+              sql`${videos.id} > ${parsedCursor.id}`,
+            ),
+          );
+        } else {
+          // newest (DESC)
+          cursorFilter = or(
+            lt(videos.importedAt, anchorTs),
+            and(
+              sql`${videos.importedAt} = ${anchorTs}`,
+              sql`${videos.id} < ${parsedCursor.id}`,
+            ),
+          );
+        }
+      }
+
+      const where = baseWhere && cursorFilter
+        ? and(baseWhere, cursorFilter)
+        : (cursorFilter ?? baseWhere);
+
+      // For cursor mode, sort by (imported_at, id) — a stable fully-indexed
+      // keyset. For offset mode use the rich COALESCE expression.
+      const orderBy = useCursor
+        ? (sort === "oldest"
+            ? sql`${videos.importedAt} ASC, ${videos.id} ASC`
+            : sql`${videos.importedAt} DESC, ${videos.id} DESC`)
+        : buildOrderBy(sort);
+
+      // ── Server-side cache (unfiltered, offset-mode requests only) ─────────
+      if (!isFiltered && !useCursor) {
         const cacheKey = catalogCacheKey({ sort, page, limit });
         // Store payload + etag together so cache hits cost zero SHA-1 work.
         const cached = await cache().get<CachedCatalogEntry>(cacheKey).catch(() => null);
@@ -345,8 +432,14 @@ export async function videosRoutes(app: FastifyInstance) {
       let totalRow: Array<{ c: unknown }>;
       let rows: CatalogRows;
       try {
+        // Cursor mode skips the COUNT query (total unknown, deep-page efficiency
+        // is the whole point). Returns total=-1 / totalPages=-1 as sentinels;
+        // cursor-aware clients should use nextCursor instead of totalPages.
+        const countPromise = useCursor
+          ? Promise.resolve([{ c: -1 }] as Array<{ c: unknown }>)
+          : db.select({ c: count() }).from(videos).where(baseWhere);
         [totalRow, rows] = await Promise.all([
-          db.select({ c: count() }).from(videos).where(where),
+          countPromise,
           db
             .select(VIDEO_COLS)
             .from(videos)
@@ -357,8 +450,11 @@ export async function videosRoutes(app: FastifyInstance) {
         ]) as [typeof totalRow, CatalogRows];
       } catch (err) {
         if (!isUndefinedColumnError(err)) throw err;
+        const countPromise = useCursor
+          ? Promise.resolve([{ c: -1 }] as Array<{ c: unknown }>)
+          : db.select({ c: count() }).from(videos).where(baseWhere);
         [totalRow, rows] = await Promise.all([
-          db.select({ c: count() }).from(videos).where(where),
+          countPromise,
           db
             .select(SAFE_CATALOG_COLS)
             .from(videos)
@@ -370,14 +466,27 @@ export async function videosRoutes(app: FastifyInstance) {
       }
 
       const total = Number(totalRow[0]?.c ?? 0);
-      const totalPages = Math.max(1, Math.ceil(total / limit));
+      const totalPages = useCursor ? -1 : Math.max(1, Math.ceil(total / limit));
+
+      // Build next cursor from the last row's importedAt + id (keyset anchor).
+      // null when the result set is smaller than `limit` (last page reached).
+      let nextCursor: string | null = null;
+      if (useCursor && rows.length === limit) {
+        const lastRow = rows[rows.length - 1];
+        if (lastRow) {
+          const lastImportedAt = lastRow.importedAt as Date | string;
+          const lastId = lastRow.id as string;
+          nextCursor = encodeCursor(lastImportedAt, lastId);
+        }
+      }
 
       const result: CatalogResponse = {
         videos: rows.map(v => toDto(v as unknown as VideoDtoRow)),
         total,
         totalPages,
-        page,
+        page: useCursor ? 1 : page,
         limit,
+        nextCursor,
       };
 
       // ETag fingerprint — hash a compact, deterministic projection of the

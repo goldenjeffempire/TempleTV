@@ -14,6 +14,8 @@ import { scheduledNotificationDispatcher } from "./modules/scheduled-notificatio
 import { transcoderDispatcher } from "./modules/transcoder/transcoder.dispatcher.js";
 import { youtubeSyncDispatcher } from "./modules/youtube-sync/youtube-sync.dispatcher.js";
 import { cleanupWorker } from "./modules/transcoder/cleanup.service.js";
+import { pruneAllExpiredRefreshTokens } from "./modules/auth/auth.service.js";
+import { workerSupervisor } from "./modules/broadcast-v2/engine/worker-supervisor.js";
 import { verifyMailer } from "./infrastructure/mailer.js";
 import { broadcastScheduler } from "./modules/broadcast/broadcast-scheduler.js";
 import { startKeepAlive, stopKeepAlive } from "./modules/network/keep-alive.js";
@@ -201,6 +203,19 @@ async function startWorkers() {
   } else {
     logger.info("youtube-sync dispatcher disabled by YOUTUBE_SYNC_DISABLE");
   }
+  // Refresh-token pruner: sweeps ALL users' expired/revoked tokens from the
+  // refresh_tokens table every 5 minutes. Moved from the per-login hot path
+  // (where it fired a DB DELETE on every login/refresh call) to a dedicated
+  // background worker so the auth endpoints stay lean. The circuit-breaker
+  // wrapper means a DB blip won't permanently silence the pruner.
+  workerSupervisor.spawn({
+    name: "refresh-token-pruner",
+    intervalMs: 5 * 60_000,        // every 5 minutes
+    initialDelayMs: 2 * 60_000,    // 2-minute startup delay (let pool warm up first)
+    maxConsecutiveFailures: 5,
+    fn: () => pruneAllExpiredRefreshTokens().then(() => undefined),
+  });
+
   // Storage health monitor: periodically probes object storage (write/head/delete)
   // to detect failures before they silently affect uploads or HLS delivery.
   if (env.STORAGE_HEALTH_INTERVAL_MS > 0) {

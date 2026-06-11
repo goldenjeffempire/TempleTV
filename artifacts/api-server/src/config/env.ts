@@ -162,6 +162,18 @@ const Env = z.object({
   // the 512 MB Replit container budget.
   DB_POOL_MAX: z.coerce.number().int().positive().default(25),
 
+  // How long (ms) a pool connection may sit idle before it is evicted.
+  // Default 30 s keeps Replit's managed PostgreSQL happy — connections that
+  // have been idle longer are closed cleanly rather than being hard-killed by
+  // the server's own idle-connection reaper (which would produce ECONNRESET).
+  DB_POOL_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+
+  // How long (ms) the pool waits when trying to acquire a new connection from
+  // the PostgreSQL server before giving up with a connection-timeout error.
+  // 10 s is generous for a co-located Replit DB; lower to 5 s on low-latency
+  // links, raise to 15–20 s if the DB host lives in a remote region.
+  DB_POOL_CONNECT_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+
   // Maximum wall-clock time (ms) a single SQL statement may run before
   // PostgreSQL cancels it. Protects the pool from runaway full-table-scans,
   // unindexed joins, and stalled transactions that would otherwise hold a
