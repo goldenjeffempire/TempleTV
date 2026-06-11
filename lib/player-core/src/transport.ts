@@ -545,6 +545,13 @@ export class V2Transport {
       // wildly wrong seek targets. Re-seed directly so convergence is instant,
       // matching the bootstrap behaviour for the first frame.
       smoothed = rawOffset;
+    } else if (Math.abs(rawOffset - this.clockOffsetMs) > 2_000) {
+      // Medium-magnitude drift (2–5 s): caused by background app suspension,
+      // slow NTP correction, or a short network outage. α=0.15 would take
+      // ~300 s to converge; applying α=0.5 for this single tick re-anchors
+      // within ~20 s while still smoothing isolated large-packet spikes that
+      // resolve on the next heartbeat.
+      smoothed = this.clockOffsetMs * 0.5 + rawOffset * 0.5;
     } else {
       smoothed = this.clockOffsetMs * 0.85 + rawOffset * 0.15;
     }

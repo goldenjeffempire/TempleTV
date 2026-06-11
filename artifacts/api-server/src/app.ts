@@ -397,7 +397,11 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(compress, {
     global: true,
     encodings: ["br", "gzip", "deflate"],
-    threshold: 1024,
+    // Lowered from 1024 → 512 bytes: JSON API responses for small resources
+    // (e.g. viewer count, health, short guide entries) typically land in the
+    // 300–800 byte range. Compressing them cuts payload size by 50–70% and
+    // meaningfully reduces data usage for mobile clients polling every 3–10 s.
+    threshold: 512,
   });
 
   await app.register(websocket);

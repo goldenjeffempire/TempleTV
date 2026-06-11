@@ -6,7 +6,7 @@ import { logger } from "./logger.js";
  *   1. Redis (if REDIS_URL is set and connection is up)
  *   2. In-process LRU (always available; per-instance only)
  *
- * Use `cache.get/set/del`. For multi-instance coherency you MUST
+ * Use `cache.get/set/del/getOrSet`. For multi-instance coherency you MUST
  * provision Redis — the in-process backend is per-pod.
  *
  * Named caches can be registered via `registerNamedCache()` for
@@ -16,6 +16,14 @@ export interface Cache {
   get<T = unknown>(key: string): Promise<T | null>;
   set<T = unknown>(key: string, value: T, ttlSeconds?: number): Promise<void>;
   del(key: string): Promise<void>;
+  /**
+   * Stampede-safe get-or-set. If `key` is cached, returns immediately.
+   * Otherwise calls `fn()` exactly once — even when N concurrent requests
+   * race on the same expired/missing key — then caches the result for
+   * `ttlSeconds`. All concurrent callers await the same in-flight Promise
+   * so the origin DB/service is hit at most once per cache miss.
+   */
+  getOrSet<T = unknown>(key: string, ttlSeconds: number, fn: () => Promise<T>): Promise<T>;
   /** Current number of live (non-expired) entries. */
   size(): number;
   readonly backend: "redis" | "memory";
@@ -31,6 +39,7 @@ class MemoryCache implements Cache {
    */
   private readonly MAX_SIZE = 10_000;
   private map = new Map<string, { v: unknown; expiresAt: number | null }>();
+  private readonly _inflight = new Map<string, Promise<unknown>>();
   readonly backend = "memory" as const;
 
   async get<T>(key: string): Promise<T | null> {
@@ -60,6 +69,23 @@ class MemoryCache implements Cache {
   async del(key: string): Promise<void> {
     this.map.delete(key);
   }
+  async getOrSet<T>(key: string, ttlSeconds: number, fn: () => Promise<T>): Promise<T> {
+    const hit = await this.get<T>(key);
+    if (hit !== null) return hit;
+    const existing = this._inflight.get(key) as Promise<T> | undefined;
+    if (existing) return existing;
+    const promise = (async () => {
+      try {
+        const v = await fn();
+        await this.set(key, v, ttlSeconds).catch(() => {});
+        return v;
+      } finally {
+        this._inflight.delete(key);
+      }
+    })();
+    this._inflight.set(key, promise);
+    return promise;
+  }
   size(): number {
     // Purge expired entries on introspection so the count is accurate.
     const now = Date.now();
@@ -74,6 +100,7 @@ const REDIS_MAX_VALUE_BYTES = 8 * 1024 * 1024;
 
 class RedisCache implements Cache {
   readonly backend = "redis" as const;
+  private readonly _inflight = new Map<string, Promise<unknown>>();
   constructor(private readonly client: ReturnType<typeof getRedis> & {}) {}
 
   async get<T>(key: string): Promise<T | null> {
@@ -103,6 +130,23 @@ class RedisCache implements Cache {
   }
   async del(key: string): Promise<void> {
     await this.client.del(key);
+  }
+  async getOrSet<T>(key: string, ttlSeconds: number, fn: () => Promise<T>): Promise<T> {
+    const hit = await this.get<T>(key);
+    if (hit !== null) return hit;
+    const existing = this._inflight.get(key) as Promise<T> | undefined;
+    if (existing) return existing;
+    const promise = (async () => {
+      try {
+        const v = await fn();
+        await this.set(key, v, ttlSeconds).catch(() => {});
+        return v;
+      } finally {
+        this._inflight.delete(key);
+      }
+    })();
+    this._inflight.set(key, promise);
+    return promise;
   }
   /** Redis DBSIZE is not used here (it's a cluster-wide count and expensive).
    *  Returns -1 to signal "remote cache — size not locally tracked." */

@@ -648,6 +648,13 @@ async function main() {
     // never prevents the server from accepting HTTP requests.
     verifyMailer().catch((err) => logger.warn({ err }, "mailer verify error"));
     await app.listen({ port: env.PORT, host: "0.0.0.0" });
+    // Explicit keepAlive + headersTimeout tuning for sustained connection reuse
+    // under concurrent SSE + HLS load. Node's default keepAliveTimeout=5s
+    // causes constant TCP reconnects from CDN edges and HLS segment clients.
+    // headersTimeout MUST exceed keepAliveTimeout to prevent a race where the
+    // headers deadline fires first on a freshly re-used keep-alive connection.
+    app.server.keepAliveTimeout = env.HTTP_KEEPALIVE_MS;
+    app.server.headersTimeout = env.HTTP_HEADERS_TIMEOUT_MS;
     // OMEGA Hardening: keep-alive self-ping to prevent free-tier cold starts.
     startKeepAlive();
     // F17: memory pressure watchdog — emits ops-alert SSE when RSS

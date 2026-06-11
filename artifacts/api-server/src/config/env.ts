@@ -16,6 +16,14 @@ if (process.env.PGHOST && process.env.PGUSER && process.env.PGDATABASE) {
 const Env = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().nonnegative().default(8080),
+  // HTTP server connection tuning. Node's built-in defaults (keepAliveTimeout=5s,
+  // headersTimeout=60s) cause frequent TCP teardowns from CDN edge nodes and
+  // HLS clients that keep connections alive for segment streaming. Raising
+  // keepAliveTimeout to 75 s matches typical CDN idle-connection budgets;
+  // headersTimeout must be strictly larger to avoid a race where the headers
+  // timeout fires first on a freshly re-used keep-alive connection.
+  HTTP_KEEPALIVE_MS: z.coerce.number().int().positive().default(75_000),
+  HTTP_HEADERS_TIMEOUT_MS: z.coerce.number().int().positive().default(80_000),
   // Injected automatically by Replit in dev environments. Used by sse-cors.ts
   // to allow the Replit preview origin in addition to localhost.
   REPLIT_DEV_DOMAIN: z.string().optional(),

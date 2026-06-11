@@ -470,7 +470,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
       // A 3-second cache lets CDNs absorb polling bursts (many TV/mobile
       // clients checking the viewer badge simultaneously) without staling
       // the count noticeably. The true count refreshes via SSE anyway.
-      reply.header("Cache-Control", "public, max-age=3, s-maxage=3, stale-while-revalidate=6");
+      reply.header("Cache-Control", "public, max-age=3, s-maxage=3, stale-while-revalidate=6, stale-if-error=60");
       return { channelId: broadcastEngine.channelId, count: broadcastEngine.getViewerCount() };
     },
   );
@@ -535,7 +535,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
       // revalidate=10` lets clients serve the cached body instantly while
       // a background refresh happens — perceived latency → zero on repeat
       // opens.
-      reply.header("Cache-Control", "public, max-age=5, s-maxage=5, stale-while-revalidate=10");
+      reply.header("Cache-Control", "public, max-age=5, s-maxage=5, stale-while-revalidate=10, stale-if-error=300");
       const snap = broadcastService.snapshot();
       const now = Date.now();
 

@@ -727,6 +727,28 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         ON broadcast_queue (sort_order ASC, added_at ASC)
     `);
 
+    // ── Performance hot-path indexes (post-audit additions) ────────────────
+    // Transcoder dispatcher poll: SELECT … FROM transcoding_jobs WHERE status
+    // IN ('queued','processing') ORDER BY created_at ASC. A composite index
+    // on (status, created_at) turns this O(table) scan into an index range
+    // scan — critical when the jobs table accumulates thousands of historical
+    // rows over a long-running deployment.
+    await run("idx_transcoding_jobs_status_created", `
+      CREATE INDEX IF NOT EXISTS idx_transcoding_jobs_status_created
+        ON transcoding_jobs (status, created_at ASC)
+    `);
+    // Admin analytics and library sort: managed_videos ordered by view_count
+    // DESC for "most watched" reports and trending video queries. The Drizzle
+    // schema declares a plain idx_managed_videos_view_count; this composite
+    // extends it with video_source so the planner can use an index-only scan
+    // on the common `WHERE video_source = 'youtube'` + `ORDER BY view_count`
+    // path used by the YouTube catalog tab and SEO ranking queries.
+    await run("idx_managed_videos_view_count_source", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_view_count_source
+        ON managed_videos (view_count DESC, video_source)
+        WHERE is_active = true
+    `);
+
     // ── Check constraints (DO-block pattern for idempotency) ───────────────
     // ALTER TABLE ADD CONSTRAINT has no IF NOT EXISTS; use a DO block.
     await client.query(`

@@ -55,7 +55,7 @@ export interface AiringEntry {
  * preload in the player FSM starts the load even earlier, so 120 s here is
  * now the fallback window rather than the sole guarantee.
  */
-const PRELOAD_LEAD_MS = 120_000;
+const PRELOAD_LEAD_MS = env.BROADCAST_PRELOAD_LEAD_MS;
 /**
  * Tick interval raised from 1 s → 2 s.
  *

@@ -67,6 +67,13 @@ interface RenditionSpec {
 // runTranscode filters this list to avoid upscaling by checking the source
 // video's actual height and dropping any renditions taller than the source.
 const ALL_RENDITIONS: RenditionSpec[] = [
+  // 240p — ultra-low tier for mobile roaming and <500 kbps connections.
+  // H.264 level 2.1 is the baseline decoder floor for legacy Android phones,
+  // feature phones, and low-end Smart TV chipsets. At 300k video + 64k audio
+  // the stream fits comfortably inside a 400 kbps budget with room for
+  // packet-loss recovery overhead. ABR can step up to 360p within one
+  // 2-second segment once bandwidth improves.
+  { name: "240p",  width: 426,  height: 240,  videoBitrateK: 300,  maxrateK: 420,  bufsizeK: 840,  audioBitrateK: 64,  level: "2.1" },
   // level "3.0" — baseline decoder for legacy STBs and Smart TV chipsets.
   // Bitrate raised 400→500k (+25%) for sharper SD output on portrait-heavy
   // sermon content; maxrate/bufsize ratio kept at 1.4×/2.8× for VBV stability.
