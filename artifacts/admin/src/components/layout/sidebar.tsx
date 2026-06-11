@@ -147,10 +147,9 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-4 border-b border-sidebar-border">
         <Link href="/" className="flex items-center gap-2.5 min-w-0">
-          <img src="/temple-tv-logo.png" alt="Temple TV" className="w-7 h-7 rounded object-cover flex-shrink-0" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+          <img src="/icon.png" alt="Temple TV" className="w-7 h-7 rounded object-cover flex-shrink-0" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
           <div className="min-w-0">
-            <p className="font-semibold text-sm text-sidebar-foreground leading-none truncate">Temple TV</p>
-            <p className="text-[10px] text-sidebar-foreground/50 uppercase tracking-widest mt-0.5">Admin Panel</p>
+            <p className="text-[10px] text-sidebar-foreground/50 uppercase tracking-widest">Admin Panel</p>
           </div>
         </Link>
         {onClose && (

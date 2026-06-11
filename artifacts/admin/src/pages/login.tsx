@@ -81,15 +81,12 @@ export default function LoginPage() {
         <div className="flex flex-col items-center gap-3 text-center">
           <div className="flex items-center gap-2.5">
             <img
-              src="/temple-tv-logo.png"
+              src="/icon.png"
               alt="Temple TV"
               className="w-10 h-10 rounded-lg object-cover"
               onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
             />
-            <div className="text-left">
-              <h1 className="text-xl font-bold leading-none">Temple TV</h1>
-              <p className="text-xs text-muted-foreground uppercase tracking-widest mt-0.5">Admin Panel</p>
-            </div>
+            <p className="text-xs text-muted-foreground uppercase tracking-widest">Admin Panel</p>
           </div>
         </div>
 
@@ -247,7 +244,7 @@ export default function LoginPage() {
 
         <p className="text-center text-xs text-muted-foreground flex items-center justify-center gap-1.5">
           <Radio size={11} className="text-red-500" />
-          Temple TV Broadcasting System
+          JCTM Broadcasting System
         </p>
       </div>
     </div>

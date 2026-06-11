@@ -43,9 +43,8 @@ const SIZE_PX: Record<LogoSize, number> = {
   hero: 96,
 };
 
-// Natural aspect of the bundled `logo.png` (900×600) — keeps the
-// wordmark from squashing on devices with non-standard pixel ratios.
-const ASPECT = 1.5;
+// icon.png is 1024×1024 — square aspect.
+const ASPECT = 1;
 
 interface LogoProps {
   size?: LogoSize;
@@ -67,7 +66,7 @@ export function Logo({
 
   return (
     <Image
-      source={require("@/assets/images/temple-tv-logo.png")}
+      source={require("@/assets/images/icon.png")}
       resizeMode="contain"
       style={[{ width, height }, style]}
       accessible={!decorative}

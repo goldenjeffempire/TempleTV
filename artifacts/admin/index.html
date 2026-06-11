@@ -13,9 +13,9 @@
     <meta name="referrer" content="no-referrer" />
 
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="alternate icon" type="image/png" href="/temple-tv-logo.png" />
-    <link rel="apple-touch-icon" href="/temple-tv-logo.png" />
-    <link rel="preload" as="image" href="/temple-tv-logo.png" fetchpriority="high" />
+    <link rel="alternate icon" type="image/png" href="/icon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="preload" as="image" href="/icon.png" fetchpriority="high" />
 
     <!-- Preconnect to the Temple TV API so admin panel data requests skip TLS
          setup latency on first load — dashboards, video lists, broadcast queue
@@ -110,14 +110,6 @@
         text-align: center;
         font-family: 'Inter', system-ui, sans-serif;
       }
-      #app-loading .ttv-wordmark strong {
-        display: block;
-        font-size: 15px;
-        font-weight: 600;
-        color: #0f172a;
-        letter-spacing: -0.01em;
-      }
-      .dark #app-loading .ttv-wordmark strong { color: #e8edf5; }
       #app-loading .ttv-wordmark span {
         display: block;
         font-size: 10px;
@@ -125,7 +117,6 @@
         color: #64748b;
         text-transform: uppercase;
         letter-spacing: 0.12em;
-        margin-top: 3px;
       }
       .dark #app-loading .ttv-wordmark span { color: #64748b; }
     </style>
@@ -138,14 +129,13 @@
         <div class="ttv-spinner"></div>
         <img
           class="ttv-logo"
-          src="/temple-tv-logo.png"
+          src="/icon.png"
           alt=""
           onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"
         />
         <div class="ttv-logo-fallback" style="display:none;">T</div>
       </div>
       <div class="ttv-wordmark">
-        <strong>Temple TV</strong>
         <span>Admin Panel</span>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { LiveStatus, BroadcastCurrent } from "../lib/api";
 import { LiveBroadcastV2 } from "./LiveBroadcastV2";
+import { TempleTvLogo } from "./TempleTvLogo";
 import { reportLiveFailure, useLiveFallbackJustTriggered } from "../lib/liveFailureSignal";
 import { useLiveCountdown } from "../lib/liveCountdown";
 
@@ -483,19 +484,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
               <ViewerCountBadge count={viewerCount ?? null} />
             </div>
 
-            <h1
-              style={{
-                fontSize: "clamp(40px, 5.2vw, 72px)",
-                fontWeight: 900,
-                color: "#fff",
-                lineHeight: 1.05,
-                letterSpacing: "-0.02em",
-                textShadow: "0 4px 32px rgba(0,0,0,0.6)",
-                margin: 0,
-              }}
-            >
-              Temple TV
-            </h1>
+            <TempleTvLogo size={80} variant="icon" decorative />
             <p
               style={{
                 fontSize: "clamp(16px, 1.4vw, 22px)",
@@ -608,7 +597,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
                 margin: 0,
               }}
             >
-              {showScheduledLive ? "Live Service Coming Up" : "Temple TV"}
+              {showScheduledLive ? "Live Service Coming Up" : <TempleTvLogo size={56} variant="icon" decorative />}
             </h1>
             <p
               style={{

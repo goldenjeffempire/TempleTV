@@ -30,12 +30,10 @@ import type { CSSProperties } from "react";
 
 // BASE_URL-aware src so this resolves correctly in both dev (Vite serves
 // at `/`) and prod (Vite mounts the TV app under `/tv/` via the
-// `BASE_PATH` env var). Hardcoding `/tv/temple-tv-logo.png` would 404
-// in dev; hardcoding `/temple-tv-logo.png` would 404 in prod.
-const LOGO_SRC = `${import.meta.env.BASE_URL}temple-tv-logo.png`;
-const NATURAL_WIDTH = 900;
-const NATURAL_HEIGHT = 600;
-const ASPECT = NATURAL_WIDTH / NATURAL_HEIGHT; // 1.5
+// `BASE_PATH` env var). Hardcoding `/tv/icon.png` would 404
+// in dev; hardcoding `/icon.png` would 404 in prod.
+const LOGO_SRC = `${import.meta.env.BASE_URL}icon.png`;
+const ASPECT = 1; // icon.png is 1024×1024 — square
 
 interface TempleTvLogoProps {
   /**

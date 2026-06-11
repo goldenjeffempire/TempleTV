@@ -257,7 +257,7 @@ export function AuthGateModal({ open, onClose, onAuthed, reason }: AuthGateModal
         <div className="px-5 py-6 sm:px-10 sm:py-10 md:px-14 md:py-12 text-white">
           <div className="flex items-center gap-3 mb-3 opacity-80">
             <span className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-xs sm:text-sm tracking-[0.3em] uppercase">Temple TV · Sign in</span>
+            <span className="text-xs sm:text-sm tracking-[0.3em] uppercase">Sign in</span>
           </div>
 
           <h2

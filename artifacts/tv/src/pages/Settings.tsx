@@ -398,7 +398,7 @@ export function Settings({ onBack, onSignIn }: SettingsProps) {
         })}
 
         <div style={{ marginTop: 32, fontSize: 12, color: "rgba(255,255,255,0.15)", textAlign: "center" }}>
-          Temple TV · JCTM Broadcasting Network
+          JCTM Broadcasting Network
         </div>
       </div>
     </div>

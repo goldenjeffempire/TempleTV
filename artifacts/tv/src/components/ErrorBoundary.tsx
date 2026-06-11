@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { TempleTvLogo } from "./TempleTvLogo";
 
 type Props = {
   children: ReactNode;
@@ -106,9 +107,7 @@ export class ErrorBoundary extends Component<Props, State> {
     return (
       <div className="min-h-screen w-full flex items-center justify-center bg-black text-white p-12">
         <div className="max-w-2xl text-center flex flex-col items-center gap-6">
-          <div className="text-6xl font-light tracking-widest opacity-70 uppercase">
-            Temple TV
-          </div>
+          <TempleTvLogo size={80} variant="icon" decorative />
           <div className="text-2xl font-medium">
             Something went wrong
           </div>

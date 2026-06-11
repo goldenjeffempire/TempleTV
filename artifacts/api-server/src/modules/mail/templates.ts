@@ -29,9 +29,9 @@ function wrap(title: string, bodyHtml: string): string {
           <!-- Header -->
           <tr>
             <td style="background:${BRAND_BG};padding:32px 40px;text-align:center;">
-              <p style="margin:0;font-size:11px;font-weight:800;letter-spacing:0.22em;color:rgba(255,255,255,0.9);text-transform:uppercase;">Temple TV</p>
-              <p style="margin:4px 0 0;font-size:9px;font-weight:600;letter-spacing:0.14em;color:rgba(255,255,255,0.5);text-transform:uppercase;">JCTM Broadcasting</p>
-              <div style="margin-top:16px;width:40px;height:3px;background:${BRAND_COLOR};border-radius:2px;display:inline-block;"></div>
+              <img src="https://templetv.org.ng/icon.png" alt="Temple TV" width="56" height="56" style="border-radius:10px;display:block;margin:0 auto;" />
+              <p style="margin:10px 0 0;font-size:9px;font-weight:600;letter-spacing:0.14em;color:rgba(255,255,255,0.5);text-transform:uppercase;">JCTM Broadcasting</p>
+              <div style="margin-top:12px;width:40px;height:3px;background:${BRAND_COLOR};border-radius:2px;display:inline-block;"></div>
             </td>
           </tr>
           <!-- Body -->
@@ -44,7 +44,7 @@ function wrap(title: string, bodyHtml: string): string {
           <tr>
             <td style="background:#f9f9f9;padding:24px 40px;border-top:1px solid #eeeeee;text-align:center;">
               <p style="margin:0;font-size:12px;color:#999999;line-height:1.6;">
-                Temple TV &middot; JCTM Broadcasting<br/>
+                JCTM Broadcasting<br/>
                 Spirit-filled teachings &amp; worship — broadcasting 24/7<br/>
                 <span style="font-size:11px;color:#cccccc;">This is an automated message. Do not reply directly to this email.</span>
               </p>
