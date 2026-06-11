@@ -336,10 +336,12 @@ class TranscoderDispatcher {
         .returning({ id: jobs.id, videoId: jobs.videoId });
 
       if (reset.length > 0) {
-        const videoIds = reset.map((r) => r.videoId);
-        await db.update(videos)
-          .set({ transcodingStatus: "queued" })
-          .where(inArray(videos.id, videoIds));
+        const videoIds = reset.map((r) => r.videoId).filter((id): id is string => id !== null);
+        if (videoIds.length > 0) {
+          await db.update(videos)
+            .set({ transcodingStatus: "queued" })
+            .where(inArray(videos.id, videoIds));
+        }
 
         logger.warn(
           { count: reset.length, jobIds: reset.map((r) => r.id) },
@@ -425,7 +427,7 @@ class TranscoderDispatcher {
               inArray(jobs.videoId, encodingVideoIds),
             ),
           )
-      ).map((r) => r.videoId),
+      ).map((r) => r.videoId).filter((id): id is string => id !== null),
     );
 
     const recoverableVideoIds = encodingVideoIds.filter((id) => !activeVideoIds.has(id));
@@ -506,7 +508,7 @@ class TranscoderDispatcher {
             });
 
             // Mark for batch duration sync (done below, after the loop).
-            healedVideoIds.push(job.videoId);
+            if (job.videoId) healedVideoIds.push(job.videoId);
 
             // Bust the public video catalogue cache so TV/mobile clients
             // immediately reflect the healed hls_ready status instead of
@@ -790,7 +792,7 @@ class TranscoderDispatcher {
 
       if (stuckJobs.length === 0) return;
 
-      const resetResults: Array<{ id: string; videoId: string; failed: boolean }> = [];
+      const resetResults: Array<{ id: string; videoId: string | null; failed: boolean }> = [];
 
       for (const stuck of stuckJobs) {
         const newAttempts = stuck.attempts + 1;
@@ -835,8 +837,8 @@ class TranscoderDispatcher {
 
       if (resetResults.length === 0) return;
 
-      const failedVideoIds = resetResults.filter((r) => r.failed).map((r) => r.videoId);
-      const requeuedVideoIds = resetResults.filter((r) => !r.failed).map((r) => r.videoId);
+      const failedVideoIds = resetResults.filter((r) => r.failed).map((r) => r.videoId).filter((id): id is string => id !== null);
+      const requeuedVideoIds = resetResults.filter((r) => !r.failed).map((r) => r.videoId).filter((id): id is string => id !== null);
 
       if (failedVideoIds.length > 0) {
         const timeoutMinutes = Math.round(env.TRANSCODER_JOB_TIMEOUT_MS / 60_000);
@@ -1053,6 +1055,18 @@ class TranscoderDispatcher {
 
       const job = claimed[0];
       if (!job) return { ran: false };
+
+      // Guard: videoId is null when the parent managed_videos row was deleted
+      // after the job was queued (FK ON DELETE SET NULL). Abandon the job
+      // rather than failing with a cryptic "column does not exist" error.
+      if (!job.videoId) {
+        logger.warn({ jobId: job.id }, "transcoder: abandoning orphaned job — parent video was deleted");
+        await db.update(jobs)
+          .set({ status: "failed", errorMessage: "Parent video was deleted; job abandoned." })
+          .where(eq(jobs.id, job.id))
+          .catch(() => { /* non-fatal */ });
+        return { ran: false };
+      }
 
       // Look up the video title for SSE event payloads — allows the admin
       // operations log and broadcast UI to show the real video name instead
@@ -1374,7 +1388,7 @@ class TranscoderDispatcher {
                 transcodingErrorCode: isCorruptSource ? "CORRUPT_SOURCE" : isSourceMissing ? "SOURCE_MISSING" : isDiskFull ? "DISK_FULL" : null,
               } : {}),
             })
-            .where(eq(videos.id, job.videoId));
+            .where(eq(videos.id, job.videoId!));
         });
 
         adminEventBus.push("transcoding-update", {

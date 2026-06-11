@@ -571,7 +571,7 @@ const TranscodingQueueSchema = z.object({
 
 function projectTranscodingJob(j: {
   id: string;
-  videoId: string;
+  videoId: string | null;
   videoPath: string;
   status: string;
   priority: number;
@@ -591,7 +591,7 @@ function projectTranscodingJob(j: {
 }): z.infer<typeof TranscodingJobSchema> {
   return {
     id: j.id,
-    videoId: j.videoId,
+    videoId: j.videoId ?? "",
     videoPath: j.videoPath,
     status: j.status,
     priority: j.priority,

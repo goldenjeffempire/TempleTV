@@ -1,11 +1,14 @@
 import { pgTable, text, timestamp, integer, index } from "drizzle-orm/pg-core";
+import { videosTable } from "./videos";
 
 export const scheduledNotificationsTable = pgTable("scheduled_notifications", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
   body: text("body").notNull(),
   type: text("type").notNull(),
-  videoId: text("video_id"),
+  // Nullable FK: when the referenced video is deleted, this is set to NULL so
+  // the notification record is preserved for audit rather than cascade-deleted.
+  videoId: text("video_id").references(() => videosTable.id, { onDelete: "set null" }),
   scheduledAt: timestamp("scheduled_at", { withTimezone: true }).notNull(),
   status: text("status").notNull().default("pending"),
   sentCount: integer("sent_count").default(0),

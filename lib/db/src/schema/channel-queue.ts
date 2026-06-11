@@ -39,6 +39,9 @@ export const channelQueueTable = pgTable(
     // Reject non-local video sources — channel queue only accepts local uploads
     // and prod-sync items, not raw YouTube watch URLs.
     check("chk_channel_queue_no_youtube_urls", sql`${t.localVideoUrl} NOT LIKE '%youtube.com/watch%' AND ${t.localVideoUrl} NOT LIKE '%youtu.be/%'`),
+    // YouTube content belongs in the Library only, not channel queues.
+    // Mirrors the no_youtube_in_queue check on broadcast_queue.
+    check("no_youtube_in_channel_queue", sql`${t.videoSource} != 'youtube'`),
   ],
 );
 

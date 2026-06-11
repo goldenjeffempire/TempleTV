@@ -408,7 +408,7 @@ export async function cancelJob(id: string): Promise<{ ok: boolean; reason?: str
       const videoState = await tx
         .select({ faststartApplied: videos.faststartApplied, hlsMasterUrl: videos.hlsMasterUrl })
         .from(videos)
-        .where(eq(videos.id, out[0]!.videoId))
+        .where(eq(videos.id, out[0]!.videoId!))
         .limit(1)
         .then((r) => r[0]);
       const restoredStatus =
@@ -418,7 +418,7 @@ export async function cancelJob(id: string): Promise<{ ok: boolean; reason?: str
       await tx
         .update(videos)
         .set({ transcodingStatus: restoredStatus })
-        .where(eq(videos.id, out[0]!.videoId));
+        .where(eq(videos.id, out[0]!.videoId!));
       logger.info(
         { jobId: id, videoId: out[0]!.videoId, restoredStatus },
         "transcoder: job cancelled by operator",

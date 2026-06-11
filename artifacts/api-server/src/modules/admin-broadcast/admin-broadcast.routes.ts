@@ -240,7 +240,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
             .from(jobsTable)
             .where(and(inArray(jobsTable.videoId, failedVideoIds), eq(jobsTable.status, "failed")));
           for (const j of failedJobs) {
-            const existing = hlsMap.get(j.videoId);
+            const existing = j.videoId ? hlsMap.get(j.videoId) : undefined;
             if (existing && j.errorMessage) {
               existing.transcodingError = j.errorMessage;
             }

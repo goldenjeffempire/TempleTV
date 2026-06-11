@@ -3,7 +3,9 @@ import { videosTable } from "./videos.js";
 
 export const transcodingJobsTable = pgTable("transcoding_jobs", {
   id: text("id").primaryKey(),
-  videoId: text("video_id").notNull().references(() => videosTable.id, { onDelete: "cascade" }),
+  // Nullable: when the parent managed_videos row is deleted the FK is set to NULL
+  // so the job record is preserved for audit rather than cascade-deleted.
+  videoId: text("video_id").references(() => videosTable.id, { onDelete: "set null" }),
   videoPath: text("video_path").notNull(),
   status: text("status").notNull().default("queued"),
   priority: integer("priority").notNull().default(0),

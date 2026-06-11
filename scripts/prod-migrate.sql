@@ -1,6 +1,6 @@
 -- ============================================================================
 --  Temple TV — Complete Production Database Migration
---  v4 (2026-05-17)
+--  v5 (2026-06-11)
 -- ============================================================================
 --
 --  PURPOSE
@@ -26,19 +26,43 @@
 --  Or in a one-liner:
 --  PGPASSWORD=xxx psql -h host -U user -d dbname -f scripts/prod-migrate.sql
 --
---  WHAT IS COVERED (40 tables)
+--  WHAT IS COVERED (41 tables)
 --  ---------------------------
 --  app_config, broadcast_event_log, broadcast_queue, broadcast_runtime_state,
 --  cache_entries, channel_graphics, channel_queue, channels, chat_messages,
 --  chat_moderation, device_link_codes, device_watch_history, emergency_alerts,
 --  live_ingest_endpoints, live_overrides, managed_videos,
---  password_reset_tokens, player_position_checkpoint, playlist_videos,
---  playlists, prayer_requests, push_tokens, rate_limit_buckets,
+--  password_reset_tokens, pending_storage_cleanup, player_position_checkpoint,
+--  playlist_videos, playlists, prayer_requests, push_tokens, rate_limit_buckets,
 --  refresh_tokens, s3_upload_telemetry, schedule_entries,
 --  scheduled_notifications, sent_notifications, series, series_episodes,
 --  storage_blobs, transcoding_jobs, upload_chunks, upload_sessions,
 --  user_favorites, user_watch_history, users, viewer_sessions,
 --  web_push_subscriptions, youtube_sync_log
+--
+--  CHANGES FROM v4
+--  ---------------
+--  • Added ON DELETE SET NULL foreign keys: broadcast_queue.video_id,
+--    channel_queue.video_id, transcoding_jobs.video_id,
+--    scheduled_notifications.video_id → managed_videos.id
+--  • Made transcoding_jobs.video_id nullable (required for ON DELETE SET NULL)
+--  • Added channel_queue uniqueness constraint: (channel_id, video_id) WHERE active
+--  • Added channel_queue check: no YouTube source type
+--  • Added managed_videos_transcoding_status_check constraint (incl. hls_ready)
+--  • Added managed_videos partial unique index on object_path
+--  • Added broadcast_queue partial unique index (uq_broadcast_queue_video_id_active)
+--  • Synced missing columns: broadcast_runtime_state.{bad_url_cache,
+--    scanner_failure_counts, failover_active, failover_reason},
+--    managed_videos.{updated_at, broadcast_only, youtube_live_status,
+--    youtube_live_status_updated_at, transcoding_error_message,
+--    transcoding_error_code, transcoding_error_kind, faststart_attempts},
+--    broadcast_queue.{scheduled_at, schedule_label, validator_deactivated_reason},
+--    transcoding_jobs.last_progress_at
+--  • Added missing performance indexes: chat_messages(user_id),
+--    chat_messages(ip_hash), chat_messages partial not-deleted,
+--    scheduled_notifications(video_id), managed_videos.{faststart_applied,
+--    youtube_live_status, metadata_locked, broadcast_admission, uploaded_by}
+--  • Added pending_storage_cleanup table (upload-fixes dependency)
 --
 --  CHANGES FROM v3
 --  ---------------
@@ -948,115 +972,108 @@ ALTER TABLE broadcast_queue
 ALTER TABLE managed_videos
     ADD COLUMN IF NOT EXISTS faststart_applied boolean NOT NULL DEFAULT false;
 
+-- ── 5b. COLUMN PATCHES (v5 — schema hardening sprint) ────────────────────────
 
--- managed_videos.faststart_attempts — per-video faststart attempt counter
--- Written by faststart.service.ts on each attempt. Controls auto-requeue
--- rate-limiting for sources that pass validity checks but always fail moov
--- relocation. Resets to 0 when a new upload replaces objectPath.
-ALTER TABLE managed_videos
-    ADD COLUMN IF NOT EXISTS faststart_attempts integer NOT NULL DEFAULT 0;
-
--- managed_videos.broadcast_only — private broadcast-use flag
--- When true, video is excluded from public library (TV, mobile, web catalogue).
--- Defaults to true for all new local uploads; admin can set false to publish.
-ALTER TABLE managed_videos
-    ADD COLUMN IF NOT EXISTS broadcast_only boolean NOT NULL DEFAULT true;
-
--- managed_videos.youtube_live_status — YouTube Live broadcast tracking
-ALTER TABLE managed_videos
-    ADD COLUMN IF NOT EXISTS youtube_live_status text;
-ALTER TABLE managed_videos
-    ADD COLUMN IF NOT EXISTS youtube_live_status_updated_at timestamp with time zone;
-
--- managed_videos.transcoding_error_code — structured transcoder failure code
--- Stores machine-readable error codes (e.g. CORRUPT_SOURCE, SOURCE_MISSING)
--- so the admin panel and orchestrator can display actionable error information.
-ALTER TABLE managed_videos
-    ADD COLUMN IF NOT EXISTS transcoding_error_code text;
-ALTER TABLE managed_videos
-    ADD COLUMN IF NOT EXISTS transcoding_error_kind text;
-
--- managed_videos.updated_at — row-level mtime for cache invalidation
--- Used by the admin panel to detect staleness without full row diffing.
+-- managed_videos.updated_at — Drizzle $onUpdate timestamp for cache invalidation
 ALTER TABLE managed_videos
     ADD COLUMN IF NOT EXISTS updated_at timestamp with time zone NOT NULL DEFAULT now();
 
--- broadcast_queue — columns added for scheduling and validator tracking
+-- managed_videos.broadcast_only — hides upload-only videos from public library
+ALTER TABLE managed_videos
+    ADD COLUMN IF NOT EXISTS broadcast_only boolean NOT NULL DEFAULT false;
+
+-- managed_videos.youtube_live_status — tracks live/rebroadcast state for YouTube videos
+ALTER TABLE managed_videos
+    ADD COLUMN IF NOT EXISTS youtube_live_status text;
+
+-- managed_videos.youtube_live_status_updated_at — staleness detection for live sweep
+ALTER TABLE managed_videos
+    ADD COLUMN IF NOT EXISTS youtube_live_status_updated_at timestamp with time zone;
+
+-- managed_videos.transcoding_error_message — human-readable failure reason
+ALTER TABLE managed_videos
+    ADD COLUMN IF NOT EXISTS transcoding_error_message text;
+
+-- managed_videos.transcoding_error_code — machine-readable failure code
+--   Values: 'CORRUPT_SOURCE', 'DISK_FULL', null
+ALTER TABLE managed_videos
+    ADD COLUMN IF NOT EXISTS transcoding_error_code text;
+
+-- managed_videos.transcoding_error_kind — narrows CORRUPT_SOURCE subtype
+--   Values: 'structure_invalid', 'moov_absent', 'preflight_failed', null
+ALTER TABLE managed_videos
+    ADD COLUMN IF NOT EXISTS transcoding_error_kind text;
+
+-- managed_videos.faststart_attempts — running count of faststart attempts
+--   Used by the broadcast engine to skip videos that have exhausted retries.
+ALTER TABLE managed_videos
+    ADD COLUMN IF NOT EXISTS faststart_attempts integer NOT NULL DEFAULT 0;
+
+-- broadcast_queue.scheduled_at — wall-clock anchor for scheduled programming
 ALTER TABLE broadcast_queue
     ADD COLUMN IF NOT EXISTS scheduled_at timestamp with time zone;
+
+-- broadcast_queue.schedule_label — human-readable block label for schedule editor
 ALTER TABLE broadcast_queue
     ADD COLUMN IF NOT EXISTS schedule_label text;
+
+-- broadcast_queue.validator_deactivated_reason — set by queue-integrity-validator
 ALTER TABLE broadcast_queue
     ADD COLUMN IF NOT EXISTS validator_deactivated_reason text;
 
--- broadcast_runtime_state — columns added for autonomous broadcast features
--- bad_url_cache: JSON map of URL → { bannedUntilMs, reason } for fast SSRF lookup
--- scanner_failure_counts: JSON map of scannerName → consecutive failure count
--- failover_active: true when the orchestrator is in automatic failover mode
+-- broadcast_runtime_state.bad_url_cache — persisted skip-count + blacklist cache
+--   Shape: { urlCache: { [url]: expiresAtMs }, skipCounts: { [itemId]: count } }
 ALTER TABLE broadcast_runtime_state
-    ADD COLUMN IF NOT EXISTS bad_url_cache jsonb NOT NULL DEFAULT '{}'::jsonb;
+    ADD COLUMN IF NOT EXISTS bad_url_cache jsonb;
+
+-- broadcast_runtime_state.scanner_failure_counts — per-item consecutive failure counts
+--   Shape: { [itemId]: { count: number; lastFailedAtMs: number | null } }
 ALTER TABLE broadcast_runtime_state
-    ADD COLUMN IF NOT EXISTS scanner_failure_counts jsonb NOT NULL DEFAULT '{}'::jsonb;
+    ADD COLUMN IF NOT EXISTS scanner_failure_counts jsonb;
+
+-- broadcast_runtime_state.failover_active — operator-engaged failover flag
 ALTER TABLE broadcast_runtime_state
     ADD COLUMN IF NOT EXISTS failover_active boolean NOT NULL DEFAULT false;
 
--- ── 5b. MISSING INDEXES ───────────────────────────────────────────────────────
--- Indexes present in the Drizzle schema but missing from the original migration.
--- All are CREATE INDEX IF NOT EXISTS — safe to run against any DB state.
+-- broadcast_runtime_state.failover_reason — human-readable reason for failover state
+ALTER TABLE broadcast_runtime_state
+    ADD COLUMN IF NOT EXISTS failover_reason text;
 
--- chat_messages: user_id and ip_hash — used by moderation and rate-limit queries.
-CREATE INDEX IF NOT EXISTS idx_chat_messages_user_id
-    ON chat_messages (user_id);
-CREATE INDEX IF NOT EXISTS idx_chat_messages_ip_hash
-    ON chat_messages (ip_hash);
+-- transcoding_jobs.last_progress_at — timestamp of last progress update from ffmpeg
+ALTER TABLE transcoding_jobs
+    ADD COLUMN IF NOT EXISTS last_progress_at timestamp with time zone;
 
--- scheduled_notifications: video_id — used by the "notify when ready" flow.
-CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_video_id
-    ON scheduled_notifications (video_id);
+-- transcoding_jobs.video_id — drop NOT NULL so FK ON DELETE SET NULL can work
+-- (ALTER COLUMN … DROP NOT NULL is a no-op when the column is already nullable)
+ALTER TABLE transcoding_jobs
+    ALTER COLUMN video_id DROP NOT NULL;
 
--- ── 5c. FOREIGN KEY CONSTRAINTS ──────────────────────────────────────────────
--- FK constraints on video_id columns — added to enforce referential integrity
--- between queue tables and managed_videos. Use PL/pgSQL guards because
--- ADD CONSTRAINT IF NOT EXISTS for FKs requires PostgreSQL 15+.
 
-DO $$
-BEGIN
-  -- broadcast_queue.video_id → managed_videos.id (SET NULL on delete)
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'fk_broadcast_queue_video_id'
-      AND conrelid = 'broadcast_queue'::regclass
-  ) THEN
-    ALTER TABLE broadcast_queue
-      ADD CONSTRAINT fk_broadcast_queue_video_id
-      FOREIGN KEY (video_id) REFERENCES managed_videos (id) ON DELETE SET NULL;
-  END IF;
+-- ── 6. NEW TABLES (v5) ───────────────────────────────────────────────────────
 
-  -- transcoding_jobs.video_id → managed_videos.id (CASCADE on delete)
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'fk_transcoding_jobs_video_id'
-      AND conrelid = 'transcoding_jobs'::regclass
-  ) THEN
-    ALTER TABLE transcoding_jobs
-      ADD CONSTRAINT fk_transcoding_jobs_video_id
-      FOREIGN KEY (video_id) REFERENCES managed_videos (id) ON DELETE CASCADE;
-  END IF;
+CREATE TABLE IF NOT EXISTS pending_storage_cleanup (
+    id              text NOT NULL,
+    object_path     text NOT NULL,
+    reason          text NOT NULL,
+    video_id        text,
+    scheduled_at    timestamp with time zone DEFAULT now() NOT NULL,
+    last_attempt_at timestamp with time zone,
+    attempts        integer DEFAULT 0 NOT NULL,
+    deleted_at      timestamp with time zone,
+    last_error      text,
+    created_at      timestamp with time zone DEFAULT now() NOT NULL,
+    PRIMARY KEY (id)
+);
 
-  -- channel_queue.video_id → managed_videos.id (SET NULL on delete)
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'fk_channel_queue_video_id'
-      AND conrelid = 'channel_queue'::regclass
-  ) THEN
-    ALTER TABLE channel_queue
-      ADD CONSTRAINT fk_channel_queue_video_id
-      FOREIGN KEY (video_id) REFERENCES managed_videos (id) ON DELETE SET NULL;
-  END IF;
-END
-$$;
+CREATE INDEX IF NOT EXISTS idx_pending_storage_cleanup_pending
+    ON pending_storage_cleanup (scheduled_at)
+    WHERE deleted_at IS NULL;
 
--- ── 6. PRIMARY CHANNEL SEED ──────────────────────────────────────────────────
+CREATE INDEX IF NOT EXISTS idx_pending_storage_cleanup_object_path
+    ON pending_storage_cleanup (object_path);
+
+
+-- ── 7. PRIMARY CHANNEL SEED ──────────────────────────────────────────────────
 -- Ensure the singleton "Temple TV Live" primary channel row exists.
 -- The broadcast engine hard-codes channel_id = 'temple-tv-live'; without this
 -- row the GET /channels endpoint returns an empty array and the broadcast engine
@@ -1076,9 +1093,125 @@ VALUES (
 ON CONFLICT (id) DO NOTHING;
 
 
--- ── 7. FINAL VERIFICATION ────────────────────────────────────────────────────
--- Returns a table-count summary so you can verify all 40 tables exist and the
--- primary channel row was seeded correctly.
+-- ── 8. FOREIGN KEY CONSTRAINTS (v5) ─────────────────────────────────────────
+-- ON DELETE SET NULL — when a managed_videos row is deleted, queue and job
+-- references are nulled rather than cascade-deleted, so audit rows survive and
+-- the integrity validator can deactivate orphaned queue entries on its next cycle.
+
+DO $$ BEGIN
+    ALTER TABLE broadcast_queue
+        ADD CONSTRAINT broadcast_queue_video_id_managed_videos_id_fk
+        FOREIGN KEY (video_id) REFERENCES managed_videos(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_table OR duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+    ALTER TABLE channel_queue
+        ADD CONSTRAINT channel_queue_video_id_managed_videos_id_fk
+        FOREIGN KEY (video_id) REFERENCES managed_videos(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_table OR duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+    ALTER TABLE transcoding_jobs
+        ADD CONSTRAINT transcoding_jobs_video_id_managed_videos_id_fk
+        FOREIGN KEY (video_id) REFERENCES managed_videos(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_table OR duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+    ALTER TABLE scheduled_notifications
+        ADD CONSTRAINT scheduled_notifications_video_id_managed_videos_id_fk
+        FOREIGN KEY (video_id) REFERENCES managed_videos(id) ON DELETE SET NULL;
+EXCEPTION WHEN duplicate_table OR duplicate_object THEN NULL; END $$;
+
+
+-- ── 9. CHECK CONSTRAINTS (v5) ────────────────────────────────────────────────
+
+-- channel_queue: mirrors the no_youtube_in_queue check on broadcast_queue.
+DO $$ BEGIN
+    ALTER TABLE channel_queue
+        ADD CONSTRAINT no_youtube_in_channel_queue
+        CHECK (video_source != 'youtube');
+EXCEPTION WHEN duplicate_table OR duplicate_object THEN NULL; END $$;
+
+-- managed_videos: enforce the closed transcoding status enum at the DB level.
+-- Includes 'hls_ready' so the dispatcher can write that value without a
+-- CHECK violation (previously absent, causing silent write failures).
+DO $$ BEGIN
+    ALTER TABLE managed_videos
+        ADD CONSTRAINT managed_videos_transcoding_status_check
+        CHECK (transcoding_status IN (
+            'none','queued','encoding','processing','ready','hls_ready','failed'
+        ));
+EXCEPTION WHEN duplicate_table OR duplicate_object THEN NULL; END $$;
+
+
+-- ── 10. UNIQUE INDEXES (v5) ──────────────────────────────────────────────────
+
+-- broadcast_queue: partial unique index prevents duplicate active entries for
+-- the same video_id. The is_active=true predicate allows reuse of the slot
+-- after a row is deactivated. Mirrors the Drizzle schema definition.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_broadcast_queue_video_id_active
+    ON broadcast_queue (video_id)
+    WHERE video_id IS NOT NULL AND is_active = true;
+
+-- channel_queue: equivalent constraint for multi-channel queues.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_channel_queue_channel_video_active
+    ON channel_queue (channel_id, video_id)
+    WHERE video_id IS NOT NULL AND is_active = true;
+
+-- managed_videos: prevent duplicate rows when the same file is uploaded twice.
+-- Partial index (WHERE object_path IS NOT NULL) lets YouTube-synced rows
+-- (where object_path is NULL) co-exist without a constraint violation.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_managed_videos_object_path
+    ON managed_videos (object_path)
+    WHERE object_path IS NOT NULL;
+
+
+-- ── 11. INDEXES (v5 additions) ───────────────────────────────────────────────
+-- Indexes present in the Drizzle schema but absent from earlier migration files.
+
+-- chat_messages: moderator ban/mute lookups filter by userId and ipHash before
+-- accepting a new message. Without these indexes each check is a full table scan.
+CREATE INDEX IF NOT EXISTS idx_chat_messages_user_id
+    ON chat_messages (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_ip_hash
+    ON chat_messages (ip_hash);
+
+-- chat_messages: partial index covering the standard history fetch
+-- (WHERE channel_id = ? AND deleted_at IS NULL ORDER BY created_at DESC).
+CREATE INDEX IF NOT EXISTS idx_chat_messages_channel_not_deleted
+    ON chat_messages (channel_id, created_at DESC)
+    WHERE deleted_at IS NULL;
+
+-- scheduled_notifications: lookup by video_id for the "notify when ready" flow.
+CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_video_id
+    ON scheduled_notifications (video_id);
+
+-- managed_videos: faststart_applied — broadcast-v2 loadActive() filters on
+-- this boolean on every orchestrator reload (10-30 s cadence).
+CREATE INDEX IF NOT EXISTS idx_managed_videos_faststart_applied
+    ON managed_videos (faststart_applied);
+
+-- managed_videos: youtube_live_status — live sweep every 2 min heals stale rows.
+CREATE INDEX IF NOT EXISTS idx_managed_videos_youtube_live_status
+    ON managed_videos (youtube_live_status);
+
+-- managed_videos: metadata_locked — YouTube sync filters on this per batch.
+CREATE INDEX IF NOT EXISTS idx_managed_videos_metadata_locked
+    ON managed_videos (metadata_locked);
+
+-- managed_videos: composite broadcast-admission index mirrors loadActive() predicate.
+CREATE INDEX IF NOT EXISTS idx_managed_videos_broadcast_admission
+    ON managed_videos (video_source, transcoding_status, faststart_applied);
+
+-- managed_videos: uploaded_by — admin "filter by uploader" and audit trail lookups.
+CREATE INDEX IF NOT EXISTS idx_managed_videos_uploaded_by
+    ON managed_videos (uploaded_by);
+
+
+-- ── 12. FINAL VERIFICATION ───────────────────────────────────────────────────
+-- Returns a summary so you can verify all 41 tables exist, critical columns
+-- are present, and the primary channel row was seeded correctly.
 
 SELECT
     (SELECT count(*) FROM information_schema.tables
@@ -1096,11 +1229,30 @@ SELECT
     ) THEN 'present' ELSE 'MISSING — reload will fail!' END)
         AS faststart_applied_col,
     (CASE WHEN EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'managed_videos'
+          AND column_name = 'faststart_attempts'
+    ) THEN 'present' ELSE 'MISSING' END)
+        AS faststart_attempts_col,
+    (CASE WHEN EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'broadcast_runtime_state'
+          AND column_name = 'bad_url_cache'
+    ) THEN 'present' ELSE 'MISSING' END)
+        AS bad_url_cache_col,
+    (CASE WHEN EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name = 'pending_storage_cleanup'
+    ) THEN 'present' ELSE 'MISSING' END)
+        AS pending_storage_cleanup_table,
+    (CASE WHEN EXISTS (
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'public' AND table_name = 'broadcast_runtime_state'
     ) THEN 'present' ELSE 'MISSING' END)
         AS broadcast_runtime_state_table,
-    'Migration v3 complete — ' || now()::text AS status;
+    'Migration v5 complete — ' || now()::text AS status;
 
 
 COMMIT;
