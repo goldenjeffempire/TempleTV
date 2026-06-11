@@ -420,7 +420,7 @@ export async function videosRoutes(app: FastifyInstance) {
       // For "oldest" ASC:  rows where (imported_at > anchor) OR
       //                    (imported_at = anchor AND id > anchor_id)
       let cursorFilter: SQL | undefined;
-      if (effectiveCursor) {
+      if (isCursorSort && effectiveCursor) {
         const anchorTs = new Date(effectiveCursor.ts);
         if (sort === "oldest") {
           cursorFilter = or(

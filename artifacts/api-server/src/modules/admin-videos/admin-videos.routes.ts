@@ -307,10 +307,10 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       }
 
       // Cursor keyset filter (imported_at + id tie-break), applied when an
-      // effective cursor is available (explicit cursor param OR cached page
-      // anchor).  On the first page (no effective cursor) the filter is absent
-      // and the query returns from the start of the ordered set.
-      if (effectiveCursor) {
+      // effective cursor is available AND sort is keyset-eligible. Non-keyset
+      // sorts (published, views, title) never apply a cursor filter — any
+      // `cursor` query param is silently ignored for those sort modes.
+      if (isCursorSort && effectiveCursor) {
         const anchorTs = new Date(effectiveCursor.ts);
         if (q.sort === "oldest") {
           filters.push(

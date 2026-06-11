@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { eq, and, gt, lt, isNull, isNotNull, or } from "drizzle-orm";
+import { eq, and, gt, isNull } from "drizzle-orm";
 import { logger } from "../../infrastructure/logger.js";
 import { nanoid } from "nanoid";
 import { db, schema, pgPool } from "../../infrastructure/db.js";

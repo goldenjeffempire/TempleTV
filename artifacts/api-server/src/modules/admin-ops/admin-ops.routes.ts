@@ -3747,8 +3747,10 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       }
 
       // ── In-process slow-request ring buffer ───────────────────────────────
-      const ringBuffer = getSlowRequestsSnapshot();
-      const slowRequests = ringBuffer
+      // getSlowRequestsSnapshot() returns { thresholdMs, bufferSize, entries, routes }
+      // NOT an array — use .entries for the per-request log.
+      const snapshot = getSlowRequestsSnapshot();
+      const slowRequests = snapshot.entries
         .filter((r) => r.durationMs >= minMs)
         .sort((a, b) => b.durationMs - a.durationMs)
         .slice(0, limit)
@@ -3762,7 +3764,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
 
       return {
         pgStatStatements: { available: pgStatAvailable, queries: pgStatQueries },
-        slowRequests: { available: ringBuffer.length > 0, requests: slowRequests },
+        slowRequests: { available: snapshot.entries.length > 0, requests: slowRequests },
         checkedAt: new Date().toISOString(),
       };
     },
