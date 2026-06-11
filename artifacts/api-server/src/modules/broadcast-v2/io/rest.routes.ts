@@ -45,6 +45,7 @@ import {
   sendBroadcastWebhookSync,
 } from "../webhook/webhook.service.js";
 import { runFaststart } from "../../transcoder/faststart.service.js";
+import { driftAggregator } from "../engine/drift-aggregator.js";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
 const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
@@ -421,6 +422,14 @@ export async function restRoutes(app: FastifyInstance) {
         fullRecoveryCount: getBroadcastHealthMonitorStatus().fullRecoveryCount,
         lastFullRecoveryAtMs: getBroadcastHealthMonitorStatus().lastFullRecoveryAtMs,
       },
+      /**
+       * Viewer-reported drift aggregated over the last 90 s.
+       * Computed from POST /report-position samples sent by player clients
+       * every ~30 s while content is playing.  Positive = viewers are behind
+       * the server's authoritative position.  All fields null when no samples
+       * are present in the window.
+       */
+      viewerSync: driftAggregator.getStats(),
     };
   });
 
@@ -985,6 +994,96 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     const { itemId } = req.body as { itemId: string };
     const result = await broadcastOrchestrator.naturalItemEnd(itemId);
     return { ok: true, ...result };
+  });
+
+  // ── Viewer position report (sync telemetry) ──────────────────────────
+  //
+  // Called by every player client every ~30 s while content is playing.
+  // The client sends its locally-computed position for the current item.
+  // The server derives the authoritative expected position from the
+  // orchestrator's cycle-anchor arithmetic and records the difference as a
+  // drift sample in the in-process DriftAggregator.
+  //
+  // This is OPTIONAL telemetry — the broadcast path is entirely unaffected
+  // by whether clients call this endpoint.  Auth required at "user" level
+  // (same as /report-stall) so anonymous viewers don't contribute noise;
+  // a 401 from the client is silently swallowed by the transport.
+  //
+  // Rate-limited to 4/min per IP (one per 30 s interval + a small burst
+  // allowance for reconnects/page-loads that fire the reporter immediately).
+  app.post("/report-position", {
+    ...userGuard,
+    bodyLimit: 1_024,
+    schema: {
+      body: z.object({
+        itemId: z.string().min(1).max(128),
+        positionMs: z.number().int().nonnegative().max(86_400_000),
+      }),
+      response: {
+        200: z.object({
+          ok: z.boolean(),
+          serverPositionMs: z.number().nullable(),
+          driftMs: z.number().nullable(),
+        }),
+        429: _429err,
+      },
+    },
+    config: { rateLimit: { max: 4, timeWindow: "1 minute" } },
+  }, (req, _reply) => {
+    const { itemId, positionMs } = req.body as { itemId: string; positionMs: number };
+    const snap = broadcastOrchestrator.snapshot();
+    if (!snap.current || snap.current.id !== itemId) {
+      // Item is no longer current — stale report, discard silently.
+      return { ok: true, serverPositionMs: null, driftMs: null };
+    }
+    const serverPositionMs = Math.max(0, Date.now() - snap.current.startsAtMs);
+    const driftMs = serverPositionMs - positionMs;
+    driftAggregator.record(itemId, driftMs);
+    return { ok: true, serverPositionMs, driftMs };
+  });
+
+  // ── Public: sync reference ────────────────────────────────────────────
+  //
+  // Returns the server's authoritative position with sub-second precision.
+  // Use this from test harnesses, monitoring scripts, or multi-device sync
+  // verification tools to measure how far any individual player is from the
+  // ground truth without relying on the player's own clock estimate.
+  //
+  // No auth required — it exposes only what the broadcast already makes
+  // public via SSE/WS snapshots. Aggressively rate-limited (60/min) since
+  // it's intended for occasional point-in-time checks, not polling.
+  app.get("/sync-reference", {
+    schema: {
+      response: {
+        200: z.object({
+          ok: z.literal(true),
+          channelId: z.string(),
+          sequence: z.number().int(),
+          serverTimeMs: z.number().int(),
+          itemId: z.string().nullable(),
+          serverPositionMs: z.number().int().nullable(),
+          durationMs: z.number().int().nullable(),
+        }),
+        429: _429err,
+      },
+    },
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+  }, (_req, reply) => {
+    reply.header("Cache-Control", "no-store, max-age=0");
+    const snap = broadcastOrchestrator.snapshot();
+    const serverTimeMs = Date.now();
+    const serverPositionMs = snap.current
+      ? Math.max(0, serverTimeMs - snap.current.startsAtMs)
+      : null;
+    return {
+      ok: true as const,
+      channelId: broadcastOrchestrator.channelId,
+      sequence: broadcastOrchestrator.getSequence(),
+      serverTimeMs,
+      itemId: snap.current?.id ?? null,
+      serverPositionMs,
+      durationMs: snap.current ? Math.round(snap.current.durationSecs * 1000) : null,
+    };
   });
 
   // ── Admin: trigger HLS transcoding for all queue items missing it ─────

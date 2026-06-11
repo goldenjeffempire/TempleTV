@@ -308,6 +308,18 @@ export class V2Transport {
    * arrived recently; if not, force-reconnects to shed the zombie socket.
    */
   private heartbeatWatchdog: ReturnType<typeof setInterval> | null = null;
+  /** Timer that fires every 30 s to report viewer position drift to the server. */
+  private driftReportTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Snapshot of the currently-airing item used by the drift reporter.
+   * Updated on every snapshot frame so the reporter always uses the
+   * freshest startsAtMs / durationSecs without coupling to the machine.
+   */
+  private lastSnapshotForDrift: {
+    itemId: string;
+    startsAtMs: number;
+    durationSecs: number;
+  } | null = null;
 
   /**
    * Stored teardown callback for the active SSE connection. Promoted to an
@@ -347,12 +359,14 @@ export class V2Transport {
     this.stopped = false;
     this.lastFrameMs = Date.now();
     this.startHeartbeatWatchdog();
+    this.startDriftReporter();
     this.connectWs();
   }
 
   stop(): void {
     this.stopped = true;
     this.stopHeartbeatWatchdog();
+    this.stopDriftReporter();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     if (this.onlineHandler && typeof window !== "undefined") {
@@ -597,6 +611,61 @@ export class V2Transport {
   private stopHeartbeatWatchdog(): void {
     if (this.heartbeatWatchdog) clearInterval(this.heartbeatWatchdog);
     this.heartbeatWatchdog = null;
+  }
+
+  // ── Viewer drift reporter ──────────────────────────────────────────────
+  //
+  // Every 30 s while content is playing, the transport posts its computed
+  // local position to the server.  The server calculates the difference
+  // from its authoritative cycle-anchor position and records it in the
+  // in-process drift aggregator, making the data available on /health and
+  // in the admin broadcast-v2 "Viewer Sync" card.
+  //
+  // This is intentionally fire-and-forget telemetry:
+  //   • Any network or auth failure is silently swallowed — it must never
+  //     surface as a player error.
+  //   • keepalive: true ensures the browser submits the request even if the
+  //     tab is unloaded immediately after the interval fires.
+  //   • The reporter is suppressed for the first 10 s of an item (buffering
+  //     window) and for the last 5 s (natural-end transition window) to
+  //     avoid artificially-high drift readings at segment boundaries.
+
+  private startDriftReporter(): void {
+    this.stopDriftReporter();
+    this.driftReportTimer = setInterval(() => {
+      if (this.stopped || !this.lastSnapshotForDrift) return;
+      const { itemId, startsAtMs, durationSecs } = this.lastSnapshotForDrift;
+      const nowMs = Date.now() + this.clockOffsetMs;
+      const elapsedMs = nowMs - startsAtMs;
+      // Skip during join buffering window and natural-end transition window
+      if (elapsedMs < 10_000 || elapsedMs > durationSecs * 1000 - 5_000) return;
+      void this.sendDriftReport(itemId, Math.round(elapsedMs));
+    }, 30_000);
+    const t = this.driftReportTimer as unknown as { unref?: () => void };
+    t.unref?.();
+  }
+
+  private stopDriftReporter(): void {
+    if (this.driftReportTimer) clearInterval(this.driftReportTimer);
+    this.driftReportTimer = null;
+  }
+
+  private sendDriftReport(itemId: string, positionMs: number): Promise<void> {
+    try {
+      const url = `${this.cfg.baseUrl}/report-position`;
+      const body = JSON.stringify({ itemId, positionMs });
+      if (typeof fetch !== "undefined") {
+        return (fetch as typeof globalThis.fetch)(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+          keepalive: true,
+        }).then(() => undefined).catch(() => undefined);
+      }
+    } catch {
+      // Swallow — telemetry must never surface errors to the player.
+    }
+    return Promise.resolve();
   }
 
   // ── Connection helpers ─────────────────────────────────────────────────
@@ -862,6 +931,17 @@ export class V2Transport {
         }
         // Cache the snapshot locally so the FSM can be seeded during outages.
         saveSnapshotCache(frame.state);
+        // Track the airing item for the drift reporter.  Updated on every
+        // snapshot so the 30 s interval always uses the freshest anchor.
+        if (frame.state.current) {
+          this.lastSnapshotForDrift = {
+            itemId: frame.state.current.id,
+            startsAtMs: frame.state.current.startsAtMs,
+            durationSecs: frame.state.current.durationSecs,
+          };
+        } else {
+          this.lastSnapshotForDrift = null;
+        }
         this.cfg.onPlayerEvent({ type: "snapshot", snapshot: frame.state });
         break;
       case "preload":

@@ -261,6 +261,21 @@ interface EngineHealth {
    * Null when the broadcast is currently off-air.
    */
   continuousOnAirMs?: number | null;
+  /**
+   * Viewer-reported position drift stats from the last 90 s window.
+   * All numeric fields are null when no samples have arrived yet.
+   * Positive values = viewers are behind the server (lagging).
+   */
+  viewerSync?: {
+    sampleCount: number;
+    windowMs: number;
+    p50Ms: number | null;
+    p95Ms: number | null;
+    maxMs: number | null;
+    minMs: number | null;
+    avgMs: number | null;
+    lastSampleAtMs: number | null;
+  };
 }
 
 interface AiringEntry {
@@ -880,6 +895,86 @@ const SortableQueueItem = memo(function SortableQueueItem({
     </li>
   );
 });
+
+/**
+ * Viewer Sync card — shows aggregate drift between viewers' playback
+ * positions and the server's authoritative cycle-anchor position.
+ *
+ * Positive drift = viewers are behind (lagging).
+ * Data comes from POST /report-position which every player client calls
+ * every ~30 s.  Uses the existing engineHealth query so no extra fetch is
+ * needed.
+ */
+function ViewerSyncCard({ health }: { health: EngineHealth | undefined }) {
+  if (!health) return null;
+  const vs = health.viewerSync;
+  if (!vs) return null;
+
+  function driftColor(ms: number | null): string {
+    if (ms === null) return "text-muted-foreground";
+    const abs = Math.abs(ms);
+    if (abs < 1_000) return "text-green-600 dark:text-green-400";
+    if (abs < 3_000) return "text-amber-600 dark:text-amber-400";
+    return "text-red-600 dark:text-red-400";
+  }
+
+  function fmtDrift(ms: number | null): string {
+    if (ms === null) return "—";
+    const abs = Math.abs(ms);
+    const sign = ms > 0 ? "+" : ms < 0 ? "−" : "";
+    if (abs < 1_000) return `${sign}${abs} ms`;
+    return `${sign}${(abs / 1_000).toFixed(1)} s`;
+  }
+
+  const windowMinutes = Math.round(vs.windowMs / 60_000);
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 pt-4">
+        <div className="flex items-center gap-2">
+          <Radio className="h-4 w-4 text-blue-500 shrink-0" />
+          <CardTitle className="text-sm">Viewer Sync</CardTitle>
+          {vs.sampleCount > 0 ? (
+            <Badge variant="secondary" className="ml-0.5 text-[10px] px-1.5">
+              {vs.sampleCount} sample{vs.sampleCount !== 1 ? "s" : ""}
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="ml-0.5 text-[10px] px-1.5 text-muted-foreground">
+              No data yet
+            </Badge>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="pb-4">
+        {vs.sampleCount === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No viewer drift reports in the last {windowMinutes} min. Samples arrive every 30 s from connected players.
+          </p>
+        ) : (
+          <>
+            <div className="grid grid-cols-3 gap-3 text-center">
+              <div className="rounded-md border bg-muted/30 px-2 py-2.5">
+                <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground mb-1">P50</div>
+                <div className={`font-mono text-sm font-semibold ${driftColor(vs.p50Ms)}`}>{fmtDrift(vs.p50Ms)}</div>
+              </div>
+              <div className="rounded-md border bg-muted/30 px-2 py-2.5">
+                <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground mb-1">P95</div>
+                <div className={`font-mono text-sm font-semibold ${driftColor(vs.p95Ms)}`}>{fmtDrift(vs.p95Ms)}</div>
+              </div>
+              <div className="rounded-md border bg-muted/30 px-2 py-2.5">
+                <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground mb-1">Max</div>
+                <div className={`font-mono text-sm font-semibold ${driftColor(vs.maxMs)}`}>{fmtDrift(vs.maxMs)}</div>
+              </div>
+            </div>
+            <p className="mt-2.5 text-[11px] text-muted-foreground text-center">
+              Positive = viewer behind server · {windowMinutes} min window
+            </p>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 /**
  * Admin Live Broadcast (v2 control plane).
@@ -2799,6 +2894,9 @@ function BroadcastV2PageInner() {
         server={server}
         queueItems={queueItems}
       />
+
+      {/* Viewer sync accuracy panel */}
+      <ViewerSyncCard health={engineHealth} />
 
       {/* Engine health panel */}
       <Card>
