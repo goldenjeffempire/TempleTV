@@ -560,7 +560,7 @@ const SortableRow = React.memo(function SortableRow({
 
       <div className="flex-shrink-0 w-16 h-10 rounded overflow-hidden bg-black">
         {item.thumbnailUrl ? (
-          <img src={item.thumbnailUrl} alt="" className="w-full h-full object-contain" />
+          <img src={item.thumbnailUrl} alt="" className="w-full h-full object-contain" loading="lazy" decoding="async" />
         ) : (
           <div className="w-full h-full flex items-center justify-center">
             <Video size={14} className="text-muted-foreground/30" />
@@ -1451,7 +1451,7 @@ function TestBroadcastDialog({ open, onOpenChange, onAdded }: TestBroadcastDialo
                   >
                     <div className="flex-shrink-0 w-14 h-9 rounded overflow-hidden bg-black">
                       {v.thumbnailUrl ? (
-                        <img src={v.thumbnailUrl} alt="" className="w-full h-full object-contain" />
+                        <img src={v.thumbnailUrl} alt="" className="w-full h-full object-contain" loading="lazy" decoding="async" />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
                           <Video size={13} className="text-muted-foreground/30" />
@@ -2164,6 +2164,8 @@ export default function BroadcastPage() {
                         src={nowPlaying.thumbnailUrl}
                         alt=""
                         className="w-full h-full object-contain"
+                        loading="lazy"
+                        decoding="async"
                       />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center">
@@ -2598,6 +2600,8 @@ export default function BroadcastPage() {
                           src={v.thumbnailUrl}
                           alt=""
                           className="w-full h-full object-contain"
+                          loading="lazy"
+                          decoding="async"
                         />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">

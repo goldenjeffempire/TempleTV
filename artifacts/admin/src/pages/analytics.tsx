@@ -680,6 +680,8 @@ export default function AnalyticsPage() {
                       src={video.thumbnailUrl}
                       alt=""
                       className="w-14 h-8 object-contain rounded flex-shrink-0 bg-black"
+                      loading="lazy"
+                      decoding="async"
                       onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                     />
                   )}

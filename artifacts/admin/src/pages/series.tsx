@@ -282,6 +282,8 @@ function EpisodesDialog({
                           src={v.thumbnailUrl}
                           alt=""
                           className="w-12 h-8 object-contain rounded flex-shrink-0 bg-black"
+                          loading="lazy"
+                          decoding="async"
                           onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                         />
                       ) : (
@@ -708,6 +710,8 @@ export default function SeriesPage() {
                     src={s.thumbnailUrl}
                     alt={s.title}
                     className="w-full h-full object-contain transition-transform duration-300"
+                    loading="lazy"
+                    decoding="async"
                     onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
                   />
                 ) : (

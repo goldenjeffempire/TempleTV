@@ -810,6 +810,21 @@ class BroadcastOrchestrator extends EventEmitter {
   private lastReloadCompletedAt = 0;
   private static readonly RELOAD_COOLDOWN_MS = 500;
 
+  /**
+   * Hash of the last successfully-loaded queue state. Used by reloadInner()
+   * to detect no-op drift-poll reloads (queue content unchanged since the
+   * last reload) and skip the expensive resolveSource() fan-out +
+   * rebuildItemOffsets() re-computation. Cleared to "" on start() so the
+   * first load after boot always runs.
+   *
+   * Hash format: pipe-separated "id:durationSecs:primaryUrl" tuples,
+   * ordered by the DB's natural sort (sort_order ASC, added_at ASC).
+   * Cheap to compute (~µs for a 50-item queue) and collision-resistant
+   * enough for this purpose — item additions, removals, URL changes, and
+   * duration edits all produce a different hash.
+   */
+  private _lastQueueHash = "";
+
   async reload(): Promise<void> {
     // All concurrent callers share the same in-flight promise — no duplicate
     // DB reads while a reload is already running.
@@ -915,6 +930,43 @@ class BroadcastOrchestrator extends EventEmitter {
       this.lastReloadError = err instanceof Error ? err.message : String(err);
       this._reloadInProgress = false;
       throw err;
+    }
+
+    // ── No-op reload short-circuit (queue hash check) ─────────────────────
+    // The 30 s self-heal drift poll fires reloadInner() even when no queue
+    // mutation has occurred. Computing a lightweight hash of the raw DB rows
+    // lets us skip the expensive resolveSource() fan-out (one HTTP probe per
+    // item) and rebuildItemOffsets() re-computation when nothing changed.
+    //
+    // Guards:
+    //   • preserveBadUrlCache callers (storage-unhealthy path) are NOT
+    //     short-circuited — they need the bad-URL cache left intact.
+    //   • An empty-queue result is NOT short-circuited — the orchestrator
+    //     must continue to the consecutiveEmptyPolls / dead-air logic below.
+    //   • A hash mismatch clears _lastQueueHash so the next reload always runs.
+    //
+    // Hash format: pipe-separated "id:durationSecs:url" tuples in DB order.
+    // Changes to any item's ID, duration, or primary URL produce a new hash.
+    if (!opts?.preserveBadUrlCache && rawRows.length > 0) {
+      const queueHash = rawRows
+        .map((r) => `${r.id}:${r.durationSecs}:${r.localVideoUrl ?? ""}:${r.hlsMasterUrl ?? ""}`)
+        .join("|");
+      if (queueHash === this._lastQueueHash) {
+        // Nothing changed — update diagnostics and return fast.
+        this.lastReloadAtMs = Date.now();
+        this.lastReloadOk = true;
+        this.lastReloadError = null;
+        this._reloadInProgress = false;
+        logger.debug(
+          { items: rawRows.length, sequence: this.sequence },
+          "[broadcast-v2] reloadInner: queue unchanged (hash match) — skipping re-computation",
+        );
+        return;
+      }
+      this._lastQueueHash = queueHash;
+    } else {
+      // Reset hash so the next non-empty reload always re-computes.
+      this._lastQueueHash = "";
     }
 
     // Pre-resolve sources ONCE per load — toItem() calls resolveSource() which

@@ -886,11 +886,20 @@ export async function videoServeRoutes(app: FastifyInstance) {
         // back to either the CDN base (when configured) or the API proxy path.
         const cdnBase = env.CDN_BASE_URL?.replace(/\/$/, "");
 
-        // A2: CDN rewriting — only for the master manifest (redirects variant
-        // playlists + segments to CDN). Segment TS files are immutable content;
-        // variant playlists are small and similarly cacheable.
-        if (cdnBase && isMaster) {
-          // Rewrite /api/hls/:videoId/... references → CDN
+        // A2: CDN rewriting — applied to ALL manifests (master + variant).
+        //
+        // Previously only the master manifest had its variant/segment references
+        // rewritten to the CDN. Variant playlists (.m3u8 files like v0/playlist.m3u8)
+        // contain the actual segment (.ts) URIs; without rewriting them here those
+        // segments are fetched from the API origin regardless of CDN config, bypassing
+        // CDN caching entirely for all segment traffic.
+        //
+        // Fix: remove the `isMaster` guard so both the proxy-path and S3-URL patterns
+        // are rewritten to the CDN base for every manifest (master or variant).
+        // Segment files are immutable content-addressed blobs — CDN caching them
+        // permanently is safe and reduces origin load dramatically.
+        if (cdnBase) {
+          // Rewrite /api/hls/:videoId/... references → CDN (master + variant)
           const proxyPathPattern = new RegExp(`/api(?:/v1)?/hls/${videoId}/([^\\s"'\\r\\n]+)`, "g");
           text = text.replace(proxyPathPattern, (_match, rest: string) => `${cdnBase}/api/hls/${videoId}/${rest}`);
         }
@@ -900,8 +909,8 @@ export async function videoServeRoutes(app: FastifyInstance) {
           `https?://[^\\s"']+/transcoded/${videoId}/([^\\s"'\\r\\n]+)`,
           "g",
         );
-        if (cdnBase && isMaster) {
-          // Point directly at CDN for segments from master manifest
+        if (cdnBase) {
+          // Point directly at CDN for all manifest types
           text = text.replace(s3UrlPattern, (_match, rest: string) => `${cdnBase}/api/hls/${videoId}/${rest}`);
         } else {
           text = text.replace(s3UrlPattern, (_match, rest: string) => `/api/hls/${videoId}/${rest}`);

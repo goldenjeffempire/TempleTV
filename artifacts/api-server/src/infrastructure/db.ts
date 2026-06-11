@@ -981,6 +981,87 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         WHERE broadcast_only IS DISTINCT FROM true
     `);
 
+    // ── Cache entries cleanup sweep ─────────────────────────────────────────
+    // Cache eviction DELETE WHERE expires_at < now() does a full table scan
+    // without an index on expires_at. A partial index on non-null expires_at
+    // makes the sweep O(expired rows) instead of O(total cache rows).
+    await run("idx_cache_entries_expires_at", `
+      CREATE INDEX IF NOT EXISTS idx_cache_entries_expires_at
+        ON cache_entries (expires_at)
+        WHERE expires_at IS NOT NULL
+    `);
+
+    // ── Refresh token expiry cleanup ────────────────────────────────────────
+    // Periodic token purge: DELETE WHERE expires_at < now() AND revoked_at IS NULL.
+    // Without this, the sweep is a full sequential scan over the tokens table.
+    await run("idx_refresh_tokens_active_expires", `
+      CREATE INDEX IF NOT EXISTS idx_refresh_tokens_active_expires
+        ON refresh_tokens (expires_at)
+        WHERE revoked_at IS NULL
+    `);
+
+    // ── App versions — mobile version check hot path ────────────────────────
+    // Mobile clients poll GET /api/app-versions?platform=X&channel=Y to check
+    // for OTA updates. A composite index on (platform, channel, is_active)
+    // turns this into an index-only scan instead of a full table scan.
+    await run("idx_app_versions_platform_channel_active", `
+      CREATE INDEX IF NOT EXISTS idx_app_versions_platform_channel_active
+        ON app_versions (platform, channel, is_active)
+    `);
+
+    // ── Live ingest endpoints — health dashboard ────────────────────────────
+    // Health and admin queries filter WHERE is_active = true ORDER BY priority.
+    // A partial index on the active subset covers the query with an index scan.
+    await run("idx_live_ingest_active_priority", `
+      CREATE INDEX IF NOT EXISTS idx_live_ingest_active_priority
+        ON live_ingest_endpoints (priority)
+        WHERE is_active = true
+    `);
+
+    // ── Playlists — listing + membership ───────────────────────────────────
+    // GET /api/playlists filters WHERE is_active = true ORDER BY created_at DESC.
+    // The full-table default scan becomes an index range scan with this covering index.
+    await run("idx_playlists_active_created", `
+      CREATE INDEX IF NOT EXISTS idx_playlists_active_created
+        ON playlists (created_at DESC)
+        WHERE is_active = true
+    `);
+
+    // ── Prayer requests — unread dashboard ─────────────────────────────────
+    // Unread prayer request count + listing: WHERE is_read = false ORDER BY
+    // created_at DESC. A partial index on the unread subset is O(unread rows).
+    await run("idx_prayer_requests_unread", `
+      CREATE INDEX IF NOT EXISTS idx_prayer_requests_unread
+        ON prayer_requests (created_at DESC)
+        WHERE is_read = false
+    `);
+
+    // ── User feedback — unread dashboard ───────────────────────────────────
+    // Admin feedback dashboard: WHERE is_read = false ORDER BY created_at DESC.
+    // Same pattern as prayer_requests — partial index on the unread subset.
+    await run("idx_user_feedback_unread", `
+      CREATE INDEX IF NOT EXISTS idx_user_feedback_unread
+        ON user_feedback (type, created_at DESC)
+        WHERE is_read = false
+    `);
+
+    // ── Broadcast event log — SSE replay + pruning ─────────────────────────
+    // SSE resume replays events WHERE channel_id = ? AND sequence > lastSeq.
+    // Pruning deletes WHERE channel_id = ? AND sequence < (max - KEEP).
+    // A composite (channel_id, sequence) index makes both O(log N).
+    await run("idx_broadcast_event_log_channel_seq", `
+      CREATE INDEX IF NOT EXISTS idx_broadcast_event_log_channel_seq
+        ON broadcast_event_log (channel_id, sequence ASC)
+    `);
+
+    // ── S3 upload telemetry — video-event analytics ─────────────────────────
+    // Telemetry dashboard queries: WHERE video_id = ? AND event = ? ORDER BY
+    // created_at DESC. Without a composite index this scans the whole table.
+    await run("idx_s3_telemetry_video_event_created", `
+      CREATE INDEX IF NOT EXISTS idx_s3_telemetry_video_event_created
+        ON s3_upload_telemetry (video_id, event, created_at DESC)
+    `);
+
     logger.info("db: functional and partial indexes ensured");
   } finally {
     client.release();
