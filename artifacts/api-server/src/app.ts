@@ -128,7 +128,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         connectSrc: ["'self'", "https:", "wss:", "ws:"],
         fontSrc: ["'self'", "https://fonts.gstatic.com"],
         objectSrc: ["'none'"],
-        frameAncestors: ["'self'", "https://*.replit.dev", "https://*.repl.co", "https://*.replit.app"],
+        frameAncestors: ["'self'"],
         upgradeInsecureRequests: [],
       },
     },
@@ -148,12 +148,11 @@ export async function buildApp(): Promise<FastifyInstance> {
   // which silently sidesteps that browser guard. Refuse to start in
   // production with that combination so the misconfiguration is loud.
   const wildcardOriginRaw = env.CORS_ORIGINS === "*";
-  // When CORS_ORIGINS='*' arrives in a non-development environment (e.g. a
-  // Replit secret that cannot be scoped per-environment), do NOT crash the
-  // server. Instead: log a severe error, clear the wildcard flag, and fall
-  // back to the APP_BASE_URL-derived safe origin so the server stays up while
-  // the operator fixes the secret.  Crashing on misconfiguration is strictly
-  // worse than degraded-but-running with a logged alert.
+  // When CORS_ORIGINS='*' arrives in a non-development environment, do NOT
+  // crash the server. Instead: log a severe error, clear the wildcard flag,
+  // and fall back to the APP_BASE_URL-derived safe origin so the server stays
+  // up while the operator fixes the configuration. Crashing on misconfiguration
+  // is strictly worse than degraded-but-running with a logged alert.
   let wildcardOrigin = wildcardOriginRaw;
   if (wildcardOriginRaw && env.NODE_ENV !== "development") {
     const fallback = env.APP_BASE_URL
@@ -163,11 +162,11 @@ export async function buildApp(): Promise<FastifyInstance> {
       { fallbackOrigin: fallback || "(none — APP_BASE_URL unset)" },
       "CORS_ORIGINS='*' is set in a non-development environment — security misconfiguration. " +
       "Update the CORS_ORIGINS secret/env-var to an explicit comma-separated allowlist " +
-      "(e.g. https://templetv.replit.app,https://*.templetv.org.ng). " +
+      "(e.g. https://admin.templetv.org.ng,https://*.templetv.org.ng). " +
       "Falling back to APP_BASE_URL-derived origin to avoid crashing.",
     );
     // Override: treat as a non-wildcard env with just APP_BASE_URL so the
-    // normal allowlist path runs below and auto-adds Replit/localhost origins.
+    // normal allowlist path runs below and auto-adds localhost origins.
     wildcardOrigin = false;
     // Temporarily override the env value in-scope so split() below works.
     (env as { CORS_ORIGINS: string }).CORS_ORIGINS = fallback;
@@ -251,34 +250,9 @@ export async function buildApp(): Promise<FastifyInstance> {
     );
   }
 
-  // Auto-allow Replit-managed dev/preview domains so the in-workspace iframes
-  // (admin, TV, and especially the Expo mobile *web* preview which runs on a
-  // different `*.expo.spock.replit.dev` origin and therefore can't piggy-back
-  // on a same-origin Vite proxy) can reach the API in development without the
-  // operator having to maintain a separate CORS_ORIGINS_EXTRA entry per Repl.
-  // Also allow localhost:5000 and localhost:3000 — when the mobile web preview
-  // is loaded through the /mobile/* dev proxy (served on port 5000), the
-  // browser origin is http://localhost:5000, which must be permitted so the
-  // Expo web bundle can make API calls back to the same API server.
-  // Production deployments never hit this branch — REPLIT_DEV_DOMAIN /
-  // REPLIT_EXPO_DEV_DOMAIN are only set inside the Replit dev container.
-  if (!wildcardOrigin) {
-    const replitDevHosts = [
-      env.REPLIT_DEV_DOMAIN,
-      env.REPLIT_EXPO_DEV_DOMAIN,
-    ].filter((h): h is string => Boolean(h));
-    if (replitDevHosts.length > 0) {
-      const replitOrigins = replitDevHosts.map((h) => `https://${h}`);
-      parsedOrigins.push(...replitOrigins);
-      app.log.info(
-        { replitOrigins },
-        "cors: auto-allowed Replit dev/preview domains",
-      );
-    }
-    if (env.NODE_ENV !== "production") {
-      parsedOrigins.push("http://localhost:5000", "http://localhost:3000");
-      app.log.info("cors: auto-allowed localhost origins for dev proxy (mobile/admin web previews)");
-    }
+  if (!wildcardOrigin && env.NODE_ENV !== "production") {
+    parsedOrigins.push("http://localhost:5000", "http://localhost:3000");
+    app.log.info("cors: auto-allowed localhost origins for local dev");
   }
   await app.register(cors, {
     origin: wildcardOrigin ? true : parsedOrigins,
@@ -398,8 +372,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   // where the framing overhead would dominate. SSE/WebSocket frames are
   // never compressed (the plugin recognises `text/event-stream`); HEAD
   // requests are also bypassed.
-  // NOTE: text/html is excluded because the Replit dev proxy can drop gzip-
-  // encoded HTML body bytes, resulting in empty responses in the preview pane.
+  // NOTE: text/html is excluded from compression.
   //
   // HLS segments (video/mp2t) and manifests (application/vnd.apple.mpegurl)
   // are NOT compressed — the plugin's default content-type regex only matches
@@ -1080,11 +1053,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   app.addHook("onReady", async () => {
-    const baseUrl =
-      env.WEBHOOK_BASE_URL ??
-      (env.REPLIT_DEV_DOMAIN
-        ? `https://${env.REPLIT_DEV_DOMAIN}`
-        : null);
+    const baseUrl = env.WEBHOOK_BASE_URL ?? null;
     if (baseUrl) {
       subscribeToYouTubePubSubHubbub(baseUrl).catch((err) => {
         app.log.warn({ err }, "youtube-webhook: initial PubSubHubbub subscription failed — will retry on next renewal cycle");

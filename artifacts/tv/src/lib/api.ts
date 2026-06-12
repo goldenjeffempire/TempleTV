@@ -30,18 +30,6 @@ export function resolveApiOrigin(): string {
   if (!origin || origin === "null" || origin.startsWith("file:")) {
     return "https://api.templetv.org.ng";
   }
-  // Replit dev/preview domains do not serve the API — always route to the
-  // production API origin so the TV surface works correctly when run on
-  // Replit without a local API proxy.
-  const { hostname } = window.location;
-  if (
-    hostname.endsWith(".replit.dev") ||
-    hostname.endsWith(".worf.replit.dev") ||
-    hostname.endsWith(".replit.app") ||
-    hostname.endsWith(".spock.replit.dev")
-  ) {
-    return "https://api.templetv.org.ng";
-  }
   return origin;
 }
 

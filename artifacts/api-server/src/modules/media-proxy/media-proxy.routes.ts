@@ -38,8 +38,6 @@ const IS_PRODUCTION = env.NODE_ENV === "production";
 const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
   ".cloudfront.net",
   ".amazonaws.com",
-  ".replit.app",
-  ".replit.dev",
   ".onrender.com",
   "youtube.com",
   "youtu.be",
@@ -160,8 +158,8 @@ export async function mediaProxyRoutes(app: FastifyInstance) {
           signal: ctrl.signal,
           // Never follow redirects — a redirect could pivot the proxy to an
           // internal / private address even if the original host was allowed.
-          // SSRF-via-open-redirect: attacker hosts a 301 on *.replit.app →
-          // internal metadata endpoint. Manual mode returns the redirect
+          // SSRF-via-open-redirect: attacker hosts a redirect to an
+          // internal/private address. Manual mode returns the redirect
           // response so we can detect and reject it explicitly.
           redirect: "manual",
         });

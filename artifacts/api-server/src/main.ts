@@ -396,8 +396,8 @@ async function main() {
   //
   // Important dev/prod distinction: in non-production environments (NODE_ENV ≠
   // "production"), queue.repo.ts ignores API_ORIGIN for own-origin detection
-  // and media-proxy URL construction, using REPLIT_DEV_DOMAIN / RENDER_EXTERNAL_URL
-  // instead. This prevents a prod-sync API_ORIGIN (e.g. https://api.templetv.org.ng)
+  // and media-proxy URL construction, using RENDER_EXTERNAL_URL instead.
+  // This prevents a prod-sync API_ORIGIN (e.g. https://api.templetv.org.ng)
   // from being treated as "same-origin" in dev, which would skip proxying and cause
   // browser CORP errors when loading prod-sync media.
   const isProdNodeEnv = process.env.NODE_ENV === "production";
@@ -418,11 +418,11 @@ async function main() {
       } else if (!isProdNodeEnv) {
         // In dev, API_ORIGIN is typically set to the production server for prod-sync.
         // queue.repo.ts ignores it for own-origin / proxy decisions in this environment.
-        const devFallback = process.env["RENDER_EXTERNAL_URL"] ?? process.env["REPLIT_DEV_DOMAIN"];
+        const devFallback = process.env["RENDER_EXTERNAL_URL"];
         logger.info(
           { API_ORIGIN: env.API_ORIGIN, devOwnOrigin: devFallback ?? "http://localhost (fallback)" },
           "API_ORIGIN set but NODE_ENV=development — used only for prod-sync URL absolutizing; " +
-          "own-origin/media-proxy URLs will use REPLIT_DEV_DOMAIN/RENDER_EXTERNAL_URL instead " +
+          "own-origin/media-proxy URLs will use RENDER_EXTERNAL_URL instead " +
           "(prevents prod-sync items from bypassing the media proxy in dev)",
         );
       } else {
@@ -430,7 +430,7 @@ async function main() {
       }
     }
   } else {
-    const fallback = process.env["RENDER_EXTERNAL_URL"] ?? process.env["REPLIT_DEV_DOMAIN"];
+    const fallback = process.env["RENDER_EXTERNAL_URL"];
     if (isProdNodeEnv && !fallback) {
       // Production with no API_ORIGIN and no auto-detected fallback.
       // Relative localVideoUrl paths (/api/v1/uploads/…) stored in the DB will
@@ -439,8 +439,8 @@ async function main() {
       // cause of broadcast outages after a clean deploy.
       logger.error(
         {},
-        "MISCONFIGURED: API_ORIGIN is unset in production and no RENDER_EXTERNAL_URL / " +
-        "REPLIT_DEV_DOMAIN auto-detect fallback is available. " +
+        "MISCONFIGURED: API_ORIGIN is unset in production and no RENDER_EXTERNAL_URL " +
+        "auto-detect fallback is available. " +
         "Relative upload paths (localVideoUrl) will not be absolutized — " +
         "all locally-uploaded broadcast items will fail with resolveSource()=null and cause dead air. " +
         "Set API_ORIGIN=https://your-api-domain.com in the environment.",
@@ -450,7 +450,7 @@ async function main() {
       // if RENDER_EXTERNAL_URL changes on a redeploy, URLs silently break.
       logger.warn(
         { fallbackOrigin: fallback },
-        "API_ORIGIN not set in production — falling back to RENDER_EXTERNAL_URL/REPLIT_DEV_DOMAIN for " +
+        "API_ORIGIN not set in production — falling back to RENDER_EXTERNAL_URL for " +
         "upload URL absolutizing and media proxy. Set API_ORIGIN explicitly for reliability.",
       );
     } else {

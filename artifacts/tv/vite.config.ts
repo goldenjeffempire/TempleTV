@@ -2,12 +2,8 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
-import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
-// Port 23876 is the Replit-assigned dev port for the TV surface, mapped in
-// .replit [[ports]] (localPort=23876 externalPort=4200) and forwarded by the
-// API server's dev proxy at /tv/*.  Override with PORT env var if needed.
-const rawPort = process.env.PORT ?? "23876";
+const rawPort = process.env.PORT ?? "4200";
 const port = Number(rawPort);
 
 if (Number.isNaN(port) || port <= 0) {
@@ -21,20 +17,6 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-    runtimeErrorOverlay(),
-    ...(process.env.NODE_ENV !== "production" &&
-    process.env.REPL_ID !== undefined
-      ? [
-          await import("@replit/vite-plugin-cartographer").then((m) =>
-            m.cartographer({
-              root: path.resolve(import.meta.dirname, ".."),
-            }),
-          ),
-          await import("@replit/vite-plugin-dev-banner").then((m) =>
-            m.devBanner(),
-          ),
-        ]
-      : []),
   ],
   resolve: {
     alias: {
@@ -100,16 +82,6 @@ export default defineConfig({
     port,
     host: "0.0.0.0",
     allowedHosts: true,
-    hmr: {
-      // When the TV app is accessed through the API server dev proxy at
-      // port 5000, `window.location.port` = 5000 so Vite's HMR client
-      // would try ws://localhost:5000/@vite/client — a path the API server
-      // does not serve, triggering an infinite reconnect + 429 loop.
-      // Setting clientPort to the Vite dev server's own port (23876)
-      // forces the HMR WebSocket to always target the correct endpoint
-      // regardless of which port the page was loaded from.
-      clientPort: port,
-    },
     fs: {
       strict: true,
       // Deny sensitive dotfiles but explicitly allow .well-known/ so that

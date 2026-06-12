@@ -1072,7 +1072,7 @@ class BroadcastOrchestrator extends EventEmitter {
         title: row.title,
         // Use the absolutized thumbnailUrl from toItem(): relative /api/hls/…
         // paths are rewritten to the server's own origin (API_ORIGIN in
-        // production, REPLIT_DEV_DOMAIN in dev) so all client surfaces
+        // production, RENDER_EXTERNAL_URL in dev) so all client surfaces
         // (TV, mobile, admin) can render thumbnails without knowing the origin.
         thumbnailUrl: v2.thumbnailUrl,
         // Apply a minimum 60 s floor to durationSecs.

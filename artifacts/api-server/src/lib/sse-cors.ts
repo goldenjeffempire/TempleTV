@@ -40,15 +40,9 @@ export function sseCorsHeaders(req: FastifyRequest): Record<string, string> {
     };
   }
 
-  const replitOrigins: string[] = [];
-  if (env.NODE_ENV === "development" || env.REPLIT_DEV_DOMAIN) {
-    if (env.REPLIT_DEV_DOMAIN) {
-      replitOrigins.push(`https://${env.REPLIT_DEV_DOMAIN}`);
-    }
-    replitOrigins.push(
-      "http://localhost:5000",
-      "http://localhost:3000",
-    );
+  const localOrigins: string[] = [];
+  if (env.NODE_ENV !== "production") {
+    localOrigins.push("http://localhost:5000", "http://localhost:3000");
   }
 
   const extraOrigins = env.CORS_ORIGINS_EXTRA
@@ -58,7 +52,7 @@ export function sseCorsHeaders(req: FastifyRequest): Record<string, string> {
   const allowed = [
     ...env.CORS_ORIGINS.split(",").map((s: string) => s.trim()).filter(Boolean),
     ...extraOrigins,
-    ...replitOrigins,
+    ...localOrigins,
   ];
 
   const isAllowed = allowed.some((allowed) => {

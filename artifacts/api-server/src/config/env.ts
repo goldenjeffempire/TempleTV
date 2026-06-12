@@ -24,14 +24,6 @@ const Env = z.object({
   // timeout fires first on a freshly re-used keep-alive connection.
   HTTP_KEEPALIVE_MS: z.coerce.number().int().positive().default(75_000),
   HTTP_HEADERS_TIMEOUT_MS: z.coerce.number().int().positive().default(80_000),
-  // Injected automatically by Replit in dev environments. Used by sse-cors.ts
-  // to allow the Replit preview origin in addition to localhost.
-  REPLIT_DEV_DOMAIN: z.string().optional(),
-  // Injected by Replit when the Expo dev container is running.
-  REPLIT_EXPO_DEV_DOMAIN: z.string().optional(),
-  // Dev-proxy ports for TV and Mobile surfaces (non-production only).
-  TV_DEV_PORT: z.coerce.number().int().positive().default(23876),
-  MOBILE_DEV_PORT: z.coerce.number().int().positive().default(18115),
   // Absolute base URL used for outbound webhook callbacks (e.g. Stripe, Expo).
   WEBHOOK_BASE_URL: z.string().url().optional(),
   LOG_LEVEL: z

@@ -9,9 +9,6 @@ const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
   // AWS / CloudFront CDN
   ".cloudfront.net",
   ".amazonaws.com",
-  // Replit — dev and production subdomains
-  ".replit.app",
-  ".replit.dev",
   // Render.com hosting — covers the default *.onrender.com service URLs
   // used before a custom domain is wired up (e.g. temple-tv-api-xxx.onrender.com).
   // Render services that have custom domains will match via the templetv.org.ng

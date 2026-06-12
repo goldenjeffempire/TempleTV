@@ -46,17 +46,8 @@ function inferProductionApiOrigin(): string | null {
   if (typeof window === "undefined") return null;
   const { hostname } = window.location;
 
-  // ── Replit dev domains — always use relative /api path ───────────────────
-  // Replit's preview proxy may assign a subdomain beginning with "admin" to
-  // the admin artifact, but the Vite dev server already proxies /api →
-  // localhost, so we must NOT rewrite to api.templetv.org.ng here.
-  if (
-    hostname.endsWith(".replit.dev") ||
-    hostname.endsWith(".worf.replit.dev") ||
-    hostname.endsWith(".replit.app") ||
-    hostname === "localhost" ||
-    hostname === "127.0.0.1"
-  ) {
+  // Local dev — always use relative /api path
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
     return null;
   }
 

@@ -398,7 +398,7 @@ class MediaIntegrityScannerImpl {
           // Normalize relative paths (e.g. /api/hls/…/master.m3u8) to absolute
           // before probing. Relative URLs always fail the HEAD/GET fetch — the
           // scanner must resolve them using the same origin resolution order
-          // (API_ORIGIN → RENDER_EXTERNAL_URL → REPLIT_DEV_DOMAIN → localhost)
+          // (API_ORIGIN → RENDER_EXTERNAL_URL → localhost)
           // that the orchestrator's toItem() uses.
           const url = normalizeQueueUrl(rawUrl);
           const kind: ScanItemResult["kind"] = row.hlsMasterUrl

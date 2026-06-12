@@ -22,7 +22,7 @@ import { runtimeRepo } from "./runtime.repo.js";
  *
  * Resolution order (first truthy wins):
  *   1. API_ORIGIN        — explicit own-origin, required in production
- *   2. REPLIT_DEV_DOMAIN — Replit-managed public dev domain (auto-set)
+ *   2. RENDER_EXTERNAL_URL — auto-set by Render; zero-config self-detection
  *   3. Raw path returned — resolver will reject with allowlist error;
  *                          surfaces a clear log instead of a silent null.
  *
@@ -34,9 +34,9 @@ import { runtimeRepo } from "./runtime.repo.js";
 // True only when the Node process is explicitly running in production mode.
 // In all other environments (development, test, staging) API_ORIGIN must NOT
 // be used as "this server's own origin" — in a dev environment API_ORIGIN
-// should be unset or point to this server's own public Replit/Render URL.
-// REPLIT_DEV_DOMAIN and RENDER_EXTERNAL_URL auto-reflect the dev instance's
-// actual public address and should be preferred over API_ORIGIN in dev.
+// should be unset or point to this server's own public Render/dev URL.
+// RENDER_EXTERNAL_URL auto-reflects the dev/staging instance's
+// actual public address and should be preferred over API_ORIGIN in non-production.
 //
 // API_ORIGIN MUST equal this server's own canonical domain in production
 // (e.g. https://api.templetv.org.ng). Do NOT set it to the admin SPA domain
@@ -69,8 +69,7 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
       if (parsed.hostname.endsWith(".onrender.com")) {
         const ownPublicBase = (
           (IS_PROD_NODE_ENV ? env.API_ORIGIN : undefined) ??
-          process.env["RENDER_EXTERNAL_URL"] ??
-          process.env["REPLIT_DEV_DOMAIN"]
+          process.env["RENDER_EXTERNAL_URL"]
         )?.replace(/\/+$/, "");
         if (ownPublicBase) {
           const absBase = /^https?:\/\//i.test(ownPublicBase)
@@ -97,15 +96,13 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
   //                              it to an admin SPA domain or a remote server URL.
   //   2. RENDER_EXTERNAL_URL   — Render auto-sets this to the service's public HTTPS URL;
   //                              gives zero-config self-origin detection on Render deploys
-  //   3. REPLIT_DEV_DOMAIN     — Replit dev environment public domain
-  //   4. http://localhost:PORT — Pure local dev fallback (no public origin configured).
+  //   3. http://localhost:PORT — Pure local dev fallback (no public origin configured).
   //                              localhost is now in the SSRF allowlist so the resolver
   //                              accepts these URLs and the player can load uploads from
   //                              the dev server running on the same machine.
   const publicBase = (
     (IS_PROD_NODE_ENV ? env.API_ORIGIN : undefined) ??
-    process.env["RENDER_EXTERNAL_URL"] ??
-    process.env["REPLIT_DEV_DOMAIN"]
+    process.env["RENDER_EXTERNAL_URL"]
   )?.replace(/\/+$/, "");
   const base = publicBase ?? `http://localhost:${env.PORT ?? 5000}`;
   const path = raw.startsWith("/") ? raw : `/${raw}`;
@@ -138,14 +135,12 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
  *                            Do NOT set API_ORIGIN to an admin SPA domain or a
  *                            remote server URL in dev — use the options below.
  *   2. RENDER_EXTERNAL_URL — zero-config Render self-detection
- *   3. REPLIT_DEV_DOMAIN   — Replit dev environment public domain
- *   4. http://localhost:PORT fallback
+ *   3. http://localhost:PORT fallback
  */
 function getOwnBase(): string {
   const publicBase = (
     (IS_PROD_NODE_ENV ? env.API_ORIGIN : undefined) ??
-    process.env["RENDER_EXTERNAL_URL"] ??
-    process.env["REPLIT_DEV_DOMAIN"]
+    process.env["RENDER_EXTERNAL_URL"]
   )?.replace(/\/+$/, "");
   const base = publicBase ?? `http://localhost:${env.PORT ?? 5000}`;
   return /^https?:\/\//i.test(base) ? base : `https://${base}`;

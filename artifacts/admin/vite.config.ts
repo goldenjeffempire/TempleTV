@@ -3,7 +3,6 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import { createRequire } from "module";
-import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
 // Resolve d3-format to its pre-built CJS/UMD bundle so Vite/Rolldown can
 // consume it without needing to rewrite the package's ESM export map.
@@ -19,13 +18,7 @@ const d3FormatDist = (() => {
   }
 })();
 
-// Port 23744 is the Replit-assigned local port for the "artifacts/admin: web"
-// workflow (mapped to external port 3002). The primary "Start application"
-// workflow always sets PORT=5000 explicitly, so changing this default does
-// not affect it. The artifact workflow does not inject PORT, so it falls
-// through to this default and binds on 23744 as Replit expects.
-// Override with PORT env var if needed.
-const rawPort = process.env.PORT ?? "23744";
+const rawPort = process.env.PORT ?? "3000";
 const port = Number(rawPort);
 
 if (Number.isNaN(port) || port <= 0) {
@@ -39,20 +32,6 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-    runtimeErrorOverlay(),
-    ...(process.env.NODE_ENV !== "production" &&
-    process.env.REPL_ID !== undefined
-      ? [
-          await import("@replit/vite-plugin-cartographer").then((m) =>
-            m.cartographer({
-              root: path.resolve(import.meta.dirname, ".."),
-            }),
-          ),
-          await import("@replit/vite-plugin-dev-banner").then((m) =>
-            m.devBanner(),
-          ),
-        ]
-      : []),
   ],
   resolve: {
     alias: {
