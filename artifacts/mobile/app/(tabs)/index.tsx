@@ -41,7 +41,7 @@ import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import { useVideos } from "@/hooks/useVideos";
 import { VideoCard } from "@/components/VideoCard";
 import { SectionHeader } from "@/components/SectionHeader";
-import { SkeletonVerticalCard } from "@/components/SkeletonCard";
+import { SkeletonVerticalCard, SkeletonHero } from "@/components/SkeletonCard";
 import { V2PlayerContainer } from "@/components/V2PlayerContainer";
 import { getApiBase } from "@/lib/apiBase";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
@@ -121,6 +121,26 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
     baseUrl: `${apiBase}/api/broadcast-v2`,
   });
   const v2Server = v2Snapshot.lastServerSnapshot;
+
+  // ── Hero skeleton (initial broadcast connection) ───────────────────────────
+  // Show the skeleton only during the very first connection attempt — once we
+  // receive ANY server snapshot (live or off-air) we fade it out and never show
+  // it again (reconnection flicker is handled by the existing content layer).
+  const skeletonOpacity = useRef(new Animated.Value(1)).current;
+  const [showSkeletonLayer, setShowSkeletonLayer] = useState(true);
+
+  useEffect(() => {
+    if (v2Server !== null && showSkeletonLayer) {
+      Animated.timing(skeletonOpacity, {
+        toValue: 0,
+        duration: 450,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) setShowSkeletonLayer(false);
+      });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [v2Server]);
 
   // Animated pulse for the ON AIR dot — gives the "live" feel.
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -287,6 +307,19 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
           )}
         </View>
       </LinearGradient>
+
+      {/* ── Hero skeleton overlay ──────────────────────────────────────────────
+          Fades out the first time lastServerSnapshot becomes non-null.
+          pointerEvents="none" so the underlying Pressable stays tappable even
+          during the brief fade-out window. */}
+      {showSkeletonLayer && (
+        <Animated.View
+          style={[StyleSheet.absoluteFill, { opacity: skeletonOpacity, zIndex: 20 }]}
+          pointerEvents="none"
+        >
+          <SkeletonHero />
+        </Animated.View>
+      )}
     </Pressable>
   );
 });

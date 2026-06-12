@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import { Animated, Platform, StyleSheet, View } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { useColors } from "@/hooks/useColors";
 import colors from "@/constants/colors";
 
@@ -60,6 +61,104 @@ export function SkeletonLiveBanner() {
     </View>
   );
 }
+
+/**
+ * Full-bleed hero skeleton — shown while the broadcast WS connection is being
+ * established (lastServerSnapshot === null). Covers the hero area with a dark
+ * shimmer background + bottom placeholder rows so the first visible frame is
+ * never a jarring blank box.
+ *
+ * Designed to sit as an absolutely-positioned overlay inside the hero Pressable
+ * and fade out via an Animated.Value supplied by the parent.
+ */
+export function SkeletonHero() {
+  const shimmer = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(shimmer, { toValue: 1, duration: 1200, useNativeDriver: ND }),
+        Animated.timing(shimmer, { toValue: 0, duration: 1200, useNativeDriver: ND }),
+      ]),
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [shimmer]);
+
+  const sweepOpacity = shimmer.interpolate({
+    inputRange: [0, 0.5, 1],
+    outputRange: [0, 0.07, 0],
+  });
+
+  const placeholderOpacity = shimmer.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.25, 0.45],
+  });
+
+  return (
+    <View style={[StyleSheet.absoluteFill, heroSkeletonStyles.root]}>
+      {/* Slow shimmer sweep over the full area */}
+      <Animated.View
+        style={[StyleSheet.absoluteFill, heroSkeletonStyles.sweep, { opacity: sweepOpacity }]}
+      />
+
+      {/* Bottom gradient + placeholder rows */}
+      <LinearGradient
+        colors={["transparent", "rgba(0,0,0,0.55)", "rgba(0,0,0,0.88)"]}
+        locations={[0.35, 0.65, 1]}
+        style={[StyleSheet.absoluteFill, heroSkeletonStyles.gradient]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0, y: 1 }}
+      >
+        <View style={heroSkeletonStyles.contentArea}>
+          {/* Badge placeholder */}
+          <Animated.View style={[heroSkeletonStyles.badge, { opacity: placeholderOpacity }]} />
+
+          {/* Title line 1 */}
+          <Animated.View style={[heroSkeletonStyles.titleLine1, { opacity: placeholderOpacity }]} />
+
+          {/* Title line 2 */}
+          <Animated.View style={[heroSkeletonStyles.titleLine2, { opacity: placeholderOpacity }]} />
+
+          {/* Button placeholder */}
+          <Animated.View style={[heroSkeletonStyles.button, { opacity: placeholderOpacity }]} />
+        </View>
+      </LinearGradient>
+    </View>
+  );
+}
+
+const heroSkeletonStyles = StyleSheet.create({
+  root: { backgroundColor: "#0d0020", overflow: "hidden" },
+  sweep: { backgroundColor: "#ffffff" },
+  gradient: { justifyContent: "flex-end" },
+  contentArea: { paddingHorizontal: 16, paddingBottom: 20, gap: 10 },
+  badge: {
+    height: 18,
+    width: 60,
+    borderRadius: 5,
+    backgroundColor: "rgba(255,255,255,0.5)",
+  },
+  titleLine1: {
+    height: 20,
+    width: "72%",
+    borderRadius: 5,
+    backgroundColor: "rgba(255,255,255,0.5)",
+  },
+  titleLine2: {
+    height: 20,
+    width: "48%",
+    borderRadius: 5,
+    backgroundColor: "rgba(255,255,255,0.5)",
+    marginBottom: 4,
+  },
+  button: {
+    height: 36,
+    width: 120,
+    borderRadius: 24,
+    backgroundColor: "rgba(255,255,255,0.35)",
+  },
+});
 
 const skeletonStyles = StyleSheet.create({
   verticalCard: { width: 180, gap: 8, padding: 4 },
