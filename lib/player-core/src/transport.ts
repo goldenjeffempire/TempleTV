@@ -131,15 +131,19 @@ const WS_FAIL_STREAK_SSE_FALLBACK = 3;
 
 const SESSION_STORAGE_KEY = "ttv:broadcast:seq:v1";
 /**
- * Extended from 5 min to 15 min for 24/7 broadcast reliability.
+ * Extended from 15 min to 2 hours for 24/7 broadcast reliability.
  *
- * A viewer who steps away for 6-10 minutes (common during service breaks,
- * announcements, offering) previously lost their sequence position on return,
- * forcing a full BOOTSTRAP cycle instead of the instant event-log replay that
- * avoids the BOOTSTRAP state entirely. 15 min covers most real-world tab-
- * background / device-sleep gaps at typical church streaming events.
+ * The sequence number lets the transport replay only the events it missed
+ * (event-log replay) instead of bootstrapping from scratch on reconnect.
+ * 15 min was too short for common "leave tab in background during a sermon"
+ * or "device sleeps during a 2-hour service" scenarios. At 2 hours the
+ * sequence is still valid for event-log replay because the server retains
+ * 10 000 events (well beyond a typical 2-hour service). Matching the TTL to
+ * a full service duration means even a device that sleeps for the entire
+ * service can resume with event-log replay on wake-up, skipping BOOTSTRAP
+ * entirely and re-joining the broadcast at the correct wall-clock position.
  */
-const SESSION_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 function loadStoredSequence(): number {
   try {
@@ -186,7 +190,39 @@ function saveStoredSequence(seq: number): void {
 // fetch fails — it never suppresses a successful server response.
 
 const SNAPSHOT_CACHE_KEY = "ttv:broadcast:snapshot:v1";
-const SNAPSHOT_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+/**
+ * Normal snapshot cache TTL — extended from 30 min to 4 hours.
+ *
+ * A device that sleeps, loses signal, or experiences an API outage for up
+ * to 4 hours now resumes playback from the cached broadcast state rather
+ * than presenting a blank BOOTSTRAP screen. The `endsAtMs < Date.now()`
+ * guard in loadSnapshotCache() already prevents replaying items whose
+ * scheduled slot has genuinely passed, so extending the TTL is safe.
+ *
+ * 24/7 context: on a TV or mobile device left running overnight, a 30-min
+ * TTL expires during any short sleep/screen-off cycle. 4 hours covers
+ * overnight deep-sleep scenarios (e.g. device auto-sleeps at midnight and
+ * wakes at 6 am for the morning service) while still expiring stale state
+ * that is genuinely too old to be useful.
+ */
+const SNAPSHOT_CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+/**
+ * Extended TTL used when the device has no network connectivity.
+ *
+ * When `navigator.onLine === false` and the normal 4-hour TTL has already
+ * expired, we serve the cached snapshot for an additional 20 hours (total
+ * 24 hours offline) rather than evicting it. This ensures a device that is
+ * offline overnight still has a cached state to seed the FSM the moment
+ * connectivity returns — avoiding BOOTSTRAP latency on the first reconnect
+ * after a long outage.
+ *
+ * The `endsAtMs < Date.now()` item-staleness guard still applies even in
+ * this extended window, so the FSM will not try to play an item that ended
+ * hours ago; it falls back to SYNCING and waits for the server to confirm
+ * what's currently on air as soon as the connection is restored.
+ */
+const SNAPSHOT_OFFLINE_GRACE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours total while offline
 
 function saveSnapshotCache(snapshot: V2Snapshot): void {
   try {
@@ -210,8 +246,21 @@ function loadSnapshotCache(): V2Snapshot | null {
     if (!raw) return null;
     const env = JSON.parse(raw) as { v?: number; snapshot?: unknown; cachedAt?: number };
     if (env.v !== 1 || !env.snapshot || typeof env.cachedAt !== "number") return null;
-    if (Date.now() - env.cachedAt > SNAPSHOT_CACHE_TTL_MS) {
-      store.removeItem(SNAPSHOT_CACHE_KEY);
+    const age = Date.now() - env.cachedAt;
+    // Determine effective TTL: when the device reports no connectivity, allow
+    // the cached snapshot to live for up to SNAPSHOT_OFFLINE_GRACE_TTL_MS so
+    // the FSM can be pre-seeded and resume immediately the moment the
+    // connection is restored — instead of starting cold from BOOTSTRAP.
+    // navigator.onLine may be absent (some TV/RN environments); treat
+    // missing as "possibly online" and use the normal TTL.
+    const isOffline = typeof navigator !== "undefined" && navigator.onLine === false;
+    const effectiveTtl = isOffline ? SNAPSHOT_OFFLINE_GRACE_TTL_MS : SNAPSHOT_CACHE_TTL_MS;
+    if (age > effectiveTtl) {
+      // Only evict when online — offline devices should keep the entry until
+      // connectivity returns (the grace TTL already covers this, but if even
+      // the grace window has expired, evict to avoid serving extremely stale
+      // state that would confuse the FSM on reconnect).
+      if (!isOffline) store.removeItem(SNAPSHOT_CACHE_KEY);
       return null;
     }
     const snapshot = env.snapshot as V2Snapshot;
@@ -354,15 +403,33 @@ export class V2Transport {
     // Restore lastSequence from sessionStorage so page reloads resume
     // event-log replay rather than starting from sequence 0.
     this.lastSequence = loadStoredSequence();
-    // Reset wsFailStreak on browser/device network-regain so the transport
-    // immediately probes WebSocket again rather than waiting for 5 SSE cycles
-    // (~2-5 minutes) of sub-optimal SSE-only mode after a connectivity drop.
+    // On browser/device network-regain: reset WS fail streak AND reconnect
+    // immediately if the transport has no active socket.
+    //
+    // Why we also need to reconnect here:
+    //   scheduleReconnect() skips scheduling a timer when navigator.onLine ===
+    //   false (to avoid pointless WS construction attempts during airplane mode
+    //   / deep sleep). When the connection drops mid-online, scheduleReconnect()
+    //   runs normally and a reconnect timer fires on its own. But when the device
+    //   was ALREADY offline at the moment the last reconnect attempt failed (or
+    //   when the socket was closed by the OS mid-sleep), scheduleReconnect()
+    //   returns without scheduling anything — so coming back online previously
+    //   produced an indefinite hang until the heartbeat watchdog (22 s) or an
+    //   explicit forceReconnect() call fired. This online handler closes that gap.
     if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
       this.onlineHandler = () => {
+        // Always reset fail streak so WS gets a fresh attempt over SSE.
         if (this.wsFailStreak > 0) {
           this.wsFailStreak = 0;
           this.wsPreferSseUntilWsOpens = false;
           this.sseReconnectCount = 0;
+        }
+        // If there is no active socket AND no pending reconnect timer, the
+        // transport was stuck with no pending recovery (offline-skip path).
+        // Force-reconnect so playback resumes within ~150 ms of the browser
+        // reporting connectivity instead of waiting up to 22 s for the watchdog.
+        if (!this.stopped && !this.ws && !this.es && !this.reconnectTimer) {
+          this.forceReconnect();
         }
       };
       window.addEventListener("online", this.onlineHandler);

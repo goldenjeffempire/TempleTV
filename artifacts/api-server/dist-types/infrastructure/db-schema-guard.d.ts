@@ -564,4 +564,6 @@ export declare const SAFE_VIDEO_COLS: {
     readonly transcodingErrorCode: import("drizzle-orm").SQL<string | null>;
     readonly youtubeLiveStatus: import("drizzle-orm").SQL<string | null>;
     readonly youtubeLiveStatusUpdatedAt: import("drizzle-orm").SQL<Date | null>;
+    readonly transcodingErrorKind: import("drizzle-orm").SQL<string | null>;
+    readonly faststartAttempts: import("drizzle-orm").SQL<number>;
 };

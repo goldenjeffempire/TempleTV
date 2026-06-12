@@ -41,8 +41,16 @@ interface RenditionSpec {
 /**
  * Build the FFmpeg filter_complex + per-rendition output args for multi-rendition HLS.
  * Accepts the specific renditions to encode so the caller can filter for upscaling.
+ *
+ * @param isInterlaced - When true, prepends a yadif deinterlace filter before
+ *   the scale step for every rendition. Set this when probeIsInterlaced() returns
+ *   true — i.e. the source was captured with field-based scanning (1080i/720i from
+ *   broadcast cameras, video capture cards, or legacy camcorders). Without yadif,
+ *   interlaced sources produce combing artifacts (horizontal zigzag edges) on
+ *   progressive displays at every motion boundary. Safe to leave false for all
+ *   modern progressive camera sources (field_order = progressive or unknown).
  */
-declare function buildFfmpegArgs(input: string, outDir: string, renditions: RenditionSpec[], hasAudio?: boolean): string[];
+declare function buildFfmpegArgs(input: string, outDir: string, renditions: RenditionSpec[], hasAudio?: boolean, isInterlaced?: boolean): string[];
 /**
  * Pre-flight probe to detect MP4 container damage BEFORE running HLS encode.
  *
