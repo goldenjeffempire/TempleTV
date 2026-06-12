@@ -2288,7 +2288,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         diskUsedGb: Math.round(mb(m.rss) / 1024 * 100) / 100,
         diskTotalGb: 0,
         uptimeSec: uptimeSec(),
-        version: env.APP_VERSION ?? process.env.npm_package_version ?? "1.0.0",
+        version: env.APP_VERSION ?? process.env.npm_package_version ?? "1.0.20",
         nodeVersion: process.version,
         activeSseConnections: sseCounter.get(),
         activeWsConnections: wsCounter.get(),

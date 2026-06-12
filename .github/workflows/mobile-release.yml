@@ -43,7 +43,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: '20.18.0'
+  NODE_VERSION: '24.x'
   PNPM_VERSION: '10.26.1'
   # Redirect git index to /tmp so EAS CLI can write the lock file in
   # restricted sandbox environments (Replit, some CI runners) without hitting

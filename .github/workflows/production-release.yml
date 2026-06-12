@@ -63,7 +63,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: '20.18.0'
+  NODE_VERSION: '24.x'
   PNPM_VERSION: '10.26.1'
 
 jobs:
@@ -132,11 +132,15 @@ jobs:
             const pkg = JSON.parse(fs.readFileSync('artifacts/mobile/package.json', 'utf8'));
             pkg.version = v;
             fs.writeFileSync('artifacts/mobile/package.json', JSON.stringify(pkg, null, 2) + '\n');
+
+            const apiPkg = JSON.parse(fs.readFileSync('artifacts/api-server/package.json', 'utf8'));
+            apiPkg.version = v;
+            fs.writeFileSync('artifacts/api-server/package.json', JSON.stringify(apiPkg, null, 2) + '\n');
           "
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add artifacts/mobile/app.json artifacts/mobile/package.json
+          git add artifacts/mobile/app.json artifacts/mobile/package.json artifacts/api-server/package.json
           git commit -m "Release $TAG"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin HEAD:main --follow-tags
@@ -164,10 +168,16 @@ jobs:
       - name: Wait for API health check
         if: inputs.dry_run != true
         run: |
+          HEALTH_URL="${{ secrets.API_HEALTHCHECK_URL }}"
+          if [ -z "$HEALTH_URL" ]; then
+            echo "API_HEALTHCHECK_URL secret not configured — skipping health check."
+            echo "Set it to https://<your-api-domain>/api/healthz to enable post-deploy verification."
+            exit 0
+          fi
           echo "Waiting 60 s for Render to spin up..."
           sleep 60
           for i in 1 2 3 4 5; do
-            STATUS=$(curl -o /dev/null -s -w "%{http_code}" "${{ secrets.API_HEALTHCHECK_URL }}" || echo "000")
+            STATUS=$(curl -o /dev/null -s -w "%{http_code}" "$HEALTH_URL" || echo "000")
             if [ "$STATUS" = "200" ]; then
               echo "API health check passed (attempt $i)"
               exit 0
@@ -175,7 +185,7 @@ jobs:
             echo "Attempt $i: status $STATUS — waiting 30 s..."
             sleep 30
           done
-          echo "WARNING: API health check did not pass — check Render dashboard."
+          echo "WARNING: API health check did not pass after 5 attempts — check Render dashboard."
           exit 1
 
   # ── 2. Mobile builds (delegates to mobile-release.yml) ──────────────────────

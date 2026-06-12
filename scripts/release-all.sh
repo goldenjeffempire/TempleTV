@@ -121,8 +121,11 @@ node -e "
   const pkg = JSON.parse(fs.readFileSync('artifacts/mobile/package.json', 'utf8'));
   pkg.version = v;
   fs.writeFileSync('artifacts/mobile/package.json', JSON.stringify(pkg, null, 2) + '\n');
+  const apiPkg = JSON.parse(fs.readFileSync('artifacts/api-server/package.json', 'utf8'));
+  apiPkg.version = v;
+  fs.writeFileSync('artifacts/api-server/package.json', JSON.stringify(apiPkg, null, 2) + '\n');
 "
-ok "Version bumped to $NEW_VERSION in app.json + package.json"
+ok "Version bumped to $NEW_VERSION in app.json + package.json + api-server/package.json"
 
 # ── 4. Generate changelog entry ────────────────────────────────────────────────
 info "Generating changelog..."
@@ -130,7 +133,7 @@ bash scripts/changelog.sh "$NEW_VERSION" || warn "Changelog generation failed (n
 
 # ── 5. Commit and tag ─────────────────────────────────────────────────────────
 info "Creating release commit and tag..."
-git add artifacts/mobile/app.json artifacts/mobile/package.json CHANGELOG.md 2>/dev/null || true
+git add artifacts/mobile/app.json artifacts/mobile/package.json artifacts/api-server/package.json CHANGELOG.md 2>/dev/null || true
 git commit -m "chore(release): $TAG"
 git tag -a "$TAG" -m "Release $TAG"
 ok "Created tag $TAG"

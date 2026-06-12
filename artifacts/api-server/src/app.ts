@@ -611,7 +611,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     }
     return {
       service: "temple-tv-api",
-      version: "1.0.0",
+      version: env.APP_VERSION ?? process.env.npm_package_version ?? "1.0.20",
       docs: "/docs",
       openapi: "/docs/json",
       api: API_PREFIX,

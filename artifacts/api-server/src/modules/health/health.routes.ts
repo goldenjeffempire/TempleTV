@@ -100,7 +100,7 @@ export async function healthRoutes(app: FastifyInstance) {
     const toMb = (n: number) => Math.round((n / 1024 / 1024) * 10) / 10;
     return {
       service: "temple-tv-api" as const,
-      version: env.APP_VERSION ?? process.env.npm_package_version ?? "1.0.0",
+      version: env.APP_VERSION ?? process.env.npm_package_version ?? "1.0.20",
       runMode: env.RUN_MODE,
       env: env.NODE_ENV,
       uptimeSec: Math.round((Date.now() - startedAt) / 1000),
@@ -190,7 +190,7 @@ export async function healthRoutes(app: FastifyInstance) {
       const body = {
         status,
         uptimeSec: Math.round((Date.now() - startedAt) / 1000),
-        version: env.APP_VERSION ?? process.env.npm_package_version ?? "1.0.0",
+        version: env.APP_VERSION ?? process.env.npm_package_version ?? "1.0.20",
         dependencies: {
           database: dbOk ? "ok" as const : "down" as const,
           cache: cacheOk ? "ok" as const : "down" as const,

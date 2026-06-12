@@ -92,6 +92,12 @@ const lgInfo = JSON.parse(fs.readFileSync('artifacts/tv/lg/appinfo.json', 'utf8'
 lgInfo.version = v;
 fs.writeFileSync('artifacts/tv/lg/appinfo.json', JSON.stringify(lgInfo, null, 2) + '\n');
 console.log('✓ artifacts/tv/lg/appinfo.json');
+
+// API server package.json — keeps /api/readyz version in sync
+const apiPkg = JSON.parse(fs.readFileSync('artifacts/api-server/package.json', 'utf8'));
+apiPkg.version = v;
+fs.writeFileSync('artifacts/api-server/package.json', JSON.stringify(apiPkg, null, 2) + '\n');
+console.log('✓ artifacts/api-server/package.json');
 EOF
 
 # Update Samsung config.xml
@@ -111,6 +117,7 @@ CHANGED_FILES=(
   "artifacts/mobile/package.json"
   "artifacts/tv/lg/appinfo.json"
   "artifacts/tv/tizen/config.xml"
+  "artifacts/api-server/package.json"
 )
 
 echo ""

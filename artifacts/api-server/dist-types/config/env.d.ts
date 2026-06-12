@@ -52,6 +52,7 @@ declare const Env: z.ZodObject<{
     BROADCAST_QUEUE_MAX_ITEMS: z.ZodDefault<z.ZodNumber>;
     BROADCAST_HEALTH_MONITOR_STALE_MS: z.ZodDefault<z.ZodNumber>;
     BROADCAST_HEALTH_MONITOR_RECOVERY_MS: z.ZodDefault<z.ZodNumber>;
+    MEDIA_SCANNER_INITIAL_DELAY_MS: z.ZodDefault<z.ZodNumber>;
     BROADCAST_ROTATION_STRATEGY: z.ZodDefault<z.ZodEnum<["shuffle", "fifo"]>>;
     BROADCAST_ROTATION_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
     DB_POOL_WARN_UTILIZATION: z.ZodDefault<z.ZodNumber>;
@@ -156,6 +157,7 @@ declare const Env: z.ZodObject<{
     BROADCAST_QUEUE_MAX_ITEMS: number;
     BROADCAST_HEALTH_MONITOR_STALE_MS: number;
     BROADCAST_HEALTH_MONITOR_RECOVERY_MS: number;
+    MEDIA_SCANNER_INITIAL_DELAY_MS: number;
     BROADCAST_ROTATION_STRATEGY: "shuffle" | "fifo";
     BROADCAST_ROTATION_INTERVAL_MS: number;
     DB_POOL_WARN_UTILIZATION: number;
@@ -278,6 +280,7 @@ declare const Env: z.ZodObject<{
     BROADCAST_QUEUE_MAX_ITEMS?: number | undefined;
     BROADCAST_HEALTH_MONITOR_STALE_MS?: number | undefined;
     BROADCAST_HEALTH_MONITOR_RECOVERY_MS?: number | undefined;
+    MEDIA_SCANNER_INITIAL_DELAY_MS?: number | undefined;
     BROADCAST_ROTATION_STRATEGY?: "shuffle" | "fifo" | undefined;
     BROADCAST_ROTATION_INTERVAL_MS?: number | undefined;
     DB_POOL_WARN_UTILIZATION?: number | undefined;

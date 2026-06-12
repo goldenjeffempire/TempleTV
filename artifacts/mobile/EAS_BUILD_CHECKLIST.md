@@ -51,8 +51,8 @@ Use this checklist before every production build. Steps marked **[one-time]** on
 ## 4. Pre-Build Checks (every build)
 
 - [ ] **API URL correct**: All production profiles have `EXPO_PUBLIC_API_URL: https://api.templetv.org.ng` ✅
-- [ ] **Version code**: `android.versionCode` in `app.json` is currently `30`. Production profile uses `autoIncrement: true` so EAS will bump it automatically. Verify the next expected code in Play Console (Internal Testing track → App versions).
-- [ ] **App version**: `version` in `app.json` is `1.0.5`. Update before significant releases: `artifacts/mobile/app.json` → `"version"` + `artifacts/mobile/package.json` → `"version"` (keep in sync).
+- [ ] **Version code**: `android.versionCode` in `app.json` is currently `62`. Production profile uses `autoIncrement: true` so EAS will bump it automatically. Verify the next expected code in Play Console (Internal Testing track → App versions).
+- [ ] **App version**: `version` in `app.json` is `1.0.20`. Update before significant releases: `artifacts/mobile/app.json` → `"version"` + `artifacts/mobile/package.json` → `"version"` (keep in sync).
 - [ ] **ProGuard rules current**: `app.json` `extraProguardRules` covers all native modules. If you add a new native module, add its package keep-rule here before building.
 - [ ] **No placeholder Firebase values**: Verify `google-services.json` does NOT contain `REPLACE_WITH_`.
 - [ ] **Sentry DSN set**: `EXPO_PUBLIC_SENTRY_DSN` in `eas.json` production profile = the production DSN ✅ (already set).
@@ -75,7 +75,7 @@ eas build --platform all --profile production
 
 ### Platform-specific production variants
 ```bash
-# Android only (manual versionCode control — autoIncrement: false)
+# Android only (autoIncrement: true — EAS bumps versionCode automatically)
 eas build --platform android --profile production-android
 
 # iOS only
@@ -131,7 +131,7 @@ eas update --branch production --message "describe the change"
 # .github/workflows/ota-update.yml
 ```
 
-OTA updates use `runtimeVersion.policy: "appVersion"` — only devices on the same `version` (e.g. `1.0.5`) will receive the update. Bump `version` in `app.json` when you update native code.
+OTA updates use `runtimeVersion.policy: "appVersion"` — only devices on the same `version` (e.g. `1.0.20`) will receive the update. Bump `version` in `app.json` when you update native code.
 
 ---
 
@@ -144,7 +144,7 @@ After every production build, verify on a real device:
 - [ ] Live broadcast player loads HLS stream: `https://api.templetv.org.ng/api/hls/<videoId>/master.m3u8`
 - [ ] Push notification received after calling `registerForPushTokenAsync()`
 - [ ] Deep link `templetv://` scheme opens the app correctly
-- [ ] Settings screen shows correct version (`1.0.5`) and has working Privacy Policy + Terms links
+- [ ] Settings screen shows correct version (`1.0.20`) and has working Privacy Policy + Terms links
 
 ---
 
@@ -168,7 +168,7 @@ After every production build, verify on a real device:
 |---|---|---|---|---|
 | `production` | Android | `.aab` | production | ✅ yes |
 | `production` | iOS | `.ipa` | production | — |
-| `production-android` | Android | `.aab` | production | ❌ manual |
+| `production-android` | Android | `.aab` | production | ✅ yes |
 | `production-ios` | iOS | `.ipa` | production | — |
 | `androidtv` | Android TV | `.aab` | androidtv | ✅ yes |
 | `firetv` | Fire TV | `.apk` | firetv | ✅ yes |

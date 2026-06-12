@@ -35,11 +35,11 @@ on:
       version_code:
         description: 'Android versionCode being promoted (for audit log only)'
         required: false
-        default: '48'
+        default: '62'
         type: string
 
 env:
-  NODE_VERSION: '20.18.0'
+  NODE_VERSION: '24.x'
   PNPM_VERSION: '10.26.1'
   GIT_INDEX_FILE: /tmp/eas-promote-index
 
