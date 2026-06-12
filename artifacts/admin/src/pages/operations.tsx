@@ -145,9 +145,10 @@ function SystemEventsLog() {
     else if (status === "encoding") pushEvent(mkEvent("info", "transcoding", `Transcoding started: ${d.videoTitle ?? "video"}`));
   });
 
-  useSSEEvent("ops-alert-sent", (data) => {
+  useSSEEvent("ops-alert", (data) => {
     const d = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
-    pushEvent(mkEvent("warn", "system", `System alert: ${d.message ?? "ops alert received"}`));
+    const level = d.level === "critical" ? "critical" : "warn";
+    pushEvent(mkEvent(level, "system", `System alert: ${d.message ?? "ops alert received"}`));
   });
 
   useSSEEvent("override-expired", () => {

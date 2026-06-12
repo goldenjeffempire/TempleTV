@@ -128,7 +128,7 @@ const KNOWN_EVENTS = [
   "override-expired", "heartbeat", "stream-health", "live-failure-stats",
   "videos-library-updated", "transcoding-update", "live-ingest-health",
   "live-ingest-recovered", "live-ingest-failover", "live-ingest-promoted",
-  "live-ingest-stopped", "ops-alert-sent", "yt-status", "live-reaction",
+  "live-ingest-stopped", "ops-alert", "yt-status", "live-reaction",
   "youtube-quota-throttled", "youtube-quota-exhausted", "prayer-received",
   "prayer-updated", "prayer-deleted", "chat-message", "emergency-broadcast",
   "live-ingest-stream-started", "live-ingest-stream-stopped",
@@ -189,6 +189,11 @@ function summarize(event: string, data: unknown): string | null {
     case "stream-health-recovered": {
       const cnt = Number(d.count ?? 0);
       return `Stream health recovered${cnt > 0 ? ` — ${cnt} viewers` : ""}`;
+    }
+    case "ops-alert": {
+      const msg = typeof d.message === "string" ? d.message : null;
+      const level = d.level === "critical" ? "CRITICAL" : "WARN";
+      return msg ? `[${level}] ${msg}` : `System alert (${level.toLowerCase()})`;
     }
     case "feedback-received": return "New user feedback received";
     case "youtube-live-status-changed": {

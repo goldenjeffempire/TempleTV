@@ -187,6 +187,14 @@ export async function pushRoutes(app: FastifyInstance) {
       if (!env.VAPID_PUBLIC_KEY) {
         return reply.code(503).send({ error: "Web Push is not configured on this server" });
       }
+      // VAPID public key is static for the lifetime of the server process —
+      // it only changes if an admin rotates the VAPID_PRIVATE_KEY secret.
+      // Long cache reduces repeated round-trips on every push-subscription
+      // setup call. stale-if-error=86400 (24 h) means a brief server restart
+      // won't break existing subscription flows that cached the key.
+      reply
+        .header("Cache-Control", "public, max-age=3600, s-maxage=3600, stale-while-revalidate=300, stale-if-error=86400")
+        .header("Vary", "Accept-Encoding");
       return { publicKey: env.VAPID_PUBLIC_KEY };
     },
   );

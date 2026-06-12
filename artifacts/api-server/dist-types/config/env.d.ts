@@ -6,6 +6,8 @@ import { z } from "zod";
 declare const Env: z.ZodObject<{
     NODE_ENV: z.ZodDefault<z.ZodEnum<["development", "test", "production"]>>;
     PORT: z.ZodDefault<z.ZodNumber>;
+    HTTP_KEEPALIVE_MS: z.ZodDefault<z.ZodNumber>;
+    HTTP_HEADERS_TIMEOUT_MS: z.ZodDefault<z.ZodNumber>;
     REPLIT_DEV_DOMAIN: z.ZodOptional<z.ZodString>;
     REPLIT_EXPO_DEV_DOMAIN: z.ZodOptional<z.ZodString>;
     TV_DEV_PORT: z.ZodDefault<z.ZodNumber>;
@@ -37,6 +39,8 @@ declare const Env: z.ZodObject<{
     MEMORY_WARN_RSS_MB: z.ZodDefault<z.ZodNumber>;
     MEMORY_RESTART_RSS_MB: z.ZodDefault<z.ZodNumber>;
     DB_POOL_MAX: z.ZodDefault<z.ZodNumber>;
+    DB_POOL_IDLE_TIMEOUT_MS: z.ZodDefault<z.ZodNumber>;
+    DB_POOL_CONNECT_TIMEOUT_MS: z.ZodDefault<z.ZodNumber>;
     DB_STATEMENT_TIMEOUT_MS: z.ZodDefault<z.ZodNumber>;
     SENTRY_DSN: z.ZodOptional<z.ZodString>;
     RUN_MODE: z.ZodDefault<z.ZodEnum<["api", "worker", "all"]>>;
@@ -82,6 +86,7 @@ declare const Env: z.ZodObject<{
     YOUTUBE_WEBHOOK_SECRET: z.ZodOptional<z.ZodString>;
     HLS_TOKEN_TTL_SECONDS: z.ZodDefault<z.ZodNumber>;
     HLS_MAX_CONCURRENT: z.ZodDefault<z.ZodNumber>;
+    HLS_SEGMENT_CACHE_MB: z.ZodDefault<z.ZodNumber>;
     SHUTDOWN_PRECLOSE_DELAY_MS: z.ZodDefault<z.ZodNumber>;
     SHUTDOWN_DRAIN_MS: z.ZodDefault<z.ZodNumber>;
     APP_VERSION: z.ZodOptional<z.ZodString>;
@@ -114,6 +119,8 @@ declare const Env: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     NODE_ENV: "development" | "test" | "production";
     PORT: number;
+    HTTP_KEEPALIVE_MS: number;
+    HTTP_HEADERS_TIMEOUT_MS: number;
     TV_DEV_PORT: number;
     MOBILE_DEV_PORT: number;
     LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
@@ -137,6 +144,8 @@ declare const Env: z.ZodObject<{
     MEMORY_WARN_RSS_MB: number;
     MEMORY_RESTART_RSS_MB: number;
     DB_POOL_MAX: number;
+    DB_POOL_IDLE_TIMEOUT_MS: number;
+    DB_POOL_CONNECT_TIMEOUT_MS: number;
     DB_STATEMENT_TIMEOUT_MS: number;
     RUN_MODE: "api" | "worker" | "all";
     SCHEDULED_NOTIF_POLL_MS: number;
@@ -168,6 +177,7 @@ declare const Env: z.ZodObject<{
     REQUIRE_HLS_TOKEN: boolean;
     HLS_TOKEN_TTL_SECONDS: number;
     HLS_MAX_CONCURRENT: number;
+    HLS_SEGMENT_CACHE_MB: number;
     SHUTDOWN_PRECLOSE_DELAY_MS: number;
     SHUTDOWN_DRAIN_MS: number;
     YOUTUBE_QUOTA_DAILY_LIMIT: number;
@@ -225,6 +235,8 @@ declare const Env: z.ZodObject<{
     JWT_REFRESH_SECRET: string;
     NODE_ENV?: "development" | "test" | "production" | undefined;
     PORT?: number | undefined;
+    HTTP_KEEPALIVE_MS?: number | undefined;
+    HTTP_HEADERS_TIMEOUT_MS?: number | undefined;
     REPLIT_DEV_DOMAIN?: string | undefined;
     REPLIT_EXPO_DEV_DOMAIN?: string | undefined;
     TV_DEV_PORT?: number | undefined;
@@ -253,6 +265,8 @@ declare const Env: z.ZodObject<{
     MEMORY_WARN_RSS_MB?: number | undefined;
     MEMORY_RESTART_RSS_MB?: number | undefined;
     DB_POOL_MAX?: number | undefined;
+    DB_POOL_IDLE_TIMEOUT_MS?: number | undefined;
+    DB_POOL_CONNECT_TIMEOUT_MS?: number | undefined;
     DB_STATEMENT_TIMEOUT_MS?: number | undefined;
     SENTRY_DSN?: string | undefined;
     RUN_MODE?: "api" | "worker" | "all" | undefined;
@@ -298,6 +312,7 @@ declare const Env: z.ZodObject<{
     YOUTUBE_WEBHOOK_SECRET?: string | undefined;
     HLS_TOKEN_TTL_SECONDS?: number | undefined;
     HLS_MAX_CONCURRENT?: number | undefined;
+    HLS_SEGMENT_CACHE_MB?: number | undefined;
     SHUTDOWN_PRECLOSE_DELAY_MS?: number | undefined;
     SHUTDOWN_DRAIN_MS?: number | undefined;
     APP_VERSION?: string | undefined;

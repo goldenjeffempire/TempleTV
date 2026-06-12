@@ -37,6 +37,13 @@ export interface AiringEntry {
 declare class BroadcastOrchestrator extends EventEmitter {
     readonly channelId = "main";
     private items;
+    /**
+     * Pre-computed cumulative item offsets (ms) for O(log N) snapshot lookup.
+     * itemOffsets[i] = sum of durationSecs * 1000 for items[0..i-1].
+     * Rebuilt by rebuildItemOffsets() whenever this.items or any item's
+     * durationSecs changes (reloadInner, naturalItemEnd).
+     */
+    private itemOffsets;
     private cycleStartedAtMs;
     private cycleDurationMs;
     private mode;
@@ -266,6 +273,17 @@ declare class BroadcastOrchestrator extends EventEmitter {
      *  /reload, self-heal poll) coalesces onto the same DB read. */
     private reloadPromise;
     /**
+     * Hard mutex preventing re-entrant calls to reloadInner().
+     * reload() is protected by the reloadPromise single-flight guard, but
+     * start() calls reloadInner() directly. If start()'s reloadInner() is
+     * extremely slow (cold DB pool), and a self-heal timer fires and calls
+     * reload() → reloadInner() before start() has set this.started=true
+     * (which is what suppresses the timers), the two would overlap.
+     * This boolean guard eliminates that window: the second concurrent caller
+     * silently returns and the first finishes uninterrupted.
+     */
+    private _reloadInProgress;
+    /**
      * Timestamp of when the last reload completed. Used together with
      * RELOAD_COOLDOWN_MS to rate-limit burst reload triggers that would
      * otherwise fire sequential DB reads milliseconds apart (e.g. a queue
@@ -273,7 +291,49 @@ declare class BroadcastOrchestrator extends EventEmitter {
      */
     private lastReloadCompletedAt;
     private static readonly RELOAD_COOLDOWN_MS;
+    /**
+     * Hash of the last successfully-loaded queue state. Used by reloadInner()
+     * to detect no-op drift-poll reloads (queue content unchanged since the
+     * last reload) and skip the expensive resolveSource() fan-out +
+     * rebuildItemOffsets() re-computation. Cleared to "" on start() so the
+     * first load after boot always runs.
+     *
+     * Hash format: pipe-separated "id:durationSecs:primaryUrl" tuples,
+     * ordered by the DB's natural sort (sort_order ASC, added_at ASC).
+     * Cheap to compute (~µs for a 50-item queue) and collision-resistant
+     * enough for this purpose — item additions, removals, URL changes, and
+     * duration edits all produce a different hash.
+     */
+    private _lastQueueHash;
     reload(): Promise<void>;
+    /**
+     * Reload queue items from the DB but SKIP clearing the bad-URL cache.
+     *
+     * Called by the broadcast health monitor when storage is unhealthy.
+     * Clearing the bad-URL cache while storage is down would immediately
+     * re-serve URLs that just failed (because storage is unreachable), which
+     * burns through their exponential backoff TTLs and triggers more
+     * RECOVERING → SKIP_PENDING cycles instead of fewer.
+     *
+     * Does NOT use the reload() single-flight reloadPromise guard so that its
+     * cache-preserving semantics cannot be silently discarded by coalescing
+     * onto a concurrent standard reload() that would clear the cache.
+     * The reloadInner() mutex (_reloadInProgress) still prevents concurrent
+     * execution; a storage-unhealthy reload that arrives while a normal reload
+     * is in flight will silently return early — which is acceptable because
+     * the normal reload will have already refreshed the item list.
+     */
+    reloadPreservingBadUrlCache(): Promise<void>;
+    /**
+     * Rebuild this.itemOffsets from the current this.items array and update
+     * this.cycleDurationMs. Must be called after any change to this.items or
+     * to any item's durationSecs field.
+     *
+     * itemOffsets[i] is the wall-clock offset (ms from cycle start) at which
+     * items[i] begins. snapshot() uses a binary search over this array to
+     * find the current slot in O(log N) instead of O(N).
+     */
+    private rebuildItemOffsets;
     private reloadInner;
     /**
      * Project a pre-resolved CachedQueueItem into a full V2Item with wall-clock

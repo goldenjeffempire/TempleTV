@@ -17,9 +17,9 @@ export declare const SkipCommand: z.ZodObject<{
 }, z.core.$strip>;
 export declare const StartOverrideCommand: z.ZodObject<{
     kind: z.ZodEnum<{
+        youtube: "youtube";
         hls: "hls";
         rtmp: "rtmp";
-        youtube: "youtube";
     }>;
     url: z.ZodString;
     title: z.ZodString;

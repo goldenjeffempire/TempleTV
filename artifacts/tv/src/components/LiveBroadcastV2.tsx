@@ -217,17 +217,19 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
       data.details === Hls.ErrorDetails.LEVEL_LOAD_TIMEOUT;
     if (!isLoadStall) return;
     const currentLevel = hls.currentLevel;
-    const lowestLevel = 0;
-    if (currentLevel > lowestLevel) {
-      stallLevelDropped = true;
-      hls.currentLevel = lowestLevel;
-      // Allow ABR to recover after 30 s of stable play at the lower level.
-      stallRecoveryTimer = setTimeout(() => {
-        stallRecoveryTimer = null;
-        stallLevelDropped = false;
-        try { hls.currentLevel = -1; } catch { /* hls already destroyed */ }
-      }, 30_000);
+    stallLevelDropped = true;
+    if (currentLevel > 0) {
+      hls.currentLevel = 0; // drop to lowest bitrate immediately
     }
+    // Always schedule auto-recovery — fires even when already at level 0 so
+    // the ABR engine returns to automatic quality selection after the link
+    // stabilises (previous bug: timer was inside the level-drop guard, so
+    // streams already at the lowest level stayed pinned at low quality forever).
+    stallRecoveryTimer = setTimeout(() => {
+      stallRecoveryTimer = null;
+      stallLevelDropped = false;
+      try { hls.currentLevel = -1; } catch { /* hls already destroyed */ }
+    }, 30_000);
   };
 
   // Detect constrained TV chipsets (2017-2019 Tizen/webOS) that cannot sustain

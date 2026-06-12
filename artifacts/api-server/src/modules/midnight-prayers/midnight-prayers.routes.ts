@@ -41,6 +41,15 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
   // Accepts ?epochMs=<number> so each viewer can request a cycle anchored to
   // their own local midnight — the server stays stateless w.r.t. timezone.
   app.get("/state", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (req, reply) => {
+    // Short public cache: the player reconstitutes exact position from
+    // startsAtMs on the client side, so a 5 s stale snapshot is fine for
+    // initial load. stale-if-error=60 lets clients survive a 60-second
+    // origin blip without going dark. epochMs query param varies per caller
+    // so Vary: * would be correct, but since CDNs won't cache Vary:* we use
+    // private to restrict caching to the browser only.
+    reply
+      .header("Cache-Control", "private, max-age=5, stale-while-revalidate=10, stale-if-error=60")
+      .header("Vary", "Accept-Encoding");
     const query = req.query as Record<string, string>;
     const epochMs = query["epochMs"] ? Number(query["epochMs"]) : undefined;
     const snapshot = midnightPrayersService.getSnapshot(epochMs);
@@ -50,6 +59,13 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
   // ── GET /config ───────────────────────────────────────────────────────────
   // Public: clients need this to decide whether / when to switch channel.
   app.get("/config", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (_req, reply) => {
+    // Config changes rarely (admin PATCH). 30 s public cache is safe — the
+    // admin mutation already pushes an SSE event that triggers immediate
+    // client invalidation. stale-if-error=600 prevents a restart from
+    // toggling the midnight-prayers window on/off erroneously.
+    reply
+      .header("Cache-Control", "public, max-age=30, s-maxage=30, stale-while-revalidate=60, stale-if-error=600")
+      .header("Vary", "Accept-Encoding");
     return reply.send(midnightPrayersService.getConfig());
   });
 

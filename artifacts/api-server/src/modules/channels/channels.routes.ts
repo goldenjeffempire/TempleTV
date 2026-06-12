@@ -95,7 +95,7 @@ export async function channelsRoutes(app: FastifyInstance) {
       // poll this every 15 s for the viewer count / isRunning badge.
       // `stale-while-revalidate=30` lets CDN/edge serve the cached body
       // instantly while refreshing in the background.
-      reply.header("Cache-Control", "public, max-age=15, s-maxage=15, stale-while-revalidate=30");
+      reply.header("Cache-Control", "public, max-age=15, s-maxage=15, stale-while-revalidate=30, stale-if-error=300");
       const rows = await db
         .select()
         .from(schema.channelsTable)

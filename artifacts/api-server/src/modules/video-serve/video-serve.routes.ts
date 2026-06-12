@@ -748,7 +748,6 @@ export async function videoServeRoutes(app: FastifyInstance) {
       const key = `transcoded/${videoId}/${wildcard}`;
       // Determine type early — needed both for Range pre-check and CDN rewriting.
       const isManifest = wildcard.endsWith(".m3u8");
-      const isMaster = wildcard === "master.m3u8";
       const s = storage();
       if (!s.enabled) {
         decrementConcurrent();

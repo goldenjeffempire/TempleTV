@@ -525,7 +525,7 @@ export async function broadcastRoutes(app: FastifyInstance) {
       schema: {
         tags: ["broadcast"],
         summary: "Channel guide — current + upcoming programs (mobile + TV compatible)",
-        response: { 200: GuideResponseSchema, 429: z.object({ error: z.string() }) },
+        response: { 200: GuideResponseSchema, 304: z.void(), 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {
@@ -536,7 +536,20 @@ export async function broadcastRoutes(app: FastifyInstance) {
       // a background refresh happens — perceived latency → zero on repeat
       // opens.
       reply.header("Cache-Control", "public, max-age=5, s-maxage=5, stale-while-revalidate=10, stale-if-error=300");
+
       const snap = broadcastService.snapshot();
+
+      // ETag based on sequence + current item id — changes only when the
+      // broadcast engine advances to a new item or sequence tick. Saves body
+      // transfer on CDN re-validation and client conditional-GET cycles.
+      // Use a weak ETag (W/) because positionSecs + progressPercent are
+      // time-derived and change on every call even for the same broadcast item.
+      // ETag encodes current + next item ids — changes only when the broadcast
+      // engine advances to a new item (not on every time-derived positionSecs).
+      const guideEtag = `W/"g${snap.current?.id ?? "none"}-${snap.next?.id ?? "none"}"`;
+      reply.header("ETag", guideEtag);
+      const ifNoneMatch = req.headers["if-none-match"];
+      if (ifNoneMatch === guideEtag) return reply.code(304).send();
       const now = Date.now();
 
       function projectItem(

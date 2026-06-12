@@ -16,7 +16,15 @@ export declare const BAD_URL_TTL_MS = 90000;
  * action required, preventing permanent Off Air states from transient failures.
  */
 export declare const SUSPENSION_TTL_MS: number;
-/** Mark a source URL as recently confirmed unreachable. */
+/** Mark a source URL as recently confirmed unreachable.
+ *
+ * Uses exponential backoff: each successive call for the same URL doubles
+ * the blacklist window (90 s → 3 min → 5 min → 10 min) so genuinely broken
+ * sources don't re-enter rotation every 90 s and cause cascading RECOVERING
+ * → SKIP_PENDING cycles. The per-URL failure count is reset by clearBadUrl()
+ * or clearAllBadUrls() so an operator "clear blocks" action always gives a
+ * clean slate.
+ */
 export declare function markBadUrl(url: string): void;
 /**
  * Mark a source URL as temporarily unavailable with a custom TTL.
@@ -32,9 +40,11 @@ export declare function markBadUrl(url: string): void;
  * absent at that point, the next autoEnqueueMissingHls call re-suppresses it.
  */
 export declare function markBadUrlWithTtl(url: string, ttlMs: number): void;
-/** Clear a URL from the bad cache (e.g. after a queue reload with new sources). */
+/** Clear a URL from the bad cache (e.g. after a queue reload with new sources).
+ * Also resets the per-URL failure count so the next failure starts fresh at 90 s TTL. */
 export declare function clearBadUrl(url: string): void;
-/** Flush the entire bad-URL cache (e.g. operator-triggered "clear blocks"). */
+/** Flush the entire bad-URL cache (e.g. operator-triggered "clear blocks").
+ * Also resets all per-URL failure counts so every URL gets a clean slate. */
 export declare function clearAllBadUrls(): void;
 /** True if the URL is currently blacklisted and should not be served. */
 export declare function isKnownBadUrl(url: string): boolean;

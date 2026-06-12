@@ -3,7 +3,7 @@
  *   1. Redis (if REDIS_URL is set and connection is up)
  *   2. In-process LRU (always available; per-instance only)
  *
- * Use `cache.get/set/del`. For multi-instance coherency you MUST
+ * Use `cache.get/set/del/getOrSet`. For multi-instance coherency you MUST
  * provision Redis — the in-process backend is per-pod.
  *
  * Named caches can be registered via `registerNamedCache()` for
@@ -13,6 +13,14 @@ export interface Cache {
     get<T = unknown>(key: string): Promise<T | null>;
     set<T = unknown>(key: string, value: T, ttlSeconds?: number): Promise<void>;
     del(key: string): Promise<void>;
+    /**
+     * Stampede-safe get-or-set. If `key` is cached, returns immediately.
+     * Otherwise calls `fn()` exactly once — even when N concurrent requests
+     * race on the same expired/missing key — then caches the result for
+     * `ttlSeconds`. All concurrent callers await the same in-flight Promise
+     * so the origin DB/service is hit at most once per cache miss.
+     */
+    getOrSet<T = unknown>(key: string, ttlSeconds: number, fn: () => Promise<T>): Promise<T>;
     /** Current number of live (non-expired) entries. */
     size(): number;
     readonly backend: "redis" | "memory";

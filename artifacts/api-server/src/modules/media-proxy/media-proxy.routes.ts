@@ -256,7 +256,13 @@ export async function mediaProxyRoutes(app: FastifyInstance) {
         .header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
         .header("Cross-Origin-Resource-Policy", "cross-origin")
         .header("Timing-Allow-Origin", "*")
-        .header("Cache-Control", "public, max-age=3600");
+        // stale-while-revalidate=300: CDN can serve the cached media for an
+        // extra 5 min while revalidating in the background — zero perceived
+        // latency for repeat video seeks / thumbnail loads.
+        // stale-if-error=86400: if the origin (S3/YouTube) becomes temporarily
+        // unavailable, CDN keeps serving the cached video for up to 24 h so
+        // viewers are never blocked by an upstream outage.
+        .header("Cache-Control", "public, max-age=3600, stale-while-revalidate=300, stale-if-error=86400");
 
       if (!upstream.body) {
         return reply.send(Buffer.alloc(0));

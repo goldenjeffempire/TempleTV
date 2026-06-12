@@ -41,7 +41,15 @@ export async function emergencyRoutes(app: FastifyInstance) {
         response: { 200: z.array(AlertSchema), 429: z.object({ error: z.string() }) },
       },
     },
-    async () => {
+    async (_req, reply) => {
+      // Very short cache — emergency alerts are critical but don't change
+      // more than once per broadcast. 5 s max-age + 10 s stale-while-revalidate
+      // allows CDN/edge to absorb burst traffic on service start without
+      // hiding a real emergency more than 5 s. stale-if-error=30 means a
+      // 30-second origin outage won't blank the emergency banner.
+      reply
+        .header("Cache-Control", "public, max-age=5, s-maxage=5, stale-while-revalidate=10, stale-if-error=30")
+        .header("Vary", "Accept-Encoding");
       const now = new Date();
       const rows = await db
         .select()

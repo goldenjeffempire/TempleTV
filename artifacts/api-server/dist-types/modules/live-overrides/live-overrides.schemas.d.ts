@@ -15,27 +15,27 @@ export declare const LiveOverrideSchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     id: string;
     title: string;
+    endsAt: string | null;
     startedAt: string;
-    createdAt: string;
-    isActive: boolean;
     hlsStreamUrl: string | null;
     youtubeVideoId: string | null;
+    isActive: boolean;
+    createdAt: string;
     rtmpIngestKey: string | null;
     streamNotes: string | null;
-    endsAt: string | null;
     scheduledFor: string | null;
     autoStarted: boolean;
 }, {
     id: string;
     title: string;
+    endsAt: string | null;
     startedAt: string;
-    createdAt: string;
-    isActive: boolean;
     hlsStreamUrl: string | null;
     youtubeVideoId: string | null;
+    isActive: boolean;
+    createdAt: string;
     rtmpIngestKey: string | null;
     streamNotes: string | null;
-    endsAt: string | null;
     scheduledFor: string | null;
     autoStarted: boolean;
 }>;
@@ -57,27 +57,27 @@ export declare const LiveStatusSchema: z.ZodObject<{
     }, "strip", z.ZodTypeAny, {
         id: string;
         title: string;
+        endsAt: string | null;
         startedAt: string;
-        createdAt: string;
-        isActive: boolean;
         hlsStreamUrl: string | null;
         youtubeVideoId: string | null;
+        isActive: boolean;
+        createdAt: string;
         rtmpIngestKey: string | null;
         streamNotes: string | null;
-        endsAt: string | null;
         scheduledFor: string | null;
         autoStarted: boolean;
     }, {
         id: string;
         title: string;
+        endsAt: string | null;
         startedAt: string;
-        createdAt: string;
-        isActive: boolean;
         hlsStreamUrl: string | null;
         youtubeVideoId: string | null;
+        isActive: boolean;
+        createdAt: string;
         rtmpIngestKey: string | null;
         streamNotes: string | null;
-        endsAt: string | null;
         scheduledFor: string | null;
         autoStarted: boolean;
     }>>;
@@ -86,14 +86,14 @@ export declare const LiveStatusSchema: z.ZodObject<{
     active: {
         id: string;
         title: string;
+        endsAt: string | null;
         startedAt: string;
-        createdAt: string;
-        isActive: boolean;
         hlsStreamUrl: string | null;
         youtubeVideoId: string | null;
+        isActive: boolean;
+        createdAt: string;
         rtmpIngestKey: string | null;
         streamNotes: string | null;
-        endsAt: string | null;
         scheduledFor: string | null;
         autoStarted: boolean;
     } | null;
@@ -102,14 +102,14 @@ export declare const LiveStatusSchema: z.ZodObject<{
     active: {
         id: string;
         title: string;
+        endsAt: string | null;
         startedAt: string;
-        createdAt: string;
-        isActive: boolean;
         hlsStreamUrl: string | null;
         youtubeVideoId: string | null;
+        isActive: boolean;
+        createdAt: string;
         rtmpIngestKey: string | null;
         streamNotes: string | null;
-        endsAt: string | null;
         scheduledFor: string | null;
         autoStarted: boolean;
     } | null;
@@ -124,34 +124,34 @@ export declare const StartOverrideBodySchema: z.ZodEffects<z.ZodObject<{
     scheduledFor: z.ZodOptional<z.ZodNullable<z.ZodString>>;
 }, "strip", z.ZodTypeAny, {
     title: string;
+    endsAt?: string | null | undefined;
     hlsStreamUrl?: string | null | undefined;
     rtmpIngestKey?: string | null | undefined;
     streamNotes?: string | null | undefined;
-    endsAt?: string | null | undefined;
     scheduledFor?: string | null | undefined;
     youtubeUrl?: string | null | undefined;
 }, {
     title: string;
+    endsAt?: string | null | undefined;
     hlsStreamUrl?: string | null | undefined;
     rtmpIngestKey?: string | null | undefined;
     streamNotes?: string | null | undefined;
-    endsAt?: string | null | undefined;
     scheduledFor?: string | null | undefined;
     youtubeUrl?: string | null | undefined;
 }>, {
     title: string;
+    endsAt?: string | null | undefined;
     hlsStreamUrl?: string | null | undefined;
     rtmpIngestKey?: string | null | undefined;
     streamNotes?: string | null | undefined;
-    endsAt?: string | null | undefined;
     scheduledFor?: string | null | undefined;
     youtubeUrl?: string | null | undefined;
 }, {
     title: string;
+    endsAt?: string | null | undefined;
     hlsStreamUrl?: string | null | undefined;
     rtmpIngestKey?: string | null | undefined;
     streamNotes?: string | null | undefined;
-    endsAt?: string | null | undefined;
     scheduledFor?: string | null | undefined;
     youtubeUrl?: string | null | undefined;
 }>;

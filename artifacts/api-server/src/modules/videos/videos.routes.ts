@@ -468,7 +468,7 @@ export async function videosRoutes(app: FastifyInstance) {
             return reply.status(304).send();
           }
           return reply
-            .header("Cache-Control", "public, s-maxage=30, max-age=30, stale-while-revalidate=60")
+            .header("Cache-Control", "public, s-maxage=30, max-age=30, stale-while-revalidate=60, stale-if-error=600")
             .header("ETag", cached.etag)
             .header("Vary", "Accept-Encoding")
             .header("X-Cache", "HIT")
@@ -581,8 +581,8 @@ export async function videosRoutes(app: FastifyInstance) {
       }
 
       const cacheControl = isFiltered
-        ? "public, s-maxage=10, max-age=10, stale-while-revalidate=30"
-        : "public, s-maxage=30, max-age=30, stale-while-revalidate=60";
+        ? "public, s-maxage=10, max-age=10, stale-while-revalidate=30, stale-if-error=300"
+        : "public, s-maxage=30, max-age=30, stale-while-revalidate=60, stale-if-error=600";
 
       return reply
         .header("Cache-Control", cacheControl)
@@ -627,7 +627,7 @@ export async function videosRoutes(app: FastifyInstance) {
           .limit(limit) as typeof rows;
       }
       return reply
-        .header("Cache-Control", "public, s-maxage=60, max-age=60, stale-while-revalidate=120")
+        .header("Cache-Control", "public, s-maxage=60, max-age=60, stale-while-revalidate=120, stale-if-error=600")
         .send({ videos: rows.map(v => toDto(v as unknown as VideoDtoRow)) });
     },
   );
@@ -648,6 +648,15 @@ export async function videosRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
+      // Short public cache — video detail pages are fetched on every player
+      // open. viewCount, youtubeLiveStatus, and transcodingStatus can change
+      // but a 10 s stale window is acceptable; player surfaces receive live
+      // status via SSE independently. stale-if-error=300 keeps serving 5 min
+      // on origin restarts so video pages never blank during deploys.
+      reply
+        .header("Cache-Control", "public, max-age=10, s-maxage=10, stale-while-revalidate=30, stale-if-error=300")
+        .header("Vary", "Accept-Encoding");
+
       let row: ({ [K in keyof typeof VIDEO_COLS]: unknown }) | undefined;
       try {
         const [r] = await db

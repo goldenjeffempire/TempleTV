@@ -35,7 +35,13 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
    * Rate-limited to 120 req/min (= 2 req/s) — generous enough for all clients
    * polling at ≥30 s intervals while blocking accidental polling storms.
    */
-  app.get("/", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async () => {
+  app.get("/", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (_req, reply) => {
+    // Same short public cache as /status — consumed by mobile as a fallback
+    // check. stale-if-error=60 prevents a brief origin blip from showing an
+    // incorrect "offline" state for up to 60 seconds.
+    reply
+      .header("Cache-Control", "public, max-age=5, s-maxage=5, stale-while-revalidate=10, stale-if-error=60")
+      .header("Vary", "Accept-Encoding");
     const s = ytPoller.getState();
     return {
       isLive: s.isLive,
@@ -52,7 +58,14 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
    * every 30 s as a fallback when SSE drops.
    * Rate-limited to 120 req/min — same budget as the root endpoint.
    */
-  app.get("/status", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async () => {
+  app.get("/status", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (_req, reply) => {
+    // Short public cache — TV fallback polls this every 30 s when SSE drops.
+    // 5 s max-age is safe: live-status SSE fires immediately on actual changes.
+    // stale-if-error=60 prevents a brief origin blip from causing an
+    // erroneous "offline" banner for up to 60 seconds.
+    reply
+      .header("Cache-Control", "public, max-age=5, s-maxage=5, stale-while-revalidate=10, stale-if-error=60")
+      .header("Vary", "Accept-Encoding");
     const s = ytPoller.getState();
     return {
       isLive: s.isLive,

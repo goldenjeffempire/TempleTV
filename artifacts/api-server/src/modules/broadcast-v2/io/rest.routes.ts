@@ -49,7 +49,8 @@ import { driftAggregator } from "../engine/drift-aggregator.js";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
 const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
-const userGuard = { preHandler: requireAuth("user") } as const;
+// userGuard kept for future per-viewer routes — unused at module level now
+const _userGuard = { preHandler: requireAuth("user") } as const; void _userGuard;
 
 // Per-process idempotency cache. Architect-flagged: we accept the same
 // `idempotencyKey` only once within a 5-minute window per channel.
@@ -474,7 +475,7 @@ export async function restRoutes(app: FastifyInstance) {
     broadcastOrchestrator.on("frame", () => { _stateCache = null; });
 
     app.get("/state", {
-      schema: { response: { 429: _429err } },
+      schema: { response: { 304: z.void(), 429: _429err } },
       config: {
         // Cold-start authority for every player surface and the recover-frame
         // refetch target. Rate-limited to absorb aggressive polling from

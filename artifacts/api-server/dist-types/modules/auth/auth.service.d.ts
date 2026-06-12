@@ -1,6 +1,15 @@
 import type { ExtendResponse } from "./auth.schemas.js";
 import type { Role } from "../../shared/types.js";
 import type { AuthTokens, LoginBody, RegisterBody, ForgotPasswordBody, ResetPasswordBody } from "./auth.schemas.js";
+/**
+ * Delete all refresh token rows (across ALL users) that are either:
+ *   - past their expiresAt, or
+ *   - revoked and whose revokedAt is older than PRUNE_AFTER_DAYS days.
+ *
+ * Returns the number of rows deleted (for telemetry). Non-fatal — any DB
+ * error is logged and re-thrown so the worker supervisor can track failures.
+ */
+export declare function pruneAllExpiredRefreshTokens(): Promise<number>;
 export declare const authService: {
     register(body: RegisterBody): Promise<AuthTokens>;
     login(body: LoginBody): Promise<AuthTokens | {

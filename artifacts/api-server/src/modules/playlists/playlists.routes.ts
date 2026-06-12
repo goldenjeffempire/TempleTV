@@ -34,12 +34,13 @@ export async function playlistsRoutes(app: FastifyInstance) {
       },
     },
     async (_req, reply) => {
-      reply.header("Cache-Control", "public, max-age=30, s-maxage=30, stale-while-revalidate=60");
+      reply.header("Cache-Control", "public, max-age=30, s-maxage=30, stale-while-revalidate=60, stale-if-error=600");
+      reply.header("Vary", "Accept-Encoding");
       // In-process LRU cache: avoids a DB round-trip when multiple clients
       // cold-start within the same 30-second window (TV, mobile, and web all
       // hit /playlists on boot). Identical pattern to series.routes.ts.
       const cacheKey = "playlists:list:v1";
-      const cached = await cache().get<unknown>(cacheKey).catch(() => null);
+      const cached = await cache().get<z.infer<typeof ListPlaylistsResponseSchema>>(cacheKey).catch(() => null);
       if (cached) return cached;
       const result = await playlistsService.list();
       await cache().set(cacheKey, result, 30).catch(() => null);
@@ -60,14 +61,18 @@ export async function playlistsRoutes(app: FastifyInstance) {
     async (req, reply) => {
       // Cache-Control set AFTER the service call so CDNs never cache 404s.
       const cacheKey = `playlists:detail:v1:${req.params.id}`;
-      const cached = await cache().get<unknown>(cacheKey).catch(() => null);
+      const cached = await cache().get<z.infer<typeof PlaylistDetailSchema>>(cacheKey).catch(() => null);
       if (cached) {
-        reply.header("Cache-Control", "public, max-age=60, s-maxage=60, stale-while-revalidate=120");
+        reply
+          .header("Cache-Control", "public, max-age=60, s-maxage=60, stale-while-revalidate=120, stale-if-error=600")
+          .header("Vary", "Accept-Encoding");
         return cached;
       }
       const result = await playlistsService.getById(req.params.id);
       await cache().set(cacheKey, result, 60).catch(() => null);
-      reply.header("Cache-Control", "public, max-age=60, s-maxage=60, stale-while-revalidate=120");
+      reply
+        .header("Cache-Control", "public, max-age=60, s-maxage=60, stale-while-revalidate=120, stale-if-error=600")
+        .header("Vary", "Accept-Encoding");
       return result;
     },
   );

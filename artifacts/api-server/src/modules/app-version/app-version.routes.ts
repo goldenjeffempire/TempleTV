@@ -134,7 +134,15 @@ export async function appVersionRoutes(app: FastifyInstance) {
         },
       },
     },
-    async (req) => {
+    async (req, reply) => {
+      // Version check is polled by mobile on every cold start + AppState active.
+      // App version records change rarely (only when an admin publishes a new
+      // release). 30 s public cache dramatically reduces DB hits during
+      // user-launch spikes. stale-if-error=600 keeps mobile from showing
+      // "update required" interstitials during a brief origin restart.
+      reply
+        .header("Cache-Control", "public, max-age=30, s-maxage=30, stale-while-revalidate=60, stale-if-error=600")
+        .header("Vary", "Accept-Encoding");
       const { platform, version, versionCode, channel } = req.query;
 
       // Fetch active versions matching this platform+channel

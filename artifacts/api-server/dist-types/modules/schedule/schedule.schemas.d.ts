@@ -13,8 +13,8 @@ export declare const ScheduleEntrySchema: z.ZodObject<{
 }, "strip", z.ZodTypeAny, {
     id: string;
     title: string;
-    createdAt: string;
     isActive: boolean;
+    createdAt: string;
     dayOfWeek: number;
     startTime: string;
     endTime: string | null;
@@ -24,8 +24,8 @@ export declare const ScheduleEntrySchema: z.ZodObject<{
 }, {
     id: string;
     title: string;
-    createdAt: string;
     isActive: boolean;
+    createdAt: string;
     dayOfWeek: number;
     startTime: string;
     endTime: string | null;
@@ -48,8 +48,8 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
     }, "strip", z.ZodTypeAny, {
         id: string;
         title: string;
-        createdAt: string;
         isActive: boolean;
+        createdAt: string;
         dayOfWeek: number;
         startTime: string;
         endTime: string | null;
@@ -59,8 +59,8 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
     }, {
         id: string;
         title: string;
-        createdAt: string;
         isActive: boolean;
+        createdAt: string;
         dayOfWeek: number;
         startTime: string;
         endTime: string | null;
@@ -73,8 +73,8 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
     items: {
         id: string;
         title: string;
-        createdAt: string;
         isActive: boolean;
+        createdAt: string;
         dayOfWeek: number;
         startTime: string;
         endTime: string | null;
@@ -87,8 +87,8 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
     items: {
         id: string;
         title: string;
-        createdAt: string;
         isActive: boolean;
+        createdAt: string;
         dayOfWeek: number;
         startTime: string;
         endTime: string | null;
@@ -113,7 +113,7 @@ export declare const CreateScheduleBodySchema: z.ZodObject<{
     isActive: boolean;
     dayOfWeek: number;
     startTime: string;
-    contentType: "external" | "live" | "video" | "playlist";
+    contentType: "video" | "live" | "external" | "playlist";
     isRecurring: boolean;
     endTime?: string | null | undefined;
     contentId?: string | null | undefined;
@@ -121,7 +121,7 @@ export declare const CreateScheduleBodySchema: z.ZodObject<{
     title: string;
     dayOfWeek: number;
     startTime: string;
-    contentType: "external" | "live" | "video" | "playlist";
+    contentType: "video" | "live" | "external" | "playlist";
     isActive?: boolean | undefined;
     endTime?: string | null | undefined;
     contentId?: string | null | undefined;
@@ -142,7 +142,7 @@ export declare const UpdateScheduleBodySchema: z.ZodObject<{
     dayOfWeek?: number | undefined;
     startTime?: string | undefined;
     endTime?: string | null | undefined;
-    contentType?: "external" | "live" | "video" | "playlist" | undefined;
+    contentType?: "video" | "live" | "external" | "playlist" | undefined;
     contentId?: string | null | undefined;
     isRecurring?: boolean | undefined;
 }, {
@@ -151,7 +151,7 @@ export declare const UpdateScheduleBodySchema: z.ZodObject<{
     dayOfWeek?: number | undefined;
     startTime?: string | undefined;
     endTime?: string | null | undefined;
-    contentType?: "external" | "live" | "video" | "playlist" | undefined;
+    contentType?: "video" | "live" | "external" | "playlist" | undefined;
     contentId?: string | null | undefined;
     isRecurring?: boolean | undefined;
 }>;

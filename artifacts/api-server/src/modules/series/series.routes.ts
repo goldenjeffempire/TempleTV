@@ -47,6 +47,7 @@ export async function seriesRoutes(app: FastifyInstance) {
         }),
         response: {
           200: z.object({ series: z.array(z.record(z.unknown())), total: z.number() }),
+          304: z.void(),
           429: z.object({ error: z.string() }),
         },
       },
@@ -55,10 +56,13 @@ export async function seriesRoutes(app: FastifyInstance) {
       // 30-second public cache — series listings change infrequently and are
       // hit by every TV/mobile cold-start. stale-while-revalidate lets CDN
       // serve a fresh copy in the background without blocking the client.
-      reply.header(
-        "Cache-Control",
-        "public, max-age=30, s-maxage=30, stale-while-revalidate=60",
-      );
+      // stale-if-error=600: CDN/clients keep serving cached series list for up
+      // to 10 min if the origin is temporarily unavailable (deploy, restart).
+      // Vary: Accept-Encoding: required for correct CDN-level content-encoding
+      // differentiation (gzip vs br vs identity must be stored separately).
+      reply
+        .header("Cache-Control", "public, max-age=30, s-maxage=30, stale-while-revalidate=60, stale-if-error=600")
+        .header("Vary", "Accept-Encoding");
 
       // ── Server-side in-process LRU cache ──────────────────────────────────
       // Eliminates DB round-trips when multiple clients cold-start within the
@@ -66,7 +70,17 @@ export async function seriesRoutes(app: FastifyInstance) {
       // Key includes all query params so filtered pages are cached separately.
       const { category, limit, offset } = req.query;
       const cacheKey = `series:list:v1:g${seriesListGen}:${category ?? "all"}:${limit}:${offset}`;
-      const cached = await cache().get<{ series: unknown[]; total: number }>(cacheKey).catch(() => null);
+
+      // ETag based on cache key — the key embeds the generation counter which
+      // increments on every admin mutation, so the ETag changes whenever the
+      // underlying data changes. Saves response body transfer on CDN + client
+      // conditional re-fetch cycles (304 Not Modified).
+      const etag = `"${crypto.createHash("sha1").update(cacheKey).digest("hex").slice(0, 16)}"`;
+      reply.header("ETag", etag);
+      const ifNoneMatch = req.headers["if-none-match"];
+      if (ifNoneMatch === etag) return reply.code(304).send();
+
+      const cached = await cache().get<{ series: Record<string, unknown>[]; total: number }>(cacheKey).catch(() => null);
       if (cached) return cached;
 
       const conditions: SQL[] = [eq(schema.seriesTable.isPublished, true)];
@@ -106,12 +120,35 @@ export async function seriesRoutes(app: FastifyInstance) {
         params: z.object({ slug: z.string().min(1).max(80) }),
         response: {
           200: z.record(z.unknown()),
+          304: z.void(),
           404: z.object({ error: z.string() }),
           429: z.object({ error: z.string() }),
         },
       },
     },
     async (req, reply) => {
+      // 30-second public cache — series detail pages are fetched on every
+      // episode-list open by TV, mobile, and web. youtubeLiveStatus changes
+      // via SSE so a 30 s stale window is acceptable (player state is not
+      // gated on this endpoint).
+      // stale-if-error=600: keeps serving 10 min on origin outage.
+      reply
+        .header("Cache-Control", "public, max-age=30, s-maxage=30, stale-while-revalidate=60, stale-if-error=600")
+        .header("Vary", "Accept-Encoding");
+
+      // ── In-process LRU cache ───────────────────────────────────────────────
+      // Key embeds the generation counter so any admin mutation (add/remove
+      // episode, metadata edit) instantly promotes a new cache key; stale key
+      // expires after its 60 s TTL.
+      const cacheKey = `series:slug:v1:g${seriesListGen}:${req.params.slug}`;
+      const slugEtag = `"${crypto.createHash("sha1").update(cacheKey).digest("hex").slice(0, 16)}"`;
+      reply.header("ETag", slugEtag);
+      const ifNoneMatch = req.headers["if-none-match"];
+      if (ifNoneMatch === slugEtag) return reply.code(304).send();
+
+      const cachedSlug = await cache().get<Record<string, unknown>>(cacheKey).catch(() => null);
+      if (cachedSlug) return cachedSlug;
+
       const [series] = await db
         .select()
         .from(schema.seriesTable)
@@ -135,7 +172,7 @@ export async function seriesRoutes(app: FastifyInstance) {
         .where(eq(schema.seriesEpisodesTable.seriesId, series.id))
         .orderBy(asc(schema.seriesEpisodesTable.episodeNumber));
 
-      return reply.send({
+      const result: Record<string, unknown> = {
         ...series,
         createdAt: series.createdAt.toISOString(),
         updatedAt: series.updatedAt.toISOString(),
@@ -146,7 +183,9 @@ export async function seriesRoutes(app: FastifyInstance) {
           addedAt: ep.addedAt.toISOString(),
           youtubeLiveStatus: (youtubeLiveStatus as "live" | "rebroadcast" | null) ?? null,
         })),
-      });
+      };
+      void cache().set(cacheKey, result, 60).catch(() => {});
+      return reply.send(result);
     },
   );
 
