@@ -479,6 +479,17 @@ export function LiveBroadcastV2({
     if (snapshot.state !== "FATAL") fatalFiredRef.current = false;
   }, [snapshot.state, onFatal]);
 
+  // Relay V2 transport connection state to the ConnectivityBanner via the
+  // same custom event that the v1 BroadcastEngine dispatches so the banner
+  // shows "Reconnecting to broadcast…" on both player surfaces.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (typeof (globalThis as { CustomEvent?: unknown }).CustomEvent !== "function") return;
+    window.dispatchEvent(
+      new CustomEvent("temple-tv-broadcast-connected", { detail: { connected } }),
+    );
+  }, [connected]);
+
   // PiP buffer-swap re-entry: when the broadcast advances to the next queue
   // item the player-core performs an A/B buffer handoff — the previously
   // inactive buffer becomes active.  If a PiP window is open it stays pinned

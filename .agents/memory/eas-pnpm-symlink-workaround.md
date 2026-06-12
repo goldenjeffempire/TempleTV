@@ -82,6 +82,7 @@ Also requires `CI=true` to suppress the "no TTY" abort when switching registries
 
 | Version  | versionCode | EAS Build ID                                 | Date       |
 |----------|-------------|----------------------------------------------|------------|
+| v1.0.20  | 64          | 08228548-183c-45d4-9572-92c93e7e9649         | 2026-06-12 |
 | v1.0.19  | 59          | af9a8fc5-de4c-40ba-a1a0-db6736366b92         | 2026-06-10 |
 | v1.0.18  | 58          | abccb181-a324-4c03-bef6-4b51ec10e8e0         | 2026-06-09 |
 | v1.0.17  | 57          | (previous session)                            | 2026-06-09 |
