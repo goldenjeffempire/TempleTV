@@ -60,6 +60,7 @@ import {
   queueStats,
   retryJob,
 } from "../transcoder/transcoder.queue.js";
+import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
 import { liveOverridesService } from "../live-overrides/live-overrides.service.js";
 import { StartOverrideBodySchema } from "../live-overrides/live-overrides.schemas.js";
@@ -2147,6 +2148,250 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         adminEventBus.push("broadcast-queue-updated", { reason: "bulk-cleared", status });
       }
       return { cleared };
+    },
+  );
+
+  // ── GET /admin/transcoding/audit ─────────────────────────────────────────
+  // Full pipeline health report: counts by status, stuck jobs, orphaned videos
+  // (stuck in encoding/processing with no active job), hls_ready videos missing
+  // from the broadcast queue, and queue drain-time estimate.
+  r.get(
+    "/transcoding/audit",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Full transcoding pipeline health audit",
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            statusCounts: z.record(z.string(), z.number()),
+            queueDepth: z.number(),
+            activeJob: z.object({ jobId: z.string(), videoId: z.string(), startedAt: z.string() }).nullable(),
+            stuckJobCount: z.number(),
+            orphanedEncodingCount: z.number(),
+            hlsReadyNotInQueueCount: z.number(),
+            estimatedDrainMinutes: z.number().nullable(),
+          }),
+          429: z.object({ error: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => {
+      const [statusRows, stuckRows, orphanedRows, missingRows, hb] = await Promise.all([
+        // Count by transcoding_status for local videos
+        db.execute(sql`
+          SELECT transcoding_status AS status, COUNT(*)::int AS cnt
+          FROM managed_videos
+          WHERE video_source = 'local'
+          GROUP BY transcoding_status
+        `),
+        // Stuck jobs: status=processing for more than 90 minutes
+        db.execute(sql`
+          SELECT COUNT(*)::int AS cnt
+          FROM transcoding_jobs
+          WHERE status = 'processing'
+            AND started_at < NOW() - INTERVAL '90 minutes'
+        `),
+        // Orphaned encoding: managed_videos stuck in 'encoding' with no active job
+        db.execute(sql`
+          SELECT COUNT(*)::int AS cnt
+          FROM managed_videos mv
+          WHERE mv.video_source = 'local'
+            AND mv.transcoding_status = 'encoding'
+            AND NOT EXISTS (
+              SELECT 1 FROM transcoding_jobs tj
+              WHERE tj.video_id = mv.id
+                AND tj.status IN ('queued', 'processing')
+            )
+        `),
+        // hls_ready local videos absent from the active broadcast queue
+        db.execute(sql`
+          SELECT COUNT(*)::int AS cnt
+          FROM managed_videos mv
+          WHERE mv.video_source = 'local'
+            AND mv.transcoding_status = 'hls_ready'
+            AND NOT EXISTS (
+              SELECT 1 FROM broadcast_queue bq
+              WHERE bq.video_id = mv.id
+                AND bq.is_active = true
+            )
+        `),
+        Promise.resolve(transcoderDispatcher.getHeartbeat()),
+      ]);
+
+      const statusCounts: Record<string, number> = {};
+      for (const row of statusRows.rows as Array<{ status: string; cnt: number }>) {
+        statusCounts[row.status ?? "unknown"] = row.cnt;
+      }
+
+      const stuckJobCount = (stuckRows.rows[0] as { cnt: number } | undefined)?.cnt ?? 0;
+      const orphanedEncodingCount = (orphanedRows.rows[0] as { cnt: number } | undefined)?.cnt ?? 0;
+      const hlsReadyNotInQueueCount = (missingRows.rows[0] as { cnt: number } | undefined)?.cnt ?? 0;
+      const queueDepth = statusCounts["queued"] ?? 0;
+
+      // Rough drain estimate: assume ~45 min per job for 1 worker
+      const estimatedDrainMinutes = queueDepth > 0 ? queueDepth * 45 : null;
+
+      const activeJobInfo = hb.currentJobId && hb.currentVideoId
+        ? { jobId: hb.currentJobId, videoId: hb.currentVideoId, startedAt: new Date(hb.startedAtMs ?? Date.now()).toISOString() }
+        : null;
+
+      return {
+        ok: true as const,
+        statusCounts,
+        queueDepth,
+        activeJob: activeJobInfo,
+        stuckJobCount,
+        orphanedEncodingCount,
+        hlsReadyNotInQueueCount,
+        estimatedDrainMinutes,
+      };
+    },
+  );
+
+  // ── POST /admin/transcoding/repair-all ────────────────────────────────────
+  // Comprehensive one-click pipeline repair:
+  //   1. Re-arm all recoverable failed transcoding jobs (same as retry-failed)
+  //   2. Reset orphaned "encoding" videos (stuck with no active job) back to queued
+  //   3. Auto-enqueue all hls_ready local videos missing from the broadcast queue
+  //   4. Nudge the dispatcher
+  //   5. Push SSE events
+  r.post(
+    "/transcoding/repair-all",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin-ops"],
+        summary: "One-click full pipeline repair: retry failed + reset orphans + enqueue missing",
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            retriedFailed: z.number(),
+            resetOrphaned: z.number(),
+            enqueuedMissing: z.number(),
+          }),
+          429: z.object({ error: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => {
+      // Step 1: Re-arm all recoverable failed transcoding jobs
+      const retriedFailed = await retryAllFailed();
+
+      // Step 2: Reset orphaned "encoding" videos (no active job) → queued
+      const orphanResult = await db.execute(sql`
+        UPDATE managed_videos
+        SET transcoding_status = 'queued'
+        WHERE video_source = 'local'
+          AND transcoding_status = 'encoding'
+          AND NOT EXISTS (
+            SELECT 1 FROM transcoding_jobs tj
+            WHERE tj.video_id = managed_videos.id
+              AND tj.status IN ('queued', 'processing')
+          )
+      `);
+      const resetOrphaned = (orphanResult.rowCount ?? 0) as number;
+
+      // Step 3: Find hls_ready local videos not in the active broadcast queue
+      // and enqueue them. Fetch up to 500 at a time to avoid runaway load.
+      const missingRows = await db.execute(sql`
+        SELECT mv.id, mv.hls_master_url
+        FROM managed_videos mv
+        WHERE mv.video_source = 'local'
+          AND mv.transcoding_status = 'hls_ready'
+          AND mv.hls_master_url IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM broadcast_queue bq
+            WHERE bq.video_id = mv.id
+              AND bq.is_active = true
+          )
+        ORDER BY mv.imported_at DESC
+        LIMIT 500
+      `);
+
+      let enqueuedMissing = 0;
+      for (const row of missingRows.rows as Array<{ id: string }>) {
+        try {
+          const res = await enqueueIfMissing({ videoId: row.id, reason: "repair-all" });
+          if (res.enqueued) enqueuedMissing++;
+        } catch {
+          // Non-fatal: duplicate guard or constraint violation — skip and continue
+        }
+      }
+
+      // Step 4: Nudge the dispatcher to pick up any newly queued jobs immediately
+      if (retriedFailed > 0 || resetOrphaned > 0) {
+        transcoderDispatcher.nudge();
+      }
+
+      // Step 5: Push SSE events to refresh all admin UI panels
+      adminEventBus.push("transcoding-update", {
+        type: "repair-all",
+        retriedFailed,
+        resetOrphaned,
+        enqueuedMissing,
+      });
+      adminEventBus.push("videos-library-updated", { reason: "repair-all" });
+      adminEventBus.push("broadcast-queue-updated", { reason: "repair-all" });
+
+      return { ok: true as const, retriedFailed, resetOrphaned, enqueuedMissing };
+    },
+  );
+
+  // ── POST /admin/transcoding/enqueue-missing ───────────────────────────────
+  // Finds all hls_ready local videos not in the active broadcast queue and
+  // enqueues them. Useful after a bulk import or a schema migration that left
+  // hls_ready videos without broadcast queue entries.
+  r.post(
+    "/transcoding/enqueue-missing",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Enqueue all hls_ready local videos missing from the broadcast queue",
+        response: {
+          200: z.object({ ok: z.literal(true), enqueued: z.number() }),
+          429: z.object({ error: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => {
+      const missingRows = await db.execute(sql`
+        SELECT mv.id
+        FROM managed_videos mv
+        WHERE mv.video_source = 'local'
+          AND mv.transcoding_status = 'hls_ready'
+          AND mv.hls_master_url IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM broadcast_queue bq
+            WHERE bq.video_id = mv.id
+              AND bq.is_active = true
+          )
+        ORDER BY mv.imported_at DESC
+        LIMIT 500
+      `);
+
+      let enqueued = 0;
+      for (const row of missingRows.rows as Array<{ id: string }>) {
+        try {
+          const res = await enqueueIfMissing({ videoId: row.id, reason: "enqueue-missing" });
+          if (res.enqueued) enqueued++;
+        } catch { /* skip duplicates/conflicts */ }
+      }
+
+      if (enqueued > 0) {
+        adminEventBus.push("broadcast-queue-updated", { reason: "enqueue-missing", enqueued });
+        adminEventBus.push("videos-library-updated", { reason: "enqueue-missing" });
+      }
+
+      return { ok: true as const, enqueued };
     },
   );
 

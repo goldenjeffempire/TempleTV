@@ -30,6 +30,7 @@ import {
   RefreshCw, Star, StarOff, ChevronLeft, ChevronRight, Film, Eye, EyeOff,
   UploadCloud, X, FileVideo, Layers, Lock, LockOpen, Youtube, HardDrive,
   ArrowUpDown, SlidersHorizontal, Zap, Clapperboard, Globe, AlertTriangle,
+  Wrench, CheckCircle2,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { LiveStatusBadge } from "@/components/live-status-badge";
@@ -566,15 +567,60 @@ export default function VideosPage() {
         void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
         void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       }
-      // Always refresh engine-health and remediation-report regardless of
-      // retry count — even 0 retried is meaningful (confirms no actionable
-      // failures) and avoids stale "N failed jobs" badges in the UI.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Batch retry failed"),
+  });
+
+  // One-click full pipeline repair: re-arm failed jobs, reset orphaned encoding
+  // videos, and enqueue hls_ready videos missing from the broadcast queue.
+  const repairAllMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean; retriedFailed: number; resetOrphaned: number; enqueuedMissing: number }>(
+        "/admin/transcoding/repair-all",
+      ),
+    onSuccess: (res) => {
+      const parts: string[] = [];
+      if (res.retriedFailed > 0) parts.push(`${res.retriedFailed} failed job${res.retriedFailed !== 1 ? "s" : ""} re-queued`);
+      if (res.resetOrphaned > 0) parts.push(`${res.resetOrphaned} orphaned video${res.resetOrphaned !== 1 ? "s" : ""} reset`);
+      if (res.enqueuedMissing > 0) parts.push(`${res.enqueuedMissing} ready video${res.enqueuedMissing !== 1 ? "s" : ""} added to broadcast queue`);
+      if (parts.length === 0) {
+        toast.info("Pipeline is healthy — nothing needed repair.");
+      } else {
+        toast.success(`Pipeline repaired: ${parts.join(", ")}.`);
+      }
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-audit"] });
+    },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Repair failed"),
+  });
+
+  // ── Pipeline audit query ─────────────────────────────────────────────────
+  // Lightweight poll (every 60 s) — informs the repair banner. Stale data
+  // is fine here; we only need it to surface actionable warning counts.
+  const { data: auditData } = useQuery({
+    queryKey: ["transcoding-audit"],
+    queryFn: () =>
+      api.get<{
+        ok: boolean;
+        statusCounts: Record<string, number>;
+        queueDepth: number;
+        stuckJobCount: number;
+        orphanedEncodingCount: number;
+        hlsReadyNotInQueueCount: number;
+        estimatedDrainMinutes: number | null;
+      }>("/admin/transcoding/audit"),
+    staleTime: 60_000,
+    refetchInterval: 120_000,
   });
 
   // Bulk transcode — enqueues each selected video for HLS transcoding.
@@ -833,6 +879,18 @@ export default function VideosPage() {
             <Button variant="outline" size="sm" onClick={() => void refetch()} className="gap-1.5">
               <RefreshCw size={13} /> Refresh
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={repairAllMutation.isPending}
+              onClick={() => repairAllMutation.mutate()}
+              className="gap-1.5"
+              title="Re-arm failed jobs, reset stuck videos, and enqueue ready videos missing from the broadcast queue"
+            >
+              {repairAllMutation.isPending
+                ? <><RefreshCw size={13} className="animate-spin" /> Repairing…</>
+                : <><Wrench size={13} /> Full Repair</>}
+            </Button>
             <Button size="sm" onClick={() => setUploadOpen(true)} className="gap-1.5 relative">
               <UploadCloud size={14} />
               Upload Video
@@ -855,6 +913,49 @@ export default function VideosPage() {
             (error.status === 0 || error.status === 502 || error.status === 503 || error.status === 504)
           }
         />
+      )}
+
+      {/* Pipeline health banner — only shown when the audit detects issues */}
+      {(() => {
+        if (!auditData) return null;
+        const { stuckJobCount, orphanedEncodingCount, hlsReadyNotInQueueCount, queueDepth, estimatedDrainMinutes } = auditData;
+        const issueCount = stuckJobCount + orphanedEncodingCount + hlsReadyNotInQueueCount;
+        if (issueCount === 0) return null;
+        return (
+          <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50/60 dark:border-blue-900/40 dark:bg-blue-950/20 px-4 py-3">
+            <AlertTriangle size={16} className="text-blue-500 flex-shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-blue-700 dark:text-blue-400">
+                Pipeline needs attention
+              </p>
+              <p className="text-xs text-blue-600/70 dark:text-blue-400/70 mt-0.5 space-y-0.5">
+                {stuckJobCount > 0 && <span className="block">{stuckJobCount} job{stuckJobCount !== 1 ? "s" : ""} stuck processing for &gt;90 min</span>}
+                {orphanedEncodingCount > 0 && <span className="block">{orphanedEncodingCount} video{orphanedEncodingCount !== 1 ? "s" : ""} orphaned in "encoding" state with no active job</span>}
+                {hlsReadyNotInQueueCount > 0 && <span className="block">{hlsReadyNotInQueueCount} ready video{hlsReadyNotInQueueCount !== 1 ? "s" : ""} not yet in the broadcast queue</span>}
+                {queueDepth > 0 && estimatedDrainMinutes != null && <span className="block">{queueDepth} video{queueDepth !== 1 ? "s" : ""} queued — est. {estimatedDrainMinutes >= 60 ? `${Math.round(estimatedDrainMinutes / 60)} h` : `${estimatedDrainMinutes} min`} to drain</span>}
+              </p>
+            </div>
+            <Button
+              size="sm"
+              disabled={repairAllMutation.isPending}
+              onClick={() => repairAllMutation.mutate()}
+              className="h-7 text-xs flex-shrink-0 gap-1.5 bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              {repairAllMutation.isPending
+                ? <><RefreshCw size={11} className="animate-spin" /> Repairing…</>
+                : <><Wrench size={11} /> Fix now</>}
+            </Button>
+          </div>
+        );
+      })()}
+
+      {/* Healthy pipeline confirmation — shown briefly after repair succeeds */}
+      {auditData && auditData.stuckJobCount === 0 && auditData.orphanedEncodingCount === 0
+        && auditData.hlsReadyNotInQueueCount === 0 && repairAllMutation.isSuccess && (
+        <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50/60 dark:border-green-900/40 dark:bg-green-950/20 px-4 py-2.5">
+          <CheckCircle2 size={14} className="text-green-500 flex-shrink-0" />
+          <p className="text-sm text-green-700 dark:text-green-400">Pipeline is healthy — all videos are queued and ready.</p>
+        </div>
       )}
 
       {/* Filters row */}

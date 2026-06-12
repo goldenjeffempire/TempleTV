@@ -108,9 +108,15 @@ const RESOLUTION_PROBE_TIMEOUT_MS = 15_000;
 /** Hard deadline for the frame-decode integrity probe in probeCanDecodeFirstFrame. */
 const FRAME_DECODE_TIMEOUT_MS = 30_000;
 // Max concurrent file uploads when copying HLS segments to object storage.
-const UPLOAD_CONCURRENCY = 10;
+// 20 concurrent uploads saturates the S3-compatible storage write path without
+// exhausting the DB connection pool (MAX_CONCURRENT_CHUNK_DB_OPS=6 is a
+// separate guard on the chunked-upload path; this controls post-encode HLS
+// segment persistence where each operation is an independent object PUT).
+const UPLOAD_CONCURRENCY = 20;
 // Max concurrent uploads during the progressive in-flight segment uploader.
-const PROGRESSIVE_UPLOAD_CONCURRENCY = 4;
+// Raised from 4→8 to keep the object-storage write pipeline from becoming the
+// bottleneck when the encoder outputs segments faster than the uploader can drain.
+const PROGRESSIVE_UPLOAD_CONCURRENCY = 8;
 // How often (ms) the progressive uploader polls for newly-written segments.
 const PROGRESSIVE_POLL_MS = 1_000;
 
@@ -166,7 +172,7 @@ function buildFfmpegArgs(
     "-hide_banner",
     "-loglevel", "error",
     "-progress", "pipe:1",
-    "-stats_period", "5",
+    "-stats_period", "2",
     // Limit FFmpeg thread count to avoid starving other processes on shared
     // Replit/Render instances. "-threads 0" (unlimited) claims all available
     // cores, which starves the Fastify event loop and upstream HTTP connections

@@ -825,6 +825,27 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         ON viewer_sessions (started_at DESC, ended_at, last_heartbeat_at)
     `);
 
+    // Partial-success healer: scans managed_videos WHERE transcoding_status =
+    // 'encoding' to find orphaned videos that were left stuck mid-encode after
+    // a server restart or dispatcher crash. Without this index the scan is O(N)
+    // over all managed_videos rows.
+    await run("idx_managed_videos_encoding_stuck", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_encoding_stuck
+        ON managed_videos (updated_at DESC)
+        WHERE video_source = 'local'
+          AND transcoding_status = 'encoding'
+    `);
+    // Repair-all endpoint: finds hls_ready local videos that are not in the
+    // active broadcast queue so they can be auto-enqueued by the repair route.
+    // The subquery "NOT IN (SELECT video_id FROM broadcast_queue WHERE is_active)"
+    // is a full scan on both tables without this index.
+    await run("idx_managed_videos_hls_ready_local", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_hls_ready_local
+        ON managed_videos (imported_at DESC)
+        WHERE video_source = 'local'
+          AND transcoding_status = 'hls_ready'
+    `);
+
     // ── Check constraints (DO-block pattern for idempotency) ───────────────
     // ALTER TABLE ADD CONSTRAINT has no IF NOT EXISTS; use a DO block.
     await client.query(`
