@@ -128,6 +128,14 @@ const PROCESS_BOOTED_AT_MS = Date.now();
 // or a route call races the timer), the second invocation is a no-op.
 // This prevents duplicate FFmpeg jobs and redundant DB round-trips.
 let _hlsScanInFlight = false;
+
+// Boot-scan guard: registerDomainRoutes is registered twice in app.ts
+// (once for /api/v1 and once for /api legacy prefix). Without this guard
+// two separate _bootHlsScanTimer instances would be created — one fires,
+// completes in <300 ms, and the second fires immediately after, causing a
+// redundant DB scan and an unnecessary orchestrator reload on every restart.
+// Module-scoped so it survives both plugin instantiations in the same process.
+let _bootScanScheduled = false;
 async function autoEnqueueMissingHls(): Promise<{ triggered: number }> {
   if (_hlsScanInFlight) {
     logger.info("[broadcast-v2] auto-enqueue-missing-hls: scan already in flight, skipping");
@@ -1943,12 +1951,20 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   //
   // Idempotent — autoEnqueueMissingHls() never double-enqueues; items with
   // a live queued/processing job or a completed hlsMasterUrl are skipped.
-  const _bootHlsScanTimer = setTimeout(() => {
-    autoEnqueueMissingHls().catch((err: unknown) => {
-      logger.warn({ err }, "[broadcast-v2] boot-time auto-enqueue HLS scan failed (non-fatal)");
-    });
-  }, 15_000);
-  _bootHlsScanTimer.unref?.();
+  //
+  // _bootScanScheduled guard: registerDomainRoutes is registered at both
+  // /api/v1 and /api prefixes — without this guard the plugin body runs twice
+  // creating two timers. The second fires 288 ms after the first completes,
+  // causing a redundant DB scan + orchestrator reload on every restart.
+  if (!_bootScanScheduled) {
+    _bootScanScheduled = true;
+    const _bootHlsScanTimer = setTimeout(() => {
+      autoEnqueueMissingHls().catch((err: unknown) => {
+        logger.warn({ err }, "[broadcast-v2] boot-time auto-enqueue HLS scan failed (non-fatal)");
+      });
+    }, 15_000);
+    _bootHlsScanTimer.unref?.();
+  }
 
   // ── Webhook status & test ──────────────────────────────────────────────────
 

@@ -207,12 +207,15 @@ function startSupervisedWorkers(): void {
   if (supervisedWorkersStarted) return;
   supervisedWorkersStarted = true;
 
-  // Media integrity scanner: probes all active queue item URLs every 2 min
+  // Media integrity scanner: probes all active queue item URLs every 2 min.
+  // Initial delay is configurable via MEDIA_SCANNER_INITIAL_DELAY_MS (default
+  // 90 s) so transient 502/503 responses during a production restart window
+  // don't generate false-positive "unreachable (first detection)" warnings.
   workerSupervisor.spawn({
     name: "media-integrity-scanner",
     fn: () => mediaIntegrityScanner.scan(),
     intervalMs: 2 * 60_000,
-    initialDelayMs: 45_000,
+    initialDelayMs: env.MEDIA_SCANNER_INITIAL_DELAY_MS,
     backoffMs: [5_000, 15_000, 30_000, 60_000],
     onCircuitOpen: makeCircuitOpenCallback("media-integrity-scanner"),
   });

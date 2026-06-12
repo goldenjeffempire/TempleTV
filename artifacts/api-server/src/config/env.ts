@@ -253,6 +253,14 @@ const Env = z.object({
   // ops-alert SSE + admin email.  Default 7 min (was 10 min).
   BROADCAST_HEALTH_MONITOR_RECOVERY_MS: z.coerce.number().int().positive().default(420_000),
 
+  // Media integrity scanner — periodic URL reachability probe.
+  // Initial delay before the first scan. Default 90 s to allow for slow
+  // production restarts and prod-sync mirror lag so transient 502/503 responses
+  // during the restart window don't generate false-positive "unreachable (first
+  // detection)" warnings. The broadcast-health-monitor also uses 90 s so both
+  // monitors reach steady-state at the same time.
+  MEDIA_SCANNER_INITIAL_DELAY_MS: z.coerce.number().int().positive().default(90_000),
+
   // Content Rotation Worker — automatic broadcast queue shuffle.
   //
   // Periodically shuffles the sort_order of all active broadcast queue items

@@ -14,6 +14,7 @@
  * failure for each item so the analytics report shows trending health.
  */
 import { logger } from "../../../infrastructure/logger.js";
+import { env } from "../../../config/env.js";
 import {
   queueRepo,
   normalizeQueueUrl,
@@ -54,7 +55,10 @@ export interface MediaScanReport {
 const PROBE_TIMEOUT_MS = 8_000;
 const MAX_CONCURRENT = 4;
 const DEFAULT_INTERVAL_MS = 2 * 60_000;
-const INITIAL_DELAY_MS = 45_000;
+// INITIAL_DELAY_MS is read from env.MEDIA_SCANNER_INITIAL_DELAY_MS (default 90 s).
+// Using a function to defer the env read until after env.ts is fully initialised
+// (avoids TDZ issues when the module is imported early in the startup sequence).
+const getInitialDelayMs = () => env.MEDIA_SCANNER_INITIAL_DELAY_MS;
 
 /**
  * Consecutive scanner failures before the URL is proactively added to the
@@ -344,14 +348,15 @@ class MediaIntegrityScannerImpl {
       }, intervalMs);
       this.scanInterval.unref?.();
     };
+    const initialDelayMs = getInitialDelayMs();
     this.bootTimer = setTimeout(() => {
       this.bootTimer = null;
       void this.scan()
         .catch((err) => logger.warn({ err }, "[media-scanner] initial scan error"))
         .finally(scheduleRecurring);
-    }, INITIAL_DELAY_MS);
+    }, initialDelayMs);
     this.bootTimer.unref?.();
-    logger.info({ intervalMs, initialDelayMs: INITIAL_DELAY_MS }, "[media-scanner] started");
+    logger.info({ intervalMs, initialDelayMs }, "[media-scanner] started");
   }
 
   stop(): void {
