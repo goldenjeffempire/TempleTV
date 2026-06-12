@@ -24,6 +24,11 @@ const queryClient = new QueryClient({
         return count < 2;
       },
       retryDelay: (attempt, err) => {
+        // Honour the server's Retry-After on 429s (caps at 60 s to avoid
+        // hanging the UI on an excessively long server-side back-off directive).
+        if (err instanceof HttpError && err.status === 429 && err.retryAfterMs) {
+          return Math.min(err.retryAfterMs, 60_000);
+        }
         // Cold-start errors get exponential backoff up to 30 s to span the full
         // Render warm-up window. Other errors use the shorter 8 s cap.
         const isColdStart = err instanceof HttpError && (err.status === 0 || err.status >= 502);

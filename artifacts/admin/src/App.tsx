@@ -1,8 +1,9 @@
-import { lazy, Suspense, useEffect, Component, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, Component, type ReactNode } from "react";
 import { Router as WouterRouter, Route, Switch, useLocation, Redirect } from "wouter";
+import { useQueryClient } from "@tanstack/react-query";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useAuth } from "@/contexts/use-auth";
-import { SSEProvider, useSSEEvent } from "@/contexts/sse-context";
+import { SSEProvider, useSSE, useSSEEvent } from "@/contexts/sse-context";
 import { AppLayout } from "@/components/layout/app-layout";
 import { Skeleton } from "@/components/ui/skeleton";
 import { UploadQueuePanel } from "@/components/upload/UploadQueuePanel";
@@ -211,6 +212,54 @@ function prefetchCommonPages(): ReturnType<typeof setTimeout>[] {
   return ids;
 }
 
+// ── SSEReconnectSync ──────────────────────────────────────────────────────────
+// Must render inside SSEProvider.
+//
+// Two responsibilities:
+//
+//  1. SSE outage catch-up — When SSE transitions from a degraded/offline state
+//     back to "connected", invalidate all active TanStack Query entries so any
+//     server-side changes that arrived as SSE events while we were disconnected
+//     are immediately reflected in the UI. Individual page-level useSSEEvent
+//     handlers cover the steady-state case; this covers the gap left by a
+//     missed-event window.
+//
+//  2. Long-idle-tab freshness — When the admin tab was hidden for more than
+//     5 minutes and comes back into focus, force-invalidate all queries
+//     regardless of SSE state. This catches pages (e.g. analytics, users) that
+//     don't subscribe to SSE events and can silently serve hours-old data
+//     without the operator noticing.
+//
+function SSEReconnectSync() {
+  const qc = useQueryClient();
+  const { state } = useSSE();
+  const prevStateRef = useRef(state);
+
+  useEffect(() => {
+    const prev = prevStateRef.current;
+    prevStateRef.current = state;
+    if (state === "connected" && prev !== "connected" && prev !== "connecting") {
+      void qc.invalidateQueries();
+    }
+  }, [state, qc]);
+
+  useEffect(() => {
+    let hiddenAt = 0;
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenAt = Date.now();
+      } else if (hiddenAt > 0 && Date.now() - hiddenAt > 5 * 60 * 1_000) {
+        void qc.invalidateQueries();
+        hiddenAt = 0;
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [qc]);
+
+  return null;
+}
+
 // Listens for YouTube quota threshold SSE events and surfaces them as
 // persistent toasts so operators are alerted in real-time — no polling needed.
 // Must render inside SSEProvider (done below in AuthenticatedApp).
@@ -268,6 +317,7 @@ function AuthenticatedApp() {
 
   return (
     <SSEProvider>
+      <SSEReconnectSync />
       <YouTubeQuotaMonitor />
       <AppLayout>
         <PanelErrorBoundary>

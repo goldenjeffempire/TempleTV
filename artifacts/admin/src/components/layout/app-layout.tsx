@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Sidebar } from "./sidebar";
 import { Header } from "./header";
 import { GlobalApiErrorToasts } from "@/components/shared/global-api-error-toasts";
+import { ConnectionStatusBanner } from "@/components/shared/connection-status-banner";
 import { cn } from "@/lib/utils";
 
 interface AppLayoutProps {
@@ -58,6 +59,7 @@ export function AppLayout({ children }: AppLayoutProps) {
       {/* Main content */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <Header onMenuClick={() => setSidebarOpen(true)} />
+        <ConnectionStatusBanner />
         <main className="flex-1 overflow-y-auto overscroll-contain">
           {children}
         </main>

@@ -49,6 +49,12 @@ export class HttpError extends Error {
     public readonly status: number,
     message: string,
     public readonly code?: string,
+    /**
+     * Milliseconds to wait before retrying, parsed from the server's
+     * `Retry-After` response header on 429 responses. Undefined when
+     * the header was absent or the response was not a 429.
+     */
+    public readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "HttpError";
@@ -408,10 +414,30 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!res.ok) {
     const body = await res.json().catch(() => ({})) as Record<string, unknown>;
     const errMsg = (body.detail as string) ?? (body.message as string) ?? (body.error as string) ?? res.statusText;
+
+    // Parse Retry-After for 429 responses so callers (query retryDelay) can
+    // honour the server's requested back-off instead of using a fixed delay.
+    // Supports both delta-seconds ("120") and HTTP-date formats.
+    let retryAfterMs: number | undefined;
+    if (res.status === 429) {
+      const header = res.headers.get("Retry-After");
+      if (header) {
+        const secs = Number(header);
+        if (!isNaN(secs) && secs > 0) {
+          retryAfterMs = secs * 1_000;
+        } else {
+          const ts = Date.parse(header);
+          if (!isNaN(ts) && ts > Date.now()) {
+            retryAfterMs = ts - Date.now();
+          }
+        }
+      }
+    }
+
     if (res.status >= 500 || res.status === 408 || res.status === 429) {
       apiErrorBus.emit({ path, status: res.status, message: errMsg, ts: Date.now() });
     }
-    throw new HttpError(res.status, errMsg, body.code as string | undefined);
+    throw new HttpError(res.status, errMsg, body.code as string | undefined, retryAfterMs);
   }
 
   if (res.status === 204 || res.headers.get("content-length") === "0") {
