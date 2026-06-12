@@ -158,6 +158,38 @@ function dbVideoToVideoItem(v: DbVideo): VideoItem {
   };
 }
 
+// ── Fetch retry helper ────────────────────────────────────────────────────
+/**
+ * Retry an async function up to maxAttempts times with exponential back-off
+ * plus jitter. Smart TVs and set-top boxes frequently run on congested Wi-Fi;
+ * a single transient network timeout should not leave the home screen empty
+ * until the next 5-minute background poll.
+ *
+ * Back-off schedule (baseDelayMs=400): 400 ms → 800 ms → give up.
+ * Total worst-case additional wait before the third failure: ~1.2 s.
+ *
+ * fn() may return null (304 sentinel) — null is NOT treated as an error;
+ * it passes through immediately on the first call without retrying.
+ */
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxAttempts = 3,
+  baseDelayMs = 400,
+): Promise<T> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt === maxAttempts - 1) throw err;
+      // Exponential back-off with ±150 ms jitter.
+      await new Promise<void>((res) =>
+        setTimeout(res, baseDelayMs * 2 ** attempt + Math.random() * 300),
+      );
+    }
+  }
+  throw new Error("withRetry: unreachable");
+}
+
 // Session-level ETag for the TV catalog endpoint. Enables 304 Not Modified
 // responses on the 5-minute background refresh cycles when the library
 // hasn't changed — avoids re-parsing ~30 KB of JSON on every poll.
@@ -165,16 +197,7 @@ function dbVideoToVideoItem(v: DbVideo): VideoItem {
 // caching. Reset on each page reload/cold start.
 let tvCatalogEtag: string | null = null;
 
-/**
- * Fetch YouTube-sourced videos from the public catalogue endpoint.
- * The TV Library mirrors the mobile Library and lists only YouTube content —
- * locally-uploaded files are reserved for the 24/7 Broadcasting module and
- * never appear in the public catalogue.
- *
- * Returns null when the server replies 304 Not Modified — callers should
- * keep displaying their currently-cached content unchanged.
- */
-export async function fetchVideos(): Promise<VideoItem[] | null> {
+async function _fetchVideosOnce(): Promise<VideoItem[] | null> {
   const headers: HeadersInit = {};
   if (tvCatalogEtag) headers["If-None-Match"] = tvCatalogEtag;
 
@@ -184,7 +207,7 @@ export async function fetchVideos(): Promise<VideoItem[] | null> {
   });
 
   if (res.status === 304) return null;
-  if (!res.ok) throw new Error("Failed to fetch videos");
+  if (!res.ok) throw new Error(`Failed to fetch videos (${res.status})`);
 
   const etag = res.headers.get("etag");
   if (etag) tvCatalogEtag = etag;
@@ -193,12 +216,30 @@ export async function fetchVideos(): Promise<VideoItem[] | null> {
   return (data.videos ?? []).map(dbVideoToVideoItem);
 }
 
+/**
+ * Fetch YouTube-sourced videos from the public catalogue endpoint.
+ * The TV Library mirrors the mobile Library and lists only YouTube content —
+ * locally-uploaded files are reserved for the 24/7 Broadcasting module and
+ * never appear in the public catalogue.
+ *
+ * Returns null when the server replies 304 Not Modified — callers should
+ * keep displaying their currently-cached content unchanged.
+ *
+ * Retried up to 3× with exponential back-off on transient failures so a
+ * single Wi-Fi hiccup on a Smart TV doesn't leave the Library empty.
+ */
+export async function fetchVideos(): Promise<VideoItem[] | null> {
+  return withRetry(_fetchVideosOnce, 3, 400);
+}
+
 export async function fetchLiveStatus(): Promise<LiveStatus> {
-  const res = await fetch(apiUrl("/youtube/live/status"), {
-    signal: AbortSignal.timeout(8000),
-  });
-  if (!res.ok) throw new Error("Failed to fetch live status");
-  return res.json() as Promise<LiveStatus>;
+  return withRetry(async () => {
+    const res = await fetch(apiUrl("/youtube/live/status"), {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error(`Failed to fetch live status (${res.status})`);
+    return res.json() as Promise<LiveStatus>;
+  }, 3, 300);
 }
 
 /**
@@ -211,11 +252,11 @@ export async function fetchLiveStatus(): Promise<LiveStatus> {
  * call — and includes a `nextNext` preload candidate which we surface via
  * `upcomingItems` for forward-compat with a future triple-buffer player.
  */
-export async function fetchBroadcastCurrent(): Promise<BroadcastCurrent> {
+async function _fetchBroadcastCurrentOnce(): Promise<BroadcastCurrent> {
   const res = await fetch(apiUrl("/playback/state"), {
     signal: AbortSignal.timeout(8000),
   });
-  if (!res.ok) throw new Error("Failed to fetch broadcast");
+  if (!res.ok) throw new Error(`Failed to fetch broadcast (${res.status})`);
   type WireSource = { kind: "hls" | "mp4" | "youtube"; url: string };
   type WireItem = {
     id: string;
@@ -287,6 +328,15 @@ export async function fetchBroadcastCurrent(): Promise<BroadcastCurrent> {
         }
       : null,
   };
+}
+
+/**
+ * Fetch the current broadcast snapshot with automatic retry on transient
+ * network failures — ensures the TV home screen cold-start doesn't fail on a
+ * single Wi-Fi hiccup (common on Smart TV / set-top-box environments).
+ */
+export function fetchBroadcastCurrent(): Promise<BroadcastCurrent> {
+  return withRetry(_fetchBroadcastCurrentOnce, 3, 400);
 }
 
 

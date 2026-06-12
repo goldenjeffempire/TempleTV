@@ -2,7 +2,7 @@ import { and, avg, count, desc, eq, gt, gte, ilike, or, sql, sum } from "drizzle
 import type { z } from "zod";
 import { db, schema } from "../../infrastructure/db.js";
 import { cache } from "../../infrastructure/cache.js";
-import { NotFoundError } from "../../shared/errors.js";
+import { ForbiddenError, NotFoundError } from "../../shared/errors.js";
 import { invalidateSessionsValidAfterCache } from "../../middleware/auth.js";
 import type {
   ListUsersQuerySchema,
@@ -69,6 +69,21 @@ export const adminService = {
   },
 
   async updateUserRole(id: string, body: z.infer<typeof UpdateUserRoleBodySchema>) {
+    // Guard: fetch current role before modifying. System accounts must never
+    // be demoted or altered by a non-system caller — they hold critical
+    // server-to-server identities. The route schema already prevents *setting*
+    // role to "system" via the Zod enum; this guard prevents *touching* a user
+    // who already carries it.
+    const [current] = await db
+      .select({ role: users.role })
+      .from(users)
+      .where(eq(users.id, id))
+      .limit(1);
+    if (!current) throw new NotFoundError("User not found");
+    if (current.role === "system") {
+      throw new ForbiddenError("System accounts cannot be modified");
+    }
+
     const now = new Date();
     const [row] = await db
       .update(users)

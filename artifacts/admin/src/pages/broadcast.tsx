@@ -2641,8 +2641,19 @@ export default function BroadcastPage() {
         open={testOpen}
         onOpenChange={setTestOpen}
         onAdded={() => {
+          // Invalidate the full set of broadcast-related query keys so the
+          // v2 queue, state, diagnostics, and engine-health are all refreshed
+          // — not just the v1 queue key. Without this, operators adding a
+          // test-broadcast video wouldn't see it in the Master Control queue
+          // until a manual refresh or the next SSE event.
           void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+          void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue"] });
+          void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
+          void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
           void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+          void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+          void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+          void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
         }}
       />
 

@@ -146,29 +146,36 @@ export function useSermons() {
   // sermons appear on TV within a few hundred ms instead of waiting on the
   // 5-minute background poll.
   const { libraryRevision } = useLiveSync();
+  // Monotonically-increasing sequence counter. Every `load()` call stamps
+  // its own sequence number on the response handler. If a slower earlier
+  // request resolves *after* a newer one (e.g. a 5-min poll completes just
+  // as an SSE-triggered refetch wins), the stale response is discarded
+  // instead of overwriting the newer result with older data.
+  const fetchSeqRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
 
     const load = (isInitial: boolean) => {
       if (isInitial) setLoading(true);
+      const seq = ++fetchSeqRef.current;
       fetchVideos()
         .then((videos) => {
-          if (!cancelled) {
-            // null = 304 Not Modified — library unchanged, keep current data.
-            if (videos === null) {
-              setLoading(false);
-              return;
-            }
-            const categorized = categorize(videos);
-            setSermons(categorized);
+          if (cancelled || fetchSeqRef.current !== seq) return; // unmounted or stale
+          // null = 304 Not Modified — library unchanged, keep current data.
+          if (videos === null) {
             setLoading(false);
-            // Keep localStorage warm so the next cold start is instant.
-            writeCatalogCache(categorized);
+            return;
           }
+          const categorized = categorize(videos);
+          setSermons(categorized);
+          setLoading(false);
+          // Keep localStorage warm so the next cold start is instant.
+          writeCatalogCache(categorized);
         })
         .catch((err) => {
-          if (!cancelled && isInitial) {
+          if (cancelled || fetchSeqRef.current !== seq) return;
+          if (isInitial) {
             setError(err instanceof Error ? err.message : "Failed to load");
             setLoading(false);
           }
@@ -186,9 +193,11 @@ export function useSermons() {
   useEffect(() => {
     if (libraryRevision === 0) return;
     let cancelled = false;
+    const seq = ++fetchSeqRef.current;
     fetchVideos()
       .then((videos) => {
-        if (!cancelled && videos !== null) {
+        if (cancelled || fetchSeqRef.current !== seq) return; // unmounted or stale
+        if (videos !== null) {
           // null = 304 Not Modified — library unchanged, nothing to update.
           const categorized = categorize(videos);
           setSermons(categorized);

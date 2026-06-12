@@ -326,24 +326,35 @@ class TranscoderDispatcher {
 
   private async resetOrphanedJobs(): Promise<void> {
     try {
-      const reset = await db
-        .update(jobs)
-        .set({
-          status: "queued",
-          progress: 0,
-          startedAt: null,
-          errorMessage: "Reset: server restarted while job was in-progress (FFmpeg process orphaned).",
-        })
-        .where(eq(jobs.status, "processing"))
-        .returning({ id: jobs.id, videoId: jobs.videoId });
+      // Wrap both writes in a transaction so a mid-restart crash can't leave
+      // transcoding_jobs in "queued" while managed_videos is still in
+      // "processing". Either both updates commit or both are rolled back —
+      // the same startup recovery runs again on the next boot.
+      const reset = await db.transaction(async (tx) => {
+        const updated = await tx
+          .update(jobs)
+          .set({
+            status: "queued",
+            progress: 0,
+            startedAt: null,
+            errorMessage: "Reset: server restarted while job was in-progress (FFmpeg process orphaned).",
+          })
+          .where(eq(jobs.status, "processing"))
+          .returning({ id: jobs.id, videoId: jobs.videoId });
+
+        if (updated.length > 0) {
+          const videoIds = updated.map((r) => r.videoId).filter((id): id is string => id !== null);
+          if (videoIds.length > 0) {
+            await tx
+              .update(videos)
+              .set({ transcodingStatus: "queued" })
+              .where(inArray(videos.id, videoIds));
+          }
+        }
+        return updated;
+      });
 
       if (reset.length > 0) {
-        const videoIds = reset.map((r) => r.videoId).filter((id): id is string => id !== null);
-        if (videoIds.length > 0) {
-          await db.update(videos)
-            .set({ transcodingStatus: "queued" })
-            .where(inArray(videos.id, videoIds));
-        }
 
         logger.warn(
           { count: reset.length, jobIds: reset.map((r) => r.id) },
