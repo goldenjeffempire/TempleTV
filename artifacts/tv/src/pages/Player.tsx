@@ -416,7 +416,7 @@ function VodHlsPlayer({
   title: string;
   onBack: () => void;
   startPositionSecs: number;
-  onProgress?: (s: number) => void;
+  onProgress?: (positionSecs: number, durationSecs: number) => void;
 }) {
   const [videoFailed, setVideoFailed] = useState(false);
 

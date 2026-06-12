@@ -183,6 +183,23 @@ services:
                               # here. Bump to a paid plan + numInstances: 2 when
                               # load requires horizontal scale.
 
+    # Only rebuild this service when files relevant to the API change.
+    # Changes to artifacts/admin, artifacts/tv, artifacts/mobile, etc. that
+    # don't touch the API server or its shared libs will skip this build,
+    # saving pipeline minutes and avoiding unnecessary API cold-starts during
+    # rolling deploy windows.
+    filters:
+      paths:
+        - artifacts/api-server/**
+        - lib/db/**
+        - lib/api-spec/**
+        - lib/broadcast-types/**
+        - lib/broadcast-sync/**
+        - pnpm-lock.yaml
+        - package.json
+        - scripts/**
+        - render.yaml
+
     # ── Build & start ──────────────────────────────────────────────────────
     # `--prefer-offline` reuses Render's pnpm cache (cuts install from ~90 s
     # → ~25 s on warm builds). `--frozen-lockfile` guarantees reproducible CI
@@ -487,6 +504,18 @@ services:
     rootDir: .
     autoDeploy: true
     pullRequestPreviewsEnabled: false
+    # Only rebuild when admin SPA source or its workspace lib dependencies change.
+    filters:
+      paths:
+        - artifacts/admin/**
+        - lib/player-core/**
+        - lib/api-client-react/**
+        - lib/api-zod/**
+        - lib/api-spec/**
+        - lib/broadcast-types/**
+        - lib/broadcast-sync/**
+        - pnpm-lock.yaml
+        - package.json
     buildCommand: |
       bash ./scripts/render-install.sh && \
       pnpm run verify:render && \
@@ -545,6 +574,18 @@ services:
     rootDir: .
     autoDeploy: true
     pullRequestPreviewsEnabled: false
+    # Only rebuild when mobile source or its workspace lib dependencies change.
+    filters:
+      paths:
+        - artifacts/mobile/**
+        - lib/player-core/**
+        - lib/api-client-react/**
+        - lib/api-zod/**
+        - lib/api-spec/**
+        - lib/broadcast-types/**
+        - lib/broadcast-sync/**
+        - pnpm-lock.yaml
+        - package.json
     buildCommand: |
       bash ./scripts/render-install.sh && \
       pnpm run verify:render && \
@@ -599,6 +640,18 @@ services:
     rootDir: .
     autoDeploy: true
     pullRequestPreviewsEnabled: false
+    # Only rebuild when TV SPA source or its workspace lib dependencies change.
+    filters:
+      paths:
+        - artifacts/tv/**
+        - lib/player-core/**
+        - lib/api-client-react/**
+        - lib/api-zod/**
+        - lib/api-spec/**
+        - lib/broadcast-types/**
+        - lib/broadcast-sync/**
+        - pnpm-lock.yaml
+        - package.json
     buildCommand: |
       bash ./scripts/render-install.sh && \
       pnpm run verify:render && \

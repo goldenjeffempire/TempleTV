@@ -20,7 +20,7 @@ export function useSearch() {
     setLoading(true);
     setError(null);
     fetchVideos()
-      .then((videos) => { setAllVideos(videos); setLoading(false); })
+      .then((videos) => { setAllVideos(videos ?? []); setLoading(false); })
       .catch((err) => {
         setError(err instanceof Error ? err.message : "Failed to load videos");
         setLoading(false);
@@ -36,7 +36,7 @@ export function useSearch() {
     if (libraryRevision === 0) return;
     let cancelled = false;
     fetchVideos()
-      .then((videos) => { if (!cancelled) setAllVideos(videos); })
+      .then((videos) => { if (!cancelled) setAllVideos(videos ?? []); })
       .catch(() => {
         // Background refetch failures are non-fatal — the user can
         // still retry via the existing `retry` action.
