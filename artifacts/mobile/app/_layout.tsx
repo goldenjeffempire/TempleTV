@@ -212,6 +212,7 @@ const KNOWN_APP_PATH_PREFIXES = [
   "/forgot-password",
   "/reset-password",
   "/link",
+  "/contact",
 ];
 
 /**
@@ -504,6 +505,13 @@ function RootLayoutNav() {
       />
       <Stack.Screen
         name="playlists/[id]"
+        options={{
+          headerShown: false,
+          animation: "slide_from_right",
+        }}
+      />
+      <Stack.Screen
+        name="contact"
         options={{
           headerShown: false,
           animation: "slide_from_right",

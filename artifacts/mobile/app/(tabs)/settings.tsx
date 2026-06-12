@@ -559,7 +559,8 @@ export default function SettingsScreen() {
         <Row
           icon="mail"
           label="Contact"
-          onPress={() => Linking.openURL("mailto:info@templetv.org.ng").catch(() => {})}
+          description="Address, email, phone & services"
+          onPress={() => router.push("/contact")}
         />
         <Row
           icon="shield"
