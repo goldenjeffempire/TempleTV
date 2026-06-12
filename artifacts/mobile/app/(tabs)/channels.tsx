@@ -585,8 +585,8 @@ export default function ChannelsTab() {
         <SectionHeader live title="Live Channels" />
         {channelsSectionContent}
 
-        {/* ── Up Next / Broadcast Schedule ─────────────────────────────── */}
-        {(scheduleLoading || scheduleItems.length > 0) && (
+        {/* ── Up Next / Broadcast Schedule — hidden per product decision */}
+        {false && (scheduleLoading || scheduleItems.length > 0) && (
           <>
             <View style={[styles.divider, { backgroundColor: colors.border }]} />
             <SectionHeader icon="list" title="Up Next" />
