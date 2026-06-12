@@ -1076,6 +1076,33 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         ON s3_upload_telemetry (video_id, event, created_at DESC)
     `);
 
+    // ── Faststart recovery sweep ────────────────────────────────────────────
+    // faststartRecoveryWorker.sweep() joins broadcast_queue with managed_videos
+    // to find active queue items whose linked video has faststart_applied=false,
+    // video_source='local', and a non-null objectPath. This partial index makes
+    // that sweep O(un-fast-started local rows) instead of a full table scan.
+    // run() catches SQLSTATE 42703 if faststart_applied is missing on an old
+    // prod DB that hasn't run ensureUserSchemaColumns yet — non-fatal; the next
+    // restart (post-column-add) will create it.
+    await run("idx_managed_videos_faststart_pending", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_faststart_pending
+        ON managed_videos (object_path)
+        WHERE video_source     = 'local'
+          AND faststart_applied = false
+          AND object_path       IS NOT NULL
+    `);
+
+    // ── Transcoding error kind — broadcast reprobe + admin broadcast view ───
+    // admin-broadcast.routes.ts and broadcast-v2/io/rest.routes.ts query
+    // managed_videos WHERE transcoding_error_kind IN ('moov_absent', …) for
+    // reprobe eligibility. A partial index over the non-null subset makes this
+    // O(rows with a kind) rather than a full table scan.
+    await run("idx_managed_videos_transcoding_error_kind", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_transcoding_error_kind
+        ON managed_videos (transcoding_error_kind)
+        WHERE transcoding_error_kind IS NOT NULL
+    `);
+
     logger.info("db: functional and partial indexes ensured");
   } finally {
     client.release();
@@ -1213,6 +1240,26 @@ export async function ensureUserSchemaColumns(): Promise<void> {
     await col("managed_videos.youtube_live_status_updated_at", `
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS youtube_live_status_updated_at TIMESTAMPTZ
+    `);
+    // transcoding_error_kind — added June 2026.
+    // Machine-readable sub-kind of a terminal transcoding failure, e.g.
+    // 'moov_absent' (MP4 with moov at EOF), 'structure_invalid' (unreadable
+    // container), 'source_missing' (blob deleted before probe). Used by the
+    // broadcast-v2 reprobe endpoint and the admin broadcast queue view.
+    // Without this guard, any query touching the column on a pre-migration
+    // prod DB throws SQLSTATE 42703.
+    await col("managed_videos.transcoding_error_kind", `
+      ALTER TABLE managed_videos
+        ADD COLUMN IF NOT EXISTS transcoding_error_kind TEXT
+    `);
+    // faststart_attempts — added June 2026.
+    // Counter incremented each time runFaststart() is attempted for a video.
+    // The faststart-recovery worker uses this to enforce a per-process attempt
+    // cap (MAX_ATTEMPTS=3) so a permanently corrupt source does not stampede
+    // ffmpeg. NOT NULL DEFAULT 0 matches the Drizzle schema default.
+    await col("managed_videos.faststart_attempts", `
+      ALTER TABLE managed_videos
+        ADD COLUMN IF NOT EXISTS faststart_attempts INTEGER NOT NULL DEFAULT 0
     `);
 
     // ── transcoding_jobs ──────────────────────────────────────────────────

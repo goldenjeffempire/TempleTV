@@ -208,4 +208,13 @@ export const SAFE_VIDEO_COLS = {
   // together with youtubeLiveStatus or any query using SAFE_VIDEO_COLS that
   // also reads youtubeLiveStatusUpdatedAt will throw 42703.
   youtubeLiveStatusUpdatedAt:   sql<Date | null>`NULL`,
+  // Late-added text column: machine-readable error sub-kind for terminal
+  // transcoding failures ('moov_absent', 'structure_invalid', etc.).
+  // Stubbed NULL here so pre-migration DBs that lack the column never see
+  // its name in a query and never throw 42703.
+  transcodingErrorKind:         sql<string | null>`NULL`,
+  // Late-added integer column: number of faststart attempts for this video.
+  // Stubbed 0 so pre-migration DBs skip the column reference gracefully;
+  // the faststart-recovery worker treats 0 attempts as "never tried".
+  faststartAttempts:            sql<number>`0`,
 } as const;
