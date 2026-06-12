@@ -170,10 +170,10 @@ function buildFfmpegArgs(
     // Limit FFmpeg thread count to avoid starving other processes on shared
     // Replit/Render instances. "-threads 0" (unlimited) claims all available
     // cores, which starves the Fastify event loop and upstream HTTP connections
-    // during active transcoding. Default 2 keeps encode speed reasonable while
+    // during active transcoding. Default 4 keeps encode speed reasonable while
     // leaving enough headroom for the API and DB pool. Override per-deployment
-    // via TRANSCODER_THREADS env var (e.g. set to "4" on a dedicated worker).
-    "-threads", (process.env["TRANSCODER_THREADS"] ?? "2"),
+    // via TRANSCODER_THREADS env var (e.g. set to "8" on a dedicated worker).
+    "-threads", String(env.TRANSCODER_THREADS),
     "-i", input,
     // Prevent "Too many packets buffered for output stream" muxer errors that
     // occur when input audio/video streams have high bitrate-mismatch. Raises

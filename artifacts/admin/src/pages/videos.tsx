@@ -241,6 +241,11 @@ export default function VideosPage() {
   });
   useSSEEvent("videos-library-updated", (payload) => {
     void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+    // Keep the Dashboard "Total Videos" count accurate on every library change
+    // (pre-committed uploads, assembly completion, thumbnail generation, etc.).
+    void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
     const p = payload as { reason?: string } | null;
     if (p?.reason === "corrupt-upload-failed") {
       toast.error(
@@ -258,21 +263,37 @@ export default function VideosPage() {
     // When HLS transcoding completes the broadcast_queue row gains a
     // hlsMasterUrl; the queue UI must also refresh to reflect the upgrade.
     void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    // Keep the Transcoding dashboard tab in sync with status changes observed
+    // via SSE — without these, a status badge update on the Videos page still
+    // shows stale data in the dedicated Transcoding tab until manual refresh.
+    void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+    void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
   });
 
-  // Belt-and-suspenders: when any upload completes, force-invalidate both the
-  // admin-videos and broadcast-queue queries so the newly uploaded video
-  // appears immediately in both the library and the broadcast queue —
-  // even if the SSE events were missed because the connection dropped between
-  // finalize and event delivery.
+  // Belt-and-suspenders: when any upload completes, force-invalidate all
+  // affected query caches so the newly uploaded video appears immediately
+  // across the library, broadcast queue, and transcoding dashboard —
+  // even if the SSE events were missed (connection drop between finalize
+  // and event delivery). Also reset to page 1 with no status filter so the
+  // new video (transcodingStatus='queued') is always visible regardless of
+  // what filter/page the operator had active before the upload.
   useEffect(() => {
     return uploadQueue.onComplete(() => {
+      // Navigate back to page 1 and clear any active status filter so the
+      // newly uploaded video (always starts as 'queued') is not hidden by
+      // a filter like 'hls_ready' or a page number higher than page 1.
+      setPage(1);
+      setStatusFilter("all");
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
-      // Keep the Dashboard "Total Videos" count in sync after uploads complete.
       void qc.invalidateQueries({ queryKey: ["admin-stats"] });
-      // Ensure the broadcast queue UI reflects the newly auto-queued video
-      // even when the SSE "broadcast-queue-updated" event was missed.
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     });
   }, [qc]);
 

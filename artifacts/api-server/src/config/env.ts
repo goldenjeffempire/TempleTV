@@ -205,7 +205,13 @@ const Env = z.object({
   // Default 10s keeps newly-uploaded videos moving through the pipeline
   // without thrashing the DB. Set TRANSCODER_DISABLE=1 to suppress the
   // worker entirely (e.g. on read-only replicas).
-  TRANSCODER_POLL_MS: z.coerce.number().int().positive().default(10_000),
+  TRANSCODER_POLL_MS: z.coerce.number().int().positive().default(5_000),
+  // Max FFmpeg thread count per encode job. Keeping this below the total
+  // vCPU count leaves headroom for the Fastify event loop and DB pool during
+  // active transcoding. Default 4 is a good balance on 2–8 core Replit/Render
+  // instances. Set to 0 for unlimited (claims all cores — not recommended on
+  // shared hosting). Override per-deployment: TRANSCODER_THREADS=8.
+  TRANSCODER_THREADS: z.coerce.number().int().min(0).max(64).default(4),
   TRANSCODER_DISABLE: z
     .union([z.boolean(), z.string()])
     .transform((v) => v === true || v === "true" || v === "1")
