@@ -408,6 +408,67 @@ export async function resetStuckProcessingVideos(): Promise<void> {
 }
 
 /**
+ * Reset managed_videos rows stuck in transcodingStatus='encoding'.
+ *
+ * 'encoding' is the transient state written by the transcoder dispatcher
+ * when it starts a transcode job (job.status → processing, video → encoding).
+ * On success the video advances to 'hls_ready'; on clean failure the
+ * dispatcher resets it. But if the Node process is SIGKILL-ed mid-encode:
+ *
+ *   - The transcoding_job row is reset to 'queued' by resetOrphanedJobs()
+ *     (runs in the TranscoderDispatcher constructor at startup).
+ *   - The managed_videos row stays at 'encoding' because the reset path in
+ *     the dispatcher never ran.
+ *
+ * In that scenario the job will be re-claimed and will set the video to
+ * 'encoding' again — which is fine.  But if the job row itself was lost
+ * (e.g. manual deletion, a bug in the cleanup service, or the job was
+ * force-failed by the stuck-job watchdog without updating the video row),
+ * the video stays 'encoding' indefinitely with no job to advance it.
+ *
+ * This function resets such orphaned rows to 'queued' (or 'none') so the
+ * transcoder can pick them up on the next poll.  It is safe to run at every
+ * startup because the check is gated on "no active processing job" —
+ * a concurrent job that is legitimately mid-encode will NOT be reset.
+ *
+ * Called once at boot, non-blocking.
+ */
+export async function resetStuckEncodingVideos(): Promise<void> {
+  const client = await pool.connect();
+  try {
+    const result = await client.query(`
+      UPDATE managed_videos mv
+      SET    transcoding_status = CASE
+               WHEN mv.local_video_url IS NOT NULL AND mv.local_video_url != '' THEN 'queued'
+               ELSE 'none'
+             END
+      WHERE  mv.transcoding_status = 'encoding'
+        AND  NOT EXISTS (
+          SELECT 1
+          FROM   transcoding_jobs tj
+          WHERE  tj.video_id  = mv.id
+            AND  tj.status   IN ('processing', 'queued')
+        )
+    `);
+    const reset = (result as unknown as { rowCount: number | null }).rowCount ?? 0;
+    if (reset > 0) {
+      logger.warn(
+        { reset },
+        "db: reset stuck 'encoding' videos to queued/none — " +
+          "these had no active transcoding job (server crash or lost job row); " +
+          "they will be re-enqueued for transcoding on the next dispatcher tick",
+      );
+    } else {
+      logger.info("db: no stuck encoding videos found at startup");
+    }
+  } catch (err) {
+    logger.warn({ err }, "db: resetStuckEncodingVideos failed (non-fatal)");
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Deactivate broadcast_queue rows that can never play in the v2 system.
  *
  * A row is "unresolvable" when it is not a YouTube item AND has no platform
@@ -1418,11 +1479,20 @@ export function scheduleStaleDataCleanup(): void {
       // Each sweep statement is attempted independently — one failure never
       // stops subsequent cleanup operations (e.g. a missing column in one
       // table should not prevent expiring tokens in another).
-      const run = async (label: string, sql: string): Promise<void> => {
+      const run = async (
+        label: string,
+        sql: string,
+        opts: { ignoreMissingTable?: boolean } = {},
+      ): Promise<void> => {
         try {
           const r = await client.query(sql);
           if (r.rowCount && r.rowCount > 0) results[label] = r.rowCount;
         } catch (err) {
+          const pg = err as { code?: string };
+          if (opts.ignoreMissingTable && pg.code === "42P01") {
+            // Table doesn't exist yet (fresh DB or feature never deployed) — skip silently.
+            return;
+          }
           logger.warn({ err, sweep: label }, `db: stale-data cleanup step '${label}' failed (non-fatal)`);
         }
       };
@@ -1457,10 +1527,13 @@ export function scheduleStaleDataCleanup(): void {
       // because the counter state is rebuilt from scratch in memory.  TRUNCATE
       // removes the entire historical accumulation in O(1) — this is safe
       // because a single process restart already resets the in-memory counters
-      // that back the table.  run() catches 42P01 (table not found on a fresh
-      // DB) and any other error without blocking the rest of the sweep.
+      // that back the table.
+      // ignoreMissingTable=true: on a fresh DB or a deploy where Redis is
+      // configured (so the pg-fallback table was never created), the TRUNCATE
+      // would emit a noisy WARN every 6 h.  We silently skip 42P01 here.
       await run("rate_limit",
-        "TRUNCATE TABLE rate_limit");
+        "TRUNCATE TABLE rate_limit",
+        { ignoreMissingTable: true });
 
       // ── Stuck-processing recovery ─────────────────────────────────────
       // 'processing' is the transient state set by runFaststart while it
@@ -1490,6 +1563,43 @@ export function scheduleStaleDataCleanup(): void {
           { stuckReset },
           "db: stale-cleanup: reset stuck 'processing' videos to queued/none — " +
             "these were interrupted mid-faststart; they are broadcast-ready at localVideoUrl",
+        );
+      }
+
+      // ── Stuck-encoding recovery ────────────────────────────────────────
+      // 'encoding' is the state set by the transcoder dispatcher when it
+      // starts a job (job.status → processing, video → encoding). On a
+      // clean failure or OOM-kill the dispatcher resets both; but if only
+      // the job row was lost (manual deletion, watchdog force-fail, etc.)
+      // the video stays 'encoding' indefinitely.
+      //
+      // Grace period: 90 minutes — well above the EARLY_STUCK threshold
+      // (30 min) and the PROGRESS_STALE threshold (15 min) — so we never
+      // race a legitimately long-running encode. Jobs that exceed the
+      // stuck-job watchdog timeout will have already been failed/retried
+      // before this 90-minute window opens.
+      const stuckEncodingResult = await client.query(`
+        UPDATE managed_videos mv
+        SET    transcoding_status = CASE
+                 WHEN mv.local_video_url IS NOT NULL AND mv.local_video_url != '' THEN 'queued'
+                 ELSE 'none'
+               END
+        WHERE  mv.transcoding_status = 'encoding'
+          AND  mv.updated_at < NOW() - INTERVAL '90 minutes'
+          AND  NOT EXISTS (
+            SELECT 1
+            FROM   transcoding_jobs tj
+            WHERE  tj.video_id  = mv.id
+              AND  tj.status   IN ('processing', 'queued')
+          )
+      `);
+      const stuckEncodingReset =
+        (stuckEncodingResult as unknown as { rowCount: number | null }).rowCount ?? 0;
+      if (stuckEncodingReset > 0) {
+        logger.warn(
+          { stuckEncodingReset },
+          "db: stale-cleanup: reset stuck 'encoding' videos to queued/none — " +
+            "no active job found after 90-minute grace; will be re-enqueued for transcoding",
         );
       }
 

@@ -188,7 +188,7 @@ export async function enqueueIfMissing(opts: {
  * UX users expect from "add to queue" on the library page.
  */
 export async function scanLibraryAndEnqueue(opts: {
-  reason: "yt-sync" | "self-heal-empty" | "self-heal-all-blocked" | "manual";
+  reason: "yt-sync" | "self-heal-empty" | "self-heal-all-blocked" | "manual" | "queue-health-guard" | "startup";
   maxToAdd?: number;
 }): Promise<{ scanned: number; enqueued: number; skipped: number }> {
   if (!isAutoEnqueueEnabled()) {

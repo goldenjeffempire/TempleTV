@@ -96,7 +96,7 @@ class QueueHealthGuardImpl {
     let added = 0;
     try {
       const result = await scanLibraryAndEnqueue({
-        reason: "manual",
+        reason: "queue-health-guard",
         maxToAdd: Math.max(50, deficit * 3), // Pull in headroom beyond the deficit
       });
       added = result?.enqueued ?? 0;

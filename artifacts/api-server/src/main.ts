@@ -7,7 +7,7 @@ import { logger } from "./infrastructure/logger.js";
 import { broadcastEngine } from "./modules/broadcast/queue.engine.js";
 import { channelRegistry } from "./modules/channels/channel-registry.js";
 import { overrideBus } from "./modules/live-overrides/override-bus.js";
-import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, ensureMidnightPrayersTable, ensureMemoryHourlySnapshotsTable, deactivateUnresolvableQueueRows, resetStuckProcessingVideos, ensureUserSchemaColumns, scheduleStaleDataCleanup, recoverStaleSyncLogs } from "./infrastructure/db.js";
+import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, ensureMidnightPrayersTable, ensureMemoryHourlySnapshotsTable, deactivateUnresolvableQueueRows, resetStuckProcessingVideos, resetStuckEncodingVideos, ensureUserSchemaColumns, scheduleStaleDataCleanup, recoverStaleSyncLogs } from "./infrastructure/db.js";
 import { closeRedis } from "./infrastructure/redis.js";
 import { sseCounter } from "./infrastructure/sse-counter.js";
 import { scheduledNotificationDispatcher } from "./modules/scheduled-notifications/dispatcher.js";
@@ -604,6 +604,13 @@ async function main() {
     resetStuckProcessingVideos().catch((err) =>
       logger.warn({ err }, "db: resetStuckProcessingVideos failed (non-fatal)"),
     );
+    // Reset videos stuck in transcodingStatus='encoding' whose transcoding job
+    // is no longer active (server crash or lost job row). These videos would
+    // stay 'encoding' indefinitely and never advance to 'hls_ready' without
+    // this reset. Safe: gated on "no active job" so live encodes are untouched.
+    resetStuckEncodingVideos().catch((err) =>
+      logger.warn({ err }, "db: resetStuckEncodingVideos failed (non-fatal)"),
+    );
     // Mark youtube_sync_log rows stuck at 'running' as 'interrupted'.
     // These accumulate when the process is killed mid-sync; without this
     // cleanup the admin Sync panel shows them as perpetually in-progress.
@@ -621,6 +628,33 @@ async function main() {
     } catch (err) {
       logger.error({ err }, "[broadcast-v2] orchestrator failed to start (non-fatal)");
     }
+    // Startup library scan: immediately pull all hls_ready (and other eligible)
+    // library videos into the broadcast queue so 24/7 broadcasting begins with a
+    // full queue rather than waiting up to 5 min for the first queue-health-guard
+    // tick.  Runs fire-and-forget with a 5 s delay to let the DB pool and
+    // orchestrator stabilise before the first batch of INSERT ON CONFLICT writes.
+    // Non-fatal; the queue-health-guard will recover on its first cycle if this
+    // scan is skipped by the isAutoEnqueueEnabled() guard.
+    void (async () => {
+      await new Promise<void>((resolve) => { const t = setTimeout(resolve, 5_000); t.unref?.(); });
+      try {
+        const { scanLibraryAndEnqueue } = await import("./modules/broadcast/auto-enqueue.service.js");
+        const result = await scanLibraryAndEnqueue({ reason: "startup", maxToAdd: 500 });
+        if (result.enqueued > 0) {
+          logger.info(
+            { scanned: result.scanned, enqueued: result.enqueued, skipped: result.skipped },
+            "[startup] library scan: queued eligible videos for broadcast",
+          );
+        } else {
+          logger.info(
+            { scanned: result.scanned, skipped: result.skipped },
+            "[startup] library scan: all eligible videos already in broadcast queue",
+          );
+        }
+      } catch (err) {
+        logger.warn({ err }, "[startup] library scan failed (non-fatal)");
+      }
+    })();
     // Gap 6: Boot remediation report — surface HLS / transcoding issues in the
     // server startup log immediately after the orchestrator starts so operators
     // notice problems without waiting for the first validator cycle (~2 min).
