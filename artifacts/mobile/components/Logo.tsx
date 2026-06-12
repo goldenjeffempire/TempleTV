@@ -18,8 +18,8 @@ import { Image, type ImageStyle, type StyleProp } from "react-native";
 
 type LogoSize = "sm" | "md" | "lg" | "hero";
 
-// logo.png is 900×600 → 1.5:1 (width:height)
-const ASPECT = 1.5;
+// logo.png is 1024×1024 → 1:1 (width:height)
+const ASPECT = 1.0;
 
 const HEIGHT_PX: Record<LogoSize, number> = {
   sm: 24,

@@ -281,16 +281,6 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
             )}
           </View>
 
-          {/* ── Program / sermon title ── */}
-          {hasActiveBroadcast && broadcastTitle ? (
-            <Text style={styles.heroTitle} numberOfLines={2}>
-              {broadcastTitle}
-            </Text>
-          ) : !hasActiveBroadcast && fallbackTitle ? (
-            <Text style={styles.heroTitle} numberOfLines={2}>
-              {fallbackTitle}
-            </Text>
-          ) : null}
 
           {/* ── CTA button ── */}
           {!watchNowDisabled && (
