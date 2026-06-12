@@ -3003,7 +3003,13 @@ class BroadcastOrchestrator extends EventEmitter {
     this.lastCpWallMs = now;
     this.checkpointWriting = true;
     try {
-      await checkpointRepo
+      // Race the DB write against a hard 45-second timeout.
+      // Without this, a truly hanging DB connection (network partition,
+      // pg proxy stall) keeps checkpointWriting=true past the next interval,
+      // permanently silencing checkpoints until the process restarts.
+      // DB_STATEMENT_TIMEOUT_MS=30000 covers the normal case; this guard
+      // handles edge cases where the socket hangs at the TCP layer.
+      const writePromise = checkpointRepo
         .save({
           channelId: this.channelId,
           itemId: snap.current.id,
@@ -3011,6 +3017,17 @@ class BroadcastOrchestrator extends EventEmitter {
           sourceHealth: this.failover.active ? "failed" : "ok",
         })
         .catch((err) => logger.warn({ err }, "[broadcast-v2] checkpoint write failed"));
+      const timeoutPromise = new Promise<void>((resolve) => {
+        const t = setTimeout(() => {
+          logger.warn(
+            { channelId: this.channelId },
+            "[broadcast-v2] checkpoint write timed out after 45 s — releasing lock to prevent deadlock",
+          );
+          resolve();
+        }, 45_000);
+        t.unref?.();
+      });
+      await Promise.race([writePromise, timeoutPromise]);
     } finally {
       this.checkpointWriting = false;
     }

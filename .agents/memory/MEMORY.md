@@ -1,4 +1,5 @@
 - [Production hardening + performance sprint](production-hardening-perf-sprint.md) — 9 indexes added to ensureRuntimeIndexes; HLS CDN variant-playlist rewrite fix (isMaster guard removed); orchestrator no-op reload hash skip; TV service worker; admin lazy-image audit.
+- [render.yaml SMTP + env defaults pattern](render-yaml-smtp-defaults.md) — SMTP_SECURE and SMTP_FROM_NAME must have `value:` not `sync: false`; same for QUEUE_MIN_ITEMS and STORAGE_HEALTH_INTERVAL_MS; sync:false with no value → env var missing on fresh Render deploys.
 - [ops-alert SSE event name mismatch](ops-alert-sse-event-mismatch.md) — server emits ops-alert; admin registered ops-alert-sent → silent alert failure; KNOWN_EVENTS + summarize() must match exact event name.
 - [BroadcastSnapshot has no sequence field](broadcast-snapshot-no-sequence.md) — v1 BroadcastSnapshot has no .sequence; guide ETag must use current?.id+next?.id; v2 uses cast for sequence.
 - [In-process cache().get<T>() type must match Zod schema](cache-get-typed-return.md) — cache().get<unknown>() causes TS2769 in typed Fastify handlers; use z.infer<typeof ResponseSchema> or exact shape.

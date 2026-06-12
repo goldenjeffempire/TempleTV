@@ -10,6 +10,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## v1.0.20 — 2026-06-12
+
+### Changed
+- **Mobile version bump**: Android `versionCode` 61 → 62, iOS `buildNumber` `202606120001`. Targets v1.0.20 release candidate.
+- **EAS `production-android` autoIncrement**: changed from `false` → `true` so EAS automatically increments `versionCode` on subsequent production-android builds — no manual bump required after this release.
+
+### Fixed
+- **render.yaml SMTP defaults**: Added explicit `SMTP_SECURE: "false"` (STARTTLS, port 587) and `SMTP_FROM_NAME: "Temple TV | JCTM"` default values. Previously both were `sync: false` with no default, causing the production pre-flight to log them as missing variables on cold deployments where the Render dashboard hadn't been manually configured.
+- **render.yaml queue/storage defaults**: Added `QUEUE_MIN_ITEMS: "5"` and `STORAGE_HEALTH_INTERVAL_MS: "120000"` as explicit values (was `sync: false`). Prevents the queue-health-guard and storage-health monitor from picking up undefined values on fresh deploys.
+- **broadcast-v2 checkpoint deadlock guard**: `persistCheckpoint()` now races the DB write against a 45-second hard timeout. If a network partition or pg-proxy stall causes the pg statement to hang beyond `DB_STATEMENT_TIMEOUT_MS`, the `checkpointWriting` mutex is forcibly released so subsequent checkpoint intervals are not permanently blocked.
+
+### Hardening (no user-visible change)
+- All TypeScript targets (api-server, admin, libs) confirmed clean — zero errors.
+- Broadcast-v2 health confirmed: `ok`, queue-mode, sequence advancing, SMTP verified on startup.
+
+---
+
 ## v1.0.12 — 2026-05-29
 
 ### Changed
