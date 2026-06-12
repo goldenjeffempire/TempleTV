@@ -117,12 +117,21 @@ const PROGRESSIVE_POLL_MS = 1_000;
 /**
  * Build the FFmpeg filter_complex + per-rendition output args for multi-rendition HLS.
  * Accepts the specific renditions to encode so the caller can filter for upscaling.
+ *
+ * @param isInterlaced - When true, prepends a yadif deinterlace filter before
+ *   the scale step for every rendition. Set this when probeIsInterlaced() returns
+ *   true — i.e. the source was captured with field-based scanning (1080i/720i from
+ *   broadcast cameras, video capture cards, or legacy camcorders). Without yadif,
+ *   interlaced sources produce combing artifacts (horizontal zigzag edges) on
+ *   progressive displays at every motion boundary. Safe to leave false for all
+ *   modern progressive camera sources (field_order = progressive or unknown).
  */
 function buildFfmpegArgs(
   input: string,
   outDir: string,
   renditions: RenditionSpec[],
   hasAudio: boolean = true,
+  isInterlaced: boolean = false,
 ): string[] {
   const filterParts: string[] = [];
   filterParts.push(`[0:v]split=${renditions.length}` + renditions.map((_, i) => `[vsplit${i}]`).join(""));
@@ -131,8 +140,23 @@ function buildFfmpegArgs(
     // the FFmpeg bilinear default when downscaling HD source to 360p/480p/720p.
     // setsar=1: normalises the Sample Aspect Ratio to 1:1 after pad so players
     // receive an unambiguous DAR and do not apply unexpected stretch corrections.
+    //
+    // yadif (when isInterlaced): deinterlace before scaling.
+    //   mode=0: output one progressive frame per input field pair — preserves
+    //     the source frame rate (e.g. 29.97fps for NTSC 1080i) without doubling
+    //     it. mode=1 would double fps (e.g. 59.94fps) which inflates segment
+    //     sizes and confuses ABR engines calibrated against a 2-second keyframe
+    //     grid. Mode 0 is the right choice for broadcast replay.
+    //   parity=-1: auto-detect top/bottom field dominance from the container's
+    //     field_order metadata. Eliminates the need to hard-code NTSC/PAL
+    //     dominance — correct for any source regardless of origin standard.
+    //   deint=1: deinterlace only frames flagged as interlaced in the bitstream,
+    //     leaving purely-progressive frames (e.g. from mixed-scan SDI feeds)
+    //     untouched. Safe even for sources where field_order disagrees with the
+    //     actual frame flags.
+    const deinterlacePrefix = isInterlaced ? "yadif=mode=0:parity=-1:deint=1," : "";
     filterParts.push(
-      `[vsplit${i}]scale=w=${r.width}:h=${r.height}:force_original_aspect_ratio=decrease:flags=lanczos,` +
+      `[vsplit${i}]${deinterlacePrefix}scale=w=${r.width}:h=${r.height}:force_original_aspect_ratio=decrease:flags=lanczos,` +
       `pad=${r.width}:${r.height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v${i}out]`,
     );
   });
@@ -327,7 +351,7 @@ function buildFfmpegArgs(
  * H.264 codec string format: avc1.PPCCLL
  *   PP = profile_idc hex  (main = 0x4D)
  *   CC = constraint_flags (0x40 for main — high-compatibility constraint set)
- *   LL = level_idc hex    (3.0 = 0x1E, 3.1 = 0x1F, 4.0 = 0x28, 4.1 = 0x29)
+ *   LL = level_idc hex    (2.1 = 0x15, 3.0 = 0x1E, 3.1 = 0x1F, 4.0 = 0x28)
  *
  * AAC-LC codec string: mp4a.40.2 (standardised — same for all bitrates).
  */
@@ -337,6 +361,12 @@ function injectCodecsIntoMaster(
   hasAudio: boolean,
 ): string {
   const H264_LEVEL_HEX: Record<string, string> = {
+    // 240p uses H.264 level 2.1 — the decoder floor for legacy Android phones,
+    // feature phones, and low-end Smart TV chipsets. 0x15 = 21 decimal.
+    // Without this entry the fallback `?? "1F"` emits level 3.1 in the CODECS
+    // attribute while the encoder outputs level 2.1 — a mismatch that causes
+    // Samsung Tizen 2.x/3.x to reject the 240p rendition with a decoder error.
+    "2.1": "15",
     "3.0": "1E",
     "3.1": "1F",
     "4.0": "28",
@@ -380,7 +410,24 @@ function injectCodecsIntoMaster(
     }
     out.push(line);
   }
-  return out.join("\n");
+
+  // Ensure #EXT-X-INDEPENDENT-SEGMENTS is present in the master playlist.
+  // The HLS spec (RFC 8216 §4.3.5.1) requires this tag in the master when all
+  // media segments are independently decodable — which they are because every
+  // segment starts on an IDR frame (enforced via -force_key_frames and -g in
+  // buildFfmpegArgs). Without this tag, strict players on Samsung Tizen and
+  // older Roku devices may disable independent segment seeking, breaking the
+  // ABR level-switch logic that relies on segment-boundary alignment.
+  // FFmpeg emits #EXT-X-INDEPENDENT-SEGMENTS in each variant playlist but
+  // NOT in the master — inject it here after the mandatory #EXTM3U line.
+  const joined = out.join("\n");
+  if (!joined.includes("#EXT-X-INDEPENDENT-SEGMENTS")) {
+    const firstNl = joined.indexOf("\n");
+    if (firstNl !== -1) {
+      return joined.slice(0, firstNl + 1) + "#EXT-X-INDEPENDENT-SEGMENTS\n" + joined.slice(firstNl + 1);
+    }
+  }
+  return joined;
 }
 
 /**
@@ -475,6 +522,56 @@ async function probeHasAudio(inputPath: string): Promise<boolean> {
     proc.on("close", () => {
       clearTimeout(timer);
       settle(out.includes("audio"));
+    });
+  });
+}
+
+/**
+ * Probe whether the first video stream of a file uses interlaced scanning.
+ *
+ * Returns true when the container reports non-progressive field_order (tt, bb,
+ * tb, or bt) — the video was captured with field-based scanning (1080i, 720i)
+ * and needs yadif deinterlacing before the scale step to avoid combing
+ * artifacts (horizontal zigzag edges visible on motion) in the HLS output.
+ *
+ * Uses the container-level `field_order` stream metadata rather than
+ * frame-level idet analysis — reads only the stream header (fast, ~50 ms) so
+ * it does not add meaningful time to the parallel probe phase. On files where
+ * field_order is absent ('') or 'unknown' (all modern progressive cameras),
+ * returns false safely without deinterlacing the source.
+ */
+async function probeIsInterlaced(inputPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const proc = spawn("ffprobe", [
+      "-v", "error",
+      "-select_streams", "v:0",
+      "-show_entries", "stream=field_order",
+      "-of", "csv=p=0",
+      inputPath,
+    ]);
+    proc.unref();
+    let out = "";
+    let settled = false;
+    const settle = (val: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+    // Use the same timeout as resolution probe — both read stream headers only.
+    const timer = setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch { /* noop */ }
+      logger.warn({ inputPath }, "transcoder: interlace probe timed out — assuming progressive (safe default)");
+      settle(false);
+    }, RESOLUTION_PROBE_TIMEOUT_MS);
+    timer.unref();
+    proc.stdout.on("data", (b: Buffer) => { out += b.toString(); });
+    proc.on("error", () => { clearTimeout(timer); settle(false); });
+    proc.on("close", () => {
+      clearTimeout(timer);
+      const fo = out.trim().toLowerCase();
+      // field_order values: 'progressive' (most sources), 'unknown' (container
+      // did not record it), '' (absent), 'tt'/'bb'/'tb'/'bt' (interlaced).
+      settle(fo !== "" && fo !== "progressive" && fo !== "unknown");
     });
   });
 }
@@ -1717,11 +1814,14 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       );
     }
 
-    // Run duration, audio, and resolution probes in parallel. Resolution uses
-    // up to 3 attempts with a 3 s delay between retries — a transient ffprobe
-    // timeout must never permanently downgrade video quality for a source file
-    // that is actually 1080p. Running all three concurrently saves 30+ s on
-    // source files where every probe succeeds quickly.
+    // Run duration, audio, interlace, and resolution probes in parallel.
+    // Resolution uses up to 3 attempts with a 3 s delay between retries — a
+    // transient ffprobe timeout must never permanently downgrade video quality
+    // for a source file that is actually 1080p. Audio probe mirrors this retry
+    // pattern: a 15-second timeout on slow storage can cause a false-negative
+    // (video-only HLS when the source actually has audio); three attempts with
+    // a 3 s gap reduce false-positives significantly. Running all four
+    // concurrently saves 30+ s on source files where every probe succeeds fast.
     const RESOLUTION_PROBE_ATTEMPTS = 3;
     const RESOLUTION_PROBE_RETRY_MS = 3_000;
     const probeResolutionWithRetries = async (): Promise<{ width: number; height: number } | null> => {
@@ -1731,22 +1831,50 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         if (attempt < RESOLUTION_PROBE_ATTEMPTS) {
           logger.warn(
             { videoId: req.videoId, attempt, maxAttempts: RESOLUTION_PROBE_ATTEMPTS },
-            `transcoder: resolution probe returned null (attempt ${attempt}/${RESOLUTION_PROBE_ATTEMPTS}) — retrying to avoid false 360p-only fallback`,
+            `transcoder: resolution probe returned null (attempt ${attempt}/${RESOLUTION_PROBE_ATTEMPTS}) — retrying to avoid false 240p-only fallback`,
           );
           await new Promise<void>((r) => setTimeout(r, RESOLUTION_PROBE_RETRY_MS));
         }
       }
       return null;
     };
-    const [durationSecs, hasAudio, srcResolution] = await Promise.all([
+    // Retry wrapper for probeHasAudio — mirrors probeResolutionWithRetries.
+    // A timeout defaulting to false (video-only) is fail-safe for the FFmpeg
+    // args but produces a silent HLS stream if the source actually has audio.
+    // Three attempts give slow storage 9+ seconds of recovery window before
+    // committing to video-only output. Returns true on ANY successful detection.
+    const AUDIO_PROBE_ATTEMPTS = 3;
+    const AUDIO_PROBE_RETRY_MS = 3_000;
+    const probeHasAudioWithRetries = async (): Promise<boolean> => {
+      for (let attempt = 1; attempt <= AUDIO_PROBE_ATTEMPTS; attempt++) {
+        const result = await probeHasAudio(activeSourcePath);
+        if (result) return true;
+        if (attempt < AUDIO_PROBE_ATTEMPTS) {
+          logger.warn(
+            { videoId: req.videoId, attempt, maxAttempts: AUDIO_PROBE_ATTEMPTS },
+            `transcoder: audio probe returned false (attempt ${attempt}/${AUDIO_PROBE_ATTEMPTS}) — retrying before committing to video-only output`,
+          );
+          await new Promise<void>((r) => setTimeout(r, AUDIO_PROBE_RETRY_MS));
+        }
+      }
+      return false;
+    };
+    const [durationSecs, hasAudio, srcResolution, isInterlaced] = await Promise.all([
       probeDurationSecs(activeSourcePath),
-      probeHasAudio(activeSourcePath),
+      probeHasAudioWithRetries(),
       probeResolutionWithRetries(),
+      probeIsInterlaced(activeSourcePath),
     ]);
     if (!hasAudio) {
       logger.info(
         { videoId: req.videoId },
         "transcoder: source has no audio stream — encoding video-only HLS",
+      );
+    }
+    if (isInterlaced) {
+      logger.info(
+        { videoId: req.videoId },
+        "transcoder: interlaced source detected (field_order = tt/bb/tb/bt) — yadif deinterlace filter will be applied before scaling",
       );
     }
 
@@ -1763,14 +1891,15 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         );
       }
     } else {
-      // Probe failed — cap at 360p ONLY as the safest conservative fallback.
+      // Probe failed — cap at 240p ONLY as the safest conservative fallback.
       //
-      // Why 360p-only rather than "everything up to 720p":
-      //   If the source is a 360p file, using 360p/480p/720p would upscale it
-      //   to 480p and 720p — producing larger segments with worse quality than
-      //   the original AND confusing ExoPlayer/AVPlayer ABR engines that prefer
-      //   higher renditions even when they're upscales. 360p is universally
-      //   decodable (H.264 level 3.0) and never upscales any realistic source.
+      // Why 240p-only rather than "everything up to 720p":
+      //   If the source is a 240p file, using 240p/360p/480p/720p would upscale
+      //   it to 360p+ — producing larger segments with worse quality than the
+      //   original AND confusing ExoPlayer/AVPlayer ABR engines that prefer
+      //   higher renditions even when they're upscales. 240p (H.264 level 2.1)
+      //   is universally decodable on every device class and never upscales any
+      //   realistic source (even legacy SD cameras output ≥240p).
       //
       // Recovery path: operators can re-transcode the video after the root cause
       // of the probe failure is resolved (corrupt container, ffprobe unavailable,
@@ -1778,7 +1907,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       renditionsToUse = [ALL_RENDITIONS[0]!];
       logger.warn(
         { videoId: req.videoId },
-        "transcoder: resolution probe failed — using 360p-only (conservative anti-upscale fallback). " +
+        "transcoder: resolution probe failed — using 240p-only (conservative anti-upscale fallback). " +
         "Re-transcode after fixing probe failure to restore the full quality ladder.",
       );
     }
@@ -1835,7 +1964,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       logger.warn({ err: diskErr, videoId: req.videoId }, "transcoder: disk space pre-flight unavailable (non-fatal)");
     }
 
-    const args = buildFfmpegArgs(activeSourcePath, scratchDir, renditionsToUse, hasAudio);
+    const args = buildFfmpegArgs(activeSourcePath, scratchDir, renditionsToUse, hasAudio, isInterlaced);
 
     // Run HLS transcoding and thumbnail extraction in parallel.
     const hlsPromise = new Promise<void>((resolve, reject) => {
@@ -1962,7 +2091,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       if (isMappingLike && renditionsToUse.length > 1) {
         logger.warn(
           { videoId: req.videoId, jobId: req.jobId, errSnippet: errStr.slice(0, 300) },
-          "transcoder: multi-rendition ffmpeg failed — retrying with 360p-only fallback",
+          "transcoder: multi-rendition ffmpeg failed — retrying with 240p-only fallback",
         );
 
         // Stop the progressive uploader and delete any partially-uploaded
@@ -2011,7 +2140,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         // throws (e.g. unsupported rendition config), fallbackProgressiveLoop
         // would otherwise start and run indefinitely because the error escapes
         // to the outer catch block without ever setting progressiveActive=false.
-        const fallbackArgs = buildFfmpegArgs(activeSourcePath, scratchDir, renditionsToUse, hasAudio);
+        const fallbackArgs = buildFfmpegArgs(activeSourcePath, scratchDir, renditionsToUse, hasAudio, isInterlaced);
         progressiveActive = true;
         const fallbackProgressiveLoop = (async () => {
           while (progressiveActive) {

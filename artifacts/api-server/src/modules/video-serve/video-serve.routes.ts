@@ -836,6 +836,12 @@ export async function videoServeRoutes(app: FastifyInstance) {
               .header("Content-Length", String(rangeObj.contentLength))
               .header("Cache-Control", "public, max-age=604800, immutable")
               .header("Accept-Ranges", "bytes")
+              // Instruct nginx/Caddy not to buffer HLS segments before forwarding
+              // to the player. Without this header, reverse-proxy buffering delays
+              // segment delivery and causes playback stalls on Smart TVs (Samsung
+              // Tizen, LG webOS) where the player issues byte-range requests and
+              // expects low-latency streaming delivery, not a fully-buffered reply.
+              .header("X-Accel-Buffering", "no")
               .header("Access-Control-Allow-Origin", "*")
               .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
               .header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
