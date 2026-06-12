@@ -35,7 +35,7 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 NODE_ENV=development NODE_OPTIONS='--max-old-space-size=1536' pnpm install --ignore-scripts --frozen-lockfile --filter '!@workspace/mobile' && NODE_ENV=development API_DEV_PORT=8080 PORT=5000 pnpm --filter @workspace/admin run dev"
+args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 NODE_ENV=production NODE_OPTIONS='--max-old-space-size=1536' pnpm install --ignore-scripts --frozen-lockfile --filter '!@workspace/mobile' && NODE_ENV=production VITE_API_BASE_URL=https://api.templetv.org.ng PORT=5000 pnpm --filter @workspace/admin run dev"
 waitForPort = 5000
 
 [[workflows.workflow]]
@@ -47,7 +47,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 NODE_OPTIONS='--max-old-space-size=1536' pnpm install --ignore-scripts --frozen-lockfile --filter '!@workspace/mobile' && pnpm --filter @workspace/db run push && bash scripts/build-if-changed.sh && MALLOC_ARENA_MAX=2 NODE_ENV=development PORT=8080 MOBILE_DEV_PORT=18115 TRANSCODER_DISABLE=false SEED_ADMIN_FORCE=false MEMORY_WARN_RSS_MB=512 MEMORY_RESTART_RSS_MB=700 HLS_MAX_CONCURRENT=10 node --max-old-space-size=460 --expose-gc --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
+args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 NODE_OPTIONS='--max-old-space-size=1536' pnpm install --ignore-scripts --frozen-lockfile --filter '!@workspace/mobile' && pnpm --filter @workspace/db run push && bash scripts/build-if-changed.sh && MALLOC_ARENA_MAX=2 NODE_ENV=production PORT=8080 MEMORY_WARN_RSS_MB=1000 MEMORY_RESTART_RSS_MB=1400 HLS_MAX_CONCURRENT=20 HTTP_KEEPALIVE_MS=75000 HTTP_HEADERS_TIMEOUT_MS=80000 SHUTDOWN_DRAIN_MS=10000 node --max-old-space-size=900 --expose-gc --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
 waitForPort = 8080
 
 [agent]

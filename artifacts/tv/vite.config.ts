@@ -110,41 +110,6 @@ export default defineConfig({
       // regardless of which port the page was loaded from.
       clientPort: port,
     },
-    proxy: (() => {
-      // Honor `API_DEV_PORT` and otherwise default to the Replit `Start
-      // application` workflow port (5000) so the TV SPA's `/api/...` calls
-      // proxy to the running Fastify server in dev. Falls back to 8080 only
-      // if the operator explicitly sets that override (the prior Render
-      // local-dev convention).
-      const apiDevPort = process.env.API_DEV_PORT ?? "8080";
-      const target = `http://localhost:${apiDevPort}`;
-      return {
-        "/api": {
-          target,
-          changeOrigin: true,
-          secure: false,
-          // Forward WebSocket upgrades for /api/playback/ws so the TV's
-          // useLiveSync hook can connect to the playback engine through the
-          // same dev origin it uses for HTTP. Without this, the WS handshake
-          // would 404 at the dev server and useLiveSync would loop on its
-          // exponential-backoff reconnect timer.
-          ws: true,
-        },
-        "/.well-known": {
-          // Forward Android App Links / iOS Universal Links verification GETs
-          // to the API server so the well-known endpoints work even when
-          // testing deep-link verification against the Vite dev server.
-          // The Vite fs.deny no longer blocks .well-known/ (see below), but
-          // the API server's dynamic response (env-var fingerprints) is the
-          // authoritative source in dev so the proxy takes precedence.
-          target,
-          changeOrigin: true,
-          secure: false,
-        },
-        "/healthz": { target, changeOrigin: true, secure: false },
-        "/readyz": { target, changeOrigin: true, secure: false },
-      };
-    })(),
     fs: {
       strict: true,
       // Deny sensitive dotfiles but explicitly allow .well-known/ so that
