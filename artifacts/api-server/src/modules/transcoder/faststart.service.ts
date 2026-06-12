@@ -213,6 +213,40 @@ export async function runFaststart(
   objectKey: string,
   options: FaststartOptions = {},
 ): Promise<FaststartResult> {
+  // Normalize: some older rows stored localVideoUrl (absolute URL) as objectPath instead of
+  // the bare storage key.  Detect and fix in-flight so headObject doesn't get a URL it can
+  // never resolve, which would throw CORRUPT_UPLOAD and permanently deactivate the video.
+  // Also repair the DB column so the next call uses the correct value.
+  const UPLOADS_MARKER = "/api/v1/uploads/";
+  if (objectKey.startsWith("http://") || objectKey.startsWith("https://")) {
+    const markerIdx = objectKey.indexOf(UPLOADS_MARKER);
+    if (markerIdx === -1) {
+      throw Object.assign(
+        new Error(
+          `faststart: objectKey is an absolute URL without a recognisable uploads path ("${objectKey}"). ` +
+          "Re-upload the file to recover.",
+        ),
+        { code: "CORRUPT_UPLOAD" },
+      );
+    }
+    const normalizedKey = `uploads/${objectKey.slice(markerIdx + UPLOADS_MARKER.length)}`;
+    rootLogger.warn(
+      { videoId, originalObjectKey: objectKey, normalizedObjectKey: normalizedKey },
+      "faststart: objectKey was an absolute URL — normalising to bare storage key and repairing DB row",
+    );
+    // Repair the DB row so all subsequent callers (orchestrator, transcoder, etc.)
+    // get the correct key without needing this normalisation pass again.
+    await db
+      .update(videos)
+      .set({ objectPath: normalizedKey })
+      .where(eq(videos.id, videoId))
+      .catch((err: unknown) =>
+        rootLogger.warn({ err, videoId }, "faststart: objectPath DB repair failed (non-fatal) — continuing with normalised key"),
+      );
+    // Recurse with the corrected key so log context is correct throughout.
+    return runFaststart(videoId, normalizedKey, options);
+  }
+
   const log = rootLogger.child({ service: "faststart", videoId, objectKey, skipStatusUpdate: options.skipStatusUpdate ?? false });
   const scratchDir = path.join(os.tmpdir(), `faststart-${randomUUID()}`);
   const inputPath = path.join(scratchDir, "input.mp4");

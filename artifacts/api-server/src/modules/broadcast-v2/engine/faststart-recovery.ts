@@ -345,6 +345,17 @@ async function backfillPlaceholderDurations(): Promise<void> {
   const seenInThisSweep = new Set<string>();
   const filteredRows = rows.filter((row) => {
     if (!row.objectPath) return false;
+    // Skip rows whose objectPath is an absolute URL — they carry a data-quality
+    // bug fixed by faststart.service.ts normalisation and the startup DB repair.
+    // Probing them would fail (storage expects a bare key) and add noise; they'll
+    // be repaired by the next faststart run or the startup UPDATE.
+    if (row.objectPath.startsWith("http://") || row.objectPath.startsWith("https://")) {
+      logger.warn(
+        { videoId: row.videoId, objectPath: row.objectPath },
+        "faststart-recovery: skipping duration backfill for row with absolute-URL objectPath (data quality issue — startup repair will fix)",
+      );
+      return false;
+    }
     if (probeSkipObjectPaths.has(row.objectPath)) return false;
     if (seenInThisSweep.has(row.objectPath)) return false;
     seenInThisSweep.add(row.objectPath);

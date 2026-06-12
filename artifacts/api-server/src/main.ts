@@ -503,6 +503,32 @@ async function main() {
   // engine has a valid channel to attach to.
   await seedPrimaryChannelIfAbsent();
 
+  // One-time repair: some older uploads stored an absolute URL as objectPath
+  // (e.g. "https://api.templetv.org.ng/api/v1/uploads/…") instead of the bare
+  // storage key ("uploads/…"). faststart.service.ts now normalises on-the-fly,
+  // but any row that never goes through faststart again (already has
+  // faststart_applied=true or hlsMasterUrl set) would keep the bad value
+  // indefinitely. This UPDATE is idempotent and fast (index seek on LIKE 'http%').
+  void (async () => {
+    try {
+      const result = await db.execute(sql`
+        UPDATE managed_videos
+        SET    object_path = 'uploads/' || SUBSTRING(object_path FROM '/api/v1/uploads/(.+)$')
+        WHERE  object_path LIKE 'http%'
+          AND  object_path LIKE '%/api/v1/uploads/%'
+      `);
+      const count = (result as { rowCount?: number }).rowCount ?? 0;
+      if (count > 0) {
+        logger.warn(
+          { repaired: count },
+          "[startup] repaired managed_videos rows with absolute-URL objectPath → bare storage key",
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, "[startup] objectPath repair failed (non-fatal)");
+    }
+  })();
+
   // Hydrate the live-override in-memory cache from the DB so `buildState()`
   // in the WS gateway returns the correct answer immediately when the first
   // client connects, even if the server restarted mid-stream.
