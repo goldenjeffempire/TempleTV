@@ -334,6 +334,20 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * find the current slot in O(log N) instead of O(N).
      */
     private rebuildItemOffsets;
+    private static queueBackupPath;
+    /**
+     * Persist the current in-memory queue to a local JSON file.
+     * Fire-and-forget — failures are logged but never thrown.
+     * Only writes when the queue is non-empty so a transient empty-queue poll
+     * never overwrites a valid backup with an empty array.
+     */
+    private saveQueueBackup;
+    /**
+     * Load the last-known queue from the local filesystem backup.
+     * Returns null when the file is absent, malformed, or older than 24 hours.
+     * Never throws.
+     */
+    private loadQueueBackup;
     private reloadInner;
     /**
      * Project a pre-resolved CachedQueueItem into a full V2Item with wall-clock

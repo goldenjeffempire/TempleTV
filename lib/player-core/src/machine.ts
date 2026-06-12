@@ -185,6 +185,8 @@ export class PlayerMachine {
     bufferB: null,
     lastServerSnapshot: null,
     lastSequence: 0,
+    fatalAttemptCount: 0,
+    fatalEnteredAtMs: null,
   };
   private listeners = new Set<(snap: PlayerSnapshot) => void>();
   private primaryRetries = 0;
@@ -431,7 +433,17 @@ export class PlayerMachine {
     // PLAYING.  The source proved recoverable so the next FATAL entry (if any)
     // restarts the backoff from the base 30 s rather than 240 s.
     if (state === "PLAYING") this.fatalAttemptCount = 0;
-    this.set({ state });
+    // Publish FATAL countdown fields so UI surfaces can show an accurate live
+    // countdown rather than a static "30 seconds" message.
+    // fatalAttemptCount is incremented by the caller BEFORE transition("FATAL")
+    // so this.fatalAttemptCount is already the updated value here.
+    if (state === "FATAL") {
+      this.set({ state, fatalAttemptCount: this.fatalAttemptCount, fatalEnteredAtMs: Date.now() });
+    } else if (state === "PLAYING") {
+      this.set({ state, fatalAttemptCount: 0, fatalEnteredAtMs: null });
+    } else {
+      this.set({ state, fatalEnteredAtMs: null });
+    }
   }
 
   // ── Public API ─────────────────────────────────────────────────────────
@@ -701,14 +713,18 @@ export class PlayerMachine {
           if (this.skipPendingCycles >= SKIP_PENDING_FATAL_THRESHOLD) {
             this.skipPendingCycles = 0;
             this.skipPendingAnchorMs = null;
-            this.transition("FATAL");
-            if (this.fatalRecoveryTimer !== null) clearTimeout(this.fatalRecoveryTimer);
-            // Exponential backoff: attempt 1 = 30 s, 2 = 60 s, 3 = 120 s, 4+ = 240 s.
-            // Prevents thundering-herd storms where many clients sharing a broken
-            // source all retry simultaneously at the same 30-second cadence.
-            // Note: transition("FATAL") above resets fatalAttemptCount only on
-            // PLAYING, so it accumulates correctly across repeated FATAL entries.
+            // Increment BEFORE transition("FATAL") so transition() sees the
+            // updated count and publishes it in the snapshot immediately.
+            // This lets UI surfaces (TV overlay, admin preview) display the
+            // correct exponential-backoff countdown on the first render of the
+            // FATAL state rather than showing the stale previous value.
             this.fatalAttemptCount++;
+            this.transition("FATAL");
+            // Clear any stale recovery timer from a previous FATAL entry.
+            // transition() only clears fatalRecoveryTimer when *leaving* FATAL,
+            // so a timer from the prior FATAL state would otherwise fire and
+            // exit FATAL prematurely (mid-backoff) if it hadn't expired yet.
+            if (this.fatalRecoveryTimer !== null) clearTimeout(this.fatalRecoveryTimer);
             const fatalBackoffMs = Math.min(
               FATAL_AUTO_RECOVERY_MS * Math.pow(2, this.fatalAttemptCount - 1),
               FATAL_BACKOFF_MAX_MS,

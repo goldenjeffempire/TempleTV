@@ -76,6 +76,8 @@ const EMPTY_SNAPSHOT: PlayerSnapshot = {
   bufferB: null,
   lastServerSnapshot: null,
   lastSequence: 0,
+  fatalAttemptCount: 0,
+  fatalEnteredAtMs: null,
 };
 
 // ── Singleton session ────────────────────────────────────────────────────────

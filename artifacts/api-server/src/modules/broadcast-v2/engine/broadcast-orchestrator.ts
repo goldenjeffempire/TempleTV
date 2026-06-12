@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import path from "node:path";
 import { env } from "../../../config/env.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, setBroadcastMode, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
@@ -95,7 +97,7 @@ const EVENT_LOG_TRIM_INTERVAL_MS = 60_000;
  * 30 s instead of 60 s — halving the lag before a newly-ready HLS URL
  * becomes the active source on air.
  */
-const SELF_HEAL_EMPTY_MS  = 10_000;
+const SELF_HEAL_EMPTY_MS  = 5_000;
 const SELF_HEAL_STALE_MS  = 30_000;
 /**
  * After this many consecutive empty-queue polls (10 s × 6 = 60 s), the
@@ -460,12 +462,31 @@ class BroadcastOrchestrator extends EventEmitter {
       if (!loaded) {
         logger.error(
           { err: lastBootErr },
-          "[broadcast-v2] initial queue load failed after all retries — booting in OFF_AIR mode (self-heal will retry)",
+          "[broadcast-v2] initial queue load failed after all retries — trying filesystem backup before OFF_AIR",
         );
-        // Ensure we emit a snapshot so SSE/WS clients get a definitive OFF_AIR frame.
-        this.items = [];
-        this.cycleDurationMs = 0;
-        this.emitSnapshot();
+        // ── Filesystem queue backup fallback ───────────────────────────────────
+        // When the DB is temporarily unreachable at startup (planned maintenance,
+        // brief restart, pool not yet warm after all retries), load the last-known
+        // queue from the local JSON backup written after each successful
+        // reloadInner().  This lets broadcasts resume immediately rather than
+        // showing OFF_AIR until the self-heal timer manages to reconnect.
+        // The self-heal timer (5 s / 30 s) will continue retrying the DB and
+        // replace the backup items with fresh DB rows as soon as the DB recovers.
+        const backup = await this.loadQueueBackup();
+        if (backup && backup.length > 0) {
+          this.items = backup;
+          this.rebuildItemOffsets();
+          // Fall through to start the tick loop with backup items — emitSnapshot()
+          // is called by the tick loop once started.
+        } else {
+          logger.warn(
+            "[broadcast-v2] no valid queue backup found — booting in OFF_AIR mode (self-heal will retry)",
+          );
+          // Ensure we emit a snapshot so SSE/WS clients get a definitive OFF_AIR frame.
+          this.items = [];
+          this.cycleDurationMs = 0;
+          this.emitSnapshot();
+        }
       }
     }
 
@@ -903,6 +924,74 @@ class BroadcastOrchestrator extends EventEmitter {
     this.cycleDurationMs = acc;
   }
 
+  // ── Queue filesystem backup ─────────────────────────────────────────────
+  // Writes a JSON snapshot of the current queue to the local filesystem after
+  // every successful DB load.  When the DB is unavailable at startup (all 3
+  // boot retries fail), the orchestrator falls back to this file so broadcasts
+  // can resume immediately rather than going OFF_AIR until the DB recovers.
+  //
+  // Backup location: BROADCAST_QUEUE_BACKUP_DIR env var (default /tmp).
+  // On Render/Docker the /tmp directory persists across process restarts within
+  // the same container — exactly the scenario this covers (process restart
+  // during a brief DB maintenance window).
+  //
+  // URL expiry: pre-signed CDN URLs in the backup may have expired.  The
+  // bad-URL suspension mechanism handles expired URLs gracefully (403/404 →
+  // suspended for 45 s, next item airs instead).  Source URLs from object
+  // storage or local upload paths don't expire and work indefinitely.
+
+  private static queueBackupPath(channelId: string): string {
+    const dir = process.env.BROADCAST_QUEUE_BACKUP_DIR ?? "/tmp";
+    return path.join(dir, `broadcast-v2-queue-backup-${channelId}.json`);
+  }
+
+  /**
+   * Persist the current in-memory queue to a local JSON file.
+   * Fire-and-forget — failures are logged but never thrown.
+   * Only writes when the queue is non-empty so a transient empty-queue poll
+   * never overwrites a valid backup with an empty array.
+   */
+  private saveQueueBackup(): void {
+    const items = this.items;
+    if (items.length === 0) return;
+    const filePath = BroadcastOrchestrator.queueBackupPath(this.channelId);
+    const payload = JSON.stringify({ channelId: this.channelId, savedAt: Date.now(), items });
+    fs.writeFile(filePath, payload, "utf8", (err) => {
+      if (err) logger.debug({ err, filePath }, "[broadcast-v2] queue backup write failed (non-fatal)");
+    });
+  }
+
+  /**
+   * Load the last-known queue from the local filesystem backup.
+   * Returns null when the file is absent, malformed, or older than 24 hours.
+   * Never throws.
+   */
+  private async loadQueueBackup(): Promise<CachedQueueItem[] | null> {
+    const filePath = BroadcastOrchestrator.queueBackupPath(this.channelId);
+    try {
+      const raw = fs.readFileSync(filePath, "utf8");
+      const parsed = JSON.parse(raw) as { channelId: string; savedAt: number; items: CachedQueueItem[] };
+      if (!Array.isArray(parsed.items) || parsed.items.length === 0) return null;
+      const ageMs = Date.now() - (parsed.savedAt ?? 0);
+      // Reject backups older than 24 hours — pre-signed CDN URLs will have
+      // expired and locally-uploaded URLs may have been replaced by new paths.
+      if (ageMs > 24 * 60 * 60 * 1_000) {
+        logger.warn(
+          { ageMs: Math.round(ageMs / 60_000) + " min", filePath },
+          "[broadcast-v2] queue backup too stale (>24 h) — ignoring; booting OFF_AIR",
+        );
+        return null;
+      }
+      logger.info(
+        { items: parsed.items.length, ageMin: Math.round(ageMs / 60_000), filePath },
+        "[broadcast-v2] queue backup loaded — DB unavailable at boot; resuming from cached items (self-heal will refresh from DB)",
+      );
+      return parsed.items;
+    } catch {
+      return null; // file not found or JSON malformed — not an error condition
+    }
+  }
+
   private async reloadInner(opts?: { preserveBadUrlCache?: boolean }): Promise<void> {
     if (this._reloadInProgress) {
       logger.debug("[broadcast-v2] reloadInner: concurrent call suppressed by mutex");
@@ -1091,6 +1180,10 @@ class BroadcastOrchestrator extends EventEmitter {
     this.reloadSuccesses += 1;
     // Rebuild itemOffsets and cycleDurationMs from the freshly-loaded items.
     this.rebuildItemOffsets();
+    // Persist a filesystem backup so the orchestrator can resume from cached
+    // items if the DB is unreachable during the next process restart.
+    // Fire-and-forget — write errors are logged at debug level only.
+    this.saveQueueBackup();
 
     // Reset dead-air tracking state whenever items load successfully.
     //

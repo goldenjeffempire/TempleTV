@@ -112,4 +112,16 @@ export interface PlayerSnapshot {
   lastServerSnapshot: V2Snapshot | null;
   /** Last-applied server sequence. */
   lastSequence: number;
+  /**
+   * How many successive FATAL entries since the last successful PLAYING state.
+   * Used by UI surfaces to compute the correct exponential-backoff countdown
+   * (30 s × 2^(n-1), capped at 240 s) rather than showing a static "30 s".
+   */
+  fatalAttemptCount: number;
+  /**
+   * Wall-clock ms (Date.now()) when the machine last entered the FATAL state.
+   * Null when the machine is not in FATAL. Combined with fatalAttemptCount,
+   * UI surfaces can derive an accurate live countdown to the auto-retry.
+   */
+  fatalEnteredAtMs: number | null;
 }

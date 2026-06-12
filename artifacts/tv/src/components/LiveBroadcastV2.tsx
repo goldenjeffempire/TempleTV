@@ -560,15 +560,44 @@ export function LiveBroadcastV2({
     return () => videoEl.removeEventListener("playing", onPlaying);
   }, [snapshot.state, snapshot.activeBufferId, server?.override?.kind]);
 
+  // ── FATAL exponential-backoff live countdown ───────────────────────────────
+  // Ticks every second while the machine is in the FATAL state so the overlay
+  // shows the exact seconds remaining until the next auto-retry — matching the
+  // actual exponential backoff (30 s / 60 s / 120 s / 240 s) rather than the
+  // old static "30 seconds" which was always wrong from attempt 2 onwards.
+  const [fatalRetrySecsLeft, setFatalRetrySecsLeft] = useState<number | null>(null);
+  useEffect(() => {
+    if (snapshot.state !== "FATAL" || snapshot.fatalEnteredAtMs == null) {
+      setFatalRetrySecsLeft(null);
+      return;
+    }
+    const backoffMs = Math.min(
+      30_000 * Math.pow(2, Math.max(0, snapshot.fatalAttemptCount - 1)),
+      240_000,
+    );
+    const tick = () => {
+      const remaining = backoffMs - (Date.now() - snapshot.fatalEnteredAtMs!);
+      setFatalRetrySecsLeft(Math.max(0, Math.ceil(remaining / 1000)));
+    };
+    tick();
+    const id = setInterval(tick, 1_000);
+    return () => clearInterval(id);
+  }, [snapshot.state, snapshot.fatalEnteredAtMs, snapshot.fatalAttemptCount]);
+
   type OverlayContent = { primary: string; secondary?: string; showRefresh?: boolean } | null;
 
   const overlay = useMemo((): OverlayContent => {
     if (snapshot.state === "OFFLINE_HOLD") return { primary: "Reconnecting to broadcast…" };
-    if (snapshot.state === "FATAL") return {
-      primary: "Stream temporarily unavailable.",
-      secondary: "Auto-retrying in 30 seconds — or press Try Again now.",
-      showRefresh: true,
-    };
+    if (snapshot.state === "FATAL") {
+      const secsLabel =
+        fatalRetrySecsLeft == null ? "" :
+        fatalRetrySecsLeft > 0 ? ` in ${fatalRetrySecsLeft}s` : " now";
+      return {
+        primary: "Stream temporarily unavailable.",
+        secondary: `Auto-retrying${secsLabel} — or press Try Again now.`,
+        showRefresh: true,
+      };
+    }
     if (server?.failover.active) return { primary: server.failover.reason ?? "On standby" };
     if (snapshot.state === "BOOTSTRAP") return { primary: "Tuning in…" };
     if (snapshot.state === "SYNCING") {
@@ -612,7 +641,7 @@ export function LiveBroadcastV2({
       secondary: "We'll be back shortly.",
     };
     return null;
-  }, [snapshot.state, server, overridePlaying]);
+  }, [snapshot.state, server, overridePlaying, fatalRetrySecsLeft]);
 
   const title = server?.override?.title ?? server?.current?.title ?? "Temple TV Live";
   const isOnAir = !overlay && !!(server?.current || server?.override);
