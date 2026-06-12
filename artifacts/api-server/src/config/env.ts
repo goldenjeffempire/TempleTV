@@ -284,6 +284,12 @@ const Env = z.object({
   // (e.g. 86400000 = 24 h) for daily variety instead of 30-minute cycles.
   BROADCAST_ROTATION_STRATEGY: z.enum(["shuffle", "fifo"]).default("shuffle"),
   BROADCAST_ROTATION_INTERVAL_MS: z.coerce.number().int().positive().default(1_800_000),
+  // Initial delay before the FIRST content rotation after server startup.
+  // Defaults to 3 minutes so the queue gets shuffled quickly after a restart
+  // without waiting the full 30-minute rotation interval.  Set to 0 to rotate
+  // immediately at boot, or equal to BROADCAST_ROTATION_INTERVAL_MS to
+  // preserve the original behaviour (first rotation after one full interval).
+  BROADCAST_ROTATION_INITIAL_DELAY_MS: z.coerce.number().int().nonnegative().default(3 * 60_000),
 
   // DB Pool Health Monitor — pg connection pool utilization alerting.
   //

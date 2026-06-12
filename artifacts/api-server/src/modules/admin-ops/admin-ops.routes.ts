@@ -4015,4 +4015,188 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     },
   );
 
+  // ── GET /admin/broadcast/system-health ─────────────────────────────────────
+  // Aggregates all subsystem health signals (broadcast, workers, queue, transcoder,
+  // DB pool, storage, content rotation) into one response so the admin dashboard
+  // can show a platform health overview without polling 6+ endpoints separately.
+  //
+  // Rate-limited to 60 req/min (30 s polling cadence is safe).
+  // Requires editor role — read-only, no mutations.
+  app.withTypeProvider<ZodTypeProvider>().route({
+    method: "GET",
+    url: "/broadcast/system-health",
+    onRequest: [requireAuth("editor")],
+    config: { rateLimit: { max: 60, timeWindow: 60_000 } },
+    schema: {
+      response: {
+        200: z.object({
+          checkedAt: z.string(),
+          broadcast: z.object({
+            started: z.boolean(),
+            sequence: z.number(),
+            itemCount: z.number(),
+          }),
+          workers: z.array(z.object({
+            name: z.string(),
+            running: z.boolean(),
+            circuitOpen: z.boolean(),
+            consecutiveFailures: z.number(),
+            totalRuns: z.number(),
+            lastRunAtMs: z.number().nullable(),
+            lastSuccessAtMs: z.number().nullable(),
+            nextRunAtMs: z.number().nullable(),
+          })),
+          unhealthyWorkerCount: z.number(),
+          queue: z.object({
+            activeItems: z.number().nullable(),
+            threshold: z.number(),
+            belowThreshold: z.boolean(),
+            totalRebuilds: z.number(),
+            lastRebuildAtMs: z.number().nullable(),
+          }),
+          transcoder: z.object({
+            enabled: z.boolean(),
+            isRunning: z.boolean(),
+            circuitOpen: z.boolean(),
+            currentJobId: z.string().nullable(),
+          }),
+          dbPool: z.object({
+            active: z.number(),
+            idle: z.number(),
+            waiting: z.number(),
+            max: z.number(),
+            utilizationPct: z.number(),
+            highUtilAlertActive: z.boolean(),
+            waitingAlertActive: z.boolean(),
+          }),
+          storage: z.object({
+            healthy: z.boolean(),
+            enabled: z.boolean(),
+            consecutiveFailures: z.number(),
+          }),
+          contentRotation: z.object({
+            strategy: z.string(),
+            intervalMs: z.number(),
+            lastShuffleAtMs: z.number(),
+            shuffleCount: z.number(),
+          }),
+          ok: z.boolean(),
+          issues: z.array(z.string()),
+        }),
+        429: z.object({ error: z.string() }),
+      },
+    },
+    handler: async (_req, _reply) => {
+      const issues: string[] = [];
+
+      // ── Broadcast orchestrator ──────────────────────────────────────────
+      const broadcast = {
+        started: broadcastOrchestrator.isStarted(),
+        sequence: broadcastOrchestrator.getSequence(),
+        itemCount: broadcastOrchestrator.getItemCount(),
+      };
+      if (!broadcast.started) issues.push("Broadcast orchestrator is not started");
+
+      // ── Workers ─────────────────────────────────────────────────────────
+      // Dynamic import avoids circular deps; workerSupervisor is a singleton.
+      const { workerSupervisor } = await import("../broadcast-v2/engine/worker-supervisor.js");
+      const rawWorkers = workerSupervisor.getHealth();
+      const workers = rawWorkers.map((w) => ({
+        name: w.name,
+        running: w.running,
+        circuitOpen: w.circuitOpen,
+        consecutiveFailures: w.consecutiveFailures,
+        totalRuns: w.totalRuns,
+        lastRunAtMs: w.lastRunAtMs,
+        lastSuccessAtMs: w.lastSuccessAtMs,
+        nextRunAtMs: w.nextRunAtMs,
+      }));
+      const unhealthyWorkerCount = workers.filter((w) => w.circuitOpen).length;
+      if (unhealthyWorkerCount > 0) {
+        const names = workers.filter((w) => w.circuitOpen).map((w) => w.name).join(", ");
+        issues.push(`Worker circuit breaker open: ${names}`);
+      }
+
+      // ── Queue health guard ───────────────────────────────────────────────
+      const { getQueueHealthGuardStatus } = await import("../broadcast-v2/index.js");
+      const qhg = getQueueHealthGuardStatus();
+      const queue = {
+        activeItems: qhg.lastActiveCount,
+        threshold: qhg.threshold,
+        belowThreshold: qhg.belowThreshold,
+        totalRebuilds: qhg.totalRebuilds,
+        lastRebuildAtMs: qhg.lastRebuildAtMs,
+      };
+      if (qhg.belowThreshold) {
+        issues.push(`Broadcast queue below minimum threshold (${qhg.lastActiveCount ?? 0}/${qhg.threshold} items)`);
+      }
+
+      // ── Transcoder ────────────────────────────────────────────────────────
+      const hb = transcoderDispatcher.getHeartbeat();
+      const transcoder = {
+        enabled: !env.TRANSCODER_DISABLE,
+        isRunning: hb.isRunning,
+        circuitOpen: hb.circuitOpen,
+        currentJobId: hb.currentJobId,
+      };
+      if (hb.circuitOpen) {
+        issues.push("Transcoder storage circuit breaker is open — transcoding suspended");
+      }
+
+      // ── DB pool ───────────────────────────────────────────────────────────
+      const { getDbPoolHealthStatus } = await import("../../infrastructure/db-pool-health.js");
+      const pool = getDbPoolHealthStatus();
+      const dbPool = {
+        active: pool.active,
+        idle: pool.idle,
+        waiting: pool.waiting,
+        max: pool.max,
+        utilizationPct: pool.utilizationPct,
+        highUtilAlertActive: pool.highUtilAlertActive,
+        waitingAlertActive: pool.waitingAlertActive,
+      };
+      if (pool.waitingAlertActive) {
+        issues.push(`DB pool fully saturated — ${pool.waiting} connection(s) waiting`);
+      } else if (pool.highUtilAlertActive) {
+        issues.push(`DB pool utilization high: ${pool.utilizationPct}% (${pool.active}/${pool.max})`);
+      }
+
+      // ── Storage ───────────────────────────────────────────────────────────
+      const { getStorageHealthStatus } = await import("../../infrastructure/storage-health-monitor.js");
+      const sth = getStorageHealthStatus();
+      const storageResult = {
+        healthy: sth.healthy,
+        enabled: sth.enabled,
+        consecutiveFailures: sth.consecutiveFailures,
+      };
+      if (sth.enabled && !sth.healthy) {
+        issues.push(`Object storage degraded (${sth.consecutiveFailures} consecutive probe failure(s))`);
+      }
+
+      // ── Content rotation ──────────────────────────────────────────────────
+      const { getContentRotationStatus } = await import("../broadcast-v2/index.js");
+      const rot = getContentRotationStatus();
+      const contentRotation = {
+        strategy: rot.strategy,
+        intervalMs: rot.intervalMs,
+        lastShuffleAtMs: rot.lastShuffleAtMs,
+        shuffleCount: rot.shuffleCount,
+      };
+
+      return {
+        checkedAt: new Date().toISOString(),
+        broadcast,
+        workers,
+        unhealthyWorkerCount,
+        queue,
+        transcoder,
+        dbPool,
+        storage: storageResult,
+        contentRotation,
+        ok: issues.length === 0,
+        issues,
+      };
+    },
+  });
+
 }

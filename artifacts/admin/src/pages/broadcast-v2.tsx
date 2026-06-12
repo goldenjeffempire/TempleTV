@@ -66,7 +66,7 @@ import { apiBase } from "@/lib/api-base";
 import { api, HttpError } from "@/lib/api";
 import { useSSE, useSSEEvent } from "@/contexts/sse-context";
 import { useSseGatedInterval } from "@/hooks/useSseGatedInterval";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   DndContext,
   closestCenter,
@@ -993,6 +993,139 @@ function ViewerSyncCard({ health }: { health: EngineHealth | undefined }) {
  *    so the queue snapshot always reflects DB mutations within ~1 frame.
  */
 
+// ── Platform System Health ──────────────────────────────────────────────────
+// Aggregates broadcast, workers, queue, transcoder, DB pool, storage and content
+// rotation health into one card. Polls /admin/broadcast/system-health every 30 s.
+
+interface SystemHealth {
+  checkedAt: string;
+  broadcast: { started: boolean; sequence: number; itemCount: number };
+  workers: { name: string; running: boolean; circuitOpen: boolean; consecutiveFailures: number; totalRuns: number; lastRunAtMs: number | null; lastSuccessAtMs: number | null; nextRunAtMs: number | null }[];
+  unhealthyWorkerCount: number;
+  queue: { activeItems: number | null; threshold: number; belowThreshold: boolean; totalRebuilds: number; lastRebuildAtMs: number | null };
+  transcoder: { enabled: boolean; isRunning: boolean; circuitOpen: boolean; currentJobId: string | null };
+  dbPool: { active: number; idle: number; waiting: number; max: number; utilizationPct: number; highUtilAlertActive: boolean; waitingAlertActive: boolean };
+  storage: { healthy: boolean; enabled: boolean; consecutiveFailures: number };
+  contentRotation: { strategy: string; intervalMs: number; lastShuffleAtMs: number; shuffleCount: number };
+  ok: boolean;
+  issues: string[];
+}
+
+function PlatformHealthCard({ health, error }: { health: SystemHealth | undefined; error: boolean }) {
+  if (error) return (
+    <Card>
+      <CardHeader className="pb-2 pt-4">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Stethoscope className="h-4 w-4" /> Platform Health
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="pb-4">
+        <p className="text-xs text-muted-foreground">Could not load platform health — retrying…</p>
+      </CardContent>
+    </Card>
+  );
+  if (!health) return null;
+
+  const now = Date.now();
+
+  function SubsystemRow({ icon, label, ok, detail }: { icon: ReactNode; label: string; ok: boolean; detail?: string }) {
+    return (
+      <div className="flex items-center gap-2 py-1">
+        <span className="text-muted-foreground shrink-0">{icon}</span>
+        <span className="text-xs font-medium flex-1 min-w-0 truncate">{label}</span>
+        {detail && <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">{detail}</span>}
+        {ok
+          ? <CircleCheck className="h-3.5 w-3.5 text-green-500 shrink-0" />
+          : <CircleX className="h-3.5 w-3.5 text-red-500 shrink-0" />
+        }
+      </div>
+    );
+  }
+
+  const broadcastOk = health.broadcast.started && health.broadcast.itemCount > 0;
+  const workersOk = health.unhealthyWorkerCount === 0;
+  const queueOk = !health.queue.belowThreshold;
+  const transcoderOk = !health.transcoder.circuitOpen;
+  const dbOk = !health.dbPool.waitingAlertActive && !health.dbPool.highUtilAlertActive;
+  const storageOk = !health.storage.enabled || health.storage.healthy;
+
+  const totalWorkers = health.workers.length;
+  const healthyWorkers = totalWorkers - health.unhealthyWorkerCount;
+
+  const lastShuffle = health.contentRotation.lastShuffleAtMs > 0
+    ? Math.round((now - health.contentRotation.lastShuffleAtMs) / 60_000) + " min ago"
+    : "never";
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 pt-4">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Stethoscope className="h-4 w-4" /> Platform Health
+          </CardTitle>
+          <Badge variant={health.ok ? "default" : "destructive"} className="text-[10px] py-0 h-5">
+            {health.ok ? "All systems OK" : `${health.issues.length} issue${health.issues.length !== 1 ? "s" : ""}`}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="pb-4 space-y-0 divide-y">
+        <SubsystemRow
+          icon={<Radio className="h-3.5 w-3.5" />}
+          label="Broadcast"
+          ok={broadcastOk}
+          detail={health.broadcast.started ? `seq ${health.broadcast.sequence} · ${health.broadcast.itemCount} item${health.broadcast.itemCount !== 1 ? "s" : ""}` : "not started"}
+        />
+        <SubsystemRow
+          icon={<Server className="h-3.5 w-3.5" />}
+          label="Workers"
+          ok={workersOk}
+          detail={`${healthyWorkers}/${totalWorkers} healthy`}
+        />
+        <SubsystemRow
+          icon={<Activity className="h-3.5 w-3.5" />}
+          label="Queue"
+          ok={queueOk}
+          detail={`${health.queue.activeItems ?? "?"} active · min ${health.queue.threshold}`}
+        />
+        <SubsystemRow
+          icon={<Cpu className="h-3.5 w-3.5" />}
+          label="Transcoder"
+          ok={transcoderOk}
+          detail={health.transcoder.enabled ? (health.transcoder.isRunning ? "running" : "idle") : "disabled"}
+        />
+        <SubsystemRow
+          icon={<Upload className="h-3.5 w-3.5" />}
+          label="Storage"
+          ok={storageOk}
+          detail={health.storage.enabled ? (health.storage.healthy ? "healthy" : `${health.storage.consecutiveFailures} fail${health.storage.consecutiveFailures !== 1 ? "s" : ""}`) : "not configured"}
+        />
+        <SubsystemRow
+          icon={<Radio className="h-3.5 w-3.5" />}
+          label={`Rotation (${health.contentRotation.strategy})`}
+          ok={true}
+          detail={`last ${lastShuffle} · ${health.contentRotation.shuffleCount}×`}
+        />
+        <SubsystemRow
+          icon={<Activity className="h-3.5 w-3.5" />}
+          label="DB Pool"
+          ok={dbOk}
+          detail={`${health.dbPool.active}/${health.dbPool.max} active · ${health.dbPool.utilizationPct}%`}
+        />
+        {health.issues.length > 0 && (
+          <div className="pt-2 space-y-1">
+            {health.issues.map((issue, i) => (
+              <div key={i} className="flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-400">
+                <CircleAlert className="h-3 w-3 mt-px shrink-0" />
+                <span className="leading-snug">{issue}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // V2 broadcast snapshot — local type alias matching the server wire type from
 // broadcast-v2/domain/types.ts (V2Snapshot). Defined here so BroadcastV2PageInner
 // reads live state via REST (/broadcast-v2/state) without importing
@@ -1138,6 +1271,17 @@ function BroadcastV2PageInner() {
     queryKey: ["broadcast-v2-engine-health"],
     queryFn: () => api.get<EngineHealth>("/broadcast-v2/health"),
     refetchInterval: sseGated60s,
+    staleTime: 25_000,
+  });
+
+  // Platform system health — aggregates broadcast, workers, queue, transcoder,
+  // DB pool, storage and content rotation into one response. Polls every 30 s;
+  // fast enough to surface any newly-tripped circuit breaker or queue depletion
+  // within a single polling cycle without hammering the API.
+  const { data: systemHealth, isError: systemHealthError } = useQuery({
+    queryKey: ["broadcast-v2-system-health"],
+    queryFn: () => api.get<SystemHealth>("/admin/broadcast/system-health"),
+    refetchInterval: 30_000,
     staleTime: 25_000,
   });
 
@@ -2960,6 +3104,9 @@ function BroadcastV2PageInner() {
 
       {/* Viewer sync accuracy panel */}
       <ViewerSyncCard health={engineHealth} />
+
+      {/* Platform system health — all subsystems at a glance */}
+      <PlatformHealthCard health={systemHealth} error={systemHealthError} />
 
       {/* Engine health panel */}
       <Card>

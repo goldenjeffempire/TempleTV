@@ -305,11 +305,14 @@ function startSupervisedWorkers(): void {
   // sequence staleness from outside the orchestrator's own self-heal loop.
   // Tier 1 (STALE_MS=3min): calls reload(). Tier 2 (RECOVERY_MS=7min):
   // calls initiateFullRecovery() and emits ops-alert + broadcast webhook.
+  // Initial delay reduced from 90 s → 45 s: the orchestrator completes its
+  // first reload in ~5 s; waiting 45 s is enough grace before we start
+  // checking for staleness without waiting nearly 2 min for first coverage.
   workerSupervisor.spawn({
     name: "broadcast-health-monitor",
     fn: () => broadcastHealthMonitorScan(),
     intervalMs: 60_000,
-    initialDelayMs: 90_000, // Wait past the orchestrator's own first-reload (30s)
+    initialDelayMs: 45_000,
     backoffMs: [15_000, 30_000, 60_000],
     onCircuitOpen: makeCircuitOpenCallback("broadcast-health-monitor"),
   });
@@ -317,13 +320,16 @@ function startSupervisedWorkers(): void {
   // Content Rotation Worker: shuffles broadcast queue sort_order periodically
   // so 24/7 broadcasts play content in a fresh order rather than the same
   // cycle forever. BROADCAST_ROTATION_STRATEGY=fifo disables the shuffle.
-  // Uses a longer initial delay so the first shuffle happens only after the
-  // broadcast has been on-air for at least one full rotation interval.
+  //
+  // initialDelayMs uses BROADCAST_ROTATION_INITIAL_DELAY_MS (default 3 min)
+  // instead of the full rotation interval so the queue gets a fresh shuffle
+  // shortly after every restart — not after waiting the full 30-minute window.
+  // Subsequent shuffles use the full BROADCAST_ROTATION_INTERVAL_MS cadence.
   workerSupervisor.spawn({
     name: "content-rotation",
     fn: () => contentRotationScan(),
     intervalMs: env.BROADCAST_ROTATION_INTERVAL_MS,
-    initialDelayMs: env.BROADCAST_ROTATION_INTERVAL_MS,
+    initialDelayMs: env.BROADCAST_ROTATION_INITIAL_DELAY_MS,
     backoffMs: [60_000, 5 * 60_000, 10 * 60_000],
     onCircuitOpen: makeCircuitOpenCallback("content-rotation"),
   });
