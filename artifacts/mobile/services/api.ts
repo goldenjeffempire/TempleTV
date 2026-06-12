@@ -22,16 +22,23 @@ function url(path: string): string {
 /**
  * Fetch a public (unauthenticated) API endpoint with automatic retry.
  * Retries up to 3 times on network errors and 5xx responses using full-jitter
- * exponential backoff (350 ms base, 10 s cap). Fire-and-forget endpoints
+ * exponential backoff (1 s base, 10 s cap). Fire-and-forget endpoints
  * (reactions, prayers, view counts) also go through this path — silently
  * catching in callers means transient network hiccups are recovered at the
  * fetch layer before the caller even sees an error.
+ *
+ * IMPORTANT — no chain-wide AbortSignal is added here.
+ * fetchWithRetry already applies a 15 s per-attempt timeout when the caller
+ * does not provide a signal.  A chain-wide AbortSignal.timeout(12_000) would
+ * fire once, mark signal.aborted=true, and cause the fetchWithRetry catch block
+ * to re-throw immediately — bypassing all retries.  This is catastrophic for
+ * cold-start scenarios (Render free tier ~30 s startup time) where the first
+ * attempt always times out and the remaining retries are the only recovery path.
+ * Callers that need a shorter per-call fence (fire-and-forget reactions, view
+ * counts, etc.) pass their own signal explicitly.
  */
 async function publicFetch(path: string, init?: RequestInit): Promise<Response> {
-  const res = await fetchWithRetry(url(path), {
-    ...init,
-    signal: init?.signal ?? AbortSignal.timeout(12_000),
-  });
+  const res = await fetchWithRetry(url(path), init);
   if (__DEV__ && !res.ok) {
     console.warn(`[api] publicFetch ${path} → HTTP ${res.status}`);
   }

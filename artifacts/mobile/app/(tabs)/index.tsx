@@ -180,7 +180,7 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
       accessibilityLabel={hasActiveBroadcast ? "Watch Now — live broadcast" : "Watch latest sermon"}
       accessibilityState={{ disabled: watchNowDisabled }}
     >
-      {/* Base layer — thumbnail keeps hero from ever being a bare black box */}
+      {/* Base layer — thumbnail or branded fallback so hero is never a bare black box */}
       {thumbUrl ? (
         <Image
           source={{ uri: thumbUrl }}
@@ -188,7 +188,22 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
           resizeMode="cover"
         />
       ) : (
-        <View style={[StyleSheet.absoluteFill, { backgroundColor: "#0f0020" }]} />
+        /* Branded fallback: deep-purple gradient + centred logo.
+           Shown when the broadcast item has no thumbnail yet, or while the
+           catalog is loading and no fallback sermon is available yet. */
+        <LinearGradient
+          colors={["#1a0040", "#2d0066", "#0f0020"]}
+          locations={[0, 0.5, 1]}
+          start={{ x: 0.3, y: 0 }}
+          end={{ x: 0.7, y: 1 }}
+          style={[StyleSheet.absoluteFill, styles.heroFallback]}
+        >
+          <Image
+            source={require("@/assets/images/temple-tv-logo.png")}
+            style={styles.heroFallbackLogo}
+            resizeMode="contain"
+          />
+        </LinearGradient>
       )}
 
       {/* V2 broadcast video — ALWAYS mounted (muted, minimal) to keep the singleton
@@ -482,6 +497,15 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
 
   // ── Hero ────────────────────────────────────────────────────────────────────
+  heroFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  heroFallbackLogo: {
+    width: 120,
+    height: 60,
+    opacity: 0.55,
+  },
   heroContent: {
     padding: 20,
     paddingBottom: 24,
