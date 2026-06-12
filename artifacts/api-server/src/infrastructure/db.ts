@@ -795,10 +795,11 @@ export async function ensureRuntimeIndexes(): Promise<void> {
     // extends it with video_source so the planner can use an index-only scan
     // on the common `WHERE video_source = 'youtube'` + `ORDER BY view_count`
     // path used by the YouTube catalog tab and SEO ranking queries.
+    // NOTE: is_active column was removed from managed_videos — partial filter
+    // dropped so the index matches the current schema.
     await run("idx_managed_videos_view_count_source", `
       CREATE INDEX IF NOT EXISTS idx_managed_videos_view_count_source
         ON managed_videos (view_count DESC, video_source)
-        WHERE is_active = true
     `);
 
     // ── HLS storage + analytics hot-path indexes (performance audit) ───────
@@ -933,17 +934,18 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         USING gin (lower(display_name) gin_trgm_ops)
     `);
 
-    // ── Functional COALESCE index for mixed-source catalog sort ────────────
+    // ── Sort index for mixed-source catalog ────────────────────────────────
     // Public /api/videos?sort=newest (no source filter) orders rows by
-    // COALESCE(published_at::timestamptz, imported_at) DESC.  The existing
-    // partial index idx_managed_videos_youtube_catalog only covers youtube rows;
-    // mixed-source queries fall back to a sequential scan + in-memory sort.
-    // published_at is stored as ISO-8601 text in the DB (YouTube API format),
-    // so we must cast it to timestamptz to match imported_at's column type.
-    // broadcast_only is a boolean column — no COALESCE needed in WHERE.
+    // imported_at DESC.  The existing partial index idx_managed_videos_youtube
+    // only covers youtube rows; mixed-source queries fall back to a full scan.
+    // NOTE: COALESCE(published_at::timestamptz, imported_at) requires an
+    // IMMUTABLE cast from text, which PostgreSQL rejects in index expressions
+    // (text→timestamptz is STABLE). Use imported_at alone — it is populated for
+    // all rows (youtube rows get it from the sync date, local rows from upload
+    // time) and is already of type timestamptz.
     await run("idx_managed_videos_coalesce_sort", `
       CREATE INDEX IF NOT EXISTS idx_managed_videos_coalesce_sort
-        ON managed_videos (COALESCE(published_at::timestamptz, imported_at) DESC)
+        ON managed_videos (imported_at DESC)
         WHERE broadcast_only IS DISTINCT FROM true
     `);
 
@@ -961,23 +963,35 @@ export async function ensureRuntimeIndexes(): Promise<void> {
     // ── Series membership lookup ────────────────────────────────────────────
     // Series pages (GET /api/series/:id/videos) join managed_videos ON
     // series_id = :id. Without an index the query does a full table scan.
-    // This partial index covers only non-null series_id values which are the
-    // only rows that will ever be looked up this way.
-    await run("idx_managed_videos_series_id", `
-      CREATE INDEX IF NOT EXISTS idx_managed_videos_series_id
-        ON managed_videos (series_id)
-        WHERE series_id IS NOT NULL
-    `);
+    // Guard: series_id column may not exist in older DB migrations (it was
+    // added post-initial-schema). Skip the index silently when absent.
+    await client.query(`
+      DO $$ BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'managed_videos' AND column_name = 'series_id'
+        ) THEN
+          EXECUTE $idx$
+            CREATE INDEX IF NOT EXISTS idx_managed_videos_series_id
+              ON managed_videos (series_id)
+              WHERE series_id IS NOT NULL
+          $idx$;
+        END IF;
+      END $$
+    `).catch((err: unknown) => {
+      logger.warn({ err }, "db: idx_managed_videos_series_id skipped (non-fatal)");
+    });
 
     // ── Catalog category + sort composite ──────────────────────────────────
     // /api/videos?category=X&sort=newest filters by lower(category) and then
-    // orders by COALESCE(published_at::timestamptz, imported_at) DESC.
-    // The planner currently uses idx_managed_videos_category_lower for the
-    // filter and then sorts in memory. A composite covering index avoids the
-    // in-memory sort step for category-filtered pages (mobile/TV grids).
+    // orders by imported_at DESC. The planner uses idx_managed_videos_category
+    // _lower for the filter and then sorts in memory. A composite covering
+    // index avoids the in-memory sort step for category-filtered pages.
+    // NOTE: COALESCE(published_at::timestamptz, ...) removed — text→timestamptz
+    // cast is STABLE not IMMUTABLE and PostgreSQL rejects it in index expressions.
     await run("idx_managed_videos_category_coalesce_sort", `
       CREATE INDEX IF NOT EXISTS idx_managed_videos_category_coalesce_sort
-        ON managed_videos (lower(category), COALESCE(published_at::timestamptz, imported_at) DESC)
+        ON managed_videos (lower(category), imported_at DESC)
         WHERE broadcast_only IS DISTINCT FROM true
     `);
 

@@ -3003,12 +3003,15 @@ class BroadcastOrchestrator extends EventEmitter {
     this.lastCpWallMs = now;
     this.checkpointWriting = true;
     try {
-      // Race the DB write against a hard 45-second timeout.
+      // Race the DB write against a hard 10-second timeout.
       // Without this, a truly hanging DB connection (network partition,
       // pg proxy stall) keeps checkpointWriting=true past the next interval,
       // permanently silencing checkpoints until the process restarts.
-      // DB_STATEMENT_TIMEOUT_MS=30000 covers the normal case; this guard
-      // handles edge cases where the socket hangs at the TCP layer.
+      // The write's own lock_timeout=3s / statement_timeout=5s covers normal
+      // contention; this outer guard handles TCP-layer socket hangs.
+      // IMPORTANT: clearTimeout() is called when writePromise wins so the
+      // timeout callback (and its logger.warn) never fires on successful writes.
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const writePromise = checkpointRepo
         .save({
           channelId: this.channelId,
@@ -3016,16 +3019,19 @@ class BroadcastOrchestrator extends EventEmitter {
           positionMs,
           sourceHealth: this.failover.active ? "failed" : "ok",
         })
-        .catch((err) => logger.warn({ err }, "[broadcast-v2] checkpoint write failed"));
+        .catch((err) => logger.warn({ err }, "[broadcast-v2] checkpoint write failed"))
+        .finally(() => {
+          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+        });
       const timeoutPromise = new Promise<void>((resolve) => {
-        const t = setTimeout(() => {
+        timeoutHandle = setTimeout(() => {
           logger.warn(
             { channelId: this.channelId },
-            "[broadcast-v2] checkpoint write timed out after 45 s — releasing lock to prevent deadlock",
+            "[broadcast-v2] checkpoint write timed out after 10 s — releasing lock to prevent deadlock",
           );
           resolve();
-        }, 45_000);
-        t.unref?.();
+        }, 10_000);
+        timeoutHandle.unref?.();
       });
       await Promise.race([writePromise, timeoutPromise]);
     } finally {
