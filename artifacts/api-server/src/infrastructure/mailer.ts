@@ -29,6 +29,23 @@ let _transport: Transporter | null = null;
  */
 const PERMANENT_ERROR_CODES = new Set(["EAUTH", "ECONNREFUSED"]);
 
+/**
+ * SMTP error codes that are transient infrastructure failures (socket reset,
+ * timeout, TLS teardown) where retrying with exponential backoff is safe and
+ * likely to succeed once the SMTP server or network recovers.
+ */
+const TRANSIENT_SMTP_CODES = new Set([
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ESOCKET",
+  "ECONNABORTED",
+  "ENOTFOUND",   // DNS blip (temporary)
+  "EAI_AGAIN",   // DNS temporary failure
+]);
+
+const MAX_SEND_ATTEMPTS = 3;
+const SEND_RETRY_BASE_MS  = 1_000; // 1 s → 2 s exponential
+
 function createTransport(): Transporter | null {
   if (!env.SMTP_HOST || !env.SMTP_USER || !env.SMTP_PASS) {
     logger.warn(
@@ -137,29 +154,57 @@ export async function sendMail(msg: MailMessage): Promise<SentMessageInfo | null
     },
   };
 
-  try {
-    const info = await transport.sendMail(options);
-    logger.info(
-      { messageId: info.messageId, to: options.to, subject: msg.subject },
-      "[mailer] email sent",
-    );
-    return info;
-  } catch (err) {
-    // Auto-reset the transport singleton on permanent errors (auth failure,
-    // connection refused) so the next call rebuilds the pool with whatever
-    // credentials are currently in env — handles password rotations without
-    // requiring a process restart.
-    const code = (err as { code?: string }).code ?? "";
-    if (PERMANENT_ERROR_CODES.has(code)) {
-      logger.warn(
-        { code, to: options.to },
-        "[mailer] permanent SMTP error — resetting transport singleton so next send re-initialises pool",
-      );
-      resetTransport();
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_SEND_ATTEMPTS; attempt++) {
+    try {
+      const info = await transport.sendMail(options);
+      if (attempt > 1) {
+        logger.info(
+          { messageId: info.messageId, to: options.to, subject: msg.subject, attempt },
+          "[mailer] email sent after retry",
+        );
+      } else {
+        logger.info(
+          { messageId: info.messageId, to: options.to, subject: msg.subject },
+          "[mailer] email sent",
+        );
+      }
+      return info;
+    } catch (err) {
+      lastErr = err;
+      const code = (err as { code?: string }).code ?? "";
+
+      // Permanent errors: reset the transport singleton so the next send
+      // rebuilds the pool with current credentials, then re-throw immediately
+      // (retrying a permanent error would just fail the same way every time).
+      if (PERMANENT_ERROR_CODES.has(code)) {
+        logger.warn(
+          { code, to: options.to, attempt },
+          "[mailer] permanent SMTP error — resetting transport singleton so next send re-initialises pool",
+        );
+        resetTransport();
+        logger.error({ err, to: options.to, subject: msg.subject }, "[mailer] email send failed (permanent)");
+        throw err;
+      }
+
+      // Transient errors: back off and retry up to MAX_SEND_ATTEMPTS times.
+      if (TRANSIENT_SMTP_CODES.has(code) && attempt < MAX_SEND_ATTEMPTS) {
+        const delayMs = SEND_RETRY_BASE_MS * Math.pow(2, attempt - 1);
+        logger.warn(
+          { code, to: options.to, subject: msg.subject, attempt, nextAttemptInMs: delayMs },
+          "[mailer] transient SMTP error — will retry with exponential backoff",
+        );
+        await new Promise<void>((resolve) => { const t = setTimeout(resolve, delayMs); if (t.unref) t.unref(); });
+        continue;
+      }
+
+      // Non-transient, non-permanent error or final attempt exhausted.
+      logger.error({ err, to: options.to, subject: msg.subject, attempt }, "[mailer] email send failed");
+      throw err;
     }
-    logger.error({ err, to: options.to, subject: msg.subject }, "[mailer] email send failed");
-    throw err;
   }
+  // Should never be reached but TypeScript needs a return path.
+  throw lastErr;
 }
 
 /**

@@ -15,6 +15,7 @@ import { transcoderDispatcher } from "./modules/transcoder/transcoder.dispatcher
 import { youtubeSyncDispatcher } from "./modules/youtube-sync/youtube-sync.dispatcher.js";
 import { cleanupWorker } from "./modules/transcoder/cleanup.service.js";
 import { pruneAllExpiredRefreshTokens } from "./modules/auth/auth.service.js";
+import { recoverStuckPendingNotifications } from "./modules/notifications/notifications.service.js";
 import { workerSupervisor } from "./modules/broadcast-v2/engine/worker-supervisor.js";
 import { verifyMailer } from "./infrastructure/mailer.js";
 import { broadcastScheduler } from "./modules/broadcast/broadcast-scheduler.js";
@@ -214,6 +215,20 @@ async function startWorkers() {
     initialDelayMs: 2 * 60_000,    // 2-minute startup delay (let pool warm up first)
     maxConsecutiveFailures: 5,
     fn: () => pruneAllExpiredRefreshTokens().then(() => undefined),
+  });
+
+  // Periodic notification stuck-row recovery: notifications.routes.ts fires
+  // recoverStuckPendingNotifications() once at boot (onReady hook), but a
+  // crash window that opens after startup would leave rows stuck until the
+  // next restart. This periodic worker closes that gap by re-running the
+  // 30-minute stale-threshold sweep every 30 minutes indefinitely.
+  // The function already catches its own errors so this fn never throws.
+  workerSupervisor.spawn({
+    name: "notification-stuck-recovery",
+    intervalMs: 30 * 60_000,       // every 30 minutes
+    initialDelayMs: 30 * 60_000,   // first run 30 min after boot (boot run already fired)
+    maxConsecutiveFailures: 5,
+    fn: () => recoverStuckPendingNotifications().then(() => undefined),
   });
 
   // Storage health monitor: periodically probes object storage (write/head/delete)
@@ -537,6 +552,19 @@ async function main() {
     { isLive: Boolean(overrideBus.active), title: overrideBus.active?.title ?? null },
     "override bus initialised",
   );
+
+  // Auto-enable HLS token enforcement when the operator has set a secret but
+  // forgot to flip the feature flag. This prevents a common misconfiguration
+  // where HLS_TOKEN_SECRET is set (implying intent to secure HLS) but
+  // REQUIRE_HLS_TOKEN=false (the default) leaves HLS URLs open. The env
+  // object is mutable — same pattern used by CORS_ORIGINS fallback above.
+  if (env.HLS_TOKEN_SECRET && !env.REQUIRE_HLS_TOKEN) {
+    (env as { REQUIRE_HLS_TOKEN: boolean }).REQUIRE_HLS_TOKEN = true;
+    logger.info(
+      "HLS_TOKEN_SECRET is set — auto-enabling REQUIRE_HLS_TOKEN=true. " +
+      "Set REQUIRE_HLS_TOKEN=false explicitly to opt out of auto-enforcement.",
+    );
+  }
 
   let app: Awaited<ReturnType<typeof buildApp>> | null = null;
 

@@ -328,7 +328,7 @@ export async function restRoutes(app: FastifyInstance) {
   app.get("/health", {
     schema: { response: { 429: _429err } },
     config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
-  }, async (_req, reply) => {
+  }, async (req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
     const snap = broadcastOrchestrator.snapshot();
     const boot = getBroadcastV2BootStatus();
@@ -384,7 +384,12 @@ export async function restRoutes(app: FastifyInstance) {
       !withinPlaybackWindow;
 
     const allBlocked = broadcastOrchestrator.getAllBlockedInfo();
-    return {
+    const now = Date.now();
+
+    // Public fields — safe to expose to unauthenticated uptime monitors and
+    // player clients. Reveals only broadcast liveness state (no internal
+    // infra metrics, no blocked-source URL list, no airing history).
+    const publicPayload = {
       ok: !stuck && !sequenceStale,
       stuck,
       sequenceStale,
@@ -403,20 +408,40 @@ export async function restRoutes(app: FastifyInstance) {
       currentDurationSecs: snap.current?.durationSecs ?? null,
       /** Seconds elapsed on the current item (wall-clock estimate). */
       currentElapsedSecs: snap.current
-        ? Math.max(0, Math.floor((Date.now() - snap.current.startsAtMs) / 1000))
+        ? Math.max(0, Math.floor((now - snap.current.startsAtMs) / 1000))
         : null,
       /** Off-air reason when nothing is playing and mode is not override. */
       offAirReason: snap.offAirReason ?? null,
       itemCount,
       uptimeMs,
-      serverTimeMs: Date.now(),
+      serverTimeMs: now,
       boot,
       reload,
+      /** True when queue has items but nothing is on air and sources are not all blocked. */
+      deadAir: !stuck && !allBlocked.allSourcesBlocked && itemCount > 0 && snap.current === null && snap.mode !== "override",
+      /**
+       * Milliseconds since the first item started airing in the current
+       * uninterrupted broadcast run. Null when the broadcast is off-air.
+       */
+      continuousOnAirMs: broadcastOrchestrator.getContinuousOnAirMs(),
+      /** Milliseconds since the sequence last advanced. */
+      sequenceAdvanceAgeMs: now - broadcastOrchestrator.getLastSequenceAdvanceMs(),
+    };
+
+    // Authenticated operators get the full internal diagnostics payload —
+    // infra metrics, blocked-source details, airing history, drift stats, etc.
+    // Any valid JWT/ADMIN_API_TOKEN principal (editor or above) qualifies.
+    const isAuthenticated = Boolean(req.principal);
+    if (!isAuthenticated) {
+      return publicPayload;
+    }
+
+    const hmStatus = getBroadcastHealthMonitorStatus();
+    return {
+      ...publicPayload,
       prodSync: sync,
       drift: broadcastOrchestrator.getDriftInfo(),
       allBlocked,
-      /** True when queue has items but nothing is on air and sources are not all blocked. */
-      deadAir: !stuck && !allBlocked.allSourcesBlocked && itemCount > 0 && snap.current === null && snap.mode !== "override",
       skipInfo: broadcastOrchestrator.getSkipInfo(),
       redis: {
         connected: broadcastFanout.isConnected(),
@@ -425,18 +450,8 @@ export async function restRoutes(app: FastifyInstance) {
       airingHistory: broadcastOrchestrator.getAiringHistory(),
       youtubeAutoOverride: getYouTubeAutoOverrideStats(),
       viewerSlope: getViewerSlopeStatus(),
-      /**
-       * Milliseconds since the first item started airing in the current
-       * uninterrupted broadcast run. Null when the broadcast is off-air
-       * (dead air, all-blocked, empty queue, or override mode).
-       * Resets to null on every dead-air gap and restarts at 0 when the
-       * broadcast recovers — measures uninterrupted on-air uptime only.
-       */
-      continuousOnAirMs: broadcastOrchestrator.getContinuousOnAirMs(),
-      /** Milliseconds since the sequence last advanced. Useful for monitoring dashboards. */
-      sequenceAdvanceAgeMs: Date.now() - broadcastOrchestrator.getLastSequenceAdvanceMs(),
       /** Broadcast health monitor (external orchestrator watchdog) status. */
-      healthMonitor: getBroadcastHealthMonitorStatus(),
+      healthMonitor: hmStatus,
       /** Content rotation worker status (queue shuffle). */
       contentRotation: getContentRotationStatus(),
       /** DB connection pool utilization (shared-infra monitor). */
@@ -447,10 +462,10 @@ export async function restRoutes(app: FastifyInstance) {
       queueHealthGuard: getQueueHealthGuardStatus(),
       /** Recovery eligibility — true when a full recovery could improve the situation. */
       recovery: {
-        eligible: (stuck || sequenceStale) && !getBroadcastHealthMonitorStatus().recoveryInFlight,
-        inFlight: getBroadcastHealthMonitorStatus().recoveryInFlight,
-        fullRecoveryCount: getBroadcastHealthMonitorStatus().fullRecoveryCount,
-        lastFullRecoveryAtMs: getBroadcastHealthMonitorStatus().lastFullRecoveryAtMs,
+        eligible: (stuck || sequenceStale) && !hmStatus.recoveryInFlight,
+        inFlight: hmStatus.recoveryInFlight,
+        fullRecoveryCount: hmStatus.fullRecoveryCount,
+        lastFullRecoveryAtMs: hmStatus.lastFullRecoveryAtMs,
       },
       /**
        * Viewer-reported drift aggregated over the last 90 s.
