@@ -965,22 +965,28 @@ export async function ensureRuntimeIndexes(): Promise<void> {
     // series_id = :id. Without an index the query does a full table scan.
     // Guard: series_id column may not exist in older DB migrations (it was
     // added post-initial-schema). Skip the index silently when absent.
-    await client.query(`
-      DO $$ BEGIN
-        IF EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_name = 'managed_videos' AND column_name = 'series_id'
-        ) THEN
-          EXECUTE $idx$
-            CREATE INDEX IF NOT EXISTS idx_managed_videos_series_id
-              ON managed_videos (series_id)
-              WHERE series_id IS NOT NULL
-          $idx$;
-        END IF;
-      END $$
-    `).catch((err: unknown) => {
-      logger.warn({ err }, "db: idx_managed_videos_series_id skipped (non-fatal)");
-    });
+    //
+    // IMPORTANT: uses a JS-level column-existence check rather than a nested
+    // DO-EXECUTE dollar-quoting block. The DO $$ BEGIN ... EXECUTE $idx$...$idx$
+    // pattern silently no-ops via the pg client library (nested dollar-quote
+    // delimiters are not correctly parsed), so the index was never created on
+    // production DBs that pre-dated the series_id column. Two-step approach:
+    // 1. Query information_schema from JS — safe with pg's parameterised interface.
+    // 2. Conditionally call run() with a bare CREATE INDEX — correct path.
+    {
+      const seriesIdCheck = await client.query(`
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'managed_videos' AND column_name = 'series_id'
+        LIMIT 1
+      `).catch(() => ({ rows: [] as unknown[] }));
+      if ((seriesIdCheck as { rows: unknown[] }).rows.length > 0) {
+        await run("idx_managed_videos_series_id", `
+          CREATE INDEX IF NOT EXISTS idx_managed_videos_series_id
+            ON managed_videos (series_id)
+            WHERE series_id IS NOT NULL
+        `);
+      }
+    }
 
     // ── Catalog category + sort composite ──────────────────────────────────
     // /api/videos?category=X&sort=newest filters by lower(category) and then
@@ -1424,6 +1430,16 @@ export function scheduleStaleDataCleanup(): void {
            AND created_at < NOW() - INTERVAL '48 hours'`);
       await run("broadcast_event_log_old",
         "DELETE FROM broadcast_event_log WHERE created_at < NOW() - INTERVAL '14 days'");
+      // rate_limit is an in-process sliding-window counter table used as a
+      // Redis fallback when REDIS_URL is absent.  Rows accumulate indefinitely
+      // (no TTL column, no expiry sweep) and are meaningless across restarts
+      // because the counter state is rebuilt from scratch in memory.  TRUNCATE
+      // removes the entire historical accumulation in O(1) — this is safe
+      // because a single process restart already resets the in-memory counters
+      // that back the table.  run() catches 42P01 (table not found on a fresh
+      // DB) and any other error without blocking the rest of the sweep.
+      await run("rate_limit",
+        "TRUNCATE TABLE rate_limit");
 
       // ── Stuck-processing recovery ─────────────────────────────────────
       // 'processing' is the transient state set by runFaststart while it

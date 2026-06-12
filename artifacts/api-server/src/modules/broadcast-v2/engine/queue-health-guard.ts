@@ -38,6 +38,16 @@ export interface QueueHealthGuardStatus {
   threshold: number;
 }
 
+/**
+ * Minimum gap between consecutive ops-alert emissions when the queue stays
+ * below threshold after a rebuild.  Prevents flooding the admin console SSE
+ * channel (and any connected notification handlers) every 5 minutes when the
+ * library is genuinely small (e.g. dev environment with no local videos, or
+ * a content pause window in production).  After the initial alert, subsequent
+ * below-threshold alerts are suppressed until the cooldown expires.
+ */
+const OPS_ALERT_COOLDOWN_MS = 30 * 60_000; // 30 minutes
+
 class QueueHealthGuardImpl {
   private lastCheckAtMs: number | null = null;
   private lastActiveCount: number | null = null;
@@ -45,6 +55,8 @@ class QueueHealthGuardImpl {
   private totalRebuilds = 0;
   private lastRebuildAdded = 0;
   private belowThreshold = false;
+  /** Wall-clock ms of the last ops-alert emission. Zero = never. */
+  private lastOpsAlertAtMs = 0;
 
   getStatus(): QueueHealthGuardStatus {
     return {
@@ -101,25 +113,42 @@ class QueueHealthGuardImpl {
     }
 
     // If we still can't fill the queue, emit an ops-alert so operators know.
+    // The alert is throttled to OPS_ALERT_COOLDOWN_MS (30 min) to prevent
+    // flooding the admin console SSE channel every 5 minutes when the library
+    // is genuinely small (dev with no local videos, or a scheduled content gap).
     const newCount = activeCount + added;
     if (newCount < threshold) {
       logger.warn(
         { newCount, threshold, added },
         "[queue-health-guard] queue still below threshold after rebuild — library may be empty or all items ineligible",
       );
-      try {
-        const { adminEventBus } = await import("../../admin-ops/admin-event-bus.js");
-        adminEventBus.push("ops-alert", {
-          level: "warn",
-          title: "Broadcast queue below minimum size",
-          message: `Active queue has ${newCount} item(s) — below the minimum of ${threshold}. The video library may be too small or all videos are ineligible for broadcast.`,
-          detail: `Active items: ${newCount} / threshold: ${threshold}. Added in rebuild: ${added}.`,
-          timestamp: new Date().toISOString(),
-          source: "queue-health-guard",
-        });
-      } catch {
-        // non-fatal
+      const nowMs = Date.now();
+      const msSinceLastAlert = nowMs - this.lastOpsAlertAtMs;
+      if (msSinceLastAlert >= OPS_ALERT_COOLDOWN_MS) {
+        this.lastOpsAlertAtMs = nowMs;
+        try {
+          const { adminEventBus } = await import("../../admin-ops/admin-event-bus.js");
+          adminEventBus.push("ops-alert", {
+            level: "warn",
+            title: "Broadcast queue below minimum size",
+            message: `Active queue has ${newCount} item(s) — below the minimum of ${threshold}. The video library may be too small or all videos are ineligible for broadcast.`,
+            detail: `Active items: ${newCount} / threshold: ${threshold}. Added in rebuild: ${added}.`,
+            timestamp: new Date().toISOString(),
+            source: "queue-health-guard",
+          });
+        } catch {
+          // non-fatal
+        }
+      } else {
+        logger.debug(
+          { newCount, threshold, cooldownRemainingMs: OPS_ALERT_COOLDOWN_MS - msSinceLastAlert },
+          "[queue-health-guard] ops-alert suppressed (within cooldown window)",
+        );
       }
+    } else {
+      // Queue recovered above threshold — reset the alert cooldown so the next
+      // below-threshold event is reported immediately (not silently suppressed).
+      this.lastOpsAlertAtMs = 0;
     }
   }
 }
