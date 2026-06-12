@@ -85,7 +85,7 @@ export function MandatoryUpdateGate() {
     <Animated.View
       style={[styles.overlay, { opacity: fadeIn }]}
       accessibilityViewIsModal
-      accessibilityRole="alertdialog"
+      accessibilityRole="alert"
       accessibilityLabel="Mandatory app update required"
     >
       {/* Dark blur backdrop */}

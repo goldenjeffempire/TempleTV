@@ -354,6 +354,7 @@ function BroadcastHlsPlayer({ muted, suppressEvents, isInPip, ...rest }: Broadca
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function PlayerScreen() {
+  const apiBase = getApiBase() ?? "";
   const params = useLocalSearchParams<{
     id?: string;
     title?: string;

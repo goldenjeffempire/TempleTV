@@ -46,6 +46,7 @@ import { V2PlayerContainer } from "@/components/V2PlayerContainer";
 import { getApiBase } from "@/lib/apiBase";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import { usePlayer } from "@/context/PlayerContext";
+import { useBroadcastSync } from "@/hooks/useBroadcastSync";
 import type { Sermon, SermonCategory } from "@/types";
 
 const CATEGORY_ROWS: SermonCategory[] = [
@@ -145,8 +146,10 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
   // Current program title from V2 snapshot — shown when broadcast is active.
   const broadcastTitle = hasActiveBroadcast ? (v2Server?.current?.title ?? null) : null;
 
-  // Live viewer count from the V2 transport heartbeat.
-  const viewerCount = v2Snapshot.viewerCount;
+  // Live viewer count from the v1 broadcast sync heartbeat.
+  // V2Snapshot (player-core) does not carry viewer counts — those are pushed
+  // by the v1 WS gateway and surfaced via useBroadcastSync.
+  const { viewerCount } = useBroadcastSync();
 
   // Fallback title for the off-air hero (latest sermon).
   const fallbackTitle = fallbackSermon?.title ?? "";

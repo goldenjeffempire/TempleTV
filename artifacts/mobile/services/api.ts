@@ -77,10 +77,26 @@ export interface ApiVideo {
 
 export interface VideosResponse {
   videos: ApiVideo[];
+  /**
+   * Total video count for the current filter, or -1 when the server uses
+   * keyset (cursor) pagination and does not compute a COUNT. Consumers must
+   * treat -1 as "unknown" and fall back to `sermons.length` for display.
+   */
   total: number;
+  /**
+   * Total pages for offset pagination, or -1 when the server uses keyset
+   * (cursor) pagination. Consumers must use `nextCursor !== null` to
+   * determine whether more pages exist in cursor mode.
+   */
   totalPages: number;
   page: number;
   limit: number;
+  /**
+   * Opaque keyset cursor pointing to the item after the last result.
+   * Non-null when there are more pages available (cursor pagination mode).
+   * Pass as `cursor` in the next `fetchVideos` call to retrieve the next page.
+   */
+  nextCursor: string | null;
 }
 
 export interface FetchVideosOptions {
@@ -107,6 +123,12 @@ export interface FetchVideosOptions {
    * should keep displaying its cached data unchanged.
    */
   ifNoneMatch?: string;
+  /**
+   * Opaque keyset cursor returned as `nextCursor` from a prior fetchVideos
+   * call. When supplied the server performs an efficient keyset query instead
+   * of an OFFSET scan. Only valid for sort=newest and sort=oldest.
+   */
+  cursor?: string;
 }
 
 // ─── Broadcast types ─────────────────────────────────────────────────────────
@@ -178,6 +200,9 @@ export async function fetchVideos(opts: FetchVideosOptions = {}): Promise<Videos
     params.set("sort", apiSort);
   }
   if (opts.source) params.set("source", opts.source);
+  // Keyset cursor for efficient deep pagination (sort=newest/oldest only).
+  // When provided the server skips OFFSET and uses a keyset boundary instead.
+  if (opts.cursor) params.set("cursor", opts.cursor);
 
   const fetchHeaders: Record<string, string> = {};
   if (opts.ifNoneMatch) fetchHeaders["If-None-Match"] = opts.ifNoneMatch;
@@ -203,6 +228,7 @@ export async function fetchVideos(opts: FetchVideosOptions = {}): Promise<Videos
           totalPages: 1,
           page: 1,
           limit: featured.length,
+          nextCursor: null,
         };
       } catch {
         /* fall through to the original error below */
@@ -210,16 +236,21 @@ export async function fetchVideos(opts: FetchVideosOptions = {}): Promise<Videos
     }
     throw new Error(`We're having trouble reaching the library. Please try again in a moment.`);
   }
-  const data = await res.json() as { videos?: ApiVideo[]; data?: ApiVideo[]; total?: number; totalPages?: number };
+  const data = await res.json() as { videos?: ApiVideo[]; data?: ApiVideo[]; total?: number; totalPages?: number; nextCursor?: string | null };
   const videos = data.videos ?? data.data ?? [];
-  const total = data.total ?? videos.length;
-  const totalPages = data.totalPages ?? 1;
+  // The server returns total=-1 and totalPages=-1 as sentinels when using
+  // keyset (cursor) pagination (sort=newest or sort=oldest). These are NOT
+  // actual counts — treat them as "unknown" and preserve them as-is so
+  // consumers can distinguish cursor-mode (-1) from offset-mode (≥0).
+  const total = typeof data.total === "number" ? data.total : videos.length;
+  const totalPages = typeof data.totalPages === "number" ? data.totalPages : 1;
+  const nextCursor = data.nextCursor ?? null;
   // Store the ETag for the unfiltered page-1 catalog so callers can supply it
   // in subsequent background-refresh calls to receive a 304 when unchanged.
   const isUnfilteredFirstPage = !opts.search && !opts.category && (!opts.page || opts.page === 1) && !opts.source;
   const etag = res.headers.get("etag");
   if (etag && isUnfilteredFirstPage) _lastCatalogEtag = etag;
-  return { videos, total, totalPages, page: opts.page ?? 1, limit: opts.limit ?? 200 };
+  return { videos, total, totalPages, page: opts.page ?? 1, limit: opts.limit ?? 200, nextCursor };
 }
 
 // Session-level ETag from the most recent unfiltered page-1 catalog fetch.

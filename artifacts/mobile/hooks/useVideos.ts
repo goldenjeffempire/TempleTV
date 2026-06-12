@@ -270,16 +270,42 @@ export function useVideos(): UseVideosResult {
       // Fetch pages 2..N silently and progressively append to the list so
       // the full library is available for search and category grids.
       // Cap at 10 pages (1 000 items) as a safety guard.
-      const totalPages = Math.min(firstPage.totalPages ?? 1, 10);
-      for (let p = 2; p <= totalPages; p++) {
+      //
+      // The server uses keyset (cursor) pagination for sort=newest / oldest
+      // and returns totalPages=-1 as a sentinel ("unknown total"). In that
+      // case we follow the `nextCursor` chain instead of relying on a page
+      // count. For offset-mode sorts (views, title) we fall back to the
+      // totalPages number as before.
+      const useCursorPaging = firstPage.totalPages === -1;
+      const offsetTotalPages = useCursorPaging ? 0 : Math.min(firstPage.totalPages ?? 1, 10);
+      let nextPageCursor = firstPage.nextCursor;
+      const MAX_EXTRA_PAGES = 9; // 9 more pages on top of page 1 = 10 total
+      let extraPages = 0;
+
+      for (
+        let p = 2;
+        useCursorPaging
+          ? nextPageCursor != null && extraPages < MAX_EXTRA_PAGES
+          : p <= offsetTotalPages;
+        p++
+      ) {
         if (gen !== loadGenRef.current) return; // newer load superseded us
         try {
-          const nextPage = await fetchVideos({ limit: CATALOG_PAGE_SIZE, page: p, sort: "newest" });
+          const nextPage = await fetchVideos({
+            limit: CATALOG_PAGE_SIZE,
+            page: p,
+            sort: "newest",
+            ...(useCursorPaging && nextPageCursor ? { cursor: nextPageCursor } : {}),
+          });
           if (nextPage === null || !Array.isArray(nextPage?.videos) || nextPage.videos.length === 0) break;
           if (gen !== loadGenRef.current) return;
           const offset = allMapped.length;
           nextPage.videos.forEach((v, i) => allMapped.push(apiVideoToSermon(v, offset + i)));
           setSermons([...allMapped]);
+          if (useCursorPaging) {
+            nextPageCursor = nextPage.nextCursor;
+            extraPages++;
+          }
         } catch {
           // Background page failure is non-fatal: keep the items we have.
           break;
@@ -482,6 +508,9 @@ export function usePaginatedVideos(opts: {
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
   const [page, setPage] = useState(1);
+  // Opaque keyset cursor returned by the last successful page fetch.
+  // Non-null when the server has more pages (cursor pagination mode).
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -490,7 +519,15 @@ export function usePaginatedVideos(opts: {
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
 
-  const hasMore = page < totalPages;
+  // Always-current ref so loadMore (useCallback) can read the latest cursor
+  // without being recreated every time nextCursor changes.
+  const nextCursorRef = useRef<string | null>(null);
+  nextCursorRef.current = nextCursor;
+
+  // hasMore: use nextCursor when the server is in cursor-pagination mode
+  // (totalPages === -1 sentinel). Fall back to classic page < totalPages
+  // for offset-mode sorts (views, title, published).
+  const hasMore = totalPages === -1 ? nextCursor !== null : page < totalPages;
 
   // Stable ref to latest opts to avoid stale closure in loadMore
   const optsRef = useRef({ debouncedSearch, category: opts.category, sort: opts.sort, source: opts.source });
@@ -510,7 +547,7 @@ export function usePaginatedVideos(opts: {
   const autoRetryRef = useRef(0);
   const autoRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fetchPage = useCallback(async (pageNum: number, replace: boolean) => {
+  const fetchPage = useCallback(async (pageNum: number, replace: boolean, cursorToken?: string | null) => {
     const { debouncedSearch: search, category, sort, source } = optsRef.current;
     const apiCategory = categoryToApiSlug(category);
     const apiSort = sortModeToApi(sort);
@@ -522,6 +559,9 @@ export function usePaginatedVideos(opts: {
       category: apiCategory,
       sort: apiSort as "newest" | "oldest" | "views",
       source,
+      // Forward the keyset cursor so the server can do an efficient
+      // keyset query instead of a deep OFFSET scan (sort=newest/oldest).
+      cursor: cursorToken ?? undefined,
     });
     // resp is null only when ifNoneMatch was supplied and server returned 304;
     // fetchPage never passes ifNoneMatch so this path is unreachable in
@@ -537,8 +577,18 @@ export function usePaginatedVideos(opts: {
         return [...prev, ...mapped.filter((s) => !ids.has(s.id))];
       });
     }
-    setTotal(resp.total ?? mapped.length);
-    setTotalPages(resp.totalPages ?? 1);
+    // When the server uses cursor pagination (sort=newest/oldest) it returns
+    // total=-1 as a sentinel meaning "count unknown". In that case show the
+    // accumulated item count rather than "-1 videos" in the UI.
+    setTotal((prev) => {
+      if (resp.total >= 0) return resp.total;
+      return replace ? mapped.length : prev + mapped.length;
+    });
+    setTotalPages(resp.totalPages);
+    // Store the cursor for the next page. nextCursorRef is kept in sync so
+    // loadMore() can read it without a stale-closure issue.
+    setNextCursor(resp.nextCursor ?? null);
+    nextCursorRef.current = resp.nextCursor ?? null;
     setPage(pageNum);
     setError(null);
     setRefreshError(null);
@@ -562,6 +612,8 @@ export function usePaginatedVideos(opts: {
     setPage(1);
     setTotal(0);
     setTotalPages(1);
+    setNextCursor(null);
+    nextCursorRef.current = null;
     setRefreshError(null);
     setError(null);
     void fetchPage(1, true)
@@ -622,7 +674,10 @@ export function usePaginatedVideos(opts: {
     loadingMoreRef.current = true;
     setLoadingMore(true);
     setLoadMoreError(null);
-    void fetchPage(page + 1, false)
+    // Pass the latest cursor so the server performs an efficient keyset
+    // query rather than a deep OFFSET scan. nextCursorRef is always current
+    // even though this callback has a stable identity.
+    void fetchPage(page + 1, false, nextCursorRef.current)
       .catch((err: unknown) => {
         setLoadMoreError(err instanceof Error ? err.message : "Failed to load more videos");
       })
@@ -642,6 +697,8 @@ export function usePaginatedVideos(opts: {
       // No data yet — fall back to a full loading state.
       setLoading(true);
       setPage(1);
+      setNextCursor(null);
+      nextCursorRef.current = null;
       setError(null);
       autoRetryRef.current = 0;
       setRetryCount(0);
@@ -656,6 +713,8 @@ export function usePaginatedVideos(opts: {
     setIsRefreshing(true);
     setRefreshError(null);
     setPage(1);
+    setNextCursor(null);
+    nextCursorRef.current = null;
 
     void fetchPage(1, true)
       .catch((err) => {
