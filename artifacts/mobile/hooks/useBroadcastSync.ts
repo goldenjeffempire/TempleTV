@@ -60,10 +60,18 @@ export function useBroadcastSync(): BroadcastSyncState {
 
   const [reconnectKey, setReconnectKey] = useState(0);
   const backgroundAtRef = useRef<number>(0);
-  // Tracks when the last WS heartbeat frame arrived. Updated by the engine
-  // via the onHeartbeat prop (when wired) or estimated from reconnectKey changes.
-  // Used by the iOS heartbeat-absence watchdog below.
+  // Tracks when the last WS/SSE frame arrived. Updated from actual sync-state
+  // changes (any data push from the engine proves the socket is alive) and also
+  // reset on foreground return. Used by the heartbeat-absence watchdog below.
+  //
+  // IMPORTANT: this ref is updated directly during render (not in an effect)
+  // because we compare the new syncState.serverTimeMs against the previous
+  // value stored in syncTimestampRef. Updating a ref in render is safe and
+  // idiomatic — it's synchronous, does not trigger re-renders, and gives the
+  // watchdog interval an up-to-date timestamp without an extra render cycle.
   const lastHeartbeatMsRef = useRef<number>(Date.now());
+  // Tracks the last serverTimeMs we saw, so we can detect changes.
+  const syncTimestampRef = useRef<number>(0);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
@@ -73,7 +81,7 @@ export function useBroadcastSync(): BroadcastSyncState {
         if (Date.now() - backgroundAtRef.current > 10_000) {
           setReconnectKey((k) => k + 1);
         }
-        // Also reset heartbeat timer on foreground so the watchdog doesn't
+        // Reset heartbeat timer on foreground so the watchdog doesn't
         // immediately fire due to the gap that accumulated during background.
         lastHeartbeatMsRef.current = Date.now();
       }
@@ -85,10 +93,13 @@ export function useBroadcastSync(): BroadcastSyncState {
   // that drop connectivity without firing an AppState change (e.g. the
   // device is not truly backgrounded but the cellular radio silently dropped
   // the TCP connection — common on iOS 16+ with aggressive connection pruning).
-  // Every 30 s, if no heartbeat has arrived in 30 s, bump reconnectKey to
-  // force a fresh WS connection regardless of AppState.
+  //
+  // Timeout raised to 90 s (was 30 s): lastHeartbeatMsRef is now updated from
+  // real sync-state changes, so the watchdog only fires when genuinely no frame
+  // has arrived for 90 s — ruling out the previous false-positive reconnects on
+  // healthy connections where the ref was never updated from actual WS frames.
   useEffect(() => {
-    const HEARTBEAT_TIMEOUT_MS = 30_000;
+    const HEARTBEAT_TIMEOUT_MS = 90_000;
     const timer = setInterval(() => {
       if (Date.now() - lastHeartbeatMsRef.current > HEARTBEAT_TIMEOUT_MS) {
         lastHeartbeatMsRef.current = Date.now(); // reset before reconnect
@@ -107,5 +118,16 @@ export function useBroadcastSync(): BroadcastSyncState {
   const sseUrl       = useMemo(() => apiBase ? `${apiBase}/api/broadcast/events?platform=mobile` : "", [apiBase]);
   const normalizeUrl = useMemo(() => makeNormalizeUrl(apiBase), [apiBase]);
 
-  return useBroadcastSyncCore({ wsUrl, stateUrl, liveStatusUrl, sseUrl, normalizeUrl });
+  const syncState = useBroadcastSyncCore({ wsUrl, stateUrl, liveStatusUrl, sseUrl, normalizeUrl });
+
+  // Update the heartbeat tracker from real sync-state changes so the watchdog
+  // doesn't reconnect a healthy WS. Any change in serverTimeMs proves the engine
+  // received a WS/SSE frame. We compare inside render (ref update, no setState)
+  // so the effect interval always reads a fresh timestamp.
+  if (syncState.serverTimeMs && syncState.serverTimeMs !== syncTimestampRef.current) {
+    syncTimestampRef.current = syncState.serverTimeMs;
+    lastHeartbeatMsRef.current = Date.now();
+  }
+
+  return syncState;
 }

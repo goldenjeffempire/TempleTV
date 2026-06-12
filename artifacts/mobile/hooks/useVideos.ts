@@ -21,6 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { fetchVideos, getLastCatalogEtag, type ApiVideo } from "@/services/api";
 import { useBroadcastSync } from "@/hooks/useBroadcastSync";
+import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import type { Sermon, SermonCategory, SortMode } from "@/types";
 
 const CACHE_KEY = "@temple_tv/videos_v2";
@@ -207,11 +208,22 @@ export function useVideos(): UseVideosResult {
   // streak. Incremented each time a retry timer is scheduled; resets to 0
   // on component mount (so each fresh session gets its own 3-attempt budget).
   const autoRetryRef = useRef(0);
+  // Background-refresh retry state. Separate from autoRetryRef (which only
+  // covers initial-load failures with no data). bgRetryRef counts how many
+  // background retry timers have been scheduled for the current failure streak;
+  // resets to 0 whenever a refresh succeeds or a 304 is received.
+  const bgRetryRef = useRef(0);
+  const bgRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Monotonically-increasing generation counter. Bumped at the top of every
   // load() call so in-flight background page fetches can detect that a newer
   // load superseded them and bail out before overwriting fresher state.
   const loadGenRef = useRef(0);
   const { libraryRevision } = useBroadcastSync();
+  const { isOnline } = useNetworkStatus();
+  // Tracks the previous isOnline value to detect the offline→online transition.
+  // Initialised to true so a device that starts online doesn't trigger a
+  // redundant refresh on the very first render.
+  const prevOnlineRef = useRef(true);
 
   const load = useCallback(async (silent = false) => {
     const gen = ++loadGenRef.current;
@@ -248,8 +260,14 @@ export function useVideos(): UseVideosResult {
         sort: "newest",
         ifNoneMatch: silent ? (getLastCatalogEtag() ?? undefined) : undefined,
       });
-      // 304 Not Modified — library unchanged; keep current data as-is.
+      // 304 Not Modified — library unchanged; content is confirmed current.
+      // Clear isStale + refreshFailed so the banner disappears: the server just
+      // told us our cached copy is up-to-date, so showing "Couldn't refresh" or
+      // "Showing cached content" would be misleading.
       if (firstPage === null) {
+        setIsStale(false);
+        setRefreshFailed(false);
+        bgRetryRef.current = 0; // reset retry streak — server confirmed freshness
         setLoading(false);
         return;
       }
@@ -262,6 +280,7 @@ export function useVideos(): UseVideosResult {
       hasDataRef.current = true;
       setIsStale(false);
       setRefreshFailed(false);
+      bgRetryRef.current = 0; // reset retry streak — fresh data received
       setLastFetchedAt(new Date());
       setLoading(false);
       loadedRef.current = true;
@@ -325,6 +344,23 @@ export function useVideos(): UseVideosResult {
         // away the visible content with an error screen.
         setRefreshFailed(true);
         if (!silent) setLoading(false);
+        // ── Background-refresh auto-retry with exponential backoff ──────────
+        // Without this, a single background refresh failure leaves the banner
+        // stuck as "Couldn't refresh" for the full 5-minute poll window.
+        // Schedule increasingly-spaced retries so the banner clears as soon
+        // as the network/server recovers, without hammering a struggling API.
+        // Budget: 3 retries at 30 s → 2 min → 5 min; then yields to the
+        // 5-min interval timer and the manual "Try Again" tap.
+        if (silent) {
+          const BG_RETRY_DELAYS = [30_000, 120_000, 300_000];
+          if (bgRetryRef.current < BG_RETRY_DELAYS.length) {
+            if (bgRetryTimerRef.current) clearTimeout(bgRetryTimerRef.current);
+            bgRetryTimerRef.current = setTimeout(() => {
+              bgRetryTimerRef.current = null;
+              load(true);
+            }, BG_RETRY_DELAYS[bgRetryRef.current++]);
+          }
+        }
       } else {
         // No data at all — show the full empty-state error screen.
         setError(err instanceof Error ? err.message : "Failed to load videos");
@@ -333,12 +369,24 @@ export function useVideos(): UseVideosResult {
     }
   }, []);
 
-  // Initial load
+  // Initial load + 5-min background poll.
+  // Cleanup cancels both the interval AND any pending background-retry timer
+  // so neither fires after the component unmounts.
   useEffect(() => {
     load(false);
-    // Background refresh every 5 min
-    const timer = setInterval(() => load(true), 5 * 60 * 1000);
-    return () => clearInterval(timer);
+    const timer = setInterval(() => {
+      // Reset the background retry streak at the start of each scheduled poll
+      // cycle so the next failure gets a fresh 3-attempt budget.
+      bgRetryRef.current = 0;
+      load(true);
+    }, 5 * 60 * 1000);
+    return () => {
+      clearInterval(timer);
+      if (bgRetryTimerRef.current) {
+        clearTimeout(bgRetryTimerRef.current);
+        bgRetryTimerRef.current = null;
+      }
+    };
   }, [load]);
 
   // Auto-retry on initial load failure when there is no cached data to show.
@@ -355,6 +403,25 @@ export function useVideos(): UseVideosResult {
     const t = setTimeout(() => load(false), delay);
     return () => clearTimeout(t);
   }, [error, load]);
+
+  // Network-recovery refresh: when the device comes back online and we already
+  // have data to display, immediately trigger a silent refresh so the "Couldn't
+  // refresh" banner clears as soon as connectivity is restored — not after
+  // waiting up to 5 min for the next scheduled poll.
+  useEffect(() => {
+    const wasOnline = prevOnlineRef.current;
+    prevOnlineRef.current = isOnline;
+    if (isOnline && !wasOnline && hasDataRef.current) {
+      // Cancel any pending backoff timer — we have a fresh network connection
+      // now, so retry immediately rather than waiting for the scheduled delay.
+      bgRetryRef.current = 0;
+      if (bgRetryTimerRef.current) {
+        clearTimeout(bgRetryTimerRef.current);
+        bgRetryTimerRef.current = null;
+      }
+      load(true);
+    }
+  }, [isOnline, load]);
 
   // SSE-driven instant refetch on library changes
   useEffect(() => {

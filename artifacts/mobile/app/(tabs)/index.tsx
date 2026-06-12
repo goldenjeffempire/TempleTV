@@ -227,12 +227,16 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
       )}
 
       {/* V2 broadcast video — ALWAYS mounted (muted, minimal) to keep the singleton
-          FSM session warm. pointerEvents="none" lets hero touch events reach the Pressable. */}
+          FSM session warm. pointerEvents="none" lets hero touch events reach the Pressable.
+          suppressEventsOverride=isBroadcastMode: when the player screen is open, the full-
+          screen player instance is the sole FSM driver — suppress watchdogs/events from this
+          muted hero so it can't fire spurious buffer-error/stall that interrupt the player. */}
       <View style={[StyleSheet.absoluteFill, { pointerEvents: "none" }]}>
         <V2PlayerContainer
           baseUrl={`${apiBase}/api/broadcast-v2`}
           muted
           minimal
+          suppressEventsOverride={isBroadcastMode}
         />
       </View>
 
