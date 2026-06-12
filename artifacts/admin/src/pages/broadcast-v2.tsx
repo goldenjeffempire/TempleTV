@@ -524,6 +524,9 @@ interface SortableItemProps {
   /** Retry remux repair for structure_invalid CORRUPT_SOURCE items. */
   onRetryRepair: (itemId: string) => void;
   isRetryingRepair: boolean;
+  /** Clear the in-memory bad-URL cache for this item and re-activate it. */
+  onClearBadUrl: (itemId: string) => void;
+  isClearingBadUrl: boolean;
 }
 
 const SortableQueueItem = memo(function SortableQueueItem({
@@ -549,6 +552,8 @@ const SortableQueueItem = memo(function SortableQueueItem({
   isReuploading,
   onRetryRepair,
   isRetryingRepair,
+  onClearBadUrl,
+  isClearingBadUrl,
 }: SortableItemProps) {
   const {
     attributes,
@@ -637,13 +642,13 @@ const SortableQueueItem = memo(function SortableQueueItem({
                   auto-suspended
                 </Badge>
                 <button
-                  onClick={() => onReactivate(item.id)}
-                  disabled={isReactivating}
+                  onClick={() => onClearBadUrl(item.id)}
+                  disabled={isClearingBadUrl || isReactivating}
                   className="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 ring-1 ring-emerald-300 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-400 dark:ring-emerald-700 dark:hover:bg-emerald-950/30"
-                  title="Re-enable this item and add it back to the broadcast rotation."
+                  title="Clear the bad-URL cache for this item and re-enable it. Use when a CDN or storage glitch temporarily blocked it."
                 >
-                  <RefreshCw className="h-2.5 w-2.5" />
-                  Re-enable
+                  <RefreshCw className={`h-2.5 w-2.5 ${isClearingBadUrl ? "animate-spin" : ""}`} />
+                  Unblock
                 </button>
               </>
             ) : (
@@ -1625,6 +1630,32 @@ function BroadcastV2PageInner() {
         err instanceof HttpError
           ? err.message
           : "Remux repair request failed — check server logs.",
+      );
+    },
+  });
+
+  // Clear bad-URL cache + re-activate a single auto-suspended queue item.
+  // Use when a CDN or storage glitch temporarily blacklisted the item's URL.
+  // Surgical alternative to a full engine reload when only one item is stuck.
+  const clearBadUrlMutation = useMutation({
+    mutationFn: (itemId: string) =>
+      api.post<{ ok: boolean; cleared: string[] }>(
+        `/broadcast-v2/queue/${itemId}/clear-bad-url`,
+        {},
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      toast.success("URL cache cleared — item re-enabled and queued for retry.");
+    },
+    onError: (err) => {
+      toast.error(
+        err instanceof HttpError
+          ? err.message
+          : "Failed to clear URL cache — check server logs.",
       );
     },
   });
@@ -4062,6 +4093,8 @@ function BroadcastV2PageInner() {
                         isReuploading={resetForReuploadMutation.isPending}
                         onRetryRepair={(itemId) => retryRepairMutation.mutate(itemId)}
                         isRetryingRepair={retryRepairMutation.isPending}
+                        onClearBadUrl={(itemId) => clearBadUrlMutation.mutate(itemId)}
+                        isClearingBadUrl={clearBadUrlMutation.isPending}
                       />
                     );
                   })}

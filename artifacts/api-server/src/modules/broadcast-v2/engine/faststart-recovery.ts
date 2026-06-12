@@ -286,6 +286,59 @@ async function dispatchOne(c: Candidate): Promise<boolean> {
 }
 
 /**
+ * Fast-path duration backfill: propagate durations already stored in
+ * managed_videos directly into broadcast_queue rows that still carry the
+ * 1800-s upload-time placeholder.
+ *
+ * This covers the common case where ffprobe ran during transcoding / HLS and
+ * wrote the real duration to managed_videos.duration, but the broadcast_queue
+ * row was never updated (e.g. the upload pipeline set duration=1800 as a
+ * default and the queue row was inserted before ffprobe completed).
+ *
+ * No ffprobe or storage access needed — purely a DB UPDATE. Fires
+ * broadcast-queue-updated after each fix so the orchestrator picks up the
+ * corrected slot length immediately without waiting for the next reload.
+ *
+ * Returns the number of rows corrected.
+ */
+async function backfillDurationsFromVideoTable(): Promise<number> {
+  try {
+    const result = await db.execute(sql`
+      UPDATE broadcast_queue q
+      SET    duration_secs = ROUND(v.duration::numeric)
+      FROM   managed_videos v
+      WHERE  q.video_id = v.id
+        AND  q.is_active = true
+        AND  q.duration_secs = 1800
+        AND  v.duration IS NOT NULL
+        AND  v.duration ~ '^[0-9]+(\\.[0-9]+)?$'
+        AND  ROUND(v.duration::numeric) > 5
+        AND  ROUND(v.duration::numeric) != 1800
+      RETURNING q.id AS queue_item_id, q.video_id, ROUND(v.duration::numeric) AS new_dur_secs
+    `);
+    const rows = result.rows as Array<{ queue_item_id: string; video_id: string; new_dur_secs: number }>;
+    if (rows.length > 0) {
+      logger.info(
+        { count: rows.length },
+        "faststart-recovery: fast-path duration backfill propagated real durations from video table → queue",
+      );
+      for (const row of rows) {
+        adminEventBus.push("broadcast-queue-updated", {
+          reason: "duration-backfill-from-video-table",
+          videoId: row.video_id,
+          queueItemId: row.queue_item_id,
+          newDurSecs: row.new_dur_secs,
+        });
+      }
+    }
+    return rows.length;
+  } catch (err) {
+    logger.warn({ err }, "faststart-recovery: fast-path duration backfill from video table failed (non-fatal)");
+    return 0;
+  }
+}
+
+/**
  * Lightweight duration backfill.
  *
  * Finds broadcast_queue items still carrying the 1800 s upload-time
@@ -295,8 +348,10 @@ async function dispatchOne(c: Candidate): Promise<boolean> {
  *   - The orchestrator uses the correct slot length for timing.
  *   - The PLACEHOLDER_DURATION validator warning clears automatically.
  *
- * This handles the case where the admin upload client sends duration=1800
- * as a default and the server skipped ffprobe because `clientDuration > 0`.
+ * Called AFTER backfillDurationsFromVideoTable() so that only the items
+ * whose managed_videos row STILL shows 1800 (ffprobe not yet run) reach
+ * the more expensive ffprobe path.
+ *
  * Runs on every sweep (every 60 s) but is fast — ffprobe on a local object
  * takes < 5 s per file and exits as soon as the container header is parsed.
  * Items still in `processing` (faststart running) are skipped — runFaststart
@@ -443,9 +498,15 @@ export const faststartRecoveryWorker = {
     stats.totalSweeps += 1;
     stats.lastSweepAt = Date.now();
 
-    // ── Duration backfill (lightweight, runs every sweep) ─────────────────
-    // Fix items stuck at the 1800 s upload-time placeholder by running
-    // ffprobe on their objectPath. No moov relocation or re-upload needed.
+    // ── Duration backfill (runs every sweep, two passes) ──────────────────
+    // Pass 1 (fast): propagate real durations already stored in managed_videos
+    // into queue rows still at the 1800 s placeholder. Pure DB UPDATE — no
+    // ffprobe, no storage access. Fires broadcast-queue-updated immediately so
+    // the orchestrator reloads with the correct slot length before the video
+    // ends, preventing dead air from over-long placeholder slots.
+    await backfillDurationsFromVideoTable();
+    // Pass 2 (slow): for queue items where managed_videos ALSO still has the
+    // 1800-s placeholder (ffprobe hasn't run yet), run ffprobe on the raw blob.
     await backfillPlaceholderDurations();
 
     // Bug C: After the (potentially long) backfill, re-check the stopped flag

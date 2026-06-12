@@ -1340,14 +1340,15 @@ class TranscoderDispatcher {
         // DISK_FULL (ENOSPC/EDQUOT): treat as a temporary infrastructure failure,
         // not a permanent job failure. The disk may be freed (old scratch files GC'd,
         // operator action) and the job should retry automatically once space is
-        // available. Open the dispatch circuit for 30 min so the queue doesn't
+        // available. Open the dispatch circuit for 10 min so the queue doesn't
         // hammer the disk while it's full, and schedule a retry with a long backoff.
+        // (Reduced from 30 min to limit upload-pipeline dead time on a 24/7 platform.)
         if (isDiskFull) {
-          this.storageCircuitOpenUntil = Date.now() + 30 * 60_000; // 30-min cool-down
+          this.storageCircuitOpenUntil = Date.now() + 10 * 60_000; // 10-min cool-down
           this.storageErrorStreak = 0;
           logger.error(
-            { errCode, jobId: job.id, videoId: job.videoId, cooldownMs: 30 * 60_000 },
-            "transcoder: DISK_FULL (ENOSPC/EDQUOT) — dispatch PAUSED 30 min; " +
+            { errCode, jobId: job.id, videoId: job.videoId, cooldownMs: 10 * 60_000 },
+            "transcoder: DISK_FULL (ENOSPC/EDQUOT) — dispatch PAUSED 10 min; " +
             "job will be retried automatically once space is freed",
           );
         }
@@ -1359,11 +1360,12 @@ class TranscoderDispatcher {
         const isImmediateFail = isCorruptSource || isSourceMissing;
         const attempts = job.attempts + (isImmediateFail ? 0 : 1);
         const exceeded = isImmediateFail || attempts >= job.maxAttempts;
-        // DISK_FULL gets a 30-min backoff on top of the circuit breaker to spread
-        // retries after disk is freed; other errors use exponential backoff capped at 30 min.
+        // DISK_FULL gets a 10-min backoff on top of the circuit breaker to spread
+        // retries after disk is freed; other errors use exponential backoff capped at
+        // 5 min (down from 30 min) to keep uploads moving on a 24/7 platform.
         const backoffMs = isDiskFull
-          ? 30 * 60_000
-          : Math.min(60_000 * 2 ** attempts, 30 * 60_000);
+          ? 10 * 60_000
+          : Math.min(60_000 * 2 ** attempts, 5 * 60_000);
         const nextRetry = new Date(Date.now() + backoffMs);
 
         // Truncate error message to 2000 chars to avoid DB bloat from FFmpeg

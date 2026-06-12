@@ -1266,13 +1266,32 @@ class BroadcastOrchestrator extends EventEmitter {
       startedAtMs > 0 &&
       nowMs - startedAtMs > 30_000;
     // stuck-mid-run: sequence advanced at least once, but has not advanced
-    // again in longer than STALE_MS. This catches mid-broadcast hangs that
-    // sequence === 0 would never flag (sequence is already > 0).
+    // again in longer than the expected slot window + stale grace.
+    //
+    // Use max(STALE_MS, currentItemSlotMs) as the threshold so long videos
+    // (e.g. a 30-min sermon, or a queue item still carrying the 1800-s
+    // upload-time placeholder) don't trigger false-positive stuck alerts
+    // every STALE_MS interval while the item is legitimately playing.
+    // Without this guard, every video longer than STALE_MS (default 3 min)
+    // would fire a Sentry alert + auto-recovery on every reloadInner() call,
+    // filling logs with noise and triggering spurious ops-alerts.
+    //
+    // The cap at 30 min ensures that genuinely stuck sessions (e.g. a
+    // zombie item whose URL went dark) are always detected within 30 min
+    // regardless of the item's stated durationSecs.
+    const currentSnap = this.snapshot();
+    const currentItemSlotMs = Math.min(
+      (currentSnap?.current?.durationSecs ?? 60) * 1000,
+      30 * 60_000, // never wait more than 30 min to detect a real stall
+    );
     const stuckAdvancing =
       this.started &&
       this.sequence > 0 &&
       this.items.length > 0 &&
-      nowMs - this.lastSequenceAdvanceMs > env.BROADCAST_HEALTH_MONITOR_STALE_MS;
+      nowMs - this.lastSequenceAdvanceMs > Math.max(
+        env.BROADCAST_HEALTH_MONITOR_STALE_MS,
+        currentItemSlotMs,
+      );
     const stuck = stuckAtZero || stuckAdvancing;
     broadcastQueueStuck.set({ channel: this.channelId, ...SERVICE_LABELS }, stuck ? 1 : 0);
     // Fire a Sentry alert the first time the stuck condition is detected (and

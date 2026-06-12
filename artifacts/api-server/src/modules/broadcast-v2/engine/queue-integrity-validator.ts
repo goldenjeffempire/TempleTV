@@ -1025,7 +1025,7 @@ class QueueIntegrityValidatorImpl {
       // manifests contain EXTINF tags that sum to the exact content duration.
       // Runs ≤3 per cycle to avoid blocking the validate() loop.
       if (hlsPlaceholderDurationItems.length > 0) {
-        const toReprobe = hlsPlaceholderDurationItems.slice(0, 3);
+        const toReprobe = hlsPlaceholderDurationItems.slice(0, 5);
         for (const item of toReprobe) {
           void (async () => {
             try {

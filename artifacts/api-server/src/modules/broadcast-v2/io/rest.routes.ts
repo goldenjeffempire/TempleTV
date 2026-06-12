@@ -20,7 +20,7 @@ import {
 import { requireAuth } from "../../../middleware/auth.js";
 import { broadcastService } from "../../broadcast/broadcast.service.js";
 import { scanLibraryAndEnqueue, listMissingFromQueue } from "../../broadcast/auto-enqueue.service.js";
-import { markBadUrl, markBadUrlWithTtl, clearAllBadUrls, getItemsHealth, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, SUSPENSION_TTL_MS, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl } from "../repository/queue.repo.js";
+import { markBadUrl, markBadUrlWithTtl, clearAllBadUrls, clearBadUrl, getItemsHealth, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, SUSPENSION_TTL_MS, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
@@ -1921,6 +1921,66 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       })();
 
       return reply.code(202).send({ ok: true, videoId, message: "Faststart remux repair started in background" });
+    },
+  );
+
+  // POST /broadcast-v2/queue/:id/clear-bad-url
+  //
+  // Clears the in-memory bad-URL cache entry for this queue item and
+  // re-activates it so the orchestrator will retry the source URL on the next
+  // tick. Use this when a CDN / storage blip temporarily blacklisted the item's
+  // URL without a full engine reload.
+  //
+  // Effect:
+  //   1. Removes the item's hlsMasterUrl and localVideoUrl from the bad-URL
+  //      cache (the in-memory TTL map that gates isKnownBadUrl() calls).
+  //   2. Re-activates the queue row in DB if it was deactivated so the
+  //      orchestrator picks it up on reload.
+  //   3. Fires `broadcast-queue-updated` → triggers orchestrator reload.
+  //
+  // This is surgical — it only unblocks the one item. If ALL items are blocked
+  // use the existing Restart Engine action which calls clearAllBadUrls().
+  app.post<{ Params: { id: string } }>(
+    "/queue/:id/clear-bad-url",
+    {
+      preHandler: requireAuth("editor"),
+      bodyLimit: 1024,
+      schema: { response: { 429: z.object({ error: z.string() }) } },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (req, reply) => {
+      const { id } = req.params as { id: string };
+
+      const [queueItem] = await db
+        .select()
+        .from(schema.broadcastQueueTable)
+        .where(eq(schema.broadcastQueueTable.id, id))
+        .limit(1);
+      if (!queueItem) return reply.code(404).send({ error: "Queue item not found" });
+
+      // Clear both possible URL slots from the bad-URL cache.
+      const cleared: string[] = [];
+      if (queueItem.hlsMasterUrl) { clearBadUrl(queueItem.hlsMasterUrl); cleared.push(queueItem.hlsMasterUrl); }
+      if (queueItem.localVideoUrl) { clearBadUrl(queueItem.localVideoUrl); cleared.push(queueItem.localVideoUrl); }
+
+      // Re-activate the DB row if it was deactivated (auto-suspend or
+      // validator deactivation) so the next reload picks it up.
+      if (!queueItem.isActive) {
+        await db
+          .update(schema.broadcastQueueTable)
+          .set({ isActive: true, validatorDeactivatedReason: null })
+          .where(eq(schema.broadcastQueueTable.id, id));
+      }
+
+      // Trigger an orchestrator reload so the unblocked item rejoins
+      // the rotation immediately without waiting for the next self-heal tick.
+      adminEventBus.push("broadcast-queue-updated", {
+        reason: "clear-bad-url",
+        itemId: id,
+      });
+
+      req.log.info({ itemId: id, cleared }, "[broadcast-v2] clear-bad-url: URL cache cleared and item re-activated");
+      return reply.send({ ok: true, cleared });
     },
   );
 
