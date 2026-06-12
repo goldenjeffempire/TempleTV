@@ -1665,6 +1665,9 @@ class BroadcastOrchestrator extends EventEmitter {
   /** Wall-clock ms when the orchestrator last detected total queue exhaustion
    *  (consecutiveSkips >= items.length). Null if no exhaustion has occurred. */
   private lastDeadAirAt: number | null = null;
+  /** Rate-limiter for cycle-exhaustion auto-reloads. Prevents tight reload
+   *  loops when every source URL remains unreachable after recovery. */
+  private lastCycleExhaustionReloadAtMs: number | null = null;
   /** Timestamp (ms) when we first detected items loaded but all URLs blocked.
    *  Null when not in that state. Used for auto-recovery after the TTL window. */
   private allBlockedSinceMs: number | null = null;
@@ -2079,6 +2082,32 @@ class BroadcastOrchestrator extends EventEmitter {
             itemCount: this.items.length,
           }).catch((err: unknown) => logger.warn({ err }, "[broadcast-v2] tick: dead_air.detected bump failed (non-fatal)"));
         }
+
+        // ── Cycle-exhaustion auto-recovery ───────────────────────────────────
+        // When consecutiveSkips reaches items.length every queue item has been
+        // tried at least once without any becoming current. Rather than waiting
+        // the full BAD_URL_TTL_MS (90 s) for the allBlockedSinceMs path below,
+        // trigger an immediate reload + cache clear so the broadcast can resume
+        // as soon as sources recover. Rate-limited to once per 3 min so a
+        // persistently-dead queue doesn't hammer the DB with reload loops.
+        const EXHAUSTION_RELOAD_INTERVAL_MS = 3 * 60_000;
+        if (
+          this.consecutiveSkips >= this.items.length &&
+          this.items.length > 0 &&
+          (this.lastCycleExhaustionReloadAtMs === null ||
+            Date.now() - this.lastCycleExhaustionReloadAtMs >= EXHAUSTION_RELOAD_INTERVAL_MS)
+        ) {
+          this.lastCycleExhaustionReloadAtMs = Date.now();
+          this.consecutiveSkips = 0;       // clear admin banner immediately
+          this.autoSkipAttempts = 0;       // allow fresh skip cycle after reload
+          this.allBlockedSinceMs = null;   // prevent duplicate TTL-path recovery
+          logger.warn(
+            { channel: this.channelId, itemCount: this.items.length },
+            "[broadcast-v2] cycle exhaustion: all queue items unresolvable — clearing bad-URL cache and reloading",
+          );
+          clearAllBadUrls();
+          this.scheduleSelfHealReload("cycle-exhaustion");
+        }
       }
       // All-sources-blocked auto-recovery: when items are loaded but every URL
       // is in the bad-URL cache, track how long we've been in this state.
@@ -2114,6 +2143,7 @@ class BroadcastOrchestrator extends EventEmitter {
           // skipping in subsequent BAD_URL_TTL recovery cycles, leaving the
           // channel permanently stuck in dead air.
           this.autoSkipAttempts = 0;
+          this.consecutiveSkips = 0;       // clear admin banner on TTL-based recovery too
           this.allBlockedRecoveryCycles += 1;
           // Push a dead-air escalation event on EVERY blocked TTL cycle so
           // the admin dashboard can surface a banner. External monitors also
