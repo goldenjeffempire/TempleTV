@@ -107,6 +107,16 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
     return reply.send({ ok: true, videoCount: videos.length });
   });
 
+  // ── GET /diagnostics ──────────────────────────────────────────────────────
+  // Returns DB-derived health stats for the midnight prayers channel:
+  // total video count by transcoding status, in-rotation count, dead-air risk.
+  // Used by the admin diagnostics panel; kept separate from /queue so callers
+  // can poll at different rates (queue: 60 s, diagnostics: 30 s).
+  app.get("/diagnostics", { ...editorGuard, config: { rateLimit: { max: 30, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (_req, reply) => {
+    const d = await midnightPrayersService.getDiagnostics();
+    return reply.send(d);
+  });
+
   // ── GET /events (SSE) ─────────────────────────────────────────────────────
   // Compatible with V2Transport SSE path.
   // Rate-limit the initial connection (30/min per IP) to prevent SSE exhaustion.

@@ -15,7 +15,7 @@
  *   reloads it on PATCH; clients poll /config once per session.
  */
 
-import { eq, and, or, isNotNull } from "drizzle-orm";
+import { eq, and, or, isNotNull, sql } from "drizzle-orm";
 import { db, schema, ensureMidnightPrayersTable } from "../../infrastructure/db.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { logger } from "../../infrastructure/logger.js";
@@ -339,6 +339,73 @@ class MidnightPrayersService {
 
   getVideos(): MPVideo[] {
     return [...this.videos];
+  }
+
+  async getDiagnostics(): Promise<{
+    total: number;
+    playable: number;
+    encoding: number;
+    failed: number;
+    queued: number;
+    inRotation: number;
+    deadAirRisk: boolean;
+    statusCounts: Record<string, number>;
+    config: MidnightPrayersConfigData;
+  }> {
+    try {
+      const rows = await db
+        .select({
+          status: schema.videosTable.transcodingStatus,
+          cnt: sql<number>`count(*)::int`,
+        })
+        .from(schema.videosTable)
+        .where(
+          and(
+            eq(schema.videosTable.category, CHANNEL_ID),
+            eq(schema.videosTable.videoSource, "local"),
+          ),
+        )
+        .groupBy(schema.videosTable.transcodingStatus);
+
+      const statusCounts: Record<string, number> = {};
+      let total = 0;
+      let playable = 0;
+      for (const r of rows) {
+        const s = r.status ?? "none";
+        statusCounts[s] = Number(r.cnt);
+        total += Number(r.cnt);
+        if (s === "hls_ready" || s === "ready") playable += Number(r.cnt);
+      }
+
+      const encoding = (statusCounts["encoding"] ?? 0) + (statusCounts["processing"] ?? 0);
+      const queued = statusCounts["queued"] ?? 0;
+      const failed = statusCounts["failed"] ?? 0;
+
+      return {
+        total,
+        playable,
+        encoding,
+        failed,
+        queued,
+        inRotation: this.videos.length,
+        deadAirRisk: this.config.enabled && this.videos.length === 0,
+        statusCounts,
+        config: this.getConfig(),
+      };
+    } catch (err) {
+      logger.warn({ err }, "[midnight-prayers] getDiagnostics: DB query failed");
+      return {
+        total: 0,
+        playable: 0,
+        encoding: 0,
+        failed: 0,
+        queued: 0,
+        inRotation: this.videos.length,
+        deadAirRisk: this.config.enabled && this.videos.length === 0,
+        statusCounts: {},
+        config: this.getConfig(),
+      };
+    }
   }
 
   // ── Snapshot computation ───────────────────────────────────────────────────
