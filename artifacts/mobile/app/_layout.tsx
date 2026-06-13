@@ -340,8 +340,8 @@ function RootLayoutNav() {
               pathname: "/player",
               params: {
                 isLive: "true",
-                title: "Temple TV Live",
-                preacher: "Temple TV JCTM",
+                title: "Live Broadcast",
+                preacher: "JCTM Ministries",
               },
             });
             break;
@@ -411,7 +411,7 @@ function RootLayoutNav() {
   }, []);
 
   return (
-    <Stack screenOptions={{ headerShown: false }}>
+    <Stack screenOptions={{ headerShown: false, title: "" }}>
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen
         name="player"

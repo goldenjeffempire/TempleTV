@@ -198,7 +198,7 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
 
   const handleTuneIn = useCallback(() => {
     if (hasActiveBroadcast) {
-      navigateToLive("", "Temple TV", 0, undefined, thumbUrl ?? undefined);
+      navigateToLive("", "Live Broadcast", 0, undefined, thumbUrl ?? undefined);
     } else if (fallbackSermon) {
       navigateToSermon(fallbackSermon);
     }
