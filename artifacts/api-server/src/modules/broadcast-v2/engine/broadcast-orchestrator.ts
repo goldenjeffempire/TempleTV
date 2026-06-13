@@ -708,10 +708,18 @@ class BroadcastOrchestrator extends EventEmitter {
           Date.now() - this.allBlockedSinceMs >=
             EMPTY_POLLS_BEFORE_LIBRARY_SCAN * SELF_HEAL_EMPTY_MS
         ) {
+          const blockedMs = Date.now() - this.allBlockedSinceMs;
           logger.warn(
-            { allBlockedDurationMs: Date.now() - this.allBlockedSinceMs },
-            "[broadcast-v2] self-heal: all queue sources blocked >60 s — triggering library scan backstop",
+            { allBlockedDurationMs: blockedMs },
+            "[broadcast-v2] self-heal: all queue sources blocked >60 s — clearing bad-URL cache and triggering library scan backstop",
           );
+          // Clear the bad-URL cache immediately so the existing queue items
+          // can be retried right away, without waiting for their individual
+          // TTLs (90 s – 5 min) to expire.  The library scan runs in parallel
+          // to fill the queue with fresh items if all current sources are
+          // genuinely unrecoverable.
+          clearAllBadUrls();
+          this.scheduleSelfHealReload("all-blocked-cache-clear");
           void scanLibraryAndEnqueue({ reason: "self-heal-all-blocked", maxToAdd: 100 })
             .then((res) => {
               if (res.enqueued > 0) {
@@ -2284,9 +2292,10 @@ class BroadcastOrchestrator extends EventEmitter {
         // tried at least once without any becoming current. Rather than waiting
         // the full BAD_URL_TTL_MS (90 s) for the allBlockedSinceMs path below,
         // trigger an immediate reload + cache clear so the broadcast can resume
-        // as soon as sources recover. Rate-limited to once per 3 min so a
-        // persistently-dead queue doesn't hammer the DB with reload loops.
-        const EXHAUSTION_RELOAD_INTERVAL_MS = 3 * 60_000;
+        // as soon as sources recover. Rate-limited to once per 30 s (reduced
+        // from 3 min) so small queues (6 items) recover within one bad-URL
+        // cycle window rather than waiting 3 minutes off-air.
+        const EXHAUSTION_RELOAD_INTERVAL_MS = 30_000;
         if (
           this.consecutiveSkips >= this.items.length &&
           this.items.length > 0 &&

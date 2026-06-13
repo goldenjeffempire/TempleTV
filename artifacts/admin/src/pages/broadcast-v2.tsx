@@ -3041,17 +3041,32 @@ function BroadcastV2PageInner() {
         >
           <Radio className="mt-0.5 h-4 w-4 shrink-0 text-orange-500" />
           <div className="flex-1">
-            <strong>Broadcast is dead air.</strong>{" "}
-            The queue has{" "}
+            <strong>Dead air — content in queue but not playing.</strong>{" "}
             {engineHealth?.itemCount === 1
-              ? "1 active item"
-              : `${engineHealth?.itemCount ?? 0} active items`}
-            {" "}but no item is currently on air — sources are reachable, the engine
-            is not stuck, and no failover is active. Use{" "}
-            <strong>Reload from queue</strong> to restart the broadcast cycle, or{" "}
-            <strong>Skip</strong> to advance to the next item.
+              ? "1 item is"
+              : `${engineHealth?.itemCount ?? 0} item(s) are`}
+            {" "}queued but nothing is on air.{" "}
+            {engineHealth?.offAirReason === "all_blocked"
+              ? "Sources may be blocked — check Stream Health."
+              : "Sources may be blocked or the broadcast cycle has exhausted all items."}
+            {" "}Use <strong>Repair Queue</strong> to clear URL blocks and resync, or{" "}
+            <strong>Reload</strong> to restart the broadcast cycle.
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!!busy}
+              onClick={() => void repairQueue()}
+              className="h-7 px-2 text-xs border-orange-400/70 text-orange-800 hover:bg-orange-100 dark:text-orange-200 dark:border-orange-600/70 dark:hover:bg-orange-900/30"
+            >
+              {busy === "repair-queue" ? (
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+              ) : (
+                <Wrench className="mr-1 h-3 w-3" />
+              )}
+              Repair Queue
+            </Button>
             <Button
               size="sm"
               variant="outline"

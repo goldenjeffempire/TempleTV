@@ -22,7 +22,11 @@ import {
   incrementBadUrlSkipCount,
   autoSuspendQueueItem,
   BAD_URL_SKIP_THRESHOLD,
+  clearBadUrl,
+  isKnownBadUrl,
+  resetBadUrlSkipCount,
 } from "../repository/queue.repo.js";
+import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { playbackAnalytics } from "./playback-analytics.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
 import { withHlsToken } from "../../../shared/hls-token.js";
@@ -443,6 +447,10 @@ class MediaIntegrityScannerImpl {
     }
 
     const results: ScanItemResult[] = [];
+    // Tracks items whose bad-URL block was cleared in this scan cycle because
+    // their source became reachable again.  Used after the loop to signal the
+    // orchestrator to reload so recovered items re-enter rotation immediately.
+    const recoveredItemIds = new Set<string>();
     for (let i = 0; i < rows.length; i += MAX_CONCURRENT) {
       const batch = rows.slice(i, i + MAX_CONCURRENT);
       const batchResults = await Promise.all(
@@ -497,6 +505,26 @@ class MediaIntegrityScannerImpl {
           const newCount = ok ? 0 : prev.count + 1;
           const lastFailedAtMs = ok ? prev.lastFailedAtMs : Date.now();
           this.failureCounts.set(row.id, { count: newCount, lastFailedAtMs });
+
+          // ── Source recovery: clear bad-URL block immediately ─────────────
+          // When a previously-failing item's source becomes reachable again,
+          // remove it from the bad-URL cache right now rather than waiting for
+          // the TTL (90 s – 10 min) or suspension TTL (5 min) to expire
+          // naturally.  Without this, a 5-min suspension keeps an item off-air
+          // even after the CDN / HLS server recovers seconds later.
+          //
+          // After clearing the block we push `broadcast-queue-updated` so the
+          // orchestrator reloads on the next self-heal tick (≤ 30 s) and the
+          // recovered item enters rotation immediately.
+          if (ok && prev.count > 0 && url && isKnownBadUrl(url)) {
+            clearBadUrl(url);
+            resetBadUrlSkipCount(row.id);
+            recoveredItemIds.add(row.id);
+            logger.info(
+              { itemId: row.id, title: row.title, url, previousFailures: prev.count },
+              "[media-scanner] source recovered — cleared bad-URL block and reset skip counter",
+            );
+          }
 
           if (!ok && newCount === 1) {
             logger.warn(
@@ -569,6 +597,22 @@ class MediaIntegrityScannerImpl {
       if (!currentScanIds.has(id)) {
         this.failureCounts.delete(id);
       }
+    }
+
+    // ── Signal orchestrator to reload when sources have recovered ────────────
+    // If any blocked items became reachable in this scan, push a bus event
+    // so the orchestrator reloads them into rotation without waiting for the
+    // next self-heal drift-poll (≤ 30 s) or bad-URL TTL expiry (90 s–5 min).
+    if (recoveredItemIds.size > 0) {
+      adminEventBus.push("broadcast-queue-updated", {
+        reason: "scanner-recovery",
+        recoveredItemIds: [...recoveredItemIds],
+        count: recoveredItemIds.size,
+      });
+      logger.info(
+        { recoveredCount: recoveredItemIds.size, itemIds: [...recoveredItemIds] },
+        "[media-scanner] source(s) recovered — signalling orchestrator to reload",
+      );
     }
 
     const reachable = results.filter((r) => r.reachable).length;
