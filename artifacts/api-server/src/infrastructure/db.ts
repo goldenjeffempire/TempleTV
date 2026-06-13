@@ -51,6 +51,28 @@ function isPoolerUrl(url: string): boolean {
  * parameters with a fatal error. When the DATABASE_URL is identified as a
  * pooler URL the `options` key is omitted entirely.
  */
+/**
+ * Rewrites sslmode=prefer/require/verify-ca → verify-full so the pg library
+ * does not emit a SECURITY WARNING on every pool connection. The pg@8 warning
+ * text reads: "The SSL modes 'prefer', 'require', and 'verify-ca' are treated
+ * as aliases for 'verify-full'." — normalising up-front silences it.
+ * Identical to the same function in lib/db/src/index.ts.
+ */
+function normalizeDatabaseUrl(raw: string): string {
+  if (!/^postgres(ql)?:\/\//i.test(raw)) return raw;
+  try {
+    const url = new URL(raw);
+    const mode = url.searchParams.get("sslmode");
+    if (mode === "prefer" || mode === "require" || mode === "verify-ca") {
+      url.searchParams.set("sslmode", "verify-full");
+      return url.toString();
+    }
+    return raw;
+  } catch {
+    return raw;
+  }
+}
+
 const usingPooler = isPoolerUrl(env.DATABASE_URL);
 const stmtTimeoutOption =
   !usingPooler && env.DB_STATEMENT_TIMEOUT_MS > 0
@@ -76,7 +98,7 @@ logger.info(
 );
 
 const pool = new Pool({
-  connectionString: env.DATABASE_URL,
+  connectionString: normalizeDatabaseUrl(env.DATABASE_URL),
   max: env.DB_POOL_MAX,
   idleTimeoutMillis: env.DB_POOL_IDLE_TIMEOUT_MS,
   connectionTimeoutMillis: env.DB_POOL_CONNECT_TIMEOUT_MS,

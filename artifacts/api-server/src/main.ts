@@ -569,16 +569,20 @@ async function main() {
     "override bus initialised",
   );
 
-  // Auto-enable HLS token enforcement when the operator has set a secret but
-  // forgot to flip the feature flag. This prevents a common misconfiguration
-  // where HLS_TOKEN_SECRET is set (implying intent to secure HLS) but
-  // REQUIRE_HLS_TOKEN=false (the default) leaves HLS URLs open. The env
-  // object is mutable — same pattern used by CORS_ORIGINS fallback above.
-  if (env.HLS_TOKEN_SECRET && !env.REQUIRE_HLS_TOKEN) {
-    (env as { REQUIRE_HLS_TOKEN: boolean }).REQUIRE_HLS_TOKEN = true;
+  // HLS viewer routes (GET/HEAD /hls/:videoId/*) are intentionally public —
+  // no HMAC token is required from viewers. The private object-storage bucket
+  // is protected by this server acting as a proxy; all surfaces (TV, mobile,
+  // web, Chromecast, VLC) can load manifests and segments without a token.
+  //
+  // REQUIRE_HLS_TOKEN is retained only for the token-signing infrastructure
+  // used by internal orchestrator probes (makeHlsToken / validateHlsToken).
+  // The old auto-enable logic (set REQUIRE_HLS_TOKEN=true when HLS_TOKEN_SECRET
+  // is present) has been removed because it contradicts the intentionally-public
+  // viewer routes and produces a misleading startup log.
+  if (env.HLS_TOKEN_SECRET) {
     logger.info(
-      "HLS_TOKEN_SECRET is set — auto-enabling REQUIRE_HLS_TOKEN=true. " +
-      "Set REQUIRE_HLS_TOKEN=false explicitly to opt out of auto-enforcement.",
+      "HLS_TOKEN_SECRET is set — HLS token signing available for internal probes. " +
+      "HLS viewer routes remain unconditionally public (no ?t=TOKEN required).",
     );
   }
 

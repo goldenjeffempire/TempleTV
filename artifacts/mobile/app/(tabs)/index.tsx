@@ -154,6 +154,20 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
     return () => anim.stop();
   }, [pulseAnim]);
 
+  // Animated pulse for the OMEGA emergency banner — draws urgent attention.
+  const emergencyPulseAnim = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    if (!emergencyBroadcast) return;
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(emergencyPulseAnim, { toValue: 0.6, duration: 400, useNativeDriver: true }),
+        Animated.timing(emergencyPulseAnim, { toValue: 1, duration: 400, useNativeDriver: true }),
+      ]),
+    );
+    anim.start();
+    return () => anim.stop();
+  }, [emergencyBroadcast, emergencyPulseAnim]);
+
   // STRICT POLICY: YouTube items are never promoted to the hero.
   // Only uploaded/local platform broadcasts get the hero treatment.
   const hasUploadedBroadcast = !!(
@@ -165,10 +179,10 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
   // Current program title from V2 snapshot — shown when broadcast is active.
   const broadcastTitle = hasActiveBroadcast ? (v2Server?.current?.title ?? null) : null;
 
-  // Live viewer count from the v1 broadcast sync heartbeat.
-  // V2Snapshot (player-core) does not carry viewer counts — those are pushed
-  // by the v1 WS gateway and surfaced via useBroadcastSync.
-  const { viewerCount } = useBroadcastSync();
+  // Live viewer count + OMEGA emergency signal from the v1 broadcast sync heartbeat.
+  // V2Snapshot (player-core) does not carry viewer counts or OMEGA signals — those
+  // are pushed by the v1 WS gateway and surfaced via useBroadcastSync.
+  const { viewerCount, emergencyBroadcast, emergencyMessage } = useBroadcastSync();
 
   // Fallback title for the off-air hero (latest sermon).
   const fallbackTitle = fallbackSermon?.title ?? "";
@@ -300,6 +314,28 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
           )}
         </View>
       </LinearGradient>
+
+      {/* ── OMEGA emergency broadcast banner ────────────────────────────────────
+          Rendered above all other hero layers (zIndex 30) when the server fires
+          an EMERGENCY_BROADCAST signal via the v1 WS gateway. Cleared on the
+          next PROGRAM_CHANGED event. pointerEvents="none" — taps still reach
+          the underlying Pressable so the viewer can navigate to the player. */}
+      {emergencyBroadcast && (
+        <Animated.View
+          style={[styles.emergencyBanner, { opacity: emergencyPulseAnim }]}
+          pointerEvents="none"
+          accessibilityRole="alert"
+          accessibilityLiveRegion="assertive"
+        >
+          <Feather name="alert-triangle" size={13} color="#fff" />
+          <Text style={styles.emergencyBannerTitle}>EMERGENCY BROADCAST</Text>
+          {!!emergencyMessage && (
+            <Text style={styles.emergencyBannerMsg} numberOfLines={1}>
+              {emergencyMessage}
+            </Text>
+          )}
+        </Animated.View>
+      )}
 
       {/* ── Hero skeleton overlay ──────────────────────────────────────────────
           Fades out the first time lastServerSnapshot becomes non-null.
@@ -526,6 +562,33 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 8,
     alignItems: "flex-end",
+  },
+
+  // ── OMEGA emergency banner ───────────────────────────────────────────────────
+  emergencyBanner: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: "rgba(220, 38, 38, 0.95)",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 7,
+    zIndex: 30,
+  },
+  emergencyBannerTitle: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 11,
+    letterSpacing: 1.1,
+    flexShrink: 0,
+  },
+  emergencyBannerMsg: {
+    color: "rgba(255,255,255,0.88)",
+    fontSize: 11,
+    flex: 1,
   },
 
   // ── Hero ────────────────────────────────────────────────────────────────────
