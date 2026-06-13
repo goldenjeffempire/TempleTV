@@ -66,6 +66,33 @@ const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
   // Sister/related first-party domains
   "jctm.org.ng",
   ".jctm.org.ng",
+  // Replit deployment — covers *.replit.app (current public-deploy URLs)
+  // and the legacy *.repl.co domains. Needed when the API server is hosted
+  // on Replit or when previously-uploaded files stored a Replit subdomain
+  // as their absolute URL before migrating to a custom domain.
+  ".replit.app",
+  ".repl.co",
+  // Railway — popular Node.js / container deployment platform used for
+  // staging and preview environments.
+  ".railway.app",
+  // Fly.io — globally-distributed container platform.
+  ".fly.dev",
+  // Render.com base domain (the onrender.com entry covers *.onrender.com
+  // service URLs; this entry covers bare render.com links if any appear).
+  "render.com",
+  // DigitalOcean Spaces — S3-compatible object storage with an optional
+  // edge CDN. Two patterns: direct-region endpoint and CDN endpoint.
+  ".digitaloceanspaces.com",
+  ".cdn.digitaloceanspaces.com",
+  // Supabase Storage — used by some Temple TV media integrations.
+  ".supabase.co",
+  // Linode / Akamai Object Storage (renamed from Linode Object Storage).
+  ".linodeobjects.com",
+  // Cloudinary — cloud media management + transformation platform.
+  ".cloudinary.com",
+  ".res.cloudinary.com",
+  // Wasabi — affordable S3-compatible object storage.
+  ".wasabisys.com",
   // Local development: allow localhost and loopback so locally-uploaded
   // videos resolve when running without a public origin (no DEV_DOMAIN /
   // RENDER_EXTERNAL_URL / API_ORIGIN configured). This allowlist gates what

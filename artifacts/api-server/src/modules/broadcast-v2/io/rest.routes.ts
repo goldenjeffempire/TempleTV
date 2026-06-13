@@ -24,7 +24,7 @@ import { markBadUrl, markBadUrlWithTtl, clearAllBadUrls, clearBadUrl, getItemsHe
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
-import { eq, and, isNull, isNotNull, sql, inArray } from "drizzle-orm";
+import { eq, and, isNull, isNotNull, sql, inArray, or } from "drizzle-orm";
 import { enqueueTranscode, boostTranscodePriority } from "../../transcoder/transcoder.queue.js";
 import { probeUploadedDuration } from "../../transcoder/transcoder.service.js";
 import { transcoderDispatcher } from "../../transcoder/transcoder.dispatcher.js";
@@ -1193,6 +1193,361 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       );
 
       return { ok: true, sequence: broadcastOrchestrator.getSequence(), reEnabledItems };
+    },
+  );
+
+  // ── POST /broadcast-v2/repair-queue ──────────────────────────────────────
+  //
+  // Comprehensive broadcast queue URL audit and self-healing repair.
+  //
+  // Phases (all non-throwing — each is wrapped in try/catch):
+  //   1. Scan managed_videos for normalizable URL fields — fix in DB.
+  //   2. Scan broadcast_queue for normalizable URL fields — fix in DB.
+  //   3. Deactivate orphan queue items (videoId missing from managed_videos).
+  //   4. Deactivate duplicate active items per video (keep best sort-order copy).
+  //   5. Deactivate active items where no URL can be found (queue or video row).
+  //   6. Re-enable all system-suspended (validator_deactivated_reason) items.
+  //   7. Flush the in-memory bad-URL cache + skip counters (clean slate).
+  //   8. Stop stale non-youtube overrides that have no resolvable current source.
+  //   9. Library scan — enqueue every eligible video missing from the queue.
+  //  10. Trigger HLS transcoding for queue items with no hlsMasterUrl.
+  //  11. Reset queue hash + reload orchestrator so clients see fresh state.
+  //
+  // Returns a full audit report including every URL change applied.
+  // Rate-limited to 3 req/min (heavy DB writer — not for polling).
+  app.post(
+    "/repair-queue",
+    {
+      preHandler: requireAuth("admin"),
+      bodyLimit: 1048576,
+      schema: {
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            durationMs: z.number().int(),
+            auditedLibraryUrls: z.number().int(),
+            fixedLibraryUrls: z.number().int(),
+            invalidLibraryUrls: z.number().int(),
+            auditedQueueUrls: z.number().int(),
+            fixedQueueUrls: z.number().int(),
+            orphansDeactivated: z.number().int(),
+            duplicatesDeactivated: z.number().int(),
+            noUrlItemsDeactivated: z.number().int(),
+            itemsReEnabled: z.number().int(),
+            badUrlCacheCleared: z.boolean(),
+            overrideWasStale: z.boolean(),
+            overrideStopped: z.boolean(),
+            libraryScanned: z.number().int(),
+            libraryEnqueued: z.number().int(),
+            hlsTriggered: z.number().int(),
+            orchestratorReloaded: z.boolean(),
+            currentItemCount: z.number().int(),
+            currentMode: z.string(),
+            urlChanges: z.array(
+              z.object({ table: z.string(), id: z.string(), field: z.string(), from: z.string(), to: z.string() }),
+            ),
+            message: z.string(),
+          }),
+          429: _429err,
+        },
+      },
+      config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
+    },
+    async (req, _reply) => {
+      const startMs = Date.now();
+      req.log.info("[broadcast-v2] repair-queue: starting comprehensive URL audit and repair");
+
+      const vt = schema.videosTable;
+      const qt = schema.broadcastQueueTable;
+      const urlChanges: Array<{ table: string; id: string; field: string; from: string; to: string }> = [];
+
+      // ── Phase 1: Audit + fix managed_videos URL fields ────────────────────
+      let auditedLibraryUrls = 0;
+      let fixedLibraryUrls = 0;
+      let invalidLibraryUrls = 0;
+      try {
+        const videoRows = await db
+          .select({ id: vt.id, localVideoUrl: vt.localVideoUrl, hlsMasterUrl: vt.hlsMasterUrl })
+          .from(vt)
+          .where(or(isNotNull(vt.localVideoUrl), isNotNull(vt.hlsMasterUrl)));
+
+        for (const row of videoRows) {
+          auditedLibraryUrls++;
+          if (row.localVideoUrl) {
+            const normalized = normalizeQueueUrl(row.localVideoUrl);
+            if (!normalized) {
+              invalidLibraryUrls++;
+            } else if (normalized !== row.localVideoUrl) {
+              try {
+                await db.update(vt).set({ localVideoUrl: normalized }).where(eq(vt.id, row.id));
+                fixedLibraryUrls++;
+                if (urlChanges.length < 200) urlChanges.push({ table: "managed_videos", id: row.id, field: "localVideoUrl", from: row.localVideoUrl, to: normalized });
+              } catch (err) {
+                req.log.warn({ err, videoId: row.id }, "[broadcast-v2] repair-queue: library localVideoUrl fix failed (non-fatal)");
+              }
+            }
+          }
+          if (row.hlsMasterUrl) {
+            const normalized = normalizeQueueUrl(row.hlsMasterUrl);
+            if (!normalized) {
+              invalidLibraryUrls++;
+            } else if (normalized !== row.hlsMasterUrl) {
+              try {
+                await db.update(vt).set({ hlsMasterUrl: normalized }).where(eq(vt.id, row.id));
+                fixedLibraryUrls++;
+                if (urlChanges.length < 200) urlChanges.push({ table: "managed_videos", id: row.id, field: "hlsMasterUrl", from: row.hlsMasterUrl, to: normalized });
+              } catch (err) {
+                req.log.warn({ err, videoId: row.id }, "[broadcast-v2] repair-queue: library hlsMasterUrl fix failed (non-fatal)");
+              }
+            }
+          }
+        }
+      } catch (err) {
+        req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 1 (library URL audit) failed (non-fatal)");
+      }
+
+      // ── Phase 2: Audit + fix broadcast_queue URL fields ───────────────────
+      let auditedQueueUrls = 0;
+      let fixedQueueUrls = 0;
+      try {
+        const queueRows = await db
+          .select({ id: qt.id, localVideoUrl: qt.localVideoUrl, hlsMasterUrl: qt.hlsMasterUrl })
+          .from(qt)
+          .where(or(isNotNull(qt.localVideoUrl), isNotNull(qt.hlsMasterUrl)));
+
+        for (const row of queueRows) {
+          auditedQueueUrls++;
+          if (row.localVideoUrl) {
+            const normalized = normalizeQueueUrl(row.localVideoUrl);
+            if (normalized && normalized !== row.localVideoUrl) {
+              try {
+                await db.update(qt).set({ localVideoUrl: normalized }).where(eq(qt.id, row.id));
+                fixedQueueUrls++;
+                if (urlChanges.length < 200) urlChanges.push({ table: "broadcast_queue", id: row.id, field: "localVideoUrl", from: row.localVideoUrl, to: normalized });
+              } catch (err) {
+                req.log.warn({ err, itemId: row.id }, "[broadcast-v2] repair-queue: queue localVideoUrl fix failed (non-fatal)");
+              }
+            }
+          }
+          if (row.hlsMasterUrl) {
+            const normalized = normalizeQueueUrl(row.hlsMasterUrl);
+            if (normalized && normalized !== row.hlsMasterUrl) {
+              try {
+                await db.update(qt).set({ hlsMasterUrl: normalized }).where(eq(qt.id, row.id));
+                fixedQueueUrls++;
+                if (urlChanges.length < 200) urlChanges.push({ table: "broadcast_queue", id: row.id, field: "hlsMasterUrl", from: row.hlsMasterUrl, to: normalized });
+              } catch (err) {
+                req.log.warn({ err, itemId: row.id }, "[broadcast-v2] repair-queue: queue hlsMasterUrl fix failed (non-fatal)");
+              }
+            }
+          }
+        }
+      } catch (err) {
+        req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 2 (queue URL audit) failed (non-fatal)");
+      }
+
+      // ── Phase 3: Deactivate orphan queue items ────────────────────────────
+      let orphansDeactivated = 0;
+      try {
+        const orphanResult = await db.execute<{ id: string }>(sql`
+          UPDATE broadcast_queue
+          SET is_active = false,
+              validator_deactivated_reason = 'repair-orphan-video-ref'
+          WHERE is_active = true
+            AND video_id IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM managed_videos WHERE id = broadcast_queue.video_id
+            )
+          RETURNING id
+        `);
+        orphansDeactivated = orphanResult.rows?.length ?? 0;
+        if (orphansDeactivated > 0) {
+          req.log.info({ count: orphansDeactivated }, "[broadcast-v2] repair-queue: deactivated orphan queue items (missing video rows)");
+        }
+      } catch (err) {
+        req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 3 (orphan deactivation) failed (non-fatal)");
+      }
+
+      // ── Phase 4: Deactivate duplicate active items for the same video ──────
+      let duplicatesDeactivated = 0;
+      try {
+        const dupeResult = await db.execute<{ id: string }>(sql`
+          UPDATE broadcast_queue
+          SET is_active = false,
+              validator_deactivated_reason = 'repair-duplicate-video'
+          WHERE is_active = true
+            AND video_id IS NOT NULL
+            AND id NOT IN (
+              SELECT DISTINCT ON (video_id) id
+              FROM broadcast_queue
+              WHERE is_active = true
+                AND video_id IS NOT NULL
+              ORDER BY video_id, sort_order ASC, added_at ASC
+            )
+          RETURNING id
+        `);
+        duplicatesDeactivated = dupeResult.rows?.length ?? 0;
+        if (duplicatesDeactivated > 0) {
+          req.log.info({ count: duplicatesDeactivated }, "[broadcast-v2] repair-queue: deactivated duplicate active items");
+        }
+      } catch (err) {
+        req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 4 (duplicate deactivation) failed (non-fatal)");
+      }
+
+      // ── Phase 5: Deactivate items with no playable URL ────────────────────
+      // Items that are active but have NULL on every URL field (both queue row
+      // and the linked video row) after the Phase 1/2 fixes are permanently
+      // unplayable and should be deactivated so the orchestrator doesn't loop.
+      let noUrlItemsDeactivated = 0;
+      try {
+        const noUrlResult = await db.execute<{ id: string }>(sql`
+          UPDATE broadcast_queue bq
+          SET is_active = false,
+              validator_deactivated_reason = 'repair-no-playable-url'
+          FROM broadcast_queue bq2
+          LEFT JOIN managed_videos mv ON mv.id = bq2.video_id
+          WHERE bq.id = bq2.id
+            AND bq2.is_active = true
+            AND COALESCE(
+              bq2.hls_master_url, mv.hls_master_url,
+              bq2.local_video_url, mv.local_video_url
+            ) IS NULL
+          RETURNING bq.id
+        `);
+        noUrlItemsDeactivated = noUrlResult.rows?.length ?? 0;
+        if (noUrlItemsDeactivated > 0) {
+          req.log.info({ count: noUrlItemsDeactivated }, "[broadcast-v2] repair-queue: deactivated items with no playable URL");
+        }
+      } catch (err) {
+        req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 5 (no-URL deactivation) failed (non-fatal)");
+      }
+
+      // ── Phase 6: Re-enable system-suspended items ──────────────────────────
+      const itemsReEnabled = await reEnableAllSuspended();
+
+      // ── Phase 7: Flush bad-URL cache ──────────────────────────────────────
+      clearAllBadUrls();
+      broadcastOrchestrator.resetQueueHash();
+
+      // ── Phase 8: Stop stale non-youtube override ───────────────────────────
+      // If a non-youtube override (HLS/RTMP live stream) is set but the
+      // orchestrator has nothing playing from it, the source has gone away
+      // without a proper stop. Stop it so the system falls back to queue mode.
+      // YouTube overrides are intentionally excluded — the YT shuffle fallback
+      // is the dead-air safety net and should self-manage.
+      let overrideWasStale = false;
+      let overrideStopped = false;
+      try {
+        const snap = broadcastOrchestrator.snapshot();
+        if (
+          snap.mode === "override" &&
+          snap.override !== null &&
+          snap.current === null &&
+          snap.override.kind !== "youtube"
+        ) {
+          overrideWasStale = true;
+          await broadcastOrchestrator.stopOverride();
+          overrideStopped = true;
+          req.log.info(
+            { overrideId: snap.override.id, kind: snap.override.kind, url: snap.override.url },
+            "[broadcast-v2] repair-queue: stopped stale non-youtube override (no resolvable source)",
+          );
+        }
+      } catch (err) {
+        req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 8 (override stop) failed (non-fatal)");
+      }
+
+      // ── Phase 9: Library scan — enqueue eligible videos ───────────────────
+      let libraryScanned = 0;
+      let libraryEnqueued = 0;
+      try {
+        const scanResult = await scanLibraryAndEnqueue({ reason: "manual", maxToAdd: 500 });
+        libraryScanned = scanResult.scanned ?? 0;
+        libraryEnqueued = scanResult.enqueued ?? 0;
+      } catch (err) {
+        req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 9 (library scan) failed (non-fatal)");
+      }
+
+      // ── Phase 10: Trigger HLS for items with no hlsMasterUrl ──────────────
+      let hlsTriggered = 0;
+      try {
+        const hlsResult = await autoEnqueueMissingHls();
+        hlsTriggered = hlsResult.triggered ?? 0;
+      } catch (err) {
+        req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 10 (HLS trigger) failed (non-fatal)");
+      }
+
+      // ── Phase 11: Reload orchestrator ─────────────────────────────────────
+      let orchestratorReloaded = false;
+      try {
+        await broadcastOrchestrator.reload();
+        orchestratorReloaded = true;
+      } catch (err) {
+        req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 11 (reload) failed (non-fatal)");
+      }
+
+      // Notify admin dashboards so library + queue panels refresh.
+      adminEventBus.push("videos-library-updated", { reason: "repair-queue" });
+      adminEventBus.push("broadcast-queue-updated", { reason: "repair-queue" });
+
+      const finalSnap = broadcastOrchestrator.snapshot();
+      const finalItemCount = broadcastOrchestrator.getItemCount();
+      const totalFixed = fixedLibraryUrls + fixedQueueUrls;
+      const totalDeactivated = orphansDeactivated + duplicatesDeactivated + noUrlItemsDeactivated;
+
+      req.log.info(
+        {
+          durationMs: Date.now() - startMs,
+          auditedLibraryUrls, fixedLibraryUrls, invalidLibraryUrls,
+          auditedQueueUrls, fixedQueueUrls,
+          orphansDeactivated, duplicatesDeactivated, noUrlItemsDeactivated,
+          itemsReEnabled, libraryEnqueued, hlsTriggered,
+          currentItemCount: finalItemCount, currentMode: finalSnap.mode,
+        },
+        "[broadcast-v2] repair-queue: comprehensive repair complete",
+      );
+
+      let message: string;
+      if (finalItemCount > 0) {
+        message =
+          `Broadcast queue healthy: ${finalItemCount} item(s) in rotation.` +
+          (totalFixed > 0 ? ` ${totalFixed} URL(s) repaired.` : "");
+      } else if (libraryEnqueued > 0) {
+        message = `${libraryEnqueued} video(s) enqueued from library. Wait 10–30 s for the orchestrator to load them.`;
+      } else if (totalFixed > 0) {
+        message = `${totalFixed} URL(s) repaired in the database. The orchestrator has been reloaded.`;
+      } else {
+        message =
+          "Repair complete. No eligible local-upload videos found in the library. " +
+          "Upload video files or add an HLS stream override to bring the broadcast on air. " +
+          "YouTube-synced videos air automatically via the YouTube Shuffle fallback " +
+          "when the queue is empty (currently active if catalogSize > 0).";
+      }
+
+      return {
+        ok: true as const,
+        durationMs: Date.now() - startMs,
+        auditedLibraryUrls,
+        fixedLibraryUrls,
+        invalidLibraryUrls,
+        auditedQueueUrls,
+        fixedQueueUrls,
+        orphansDeactivated,
+        duplicatesDeactivated,
+        noUrlItemsDeactivated,
+        itemsReEnabled,
+        badUrlCacheCleared: true,
+        overrideWasStale,
+        overrideStopped,
+        libraryScanned,
+        libraryEnqueued,
+        hlsTriggered,
+        orchestratorReloaded,
+        currentItemCount: finalItemCount,
+        currentMode: finalSnap.mode,
+        urlChanges,
+        message,
+      };
     },
   );
 

@@ -44,6 +44,7 @@ import {
   Keyboard,
   Webhook,
   Send,
+  Wrench,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
@@ -2376,6 +2377,69 @@ function BroadcastV2PageInner() {
     }
   }
 
+  async function repairQueue() {
+    setBusy("repair-queue");
+    try {
+      const result = await api.post<{
+        ok: boolean;
+        durationMs: number;
+        auditedLibraryUrls: number;
+        fixedLibraryUrls: number;
+        invalidLibraryUrls: number;
+        auditedQueueUrls: number;
+        fixedQueueUrls: number;
+        orphansDeactivated: number;
+        duplicatesDeactivated: number;
+        noUrlItemsDeactivated: number;
+        itemsReEnabled: number;
+        badUrlCacheCleared: boolean;
+        overrideWasStale: boolean;
+        overrideStopped: boolean;
+        libraryScanned: number;
+        libraryEnqueued: number;
+        hlsTriggered: number;
+        orchestratorReloaded: boolean;
+        currentItemCount: number;
+        currentMode: string;
+        urlChanges: Array<{ table: string; id: string; field: string; from: string; to: string }>;
+        message: string;
+      }>("/broadcast-v2/repair-queue", {});
+
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["broadcast-queue"] }),
+        qc.invalidateQueries({ queryKey: ["admin-videos"] }),
+        qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] }),
+        qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] }),
+      ]);
+
+      const fixCount = result.fixedLibraryUrls + result.fixedQueueUrls;
+      const detail = [
+        fixCount > 0 && `${fixCount} URL${fixCount !== 1 ? "s" : ""} fixed`,
+        result.libraryEnqueued > 0 && `${result.libraryEnqueued} enqueued`,
+        result.itemsReEnabled > 0 && `${result.itemsReEnabled} re-enabled`,
+        result.orphansDeactivated > 0 && `${result.orphansDeactivated} orphans removed`,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+
+      if (detail) {
+        toast.success(`Queue repaired: ${detail}. ${result.currentItemCount} item(s) active.`);
+      } else {
+        toast.success(result.message.slice(0, 160));
+      }
+    } catch (e) {
+      const detail =
+        e instanceof HttpError
+          ? `${e.status}${e.message && e.message !== String(e.status) ? ` ${e.message}` : ""}`
+          : e instanceof Error
+          ? e.message
+          : "?";
+      toast.error(`Queue repair failed (${detail})`);
+    } finally {
+      setBusy((prev) => (prev === "repair-queue" ? null : prev));
+    }
+  }
+
   async function repairHlsStorageMissing() {
     setBusy("repair-hls");
     try {
@@ -2540,6 +2604,21 @@ function BroadcastV2PageInner() {
                 <ShieldCheck size={13} />
               )}
               Revalidate Sources
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-violet-700 dark:text-violet-400 border-violet-300 dark:border-violet-700 hover:bg-violet-50 dark:hover:bg-violet-950"
+              disabled={!!busy}
+              onClick={() => void repairQueue()}
+              title="Full URL audit &amp; repair: fixes stale domain rewrites, deactivates orphan/duplicate items, re-enables suspended items, re-scans the library, triggers missing HLS, and reloads the orchestrator."
+            >
+              {busy === "repair-queue" ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <Wrench size={13} />
+              )}
+              Repair Queue
             </Button>
             <Button
               variant="outline"

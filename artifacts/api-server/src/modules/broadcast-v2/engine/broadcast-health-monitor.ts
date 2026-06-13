@@ -71,6 +71,51 @@ export async function broadcastHealthMonitorScan(): Promise<void> {
   const started = broadcastOrchestrator.isStarted();
   if (!started) return; // Orchestrator not booted yet — nothing to monitor.
 
+  // ── Stale override detection ───────────────────────────────────────────────
+  // If a non-youtube override has been set for >STALE_OVERRIDE_MS with no
+  // resolvable current source, auto-stop it. This recovers from orphaned
+  // override entries left by:
+  //   • HLS/RTMP live streams that ended without a manual stop
+  //   • Operator overrides whose source URL expired or went offline
+  //
+  // YouTube overrides are explicitly excluded — the YouTube Shuffle Fallback
+  // is the dead-air safety net and self-manages its own lifecycle; stopping
+  // it here would fight the orchestrator's dead-air logic.
+  //
+  // Gated behind `!recoveryInFlight` to avoid racing with a full recovery.
+  const STALE_OVERRIDE_MS = 10 * 60_000; // 10 minutes
+  if (!recoveryInFlight) {
+    try {
+      const overrideSnap = broadcastOrchestrator.snapshot();
+      if (
+        overrideSnap.mode === "override" &&
+        overrideSnap.override !== null &&
+        overrideSnap.current === null &&
+        overrideSnap.override.kind !== "youtube"
+      ) {
+        const overrideAgeMs = now - overrideSnap.override.startedAtMs;
+        if (overrideAgeMs > STALE_OVERRIDE_MS) {
+          logger.warn(
+            {
+              overrideId: overrideSnap.override.id,
+              overrideKind: overrideSnap.override.kind,
+              overrideUrl: overrideSnap.override.url,
+              overrideTitle: overrideSnap.override.title,
+              overrideAgeMs,
+            },
+            "[broadcast-health-monitor] stale override auto-stop — no resolvable source for >10 min",
+          );
+          lastAlertReason = `stale-override:${overrideSnap.override.id}`;
+          void broadcastOrchestrator.stopOverride().catch((err: unknown) => {
+            logger.warn({ err }, "[broadcast-health-monitor] stale override auto-stop failed (non-fatal)");
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, "[broadcast-health-monitor] stale override check failed (non-fatal)");
+    }
+  }
+
   const itemCount = broadcastOrchestrator.getItemCount();
   if (itemCount === 0) return; // Empty queue is valid OFF_AIR state, not a hang.
 

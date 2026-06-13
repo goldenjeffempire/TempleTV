@@ -87,6 +87,44 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
         }
       }
     } catch { /* malformed URL — fall through and return as-is */ }
+
+    // Rewrite stale *.replit.app / *.repl.co URLs when this server has
+    // migrated to a custom domain (e.g. api.templetv.org.ng). Follows
+    // the same pattern as the onrender.com rewrite: swap the origin,
+    // preserve path/query/hash. The guard `!ownPublicBase.includes(".replit.app")`
+    // prevents a self-rewrite in dev environments where the server IS
+    // still on a Replit subdomain — rewriting to itself is a no-op but
+    // the log noise would be confusing.
+    try {
+      const parsedReplit = new URL(raw);
+      if (
+        parsedReplit.hostname.endsWith(".replit.app") ||
+        parsedReplit.hostname.endsWith(".repl.co")
+      ) {
+        const ownPublicBase = (
+          (IS_PROD_NODE_ENV ? env.API_ORIGIN : undefined) ??
+          process.env["RENDER_EXTERNAL_URL"]
+        )?.replace(/\/+$/, "");
+        if (
+          ownPublicBase &&
+          !ownPublicBase.includes(".replit.app") &&
+          !ownPublicBase.includes(".repl.co")
+        ) {
+          const absBase = /^https?:\/\//i.test(ownPublicBase) ? ownPublicBase : `https://${ownPublicBase}`;
+          const baseParsed = new URL(absBase);
+          const fromHost = parsedReplit.hostname;
+          parsedReplit.protocol = baseParsed.protocol;
+          parsedReplit.hostname = baseParsed.hostname;
+          parsedReplit.port = baseParsed.port;
+          logger.info(
+            { from: fromHost, to: baseParsed.hostname, path: parsedReplit.pathname },
+            "[broadcast-v2] rewrote stale replit.app/repl.co URL to canonical API origin",
+          );
+          return parsedReplit.toString();
+        }
+      }
+    } catch { /* malformed — fall through */ }
+
     return raw;
   }
   // Resolution order (first truthy wins):
