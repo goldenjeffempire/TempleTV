@@ -94,8 +94,8 @@
       "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon-foreground.png",
-        "backgroundColor": "#F8F5FF",
-        "monochromeImage": "./assets/images/adaptive-icon-foreground.png"
+        "backgroundColor": "#6A0DAD",
+        "monochromeImage": "./assets/images/monochrome-icon.png"
       },
       "permissions": [
         "android.permission.INTERNET",
