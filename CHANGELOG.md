@@ -10,6 +10,23 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## v1.0.23 — 2026-06-13
+
+### Fixed
+- **"Tap to reconnect" had no effect on the video buffer** (critical): The button called `forceReconnect()` which only reconnects the WebSocket transport. When in `RECOVERING_PRIMARY`, the FSM re-issues `play` (not `bind`) on the next snapshot, so `bindRevision` never changes and `BroadcastBuffer` never reloads the video element — the player stayed frozen indefinitely. Fix: added `machine.requestManualRebind()` which resets `primaryRetries`, issues a fresh `bind + play` intent (incrementing `bindRevision` so `BroadcastBuffer` reloads), and transitions to `PREPARING_ACTIVE`. Exposed as `forceRebind()` from `useV2BroadcastNative`. All `onRetry` callbacks in the player overlay now call `forceRebind()` instead of `forceReconnect()`.
+- **`RECOVERING_PRIMARY` retry button appeared too late** (10 s → 5 s): The "Tap to reconnect" button was shown at `loadingPhase >= 2` (10 seconds of continuous recovery). Reduced to `loadingPhase >= 1` (5 seconds) so the user gets a real escape hatch before the automatic 8 s load-timeout cycles through all retry attempts.
+- **Silent ExoPlayer load timeout too long** (12 s → 8 s): `LOAD_TIMEOUT_MS` reduced from 12 s to 8 s. When ExoPlayer silently fails to load a manifest (no `onLoad`, no `onError`), the FSM now escalates to the next retry attempt in 8 s instead of 12 s, reducing the maximum stuck-window from ~36 s to ~24 s across 3 retry cycles.
+
+### Changed
+- **Mobile version bump**: Android `versionCode` 68 → 70 (EAS auto-increments), iOS `buildNumber` `202606130001`. Targets v1.0.23 release candidate.
+
+### Technical
+- `lib/player-core/src/machine.ts`: added `public requestManualRebind()` — resets `primaryRetries`, `skipPendingCycles`, `skipPendingAnchorMs`, clears `fatalRecoveryTimer`, calls `bindActive()` + `emit play` + `transition PREPARING_ACTIVE`.
+- `lib/player-core/src/react-native.ts`: added `forceRebind()` to `UseV2BroadcastNativeResult` interface and hook return. Calls `machine.requestManualRebind()` + debounced `transport.forceReconnect()`.
+- `artifacts/mobile/components/V2PlayerContainer.tsx`: destructures `forceRebind` from hook; all `onRetry` overlay callbacks updated to `forceRebind`; LIVE_OVERRIDE_ACTIVE retains `forceReconnect` (rebinding would dismiss the admin override); `LOAD_TIMEOUT_MS` 12 s → 8 s.
+
+---
+
 ## v1.0.20 — 2026-06-12
 
 ### Changed

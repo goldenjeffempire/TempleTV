@@ -342,6 +342,60 @@ export class PlayerMachine {
   }
 
   /**
+   * Initiated by a user "Tap to reconnect" action — resets the recovery
+   * budget and starts a fresh PREPARING_ACTIVE cycle for the current item
+   * WITHOUT consuming the `primaryRetries` budget.
+   *
+   * This is the correct handler for manual user-initiated retries because:
+   *  - Unlike injecting a synthetic buffer-error (which increments
+   *    `primaryRetries` toward SKIP_PENDING), this gives a clean start.
+   *  - Unlike `forceReconnect()` on the transport (which only reconnects
+   *    the WS), this re-issues the `bind` intent so the BroadcastBuffer
+   *    adapter increments its `bindRevision` and reloads the video element
+   *    — fixing the "Tap to reconnect has no visible effect" bug where
+   *    the player stays frozen in RECOVERING_PRIMARY indefinitely.
+   *
+   * Safe to call in any state. Transitions to SYNCING (and requests a fresh
+   * snapshot) when there is no current item to bind.
+   */
+  public requestManualRebind(): void {
+    const server = this.snapshot.lastServerSnapshot;
+    if (!server?.current || !("startsAtMs" in server.current)) {
+      // No scheduled item available — return to SYNCING and request a
+      // fresh snapshot so the transport re-evaluates server state immediately.
+      this.transition("SYNCING");
+      this.onNeedSnapshotCb?.();
+      return;
+    }
+    const item = server.current as V2Item;
+    const activeId = this.snapshot.activeBufferId;
+
+    // Clear the FATAL backoff timer — transition() also clears it when
+    // leaving FATAL, but clearing it here first prevents a brief window
+    // where the timer could fire between this call and transition().
+    if (this.fatalRecoveryTimer !== null) {
+      clearTimeout(this.fatalRecoveryTimer);
+      this.fatalRecoveryTimer = null;
+    }
+
+    // Reset all retry / skip counters so the next error cycle gets a full
+    // budget instead of the accumulated state from prior automatic retries.
+    this.primaryRetries = 0;
+    this.skipPendingCycles = 0;
+    this.skipPendingAnchorMs = null;
+
+    // Re-bind the current item. This increments `bindRevision` in the
+    // mobile adapter even if the source URL is unchanged — the BroadcastBuffer
+    // useEffect([state.bindRevision]) fires, runs the same-URL fast-path
+    // (if expo-av still has the URL loaded) or arms a fresh load-timeout
+    // (if the native player needs to reload from scratch).
+    this.bindActive(item);
+    const positionSecs = resolvePositionSecs(item, item.startsAtMs, this.clockOffsetMs);
+    this.emit({ type: "play", bufferId: activeId, positionSecs });
+    this.transition("PREPARING_ACTIVE");
+  }
+
+  /**
    * Schedule a proactive snapshot request to fire 90 s before the active
    * source URL expires (if `source.expiresAtMs` is set). This ensures the
    * transport fetches a fresh snapshot — with a renewed pre-signed URL —

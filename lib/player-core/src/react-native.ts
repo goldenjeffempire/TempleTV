@@ -59,6 +59,19 @@ export interface UseV2BroadcastNativeResult {
    * underlying socket without surfacing an `onclose` to JS.
    */
   forceReconnect: () => void;
+  /**
+   * User-initiated "Tap to reconnect" handler.
+   *
+   * Resets the FSM's retry budget and issues a fresh `bind` + `play` for
+   * the current broadcast item, then transitions to PREPARING_ACTIVE.
+   * Also reconnects the WS transport (debounced) so the machine receives
+   * an up-to-date server snapshot immediately after rebinding.
+   *
+   * Unlike `forceReconnect()` (WS-only), this actually reloads the video
+   * buffer — fixing the stuck RECOVERING_PRIMARY state where pressing
+   * "Tap to reconnect" previously had no visible effect on the player.
+   */
+  forceRebind: () => void;
   /** Tell the FSM the device is back online (e.g. AppState→active). */
   notifyOnline: () => void;
 }
@@ -508,12 +521,37 @@ export function useV2BroadcastNative(opts: UseV2BroadcastNativeOptions): UseV2Br
     [session],
   );
 
+  /**
+   * Debounced forceRebind: calls machine.requestManualRebind() to issue a
+   * fresh bind + PREPARING_ACTIVE cycle, then reconnects the WS transport
+   * so the machine immediately receives an up-to-date server snapshot.
+   *
+   * The 50 ms debounce collapses simultaneous calls from multiple mounted
+   * V2PlayerContainer instances (Hero + Player screen) into a single
+   * machine.requestManualRebind() invocation — same pattern as forceReconnect.
+   */
+  const forceRebind = useCallback(() => {
+    if (!session) return;
+    // Machine rebind — resets retry budget and issues a fresh bind/play intent.
+    session.machine.requestManualRebind();
+    // Transport reconnect — debounced so multiple simultaneous callers
+    // (Hero + Player) collapse into one actual socket cycle.
+    if (session.forceReconnectDebounce !== null) {
+      clearTimeout(session.forceReconnectDebounce);
+    }
+    session.forceReconnectDebounce = setTimeout(() => {
+      session.forceReconnectDebounce = null;
+      session.transport.forceReconnect();
+    }, 50);
+  }, [session]);
+
   return {
     snapshot,
     connected,
     buffers,
     reportBufferEvent,
     forceReconnect,
+    forceRebind,
     notifyOnline,
   };
 }

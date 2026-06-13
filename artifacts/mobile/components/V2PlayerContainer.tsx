@@ -141,6 +141,12 @@ import {
  *     the OS-level TCP keepalive timeout (> 60 s on Android/iOS).
  */
 const BUFFERING_STALL_THRESHOLD_MS = 15_000;
+// Reduced from 12 s → 8 s: mobile networks on ExoPlayer can silently fail
+// to load a manifest (no onLoad, no onError). A shorter first-cycle timeout
+// means the FSM escalates to the next retry attempt faster, reducing the
+// total stuck-time from up to 36 s (3 × 12 s) to up to 24 s (3 × 8 s).
+// Still chosen below BUFFERING_STALL_THRESHOLD_MS (15 s) so a genuine
+// buffering stall fires the watchdog before the load timeout can double-fire.
 
 /**
  * How many milliseconds of actual playback must occur before a `didJustFinish`
@@ -234,16 +240,17 @@ const HLS_LIVE_SYNC_INTERVAL_MS = 30_000;
  * PREPARING_ACTIVE or RECOVERING indefinitely — audio may play (from a prior
  * successful load) but "Tuning in…" never clears.
  *
- * 12 s: chosen BELOW BUFFERING_STALL_THRESHOLD_MS (15 s) so the two
+ * 8 s: chosen BELOW BUFFERING_STALL_THRESHOLD_MS (15 s) so the two
  * watchdogs target different failure classes without racing each other.
  * LOAD_TIMEOUT catches "ExoPlayer never emitted isBuffering=true" (silent
  * codec / manifest failures). BUFFERING_STALL catches "isBuffering=true
  * but no frames arrive" (partial content, slow segment download). Both
  * can be active simultaneously but LOAD_TIMEOUT fires first and clears
- * the stall watchdog via the error path. Reduced from 25 s to recover
- * twice as fast on completely silent ExoPlayer silent failures.
+ * the stall watchdog via the error path. Reduced from 12 s → 8 s so that
+ * silent ExoPlayer manifest failures cycle through all 3 retry attempts
+ * in ~24 s total instead of ~36 s, shortening the stuck-player window.
  */
-const LOAD_TIMEOUT_MS = 12_000;
+const LOAD_TIMEOUT_MS = 8_000;
 
 interface Props {
   baseUrl: string;
@@ -1290,7 +1297,7 @@ export function V2PlayerContainer({
 }: Props) {
   void _channelId;
   const effectiveBaseUrl = useMidnightPrayersSwitch(baseUrl);
-  const { snapshot, connected, buffers, reportBufferEvent, forceReconnect, notifyOnline } =
+  const { snapshot, connected, buffers, reportBufferEvent, forceReconnect, forceRebind, notifyOnline } =
     useV2BroadcastNative({ baseUrl: effectiveBaseUrl });
 
   // Network context — drives network-aware banner text and immediate
@@ -1607,7 +1614,7 @@ export function V2PlayerContainer({
         main: "Playback Error",
         sub: "Please try again in a moment.",
         showSpinner: false,
-        onRetry: forceReconnect,
+        onRetry: forceRebind,
       };
     }
     // YouTube live override — expo-av cannot play YouTube URLs so we surface a
@@ -1653,7 +1660,7 @@ export function V2PlayerContainer({
           ? "Reaching broadcast server"
           : "Taking a bit longer than usual — please wait",
         showSpinner: true,
-        onRetry: p >= 3 ? forceReconnect : undefined,
+        onRetry: p >= 3 ? forceRebind : undefined,
       };
     }
     // SYNCING — transport connected, waiting for first server snapshot.
@@ -1673,7 +1680,7 @@ export function V2PlayerContainer({
           ? "Almost ready to play"
           : "Still loading — almost there",
         showSpinner: true,
-        onRetry: p >= 3 ? forceReconnect : undefined,
+        onRetry: p >= 3 ? forceRebind : undefined,
       };
     }
     // PREPARING_ACTIVE — item bound to active buffer, waiting for buffer-ready.
@@ -1688,7 +1695,7 @@ export function V2PlayerContainer({
           ? "This is taking a moment — please wait"
           : "Still buffering — hang tight",
         showSpinner: true,
-        onRetry: p >= 3 ? forceReconnect : undefined,
+        onRetry: p >= 3 ? forceRebind : undefined,
       };
     }
     // Active playback — no overlay.
@@ -1698,12 +1705,19 @@ export function V2PlayerContainer({
       snapshot.state === "PREPARING_NEXT"
     ) return null;
     // Recovery states.
+    // RECOVERING_PRIMARY: use forceRebind (not forceReconnect) so the video
+    // buffer is actually reloaded when the user taps "Tap to reconnect".
+    // forceReconnect() only reconnects the WS transport — without a fresh
+    // bind intent the video element stays frozen regardless of the WS state.
+    // Show the retry button at p >= 1 (5 s) instead of p >= 2 (10 s) so the
+    // user gets an escape hatch before the automatic 8 s load-timeout cycles
+    // through all 3 retry attempts.
     if (snapshot.state === "RECOVERING_PRIMARY") {
       return {
         main: p === 0 ? "Reconnecting…" : "Retrying Stream…",
         sub: p === 0 ? "Retrying stream source" : "Attempting stream recovery",
         showSpinner: true,
-        onRetry: p >= 2 ? forceReconnect : undefined,
+        onRetry: p >= 1 ? forceRebind : undefined,
       };
     }
     // RECOVERING_FAILOVER — loading the backup/failover stream.
@@ -1732,7 +1746,7 @@ export function V2PlayerContainer({
         showSpinner: true,
         // Offer manual reconnect after 15 s (phase 3) — auto-recovery may
         // have already cycled several times by then and user feedback helps.
-        onRetry: p >= 3 ? forceReconnect : undefined,
+        onRetry: p >= 3 ? forceRebind : undefined,
       };
     }
     // Failover is active and the stream is playing — steady-state indicator.
@@ -1749,7 +1763,7 @@ export function V2PlayerContainer({
           ? "Almost ready"
           : "This is taking a moment — please wait",
         showSpinner: true,
-        onRetry: p >= 3 ? forceReconnect : undefined,
+        onRetry: p >= 3 ? forceRebind : undefined,
       };
     }
     // Remaining states: genuinely off-air when no content.
@@ -1763,7 +1777,7 @@ export function V2PlayerContainer({
       };
     }
     return null;
-  }, [snapshot.state, server, loadingPhase, isOnline, isYouTubeOverride, videoReady, forceReconnect]);
+  }, [snapshot.state, server, loadingPhase, isOnline, isYouTubeOverride, videoReady, forceReconnect, forceRebind]);
 
   // Poster: show the upcoming/current sermon thumbnail behind the buffers
   // while the player is still tuning in, off-air, reconnecting, or in any
