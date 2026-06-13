@@ -2888,13 +2888,72 @@ class BroadcastOrchestrator extends EventEmitter {
     return url;
   }
 
+  /**
+   * Convert an own-origin HLS URL to its `http://127.0.0.1:PORT/…` equivalent
+   * so orchestrator probes always reach the local server via loopback.
+   *
+   * Problem this solves: `normalizeQueueUrl()` resolves relative /api/hls/…
+   * paths using API_ORIGIN (e.g. https://api.templetv.org.ng). When the
+   * orchestrator then probes that external URL it exits the process, traverses
+   * the CDN/reverse-proxy, and arrives at the HLS handler with a non-loopback
+   * source IP — so `isInternalRequest()` returns false and REQUIRE_HLS_TOKEN
+   * forces a 401.  Converting to 127.0.0.1 short-circuits external routing
+   * and guarantees the loopback bypass fires.
+   *
+   * Own-origin detection: checks API_ORIGIN, RENDER_EXTERNAL_URL, and
+   * REPLIT_DEV_DOMAIN against the URL hostname. Only /api/hls/ and
+   * /api/v1/hls/ paths are rewritten — other own-origin paths are unchanged.
+   */
+  private toLocalhostProbeUrl(url: string): string {
+    try {
+      const u = new URL(url);
+      const ownHostnames = [
+        env.API_ORIGIN,
+        process.env["RENDER_EXTERNAL_URL"],
+        process.env["REPLIT_DEV_DOMAIN"],
+        process.env["REPLIT_DOMAINS"]?.split(",")[0]?.trim(),
+      ]
+        .filter(Boolean)
+        .map((h) => {
+          try {
+            return new URL(/^https?:\/\//i.test(h!) ? h! : `https://${h!}`).hostname;
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean) as string[];
+
+      const isOwnHost = ownHostnames.includes(u.hostname);
+      if (isOwnHost && /\/api(?:\/v1)?\/hls\//.test(u.pathname)) {
+        u.protocol = "http:";
+        u.hostname = "127.0.0.1";
+        u.port = String(env.PORT ?? 8080);
+        return u.toString();
+      }
+    } catch {
+      /* malformed URL — return as-is */
+    }
+    return url;
+  }
+
+  /** Build the standard internal-probe headers map. */
+  private internalProbeHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
+    if (env.INTERNAL_HLS_BYPASS_SECRET) {
+      headers["x-internal-token"] = env.INTERNAL_HLS_BYPASS_SECRET;
+    }
+    return headers;
+  }
+
   private async probeUrlReachability(rawUrl: string): Promise<boolean | null> {
-    // Inject a short-lived HLS auth token when REQUIRE_HLS_TOKEN is enabled.
-    // Internal probes always target http://localhost:PORT/api/hls/… — the
-    // loopback bypass in video-serve.routes.ts would also allow them through,
-    // but adding the token here makes each probe self-contained and safe even
-    // in future multi-node configurations where probes may not be loopback.
-    const url = withHlsToken(rawUrl);
+    // Convert own-origin HLS URLs to http://127.0.0.1:PORT/… so the probe
+    // goes through loopback and the loopback/X-Internal-Token bypass in
+    // video-serve.routes.ts always fires — regardless of REQUIRE_HLS_TOKEN.
+    const localhostUrl = this.toLocalhostProbeUrl(rawUrl);
+    // Inject a short-lived HLS auth token as belt-and-suspenders: the
+    // loopback bypass already allows the request through, but the token
+    // also works for multi-node configurations where loopback isn't available.
+    const url = withHlsToken(localhostUrl);
 
     // HLS manifests: use GET so we can validate the response body starts with
     // the required #EXTM3U tag. A HEAD request returns 200 even for empty or
@@ -2906,8 +2965,14 @@ class BroadcastOrchestrator extends EventEmitter {
         const ctrl = new AbortController();
         const timeout = setTimeout(() => ctrl.abort(), 5_000);
         let res: Response;
+        const hlsHeaders = this.internalProbeHeaders();
         try {
-          res = await fetch(url, { method: "GET", redirect: "follow", signal: ctrl.signal });
+          res = await fetch(url, {
+            method: "GET",
+            redirect: "follow",
+            signal: ctrl.signal,
+            headers: Object.keys(hlsHeaders).length > 0 ? hlsHeaders : undefined,
+          });
         } finally {
           clearTimeout(timeout);
         }
@@ -2960,12 +3025,16 @@ class BroadcastOrchestrator extends EventEmitter {
     try {
       const ctrl = new AbortController();
       const timeout = setTimeout(() => ctrl.abort(), 5_000);
+      const reqHeaders: Record<string, string> = {
+        ...this.internalProbeHeaders(),
+        ...(range ? { Range: range } : {}),
+      };
       try {
         const res = await fetch(url, {
           method,
           redirect: "follow",
           signal: ctrl.signal,
-          headers: range ? { Range: range } : undefined,
+          headers: Object.keys(reqHeaders).length > 0 ? reqHeaders : undefined,
         });
         // A GET response carries a body. Some origins ignore the Range header
         // and reply 200 with the full payload — for a large MP4 that would keep

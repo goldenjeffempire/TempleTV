@@ -27,6 +27,56 @@ import { playbackAnalytics } from "./playback-analytics.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
 import { withHlsToken } from "../../../shared/hls-token.js";
 
+/**
+ * Build the X-Internal-Token headers for internal probe requests.
+ * Mirrors the orchestrator's internalProbeHeaders() so the scanner
+ * benefits from the same HLS-auth bypass.
+ */
+function internalProbeHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (env.INTERNAL_HLS_BYPASS_SECRET) {
+    headers["x-internal-token"] = env.INTERNAL_HLS_BYPASS_SECRET;
+  }
+  return headers;
+}
+
+/**
+ * Convert an own-origin HLS URL to http://127.0.0.1:PORT/… for local probing.
+ * Identical logic to BroadcastOrchestrator.toLocalhostProbeUrl() — keeps probes
+ * on loopback so the HLS auth bypass always fires, avoiding 401 failures when
+ * REQUIRE_HLS_TOKEN=true and the probe URL uses the external API_ORIGIN.
+ */
+function toLocalhostProbeUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const ownHostnames = [
+      env.API_ORIGIN,
+      process.env["RENDER_EXTERNAL_URL"],
+      process.env["REPLIT_DEV_DOMAIN"],
+      process.env["REPLIT_DOMAINS"]?.split(",")[0]?.trim(),
+    ]
+      .filter(Boolean)
+      .map((h) => {
+        try {
+          return new URL(/^https?:\/\//i.test(h!) ? h! : `https://${h!}`).hostname;
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean) as string[];
+
+    if (ownHostnames.includes(u.hostname) && /\/api(?:\/v1)?\/hls\//.test(u.pathname)) {
+      u.protocol = "http:";
+      u.hostname = "127.0.0.1";
+      u.port = String(env.PORT ?? 8080);
+      return u.toString();
+    }
+  } catch {
+    /* malformed URL — return as-is */
+  }
+  return url;
+}
+
 // Channel ID used for runtime state persistence — matches the hardcoded "main"
 // channel used throughout the broadcast-v2 module.
 const CHANNEL_ID = "main";
@@ -86,11 +136,12 @@ const SCANNER_BAD_URL_THRESHOLD = 3;
 async function probeUrl(url: string): Promise<{ ok: boolean; status: number | null; reason?: string }> {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
+  const intHeaders = internalProbeHeaders();
   try {
     const res = await fetch(url, {
       method: "HEAD",
       signal: ac.signal,
-      headers: { Range: "bytes=0-0" },
+      headers: { ...intHeaders, Range: "bytes=0-0" },
     });
     clearTimeout(t);
 
@@ -102,7 +153,7 @@ async function probeUrl(url: string): Promise<{ ok: boolean; status: number | nu
         const getRes = await fetch(url, {
           method: "GET",
           signal: getAc.signal,
-          headers: { Range: "bytes=0-1023" },
+          headers: { ...intHeaders, Range: "bytes=0-1023" },
         });
         clearTimeout(getT);
         // Discard body immediately — we only need the status code.
@@ -164,11 +215,12 @@ async function probeHlsVariant(
 ): Promise<{ ok: boolean; status: number | null; reason?: string }> {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
+  const intHeaders = internalProbeHeaders();
   try {
     const res = await fetch(url, {
       method: "GET",
       signal: ac.signal,
-      headers: { Accept: "application/vnd.apple.mpegurl, application/x-mpegurl, */*" },
+      headers: { ...intHeaders, Accept: "application/vnd.apple.mpegurl, application/x-mpegurl, */*" },
     });
     clearTimeout(t);
     if (!res.ok) {
@@ -226,11 +278,12 @@ async function probeHlsVariant(
 async function probeHlsManifest(url: string): Promise<{ ok: boolean; status: number | null; reason?: string }> {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
+  const intHeaders = internalProbeHeaders();
   try {
     const res = await fetch(url, {
       method: "GET",
       signal: ac.signal,
-      headers: { Accept: "application/vnd.apple.mpegurl, application/x-mpegurl, */*" },
+      headers: { ...intHeaders, Accept: "application/vnd.apple.mpegurl, application/x-mpegurl, */*" },
     });
     clearTimeout(t);
     if (!res.ok) return { ok: false, status: res.status, reason: `HTTP ${res.status}` };
@@ -277,7 +330,7 @@ async function probeHlsManifest(url: string): Promise<{ ok: boolean; status: num
     if (hasStreams && !hasSegments) {
       const variantUrl = extractFirstVariantUrl(text, url);
       if (variantUrl) {
-        const variantProbe = await probeHlsVariant(withHlsToken(variantUrl));
+        const variantProbe = await probeHlsVariant(withHlsToken(toLocalhostProbeUrl(variantUrl)));
         if (!variantProbe.ok) {
           return {
             ok: false,
@@ -416,12 +469,13 @@ class MediaIntegrityScannerImpl {
             try {
               // HLS manifests are validated by fetching and parsing content —
               // a HEAD probe can return 200 for stale CDN-cached empty playlists.
-              // withHlsToken() appends a short-lived HMAC token to internal HLS
-              // proxy URLs when REQUIRE_HLS_TOKEN=true — preventing 401 failures
-              // that would falsely mark healthy assets as unreachable. The bad-URL
-              // tracking below continues to use the original `url` (no token) so
-              // token-rotation doesn't affect circuit-breaker de-duplication.
-              const probeTarget = kind === "hls" ? withHlsToken(url) : url;
+              // toLocalhostProbeUrl() rewrites own-origin HLS URLs to localhost so
+              // the probe always hits this server directly (bypassing REQUIRE_HLS_TOKEN).
+              // withHlsToken() adds a token as belt-and-suspenders for multi-node setups.
+              // The bad-URL tracking below uses the original `url` (no token/localhost)
+              // so token-rotation doesn't affect circuit-breaker de-duplication.
+              const localhostUrl = kind === "hls" ? toLocalhostProbeUrl(url) : url;
+              const probeTarget = kind === "hls" ? withHlsToken(localhostUrl) : url;
               const probe = kind === "hls"
                 ? await probeHlsManifest(probeTarget)
                 : await probeUrl(probeTarget);

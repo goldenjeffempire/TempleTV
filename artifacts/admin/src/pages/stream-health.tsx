@@ -190,6 +190,23 @@ export default function StreamHealthPage() {
 
   const allOk = allDepsOk && (engineHealth ? isEngineHealthy : true);
 
+  const revalidateSourcesMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean; reEnabledItems: number }>("/broadcast-v2/revalidate-sources", {
+        idempotencyKey: crypto.randomUUID(),
+      }),
+    onSuccess: (data) => {
+      toast.success(`Full revalidation complete — ${data.reEnabledItems} item(s) re-enabled`);
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+    },
+    onError: (err) => toast.error(`Revalidation failed: ${(err as Error).message}`),
+  });
+
   const clearBadUrlsMutation = useMutation({
     mutationFn: () =>
       api.post<{ ok: boolean }>("/broadcast-v2/clear-bad-urls", {
@@ -552,18 +569,33 @@ export default function StreamHealthPage() {
               <CardTitle className="text-sm flex items-center gap-2">
                 <Shield size={15} /> Source Circuit Breaker
               </CardTitle>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs gap-1.5"
-                disabled={clearBadUrlsMutation.isPending}
-                onClick={() => setShowClearConfirm(true)}
-              >
-                {clearBadUrlsMutation.isPending
-                  ? <RefreshCw size={11} className="animate-spin" />
-                  : <RotateCcw size={11} />}
-                Clear All Blocks
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs gap-1.5 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950"
+                  disabled={revalidateSourcesMutation.isPending || clearBadUrlsMutation.isPending}
+                  onClick={() => revalidateSourcesMutation.mutate()}
+                  title="Clears all bad-URL blocks, re-enables suspended items, reloads the orchestrator, and runs an immediate media integrity scan via localhost — fixes HLS 401 dead-air."
+                >
+                  {revalidateSourcesMutation.isPending
+                    ? <RefreshCw size={11} className="animate-spin" />
+                    : <ShieldCheck size={11} />}
+                  Revalidate Sources
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs gap-1.5"
+                  disabled={clearBadUrlsMutation.isPending || revalidateSourcesMutation.isPending}
+                  onClick={() => setShowClearConfirm(true)}
+                >
+                  {clearBadUrlsMutation.isPending
+                    ? <RefreshCw size={11} className="animate-spin" />
+                    : <RotateCcw size={11} />}
+                  Clear All Blocks
+                </Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent>

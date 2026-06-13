@@ -149,6 +149,28 @@ function isLoopbackIp(ip: string): boolean {
   return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
 }
 
+/**
+ * Returns true when the request originates from an internal service (media
+ * scanner, orchestrator probe, queue validator, watchdog, etc.) that is
+ * trusted to access HLS assets without a client-issued ?t=TOKEN.
+ *
+ * Two detection mechanisms are layered for defence-in-depth:
+ *   1. **Loopback IP** — cheapest check; works for single-node deployments
+ *      where internal services probe via http://127.0.0.1:PORT.
+ *   2. **X-Internal-Token header** — works across multi-node deployments,
+ *      reverse-proxy topologies, and Replit Dev Domains where the TCP source
+ *      IP is not 127.0.0.1 even for same-process fetches. The secret is set
+ *      via INTERNAL_HLS_BYPASS_SECRET and injected by the orchestrator and
+ *      media integrity scanner on every internal probe request.
+ */
+function isInternalRequest(req: { ip?: string; headers: Record<string, string | string[] | undefined> }): boolean {
+  if (isLoopbackIp(req.ip ?? "")) return true;
+  const secret = env.INTERNAL_HLS_BYPASS_SECRET;
+  if (!secret) return false;
+  const header = req.headers["x-internal-token"];
+  return typeof header === "string" && header === secret;
+}
+
 export async function videoServeRoutes(app: FastifyInstance) {
   // ── Startup advisory: warn when running in production without a CDN ───────
   // HLS segment requests (can number in the thousands per viewer per hour)
@@ -622,7 +644,7 @@ export async function videoServeRoutes(app: FastifyInstance) {
         return reply.code(400).send();
       }
 
-      if (env.REQUIRE_HLS_TOKEN && !isLoopbackIp(req.ip ?? "")) {
+      if (env.REQUIRE_HLS_TOKEN && !isInternalRequest(req)) {
         const tokenRaw = typeof req.query?.t === "string" ? req.query.t : "";
         if (!tokenRaw || !validateHlsToken(videoId, tokenRaw)) {
           return reply.code(401).send();
@@ -700,9 +722,9 @@ export async function videoServeRoutes(app: FastifyInstance) {
 
       // A3: Token validation (opt-in)
       // Internal server-to-server requests (media scanner, orchestrator probes)
-      // originate from 127.0.0.1 — they bypass token validation so they are
-      // never denied access to our own HLS assets without a client-issued token.
-      if (env.REQUIRE_HLS_TOKEN && !isLoopbackIp(req.ip ?? "")) {
+      // bypass token validation via loopback IP or X-Internal-Token header so
+      // they are never denied access to our own HLS assets.
+      if (env.REQUIRE_HLS_TOKEN && !isInternalRequest(req)) {
         const tokenRaw = typeof req.query?.t === "string" ? req.query.t : "";
         if (!tokenRaw || !validateHlsToken(videoId, tokenRaw)) {
           return reply.code(401).send({ error: "Valid HLS token required. Call /api/hls-token/:videoId to obtain one." });

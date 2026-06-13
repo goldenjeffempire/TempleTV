@@ -13,6 +13,7 @@ import {
   WifiOff,
   RotateCw,
   ShieldAlert,
+  ShieldCheck,
   Activity,
   CheckCircle2,
   XCircle,
@@ -2524,6 +2525,21 @@ function BroadcastV2PageInner() {
                 <RotateCw size={13} />
               )}
               Restart Engine
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-700 hover:bg-amber-50 dark:hover:bg-amber-950"
+              disabled={!!busy}
+              onClick={() => adminPost("/broadcast-v2/revalidate-sources")}
+              title="Clears all bad-URL blocks, re-enables suspended items, reloads the orchestrator, and runs an immediate media integrity scan via localhost probe — fixes HLS 401 dead-air."
+            >
+              {busy === "/broadcast-v2/revalidate-sources" ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <ShieldCheck size={13} />
+              )}
+              Revalidate Sources
             </Button>
             <Button
               variant="outline"

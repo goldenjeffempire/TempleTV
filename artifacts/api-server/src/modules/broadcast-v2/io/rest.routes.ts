@@ -1122,6 +1122,80 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     return { ok: true, sequence: broadcastOrchestrator.getSequence() };
   });
 
+  // ── POST /broadcast-v2/revalidate-sources ────────────────────────────
+  //
+  // Comprehensive self-healing recovery action. Performs a full source
+  // revalidation cycle in a single operator click:
+  //
+  //   1. Re-enables all auto-suspended queue items (those blocked ≥5 stall
+  //      reports in a row). This is safe because the HLS-localhost fix means
+  //      the orchestrator now probes via 127.0.0.1 — previous suspensions
+  //      caused by 401 probe failures are no longer valid.
+  //   2. Clears ALL entries from the in-memory bad-URL cache (90 s → 5 min
+  //      TTLs) and resets per-item skip counters, giving every source a
+  //      clean slate.
+  //   3. Resets the queue hash so orchestrator.reloadInner() re-resolves ALL
+  //      items even if the raw DB rows haven't changed since last reload.
+  //   4. Triggers an immediate orchestrator reload so clients see fresh state
+  //      within ~500 ms rather than waiting for the next 10 s drift poll.
+  //   5. Triggers an immediate media integrity scan in the background so
+  //      newly-cleared sources are probed (via localhost) and any still-broken
+  //      URLs are re-flagged before they cause viewer stalls.
+  //
+  // Requires admin auth. Idempotency-keyed (5-min dedup) so double-clicks
+  // from the admin console don't fire two full reload cycles.
+  app.post(
+    "/revalidate-sources",
+    {
+      preHandler: requireAuth("admin"),
+      bodyLimit: 1048576,
+      schema: {
+        body: StopOverrideCommand,
+        response: {
+          200: z.object({
+            ok: z.boolean(),
+            sequence: z.number(),
+            reEnabledItems: z.number(),
+            duplicate: z.boolean().optional(),
+          }),
+          400: _400err,
+          429: _429err,
+        },
+      },
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+    },
+    async (req, _reply) => {
+      const body = req.body as z.infer<typeof StopOverrideCommand>;
+      if (!checkIdempotency(body.idempotencyKey)) {
+        return { ok: true, sequence: broadcastOrchestrator.getSequence(), reEnabledItems: 0, duplicate: true };
+      }
+
+      // Step 1: Re-enable all auto-suspended items.
+      const reEnabledItems = await reEnableAllSuspended();
+
+      // Step 2: Clear bad-URL cache + skip counters (clearAllBadUrls resets counts too).
+      clearAllBadUrls();
+
+      // Step 3: Reset queue hash so reloadInner() re-resolves everything.
+      broadcastOrchestrator.resetQueueHash();
+
+      // Step 4: Reload orchestrator immediately.
+      await broadcastOrchestrator.reload();
+
+      // Step 5: Trigger immediate media integrity scan in background.
+      void mediaIntegrityScanner.scan().catch((err: unknown) => {
+        logger.warn({ err }, "[broadcast-v2] revalidate-sources: background scan failed (non-fatal)");
+      });
+
+      logger.info(
+        { reEnabledItems, sequence: broadcastOrchestrator.getSequence() },
+        "[broadcast-v2] revalidate-sources: full recovery cycle complete",
+      );
+
+      return { ok: true, sequence: broadcastOrchestrator.getSequence(), reEnabledItems };
+    },
+  );
+
   // ── Natural item end ─────────────────────────────────────────────────
   // Called by player clients when a video finishes playing before the
   // server's scheduled wall-clock slot expires (i.e. durationSecs on the

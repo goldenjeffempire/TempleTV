@@ -440,6 +440,14 @@ const Env = z.object({
     .transform((v) => v === true || v === "true" || v === "1")
     .default(false),
   HLS_TOKEN_SECRET: z.string().optional(),
+  // Pre-shared secret for internal server-to-server HLS requests.
+  // When set, any HTTP request carrying `X-Internal-Token: <secret>` bypasses
+  // REQUIRE_HLS_TOKEN validation in the /api/hls/* proxy — identical in effect
+  // to coming from 127.0.0.1, but works across multi-node deployments and
+  // reverse-proxy topologies where the source IP is not loopback.
+  // Generate a strong random value: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+  // Leave unset to rely solely on loopback-IP detection (single-node setups).
+  INTERNAL_HLS_BYPASS_SECRET: z.string().min(16).optional(),
   // ── YouTube PubSubHubbub webhook security ─────────────────────────────────
   // Optional shared secret for YouTube WebSub. When set, the hub will sign
   // each POST with X-Hub-Signature: sha1=<hmac> and the server will verify
