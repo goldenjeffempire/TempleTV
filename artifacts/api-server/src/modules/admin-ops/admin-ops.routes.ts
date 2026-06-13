@@ -3901,7 +3901,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         tags: ["admin-ops"],
         summary: "Slowest SQL queries from pg_stat_statements + in-process request ring buffer",
         querystring: z.object({
-          limit: z.coerce.number().int().min(1).max(100).default(20),
+          limit: z.coerce.number().int().min(1).default(20).catch(20).transform(v => Math.min(v, 100)),
           minMs: z.coerce.number().int().nonnegative().default(500),
         }),
         response: {

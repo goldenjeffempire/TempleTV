@@ -44,7 +44,7 @@ export async function auditLogRoutes(app: FastifyInstance) {
         tags: ["admin"],
         summary: "Get admin activity audit log (latest 200 entries)",
         querystring: z.object({
-          limit: z.coerce.number().int().min(1).max(200).default(100),
+          limit: z.coerce.number().int().min(1).default(100).catch(100).transform(v => Math.min(v, 200)),
           // Page offset into the merged, sorted result set. Without this, the
           // endpoint is stuck at the first `limit` entries regardless of how
           // many rows exist across the source tables.

@@ -44,7 +44,7 @@ const PostChatBodySchema = z.object({
 });
 
 const ChatHistoryQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(200).default(50),
+  limit: z.coerce.number().int().min(1).default(50).catch(50).transform(v => Math.min(v, 200)),
   before: z.string().datetime().optional(),
 });
 

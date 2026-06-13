@@ -455,6 +455,44 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 /**
+ * Backend-enforced maximums for list endpoints.
+ * Keep these in sync with the Zod schemas in api-server/src/modules/.
+ */
+export const API_LIMIT_MAX = {
+  users:           500,
+  adminVideos:     200,
+  notifications:   200,
+  feedback:        200,
+  auditLog:        200,
+  chat:            200,
+  appVersions:     200,
+  prayers:         200,
+  scheduledNotifs: 200,
+  media:           100,
+  ytSyncHistory:   100,
+  slowQueries:     100,
+  series:           50,
+  featured:         50,
+  videos:          500,
+  watchHistory:    500,
+} as const;
+
+/**
+ * Clamp a limit parameter to the allowed range [min, max] before sending it
+ * to the API.  Handles NaN, Infinity, floats, and negatives gracefully so we
+ * never trigger a backend validation error.
+ *
+ * @param value  – the desired page size
+ * @param max    – the backend-enforced maximum (use API_LIMIT_MAX)
+ * @param min    – minimum allowed value (default 1)
+ * @returns      a safe integer in [min, max]
+ */
+export function clampLimit(value: number, max: number, min = 1): number {
+  if (!Number.isFinite(value) || isNaN(value)) return Math.min(max, 25);
+  return Math.min(Math.max(Math.round(value), min), max);
+}
+
+/**
  * Returns true for network-level and server-startup errors that are typically
  * transient. Use this to render the softer amber "Reconnecting…" ErrorAlert
  * style instead of the destructive red banner.

@@ -105,7 +105,7 @@ const ListQuerySchema = z.object({
   // is ~1 MB — acceptable for a one-shot cold-start fetch. Callers needing
   // bulk export should use the admin API. Was briefly lowered to 200 which
   // caused a 400 → "Couldn't load videos" error on the mobile home screen.
-  limit: z.coerce.number().int().min(1).max(500).default(50),
+  limit: z.coerce.number().int().min(1).default(50).catch(50).transform(v => Math.min(v, 500)),
   page: z.coerce.number().int().min(1).default(1),
   search: z.string().trim().max(200).optional(),
   category: z.string().trim().max(100).optional(),
@@ -604,7 +604,7 @@ export async function videosRoutes(app: FastifyInstance) {
         tags: ["videos"],
         summary: "Featured videos — top 12 by view count",
         querystring: z.object({
-          limit: z.coerce.number().int().min(1).max(50).default(12),
+          limit: z.coerce.number().int().min(1).default(12).catch(12).transform(v => Math.min(v, 50)),
         }),
         response: { 200: z.object({ videos: z.array(PublicVideoSchema) }), 429: z.object({ error: z.string() }) },
       },

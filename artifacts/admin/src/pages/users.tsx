@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, HttpError, isTransientError} from "@/lib/api";
+import { api, HttpError, isTransientError, clampLimit, API_LIMIT_MAX } from "@/lib/api";
 import { useAuth } from "@/contexts/use-auth";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
@@ -56,7 +56,7 @@ export default function UsersPage() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["users", roleFilter, debouncedSearch],
     queryFn: () => {
-      const params = new URLSearchParams({ limit: "200" });
+      const params = new URLSearchParams({ limit: String(clampLimit(200, API_LIMIT_MAX.users)) });
       if (roleFilter !== "all") params.set("role", roleFilter);
       if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
       return api.get<{ items: AdminUser[]; total: number }>(`/admin/users?${params}`);

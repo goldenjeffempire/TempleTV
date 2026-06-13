@@ -108,7 +108,7 @@ export async function youtubeSyncRoutes(app: FastifyInstance) {
       config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
         tags: ["admin"],
         summary: "YouTube sync history log",
-        querystring: z.object({ limit: z.coerce.number().int().min(1).max(100).default(20) }),
+        querystring: z.object({ limit: z.coerce.number().int().min(1).default(20).catch(20).transform(v => Math.min(v, 100)) }),
         security: [{ bearerAuth: [] }],
         response: {
           200: z.object({

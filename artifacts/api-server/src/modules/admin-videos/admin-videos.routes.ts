@@ -85,8 +85,8 @@ const VideoRowSchema = z.object({
 const ListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   // Accept "limit" (canonical) or "pageSize" (legacy admin SPA param name).
-  limit: z.coerce.number().int().min(1).max(200).default(20),
-  pageSize: z.coerce.number().int().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).default(20).catch(20).transform(v => Math.min(v, 200)),
+  pageSize: z.coerce.number().int().min(1).max(200).optional().catch(undefined),
   search: z.string().trim().max(200).optional(),
   category: z.string().trim().max(100).optional(),
   source: z.enum(["youtube", "local", "hls"]).optional(),

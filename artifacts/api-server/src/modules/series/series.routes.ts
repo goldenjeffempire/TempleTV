@@ -42,7 +42,7 @@ export async function seriesRoutes(app: FastifyInstance) {
         summary: "List all published sermon series",
         querystring: z.object({
           category: z.string().optional(),
-          limit: z.coerce.number().int().positive().max(50).optional().default(20),
+          limit: z.coerce.number().int().positive().optional().default(20).catch(20).transform(v => Math.min(v, 50)),
           offset: z.coerce.number().int().nonnegative().optional().default(0),
         }),
         response: {

@@ -12,7 +12,7 @@ export const AdminUserSchema = z.object({
 });
 
 export const ListUsersQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(25),
+  limit: z.coerce.number().int().min(1).default(25).catch(25).transform(v => Math.min(v, 500)),
   offset: z.coerce.number().int().nonnegative().default(0),
   role: z.string().optional(),
   search: z.string().min(1).max(120).optional(),

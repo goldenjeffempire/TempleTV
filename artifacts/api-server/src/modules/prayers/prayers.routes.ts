@@ -31,7 +31,7 @@ const PrayerSchema = z.object({
 
 const ListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(200).default(25),
+  limit: z.coerce.number().int().min(1).default(25).catch(25).transform(v => Math.min(v, 200)),
   unread: z
     .union([z.literal("true"), z.literal("false")])
     .optional()

@@ -19,7 +19,7 @@ export const MediaItemSchema = z.object({
 });
 
 export const ListMediaQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(20),
+  limit: z.coerce.number().int().min(1).default(20).catch(20).transform(v => Math.min(v, 100)),
   offset: z.coerce.number().int().nonnegative().default(0),
   category: z.string().optional(),
   featured: z.coerce.boolean().optional(),

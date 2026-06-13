@@ -137,7 +137,7 @@ export async function userRoutes(app: FastifyInstance) {
         summary: "List all favorited videos for the authenticated user",
         security: [{ bearerAuth: [] }],
         querystring: z.object({
-          limit:  z.coerce.number().int().min(1).max(200).default(50),
+          limit:  z.coerce.number().int().min(1).default(50).catch(50).transform(v => Math.min(v, 200)),
           offset: z.coerce.number().int().min(0).default(0),
         }),
         response: {
@@ -278,7 +278,7 @@ export async function userRoutes(app: FastifyInstance) {
         tags: ["user"],
         summary: "Watch history alias (same as GET /user/history)",
         security: [{ bearerAuth: [] }],
-        querystring: z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }),
+        querystring: z.object({ limit: z.coerce.number().int().min(1).default(100).catch(100).transform(v => Math.min(v, 500)) }),
         response: {
           200: z.object({ history: z.array(HistoryItemSchema) }),
           429: z.object({ error: z.string() }),
@@ -315,7 +315,7 @@ export async function userRoutes(app: FastifyInstance) {
         tags: ["user"],
         summary: "List watch history for the authenticated user (newest first)",
         security: [{ bearerAuth: [] }],
-        querystring: z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }),
+        querystring: z.object({ limit: z.coerce.number().int().min(1).default(100).catch(100).transform(v => Math.min(v, 500)) }),
         response: {
           200: z.object({ history: z.array(HistoryItemSchema) }),
           429: z.object({ error: z.string() }),

@@ -164,7 +164,7 @@ export async function scheduledNotificationsRoutes(app: FastifyInstance) {
         tags: ["admin"],
         summary: "List permanently-failed scheduled notifications (exhausted max_attempts)",
         querystring: z.object({
-          limit: z.coerce.number().int().positive().max(200).default(50),
+          limit: z.coerce.number().int().positive().default(50).catch(50).transform(v => Math.min(v, 200)),
         }),
         response: {
           200: z.object({
