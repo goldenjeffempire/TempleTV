@@ -3,6 +3,13 @@ name: HLS probe localhost bypass — orchestrator + scanner 401 fix
 description: Root cause and fix for 401 errors when orchestrator/scanner probe HLS URLs that use API_ORIGIN as their hostname. Applies to any deployment where API_ORIGIN is the external canonical URL.
 ---
 
+## REQUIRE_HLS_TOKEN must NOT block viewer routes
+
+REQUIRE_HLS_TOKEN=true was blocking all public viewers (TV, mobile, web) who don't send ?t=TOKEN.
+**Fix**: The HEAD and GET /hls/:videoId/* route handlers no longer check REQUIRE_HLS_TOKEN. These routes are intentionally public — the private S3 bucket is already protected by the server acting as a proxy. Token enforcement (if ever needed) must be done at the CDN layer, not the API origin.
+
+The env var REQUIRE_HLS_TOKEN is retained only for the token-signing infrastructure (makeHlsToken/validateHlsToken) used by internal orchestrator probes — it no longer gates any viewer request.
+
 ## The Problem
 
 `probeUrlReachability()` in `broadcast-orchestrator.ts` and the `probeHlsManifest()` / `probeUrl()` functions in `media-integrity-scanner.ts` probe HLS URLs using the fully-normalized form (e.g. `https://api.templetv.org.ng/api/hls/VIDEO_ID/master.m3u8?t=TOKEN`).

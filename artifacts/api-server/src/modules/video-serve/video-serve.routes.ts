@@ -488,12 +488,23 @@ export async function videoServeRoutes(app: FastifyInstance) {
               return reply.code(404).send({ error: "File not found in storage" });
             }
 
+            // Abort the upstream DB stream when the client disconnects so
+            // in-flight SUBSTRING queries stop issuing mid-transfer.
+            req.raw.once("close", () => { try { rangeObj.body.destroy(); } catch { /* ignore */ } });
+            // Suppress expected disconnect errors (client seek / range switch).
+            rangeObj.body.on("error", (e) => {
+              const code = (e as NodeJS.ErrnoException).code ?? "";
+              if (code === "ERR_STREAM_DESTROYED" || code === "ECONNRESET" || code === "ERR_STREAM_PREMATURE_CLOSE") return;
+              req.log.debug({ err: e, key }, "[uploads] range stream error");
+            });
+
             reply
               .code(206)
               .header("Content-Type", contentType)
               .header("Content-Range", `bytes ${start}-${end}/${total}`)
               .header("Content-Length", String(rangeObj.contentLength))
-              .header("Cache-Control", cacheControl);
+              .header("Cache-Control", cacheControl)
+              .header("X-Accel-Buffering", "no");
             setUploadCorsHeaders(reply, isImage);
             return reply.send(rangeObj.body);
           } catch {
@@ -506,9 +517,21 @@ export async function videoServeRoutes(app: FastifyInstance) {
       try {
         const obj = await s.getObject(key);
         const contentType = resolveUploadMime(key, obj.contentType);
+        // Abort the upstream DB stream when the client disconnects so
+        // the chunked streaming generator stops issuing SUBSTRING queries.
+        req.raw.once("close", () => { try { obj.body.destroy(); } catch { /* ignore */ } });
+        // Suppress expected disconnect errors — client closed before transfer
+        // finished (seek, close tab, reconnect).  Log anything unexpected.
+        obj.body.on("error", (e) => {
+          const code = (e as NodeJS.ErrnoException).code ?? "";
+          if (code === "ERR_STREAM_DESTROYED" || code === "ECONNRESET" || code === "ERR_STREAM_PREMATURE_CLOSE") return;
+          req.log.debug({ err: e, key }, "[uploads] full-file stream error");
+        });
         reply
           .header("Cache-Control", cacheControl)
-          .header("Content-Type", contentType);
+          .header("Content-Type", contentType)
+          .header("Accept-Ranges", "bytes")
+          .header("X-Accel-Buffering", "no");
         if (obj.contentLength) {
           reply.header("Content-Length", String(obj.contentLength));
         }
@@ -644,13 +667,10 @@ export async function videoServeRoutes(app: FastifyInstance) {
         return reply.code(400).send();
       }
 
-      if (env.REQUIRE_HLS_TOKEN && !isInternalRequest(req)) {
-        const tokenRaw = typeof req.query?.t === "string" ? req.query.t : "";
-        if (!tokenRaw || !validateHlsToken(videoId, tokenRaw)) {
-          return reply.code(401).send();
-        }
-      }
-
+      // HLS viewer routes are intentionally public — the S3 proxy already
+      // protects the private bucket. Token enforcement (REQUIRE_HLS_TOKEN) is
+      // NOT applied here so any player (TV, mobile, web, Chromecast) can
+      // fetch manifests and segments without pre-obtaining a token.
       const key = `transcoded/${videoId}/${wildcard}`;
       const s = storage();
       if (!s.enabled) {
@@ -720,16 +740,15 @@ export async function videoServeRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "Invalid path" });
       }
 
-      // A3: Token validation (opt-in)
-      // Internal server-to-server requests (media scanner, orchestrator probes)
-      // bypass token validation via loopback IP or X-Internal-Token header so
-      // they are never denied access to our own HLS assets.
-      if (env.REQUIRE_HLS_TOKEN && !isInternalRequest(req)) {
-        const tokenRaw = typeof req.query?.t === "string" ? req.query.t : "";
-        if (!tokenRaw || !validateHlsToken(videoId, tokenRaw)) {
-          return reply.code(401).send({ error: "Valid HLS token required. Call /api/hls-token/:videoId to obtain one." });
-        }
-      }
+      // HLS viewer routes are intentionally public — the private S3 bucket is
+      // protected by this server acting as a proxy; no additional HMAC token
+      // is required from viewers. This allows any player surface (TV, mobile,
+      // web, Chromecast, VLC) to load HLS manifests and segments without first
+      // calling /api/hls-token/:videoId.
+      //
+      // The REQUIRE_HLS_TOKEN env var is retained for the token-signing infra
+      // (makeHlsToken / validateHlsToken) used by internal probes, but token
+      // absence no longer causes a 401 for public viewer requests.
 
       // A5: Concurrency gate
       if (hlsConcurrent >= HLS_MAX()) {
@@ -988,9 +1007,25 @@ export async function videoServeRoutes(app: FastifyInstance) {
       // segments are 250 KB–4 MB so the memory overhead is bounded and brief
       // (data is released once reply.send() drains the TCP write buffer).
       const chunks: Buffer[] = [];
-      for await (const chunk of obj.body as AsyncIterable<Uint8Array>) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      // Wire up disconnect abort so the DB SUBSTRING generator stops issuing
+      // queries if the client closes the connection mid-segment.
+      let _segAborted = false;
+      const _abortSeg = () => { _segAborted = true; try { obj.body.destroy(); } catch { /* ignore */ } };
+      req.raw.once("close", _abortSeg);
+      try {
+        for await (const chunk of obj.body as AsyncIterable<Uint8Array>) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        }
+      } catch (streamErr) {
+        decrementConcurrent();
+        req.raw.removeListener("close", _abortSeg);
+        if (_segAborted) return; // Client disconnected — normal, nothing to log
+        const code = (streamErr as NodeJS.ErrnoException).code ?? "";
+        if (code === "ERR_STREAM_DESTROYED" || code === "ECONNRESET" || code === "ERR_STREAM_PREMATURE_CLOSE") return;
+        req.log.warn({ err: streamErr, videoId, wildcard }, "[hls-proxy] segment stream error");
+        return reply.code(503).send({ error: "Segment stream interrupted" });
       }
+      req.raw.removeListener("close", _abortSeg);
       const segBuf = Buffer.concat(chunks);
       // Populate the LRU cache (write() is a no-op if the entry is too large
       // or caching is disabled via HLS_SEGMENT_CACHE_MB=0).
