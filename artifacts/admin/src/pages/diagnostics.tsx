@@ -260,11 +260,27 @@ function SectionSkeleton() {
 }
 
 function MemoryHistorySection() {
-  const { data } = useQuery<MemoryDiagnostics>({
+  const { data, isLoading, isError } = useQuery<MemoryDiagnostics>({
     queryKey: ["diagnostics", "memory"],
-    staleTime: Infinity,
-    retry: false,
+    queryFn: () => api.get<MemoryDiagnostics>("/admin/diagnostics/memory"),
+    staleTime: 30_000,
+    retry: 1,
+    retryDelay: 5_000,
   });
+
+  if (isLoading) {
+    return (
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground/70">
+          Memory History
+        </h2>
+        <SectionSkeleton />
+      </section>
+    );
+  }
+
+  if (isError) return null;
+
   const samples = data?.memorySamples ?? [];
   if (samples.length < 2) return null;
 
