@@ -461,14 +461,16 @@ services:
         sync: false
 
       # ── HLS token auth ─────────────────────────────────────────────────────
-      # When REQUIRE_HLS_TOKEN=true, each /api/hls/* request must carry a
-      # short-lived signed token. This prevents direct link sharing or embed
-      # scraping of HLS streams. Disabled by default so existing players keep
-      # working — enable once all player surfaces have been updated to request
-      # a token from POST /api/v1/hls/token before each play session.
-      # HLS_TOKEN_SECRET: generate with `openssl rand -hex 32`, store in Secrets.
+      # HLS viewer routes (GET/HEAD /api/hls/*) are intentionally public — the
+      # private object-storage bucket is already protected by this server acting
+      # as a proxy. All player surfaces (TV, mobile, web, Chromecast, VLC) can
+      # load manifests and segments without a signed token.
+      #
+      # REQUIRE_HLS_TOKEN is kept here as an explicit false so the Render.com
+      # dashboard cannot accidentally override it to true and re-block viewers.
+      # HLS_TOKEN_SECRET is retained for internal orchestrator probe signing.
       - key: REQUIRE_HLS_TOKEN
-        sync: false
+        value: "false"
       - key: HLS_TOKEN_SECRET
         sync: false
 
