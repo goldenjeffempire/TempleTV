@@ -21,17 +21,17 @@ const bytea = customType<{ data: Buffer }>({
  * One row per chunked-upload session initiated by the admin VideoUploadModal.
  *
  * storageBackend:
- *   's3'         — chunks are being (or were) uploaded as S3 multipart parts
- *   'db_fallback'— S3 was unreachable at session-init time; chunks are stored
- *                  as BYTEA in upload_chunks.fallback_data and will be pushed
- *                  to S3 during finalization when S3 becomes available again.
+ *   'db'         — chunks are stored as multipart parts in storage_blobs (normal path).
+ *                  This is the default; the init route always writes "db" explicitly.
+ *   'db_fallback'— createMultipartUpload failed; chunks are stored as raw BYTEA rows
+ *                  in upload_chunks.fallback_data and assembled directly at finalize.
  */
 export const uploadSessionsTable = pgTable(
   "upload_sessions",
   {
     sessionId: text("session_id").primaryKey(),
-    uploadId: text("upload_id"),           // S3 multipart UploadId (null in db_fallback mode)
-    objectKey: text("object_key"),         // S3 object key (null in db_fallback until finalize)
+    uploadId: text("upload_id"),           // DB multipart UploadId (null in db_fallback mode)
+    objectKey: text("object_key"),         // DB storage key (null in db_fallback until finalize)
     title: text("title").notNull(),
     description: text("description").notNull().default(""),
     category: text("category").notNull().default("sermon"),
@@ -45,7 +45,7 @@ export const uploadSessionsTable = pgTable(
     mimeType: text("mime_type"),
     durationSecs: integer("duration_secs"),
     uploadedBy: text("uploaded_by"),
-    storageBackend: text("storage_backend").notNull().default("s3"),
+    storageBackend: text("storage_backend").notNull().default("db"),
     status: text("status").notNull().default("uploading"),
     completedVideoId: text("completed_video_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -62,13 +62,14 @@ export const uploadSessionsTable = pgTable(
 /**
  * Per-chunk tracking record.
  *
- * storageBackend === 's3':         s3Etag is set, fallbackData is null
- * storageBackend === 'db_fallback': fallbackData holds the raw chunk bytes as BYTEA,
- *                                   s3Etag is null
+ * storageBackend === 'db':          s3Etag holds the part ETag from storage().uploadPart();
+ *                                   fallbackData is null (part data lives in storage_blobs).
+ * storageBackend === 'db_fallback': fallbackData holds the raw chunk bytes as BYTEA;
+ *                                   s3Etag is null.
  *
- * The BYTEA column is nullable so S3 sessions don't incur the storage overhead.
- * During rescue finalization the server streams fallbackData rows to S3 chunk-by-chunk
- * (combining them into ≥5 MiB parts to satisfy S3's multipart minimum-part-size rule).
+ * The BYTEA column is nullable so normal-path (db) sessions don't incur storage overhead.
+ * During db_fallback finalization the server reads fallbackData rows in order and pipes
+ * them through completeMultipartUpload via iterative PostgreSQL UPDATE concatenation.
  */
 export const uploadChunksTable = pgTable(
   "upload_chunks",
@@ -80,7 +81,7 @@ export const uploadChunksTable = pgTable(
     sizeBytes: integer("size_bytes").notNull(),
     s3Etag: text("s3_etag"),
     fallbackData: bytea("fallback_data"),
-    storageBackend: text("storage_backend").notNull().default("s3"),
+    storageBackend: text("storage_backend").notNull().default("db"),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

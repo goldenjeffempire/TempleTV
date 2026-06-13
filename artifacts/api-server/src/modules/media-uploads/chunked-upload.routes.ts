@@ -439,16 +439,18 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             "[upload] recovered fully-assembled sessions after server restart — video rows preserved",
           );
 
-          // Re-enqueue each recovered video into the broadcast queue.
-          // If the server crashed AFTER completeMultipartUpload but BEFORE the
-          // enqueueIfMissing call in the background assembly task, the blob is
-          // intact and the video row is valid but the queue slot was never created.
-          // Calling enqueueIfMissing here is idempotent (no-ops if already queued)
-          // and ensures recovered videos always appear in the broadcast queue
-          // without requiring an operator to add them manually.
+          // Re-enqueue each recovered video into the broadcast queue and resume
+          // any post-assembly processing (faststart, HLS) that the server crash
+          // interrupted before it could complete.
+          //
+          // All three steps are idempotent:
+          //   • enqueueIfMissing  — no-ops if the queue slot already exists
+          //   • runFaststart      — guarded by faststartApplied=true already set
+          //   • enqueueTranscode  — guarded by hlsMasterUrl IS NOT NULL already set
           for (const videoId of recoveredVideoIds) {
             void (async () => {
               try {
+                // Step 1: Broadcast queue slot.
                 const enqResult = await enqueueIfMissing({ videoId, reason: "upload-recovery-on-restart" });
                 if (enqResult.enqueued) {
                   app.log.info(
@@ -457,10 +459,57 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   );
                   adminEventBus.push("broadcast-queue-updated", { reason: "upload-recovery-enqueue", videoId });
                 }
-              } catch (enqErr) {
+
+                // Step 2: Query current video state to decide what further
+                // processing is still outstanding.
+                const [vRow] = await db
+                  .select({
+                    objectPath: videos.objectPath,
+                    faststartApplied: videos.faststartApplied,
+                    hlsMasterUrl: videos.hlsMasterUrl,
+                    transcodingStatus: videos.transcodingStatus,
+                  })
+                  .from(videos)
+                  .where(eq(videos.id, videoId))
+                  .limit(1);
+
+                if (!vRow?.objectPath) return;
+
+                // Step 3: Faststart — moves the moov atom to the front of the
+                // MP4 so the file is streamable via HTTP range requests.
+                // Also required for midnight-prayers videos to enter rotation
+                // (midnight-prayers service gates on faststartApplied=true for
+                // raw MP4 playback).
+                if (!vRow.faststartApplied) {
+                  try {
+                    await runFaststart(videoId, vRow.objectPath, { skipStatusUpdate: false });
+                    app.log.info({ videoId }, "[upload] recovery: faststart applied to recovered video");
+                  } catch (fsErr) {
+                    app.log.warn(
+                      { err: fsErr, videoId },
+                      "[upload] recovery: faststart failed for recovered video (non-fatal) — video is still broadcast-ready but not midnight-prayers eligible",
+                    );
+                  }
+                }
+
+                // Step 4: HLS transcoding — re-read faststartApplied after the
+                // step above so we use the freshest state.
+                if (!vRow.hlsMasterUrl) {
+                  try {
+                    await enqueueTranscode({ videoId, videoPath: vRow.objectPath });
+                    if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
+                    app.log.info({ videoId }, "[upload] recovery: HLS transcoding queued for recovered video");
+                  } catch (txErr) {
+                    app.log.warn(
+                      { err: txErr, videoId },
+                      "[upload] recovery: enqueueTranscode failed for recovered video (non-fatal)",
+                    );
+                  }
+                }
+              } catch (err) {
                 app.log.warn(
-                  { err: enqErr, videoId },
-                  "[upload] recovery: enqueueIfMissing failed for recovered video (non-fatal)",
+                  { err, videoId },
+                  "[upload] recovery: post-assembly processing failed for recovered video (non-fatal)",
                 );
               }
             })();

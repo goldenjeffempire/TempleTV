@@ -194,10 +194,19 @@ export const SAFE_VIDEO_COLS = {
   sourceCleanupAfter:    videos.sourceCleanupAfter,
   sourceDeletedAt:       videos.sourceDeletedAt,
   sourceCleanupAttempts: videos.sourceCleanupAttempts,
-  // Late-added boolean columns — hardcoded false so no column reference appears
-  // in the SQL until the migration adds them (next Render deploy via push-force).
+  // Late-added boolean columns — hardcoded safe fallbacks so no column
+  // reference appears in the SQL until the migration adds them.
+  //
+  // metadataLocked / broadcastOnly default to false: safe conservative values
+  // (metadata is editable; video is not hidden from the public catalog).
+  //
+  // faststartApplied uses NULL (not false) because false means "faststart
+  // explicitly ran and FAILED" — an important semantic distinction in the
+  // queue-integrity validator (=== false check) and midnight-prayers service.
+  // NULL means "never attempted / unknown", which is the correct fallback for
+  // a pre-migration DB that lacks the column entirely.
   metadataLocked:   sql<boolean>`false`,
-  faststartApplied: sql<boolean>`false`,
+  faststartApplied: sql<boolean | null>`NULL::boolean`,
   broadcastOnly:    sql<boolean>`false`,
   // Late-added text columns — hardcoded NULL so no column reference appears
   // in the SQL until the migration adds them.
