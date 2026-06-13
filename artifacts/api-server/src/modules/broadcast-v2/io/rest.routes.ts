@@ -20,7 +20,7 @@ import {
 import { requireAuth } from "../../../middleware/auth.js";
 import { broadcastService } from "../../broadcast/broadcast.service.js";
 import { scanLibraryAndEnqueue, listMissingFromQueue } from "../../broadcast/auto-enqueue.service.js";
-import { markBadUrl, markBadUrlWithTtl, clearAllBadUrls, clearBadUrl, getItemsHealth, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, SUSPENSION_TTL_MS, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl } from "../repository/queue.repo.js";
+import { markBadUrl, markBadUrlWithTtl, clearAllBadUrls, clearBadUrl, getItemsHealth, getBadUrlStats, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, SUSPENSION_TTL_MS, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
@@ -1554,24 +1554,33 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     const cleanup = orphanCleanupWorker.getStats();
     const analyticsWindow = 60 * 60_000; // 1 hour
     const analyticsSummary = playbackAnalytics.getReport(analyticsWindow);
-    const itemsHealth = (() => {
+    // When the orchestrator has no in-memory items (all blocked or truly empty),
+    // load directly from DB so operators can see WHICH items are blocked and why.
+    const itemsHealth = await (async () => {
       try {
-        return getItemsHealth(broadcastOrchestrator.getItems().map((i) => ({
-          id: i.id,
-          videoId: null,
-          youtubeId: "",
-          title: "",
-          thumbnailUrl: null,
-          durationSecs: 0,
-          localVideoUrl: i.localVideoUrl ?? null,
-          hlsMasterUrl: i.hlsMasterUrl ?? null,
-          faststartApplied: false,
-          videoDuration: null,
-        })));
+        const memItems = broadcastOrchestrator.getItems();
+        if (memItems.length > 0) {
+          return getItemsHealth(memItems.map((i) => ({
+            id: i.id,
+            videoId: null,
+            youtubeId: "",
+            title: "",
+            thumbnailUrl: null,
+            durationSecs: 0,
+            localVideoUrl: i.localVideoUrl ?? null,
+            hlsMasterUrl: i.hlsMasterUrl ?? null,
+            faststartApplied: false,
+            videoDuration: null,
+          })));
+        }
+        // Nothing in memory — load from DB to expose blocked items.
+        const dbRows = await queueRepo.loadActive();
+        return getItemsHealth(dbRows);
       } catch {
         return {};
       }
     })();
+    const badUrlStats = getBadUrlStats();
 
     return {
       generatedAtMs: Date.now(),
@@ -1589,6 +1598,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         reload: reloadStats,
       },
       sourceHealth: itemsHealth,
+      badUrlCache: badUrlStats,
       autoSuspended: getRecentlySuspended(),
       mediaScan,
       queueValidation,

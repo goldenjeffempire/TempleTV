@@ -497,6 +497,47 @@ class BroadcastOrchestrator extends EventEmitter {
     this.started = true;
     this.startedAtWallMs = Date.now();
 
+    // ── Boot-time dead-air auto-revalidation ─────────────────────────────
+    // After a server restart the bad-URL cache is hydrated from the DB (above).
+    // If all queued items were blocked before the restart (e.g. from a 401
+    // storm caused by a misconfigured auth flag that has since been fixed),
+    // those stale cache entries survive and prevent playback even though the
+    // underlying source is now accessible. This 10-second delayed check
+    // detects that state and immediately clears the bad-URL cache + reloads
+    // so items can resolve — faster than waiting for escalateDeadAir() at 15s.
+    {
+      const bootRevalidateTimer = setTimeout(() => {
+        void (async () => {
+          try {
+            if (!this.started) return;
+            if (this.items.length > 0) return; // already playing — nothing to do
+            const dbCount = await countActiveRaw();
+            if (dbCount === 0) return; // truly empty — library scan handles it
+            logger.warn(
+              { channel: this.channelId, dbCount },
+              "[broadcast-v2] boot: DB has active queue items but none are playable " +
+              "— clearing bad-URL cache and running immediate source revalidation",
+            );
+            await reEnableAllSuspended().catch((err: unknown) => {
+              logger.warn({ err }, "[broadcast-v2] boot: reEnableAllSuspended failed (non-fatal)");
+            });
+            clearAllBadUrls();
+            this.resetQueueHash();
+            await this.reload().catch((err: unknown) => {
+              logger.warn({ err }, "[broadcast-v2] boot: revalidation reload failed (non-fatal)");
+            });
+            logger.info(
+              { channel: this.channelId, itemsAfter: this.items.length },
+              "[broadcast-v2] boot: source revalidation complete",
+            );
+          } catch (err: unknown) {
+            logger.warn({ err }, "[broadcast-v2] boot: source revalidation failed (non-fatal)");
+          }
+        })();
+      }, 10_000);
+      bootRevalidateTimer.unref?.();
+    }
+
     // ── Tick loop (purely computational — no async/DB work ever) ──────────
     this.tickTimer = setInterval(() => this.tick(), TICK_MS);
     this.tickTimer.unref?.();
@@ -2292,7 +2333,11 @@ class BroadcastOrchestrator extends EventEmitter {
             "[broadcast-v2] all-sources-blocked TTL expired — auto-clearing bad-URL cache and reloading",
           );
           clearAllBadUrls();
-          this.scheduleSelfHealReload("all-blocked-ttl-recovery");
+          // Immediate reload — don't use scheduleSelfHealReload (which adds extra
+          // delay) so the orchestrator picks up newly-unblocked items right away.
+          void this.reload().catch((err: unknown) =>
+            logger.warn({ err }, "[broadcast-v2] all-blocked TTL recovery reload failed (non-fatal)"),
+          );
           return;
         }
       }

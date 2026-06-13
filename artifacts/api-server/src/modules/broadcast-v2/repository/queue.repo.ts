@@ -540,18 +540,28 @@ export async function reEnableAllSuspended(): Promise<number> {
  * items, we must look up BOTH the proxied URL (primary check) and the raw
  * normalized URL (backward compat / local sources).
  */
+export interface ItemHealthEntry {
+  status: "ok" | "bad";
+  badUntilMs: number | null;
+  /** How many consecutive probe/stall failures this URL has accumulated. */
+  failureCount: number;
+  /** The resolved URL that is blocked (for operator diagnostics). */
+  blockedUrl: string | null;
+}
+
 export function getItemsHealth(
   rows: RawQueueRow[],
-): Record<string, { status: "ok" | "bad"; badUntilMs: number | null }> {
+): Record<string, ItemHealthEntry> {
   const now = Date.now();
   const ownBase = getOwnBase();
-  const result: Record<string, { status: "ok" | "bad"; badUntilMs: number | null }> = {};
+  const result: Record<string, ItemHealthEntry> = {};
   for (const row of rows) {
     const primary = normalizeQueueUrl(row.hlsMasterUrl ?? row.localVideoUrl);
 
     // For external MP4 sources the cache entry is the proxied URL.
     // For locally-hosted or HLS sources the cache entry is the raw URL.
     let exp: number | undefined;
+    let resolvedBlockedUrl: string | null = null;
 
     if (primary !== null) {
       const isExternal = !isOwnOriginUrl(primary, ownBase);
@@ -562,6 +572,7 @@ export function getItemsHealth(
           badUrlCache.delete(proxied);
           exp = undefined;
         }
+        if (exp !== undefined) resolvedBlockedUrl = proxied;
       }
 
       // Fallback: check the raw/normalized URL for locally-hosted items and
@@ -572,16 +583,44 @@ export function getItemsHealth(
           badUrlCache.delete(primary);
           exp = undefined;
         }
+        if (exp !== undefined) resolvedBlockedUrl = primary;
       }
     }
 
     const isBad = exp !== undefined && exp > now;
+    const failureCount = resolvedBlockedUrl
+      ? (badUrlFailureCounts.get(resolvedBlockedUrl) ?? 0)
+      : (primary ? (badUrlFailureCounts.get(primary) ?? 0) : 0);
+
     result[row.id] = {
       status: isBad ? "bad" : "ok",
       badUntilMs: isBad ? exp! : null,
+      failureCount,
+      blockedUrl: isBad ? resolvedBlockedUrl : null,
     };
   }
   return result;
+}
+
+/**
+ * Returns a snapshot of the bad-URL cache for monitoring and diagnostics.
+ * Cleans up expired entries as a side effect.
+ */
+export function getBadUrlStats(): {
+  blockedCount: number;
+  entries: Array<{ url: string; expiresAtMs: number; failureCount: number }>;
+} {
+  const now = Date.now();
+  const entries: Array<{ url: string; expiresAtMs: number; failureCount: number }> = [];
+  for (const [url, exp] of badUrlCache) {
+    if (exp <= now) {
+      badUrlCache.delete(url);
+    } else {
+      entries.push({ url, expiresAtMs: exp, failureCount: badUrlFailureCounts.get(url) ?? 0 });
+    }
+  }
+  entries.sort((a, b) => b.expiresAtMs - a.expiresAtMs);
+  return { blockedCount: entries.length, entries };
 }
 
 const q = schema.broadcastQueueTable;
