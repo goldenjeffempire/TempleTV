@@ -488,12 +488,12 @@ const Env = z.object({
   //   Per concurrent request (external Buffer)   :  8 MiB
   //   Node.js + API baseline RSS                 : ~300 MiB
   //
-  //   At HLS_MAX_CONCURRENT=10 (default):
+  //   At HLS_MAX_CONCURRENT=10 (Replit default — constrained host):
   //     V8 hex strings  : 10 × 16 MiB = 160 MiB
   //     External buffers: 10 ×  8 MiB =  80 MiB
   //     Total peak RSS  : ~540 MiB    (well under MEMORY_RESTART_RSS_MB=1536 ✓)
   //
-  //   At HLS_MAX_CONCURRENT=20 (production default):
+  //   At HLS_MAX_CONCURRENT=20:
   //     V8 hex strings  : 20 × 16 MiB = 320 MiB
   //     External buffers: 20 ×  8 MiB = 160 MiB
   //     Total peak RSS  : ~780 MiB    (fits MEMORY_RESTART_RSS_MB=1536 ✓)
@@ -502,9 +502,9 @@ const Env = z.object({
   //     Total peak RSS  : ~1020 MiB   — safe on ≥ 2 GiB hosts, OOM on 512 MiB
   //
   // Recommended values by deployment size:
-  //   Production  (--max-old-space-size=2048, ≥ 4 GiB host) : 30  (set via env)
-  //   Production  (--max-old-space-size=1536, ≥ 2 GiB host) : 20  (set via env)
-  //   Constrained (--max-old-space-size=256,  512 MiB host)  :  5  (render free)
+  //   Replit / constrained (≤ 2 GiB)                           : 10 (default)
+  //   Production  (--max-old-space-size=1536, ≥ 2 GiB host)   : 20 (set via env)
+  //   Production  (--max-old-space-size=2048, ≥ 4 GiB host)   : 30 (set via env)
   //
   // Raise MEMORY_RESTART_RSS_MB proportionally when raising this value.
   // video-serve.routes.ts emits a startup WARN when the budget would overflow.
@@ -514,10 +514,11 @@ const Env = z.object({
   // Segments are content-addressed (never mutated after write) so caching them
   // is always safe. A cache HIT bypasses both DB queries + a pool connection,
   // cutting per-segment latency from ~30–60 ms (DB BYTEA fetch) to <1 ms.
-  // Each 2-second segment is ~250 KB–2 MB; 64 MB holds 32–256 warm segments
-  // which covers the entire active broadcast window for a typical live service.
-  // Set to 0 to disable. Max 512 MB (capped for OOM safety on constrained hosts).
-  HLS_SEGMENT_CACHE_MB: z.coerce.number().int().min(0).max(512).default(64),
+  // Each 2-second segment is ~250 KB–2 MB; 32 MB holds 16–128 warm segments
+  // which covers a typical broadcast window while halving the permanent
+  // Buffer allocation vs the previous 64 MB default. Set to 0 to disable.
+  // Max 512 MB (capped for OOM safety on constrained hosts).
+  HLS_SEGMENT_CACHE_MB: z.coerce.number().int().min(0).max(512).default(32),
 
   // How long (ms) to wait after SIGTERM before starting to close services.
   // During this window /healthz returns HTTP 503 so the upstream load balancer

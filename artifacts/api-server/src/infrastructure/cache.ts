@@ -36,8 +36,14 @@ class MemoryCache implements Cache {
    * moves to the tail (most-recently-used). On overflow we evict from
    * the head (least-recently-used). This is O(1) for all operations
    * because Map iteration starts at the insertion head.
+   *
+   * MAX_SIZE is kept modest (1,000 entries) — the video catalog has ≤ 50
+   * pages, broadcast/channel responses are a handful of keys, and the
+   * short TTLs (3–300 s) mean hot entries expire quickly. 10,000 was
+   * excessive and allowed the map to fill with stale JSON objects that
+   * V8 couldn't reclaim until accessed again.
    */
-  private readonly MAX_SIZE = 10_000;
+  private readonly MAX_SIZE = 1_000;
   private map = new Map<string, { v: unknown; expiresAt: number | null }>();
   private readonly _inflight = new Map<string, Promise<unknown>>();
   readonly backend = "memory" as const;
@@ -93,6 +99,24 @@ class MemoryCache implements Cache {
       if (v.expiresAt !== null && v.expiresAt < now) this.map.delete(k);
     }
     return this.map.size;
+  }
+
+  /**
+   * Proactively sweep all expired entries from the map and return the count
+   * of entries removed. Called on a background interval AND by the memory
+   * watchdog during RSS / heap-growth pressure events so stale JSON objects
+   * are freed before V8 is forced to trigger a GC cycle.
+   */
+  purgeExpired(): number {
+    const now = Date.now();
+    let purged = 0;
+    for (const [k, v] of this.map) {
+      if (v.expiresAt !== null && v.expiresAt < now) {
+        this.map.delete(k);
+        purged++;
+      }
+    }
+    return purged;
   }
 }
 
@@ -164,7 +188,39 @@ export function cache(): Cache {
   logger.info({ backend: _cache.backend }, "cache backend resolved");
   // Register under a stable name for diagnostics introspection.
   registerNamedCache("main", _cache);
+
+  // Background TTL sweep for the in-process cache.
+  // Lazy eviction (evict only on access) leaves expired entries occupying
+  // heap until something reads their key again — on a 24/7 server with
+  // short-TTL broadcast/catalog entries this can be never. The sweep runs
+  // every 60 s and frees those objects without waiting for an access hit.
+  // Redis manages its own TTL server-side so the sweep is a no-op there.
+  if (_cache.backend === "memory") {
+    const memCache = _cache as MemoryCache;
+    const sweepInterval = setInterval(() => {
+      try {
+        const purged = memCache.purgeExpired();
+        if (purged > 0) {
+          logger.debug({ purged }, "cache: background TTL sweep freed expired entries");
+        }
+      } catch {
+        // non-fatal
+      }
+    }, 60_000);
+    sweepInterval.unref();
+  }
+
   return _cache;
+}
+
+/**
+ * Proactively sweep expired entries from the in-process cache.
+ * Called by the memory watchdog during RSS / heap-growth pressure events.
+ * Returns 0 when the backend is Redis (TTL managed server-side).
+ */
+export function purgeExpiredCacheEntries(): number {
+  if (!_cache || _cache.backend !== "memory") return 0;
+  return (_cache as MemoryCache).purgeExpired();
 }
 
 // ── Named cache registry ──────────────────────────────────────────────────────

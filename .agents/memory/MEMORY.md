@@ -1,3 +1,4 @@
+- [HLS concurrency memory budget](hls-concurrency-memory-budget.md) — HLS_MAX_CONCURRENT must stay ≤10 on Replit; 20 concurrent = 480 MiB from HLS alone; MemoryCache MAX_SIZE 10k→1k + 60s sweep.
 - [Upload lifecycle audit — 3 pipeline fixes](upload-lifecycle-audit-fixes.md) — resetFaststartOrphans missing enqueueTranscode call; fillQueueFromLibrary queued pre-committed blobs; pre-commit transcodingStatus 'queued'→'none'.
 - [forceRebind vs forceReconnect — player overlay buttons](forcereconn-vs-forcerebind.md) — overlay "Try Again"/"Tap to reconnect" must call forceRebind (machine.requestManualRebind + transport.forceReconnect), NOT forceReconnect alone; both web and RN hooks must expose forceRebind.
 - [Upload pipeline recovery gap — faststart + HLS](upload-recovery-faststart-hls.md) — onReady hook called enqueueIfMissing for crash-recovered sessions but never ran faststart or enqueueTranscode; recovered videos skipped midnight-prayers + never got HLS.

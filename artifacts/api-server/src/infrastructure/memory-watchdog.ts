@@ -28,7 +28,7 @@
 import { logger } from "./logger.js";
 import { env } from "../config/env.js";
 import { processRssGauge, SERVICE_LABELS } from "./metrics.js";
-import { sampleNamedStorePeaks, getRegisteredCacheStats } from "./cache.js";
+import { sampleNamedStorePeaks, getRegisteredCacheStats, purgeExpiredCacheEntries } from "./cache.js";
 import { getEventLoopLagMs, isEventLoopLagAlertActive } from "./event-loop-lag.js";
 
 const SAMPLE_INTERVAL_MS = 30_000;
@@ -356,6 +356,17 @@ function sample() {
   // faster than the alert threshold. Previously this only triggered on RSS
   // pressure; adding the heapUsed guard lets the GC reclaim leaked JS objects
   // before they push RSS past the restart threshold, buying recovery time.
+  if (rssAlertActive || heapUsedAlertActive) {
+    // First, flush expired in-process cache entries so the GC has smaller
+    // live-set to scan. This reliably reclaims catalog/broadcast JSON objects
+    // that are past their TTL but haven't been touched (lazy eviction would
+    // leave them in the Map until their key is accessed, which may be never
+    // on a 24/7 server after a video rotation).
+    const purged = purgeExpiredCacheEntries();
+    if (purged > 0) {
+      logger.info({ purged }, "[memory-watchdog] flushed expired cache entries during pressure");
+    }
+  }
   const gcFn = (global as { gc?: () => void }).gc;
   if ((rssAlertActive || heapUsedAlertActive) && gcFn) {
     gcFn();
