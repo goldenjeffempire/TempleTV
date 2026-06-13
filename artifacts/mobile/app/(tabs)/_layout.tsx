@@ -155,6 +155,7 @@ function ClassicTabLayout() {
         <Tabs.Screen
           name="index"
           options={{
+            headerShown: false,
             title: "Watch",
             tabBarIcon: ({ color }) =>
               isIOS ? (
@@ -169,6 +170,7 @@ function ClassicTabLayout() {
         <Tabs.Screen
           name="library"
           options={{
+            headerShown: false,
             title: "Library",
             tabBarIcon: ({ color }) =>
               isIOS ? (
@@ -187,6 +189,7 @@ function ClassicTabLayout() {
         <Tabs.Screen
           name="channels"
           options={{
+            headerShown: false,
             title: "Channel",
             tabBarLabel: "",
             tabBarItemStyle: { paddingTop: 0 },
@@ -229,6 +232,7 @@ function ClassicTabLayout() {
         <Tabs.Screen
           name="radio"
           options={{
+            headerShown: false,
             title: "Radio",
             tabBarIcon: ({ color }) =>
               isIOS ? (
@@ -247,6 +251,7 @@ function ClassicTabLayout() {
         <Tabs.Screen
           name="settings"
           options={{
+            headerShown: false,
             title: "Settings",
             tabBarIcon: ({ color }) =>
               isIOS ? (

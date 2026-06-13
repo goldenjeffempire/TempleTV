@@ -22,7 +22,7 @@ import {
 } from "react-native";
 import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
-import { router, useLocalSearchParams } from "expo-router";
+import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { usePaginatedVideos } from "@/hooks/useVideos";
@@ -703,6 +703,7 @@ export default function LibraryScreen() {
       style={[styles.container, { backgroundColor: c.background, paddingTop: insets.top }]}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
+      <Stack.Screen options={{ headerShown: false }} />
 
       {/* Stale / refresh-fail indicator — only shown in videos mode, only when online
           (NetworkBanner already covers the offline case at the root). */}

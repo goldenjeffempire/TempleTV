@@ -19,7 +19,7 @@ import {
   View,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
@@ -244,6 +244,7 @@ export default function SettingsScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
+      <Stack.Screen options={{ headerShown: false }} />
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingTop: insets.top, paddingBottom: insets.bottom + 100 }}

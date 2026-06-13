@@ -33,7 +33,7 @@ import {
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
@@ -448,6 +448,7 @@ export default function WatchScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
+      <Stack.Screen options={{ headerShown: false }} />
       {/* Search toolbar — safe-area top + search icon only, no branding */}
       <View style={[styles.searchToolbar, { paddingTop: insets.top, backgroundColor: c.background }]}>
         <Pressable

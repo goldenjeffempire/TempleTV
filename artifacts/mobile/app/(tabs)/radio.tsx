@@ -5,6 +5,7 @@
  * Replaces the full stream UI; no RadioStreamContext calls needed here.
  */
 import type { ErrorBoundaryProps } from "expo-router";
+import { Stack } from "expo-router";
 import { ErrorFallback } from "@/components/ErrorFallback";
 
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
@@ -54,6 +55,7 @@ export default function RadioScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
+      <Stack.Screen options={{ headerShown: false }} />
 
       <View style={[styles.body, { paddingTop: insets.top, paddingBottom: insets.bottom + 40 }]}>
         <Animated.View style={[styles.card, { opacity: fadeAnim }]}>

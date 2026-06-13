@@ -18,7 +18,7 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 }
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, Stack } from "expo-router";
 import { useColors } from "@/hooks/useColors";
 import { getApiBase } from "@/lib/apiBase";
 import { fetchChannels, type ApiChannel } from "@/services/api";
@@ -554,6 +554,7 @@ export default function ChannelsTab() {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
+      <Stack.Screen options={{ headerShown: false }} />
 
       <ScrollView
         showsVerticalScrollIndicator={false}
