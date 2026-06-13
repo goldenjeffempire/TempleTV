@@ -25,6 +25,7 @@ import {
 } from "../repository/queue.repo.js";
 import { playbackAnalytics } from "./playback-analytics.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
+import { withHlsToken } from "../../../shared/hls-token.js";
 
 // Channel ID used for runtime state persistence — matches the hardcoded "main"
 // channel used throughout the broadcast-v2 module.
@@ -276,7 +277,7 @@ async function probeHlsManifest(url: string): Promise<{ ok: boolean; status: num
     if (hasStreams && !hasSegments) {
       const variantUrl = extractFirstVariantUrl(text, url);
       if (variantUrl) {
-        const variantProbe = await probeHlsVariant(variantUrl);
+        const variantProbe = await probeHlsVariant(withHlsToken(variantUrl));
         if (!variantProbe.ok) {
           return {
             ok: false,
@@ -415,9 +416,15 @@ class MediaIntegrityScannerImpl {
             try {
               // HLS manifests are validated by fetching and parsing content —
               // a HEAD probe can return 200 for stale CDN-cached empty playlists.
+              // withHlsToken() appends a short-lived HMAC token to internal HLS
+              // proxy URLs when REQUIRE_HLS_TOKEN=true — preventing 401 failures
+              // that would falsely mark healthy assets as unreachable. The bad-URL
+              // tracking below continues to use the original `url` (no token) so
+              // token-rotation doesn't affect circuit-breaker de-duplication.
+              const probeTarget = kind === "hls" ? withHlsToken(url) : url;
               const probe = kind === "hls"
-                ? await probeHlsManifest(url)
-                : await probeUrl(url);
+                ? await probeHlsManifest(probeTarget)
+                : await probeUrl(probeTarget);
               ok = probe.ok;
               httpStatus = probe.status;
               failReason = probe.reason;
@@ -543,6 +550,25 @@ class MediaIntegrityScannerImpl {
 
     this.scanning = false;
     return this.report;
+  }
+
+  /**
+   * Reset all accumulated probe failure counts to zero.
+   *
+   * Call this after fixing an infrastructure issue (e.g. HLS 401 misconfiguration)
+   * so that items which built up consecutive failure counts during the broken period
+   * do not hit the auto-suspension threshold on their next successful probe cycle.
+   * Also persists the cleared state to DB so the reset survives a process restart.
+   */
+  clearFailureCounts(): void {
+    const cleared = this.failureCounts.size;
+    this.failureCounts.clear();
+    void runtimeRepo
+      .saveFailureCounts(CHANNEL_ID, {})
+      .catch((err) => logger.warn({ err }, "[media-scanner] clearFailureCounts: persist failed (non-fatal)"));
+    if (cleared > 0) {
+      logger.info({ cleared }, "[media-scanner] failure counts cleared (self-heal)");
+    }
   }
 }
 

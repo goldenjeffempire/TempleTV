@@ -1,5 +1,6 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import { makeHlsToken, validateHlsToken } from "../../shared/hls-token.js";
 import { desc, eq } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { storage } from "../../infrastructure/storage.js";
@@ -132,35 +133,20 @@ function hlsSegments(): HlsSegmentLru {
 }
 
 // ── A3: HMAC token helpers ────────────────────────────────────────────────────
-const TOKEN_ALGO = "sha256";
+// makeHlsToken / validateHlsToken are imported from the shared module (top of
+// file) so internal services can use the same token logic without duplicating
+// the crypto implementation.
+export { makeHlsToken };
 
-function makeHlsToken(videoId: string): { token: string; expiresAt: number } {
-  const secret = env.HLS_TOKEN_SECRET ?? "temple-tv-hls-default";
-  const expiresAt = Date.now() + env.HLS_TOKEN_TTL_SECONDS * 1000;
-  const payload = `${videoId}:${expiresAt}`;
-  const token = createHmac(TOKEN_ALGO, secret).update(payload).digest("hex");
-  return { token: `${token}:${expiresAt}`, expiresAt };
-}
-
-function validateHlsToken(videoId: string, raw: string): boolean {
-  try {
-    const parts = raw.split(":");
-    if (parts.length !== 2) return false;
-    const [token, expiresAtStr] = parts as [string, string];
-    const expiresAt = parseInt(expiresAtStr, 10);
-    if (isNaN(expiresAt) || Date.now() > expiresAt) return false;
-
-    const secret = env.HLS_TOKEN_SECRET ?? "temple-tv-hls-default";
-    const payload = `${videoId}:${expiresAt}`;
-    const expected = createHmac(TOKEN_ALGO, secret).update(payload).digest("hex");
-    // Timing-safe comparison prevents timing-attack token enumeration
-    const expectedBuf = Buffer.from(expected, "hex");
-    const tokenBuf = Buffer.from(token, "hex");
-    if (expectedBuf.length !== tokenBuf.length) return false;
-    return timingSafeEqual(expectedBuf, tokenBuf);
-  } catch {
-    return false;
-  }
+// ── A3b: Internal loopback bypass ────────────────────────────────────────────
+// Requests that originate from the Node.js process itself (media scanner,
+// orchestrator probes, /reprobe endpoint) always arrive on the loopback
+// interface. These callers cannot include a user-issued token because they
+// are server-to-server; they should never be denied access to our own HLS
+// assets. External clients still require a valid ?t=TOKEN parameter when
+// REQUIRE_HLS_TOKEN is enabled.
+function isLoopbackIp(ip: string): boolean {
+  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
 }
 
 export async function videoServeRoutes(app: FastifyInstance) {
@@ -636,7 +622,7 @@ export async function videoServeRoutes(app: FastifyInstance) {
         return reply.code(400).send();
       }
 
-      if (env.REQUIRE_HLS_TOKEN) {
+      if (env.REQUIRE_HLS_TOKEN && !isLoopbackIp(req.ip ?? "")) {
         const tokenRaw = typeof req.query?.t === "string" ? req.query.t : "";
         if (!tokenRaw || !validateHlsToken(videoId, tokenRaw)) {
           return reply.code(401).send();
@@ -713,7 +699,10 @@ export async function videoServeRoutes(app: FastifyInstance) {
       }
 
       // A3: Token validation (opt-in)
-      if (env.REQUIRE_HLS_TOKEN) {
+      // Internal server-to-server requests (media scanner, orchestrator probes)
+      // originate from 127.0.0.1 — they bypass token validation so they are
+      // never denied access to our own HLS assets without a client-issued token.
+      if (env.REQUIRE_HLS_TOKEN && !isLoopbackIp(req.ip ?? "")) {
         const tokenRaw = typeof req.query?.t === "string" ? req.query.t : "";
         if (!tokenRaw || !validateHlsToken(videoId, tokenRaw)) {
           return reply.code(401).send({ error: "Valid HLS token required. Call /api/hls-token/:videoId to obtain one." });

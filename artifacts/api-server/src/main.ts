@@ -644,6 +644,31 @@ async function main() {
     } catch (err) {
       logger.error({ err }, "[broadcast-v2] orchestrator failed to start (non-fatal)");
     }
+    // HLS self-heal: on every boot, clear any bad-URL marks and accumulated
+    // media-scanner failure counts that were built up during a prior run where
+    // REQUIRE_HLS_TOKEN was enabled but internal probes were getting 401 (before
+    // the loopback bypass was applied). Re-enable any items auto-suspended by
+    // the scanner's circuit breaker. Runs 3 s after boot so the orchestrator's
+    // initial reload completes first; fully non-fatal.
+    void (async () => {
+      await new Promise<void>((resolve) => { const t = setTimeout(resolve, 3_000); t.unref?.(); });
+      try {
+        const { broadcastOrchestrator, mediaIntegrityScanner } = await import("./modules/broadcast-v2/index.js");
+        const { clearAllBadUrls, reEnableAllSuspended } = await import("./modules/broadcast-v2/repository/queue.repo.js");
+        broadcastOrchestrator.resetQueueHash();
+        clearAllBadUrls();
+        mediaIntegrityScanner.clearFailureCounts();
+        const reEnabled = await reEnableAllSuspended();
+        if (reEnabled > 0) {
+          logger.info(
+            { reEnabled },
+            "[startup] HLS self-heal: re-enabled items previously auto-suspended by the media scanner",
+          );
+        }
+      } catch (err) {
+        logger.warn({ err }, "[startup] HLS self-heal failed (non-fatal)");
+      }
+    })();
     // Startup library scan: immediately pull all hls_ready (and other eligible)
     // library videos into the broadcast queue so 24/7 broadcasting begins with a
     // full queue rather than waiting up to 5 min for the first queue-health-guard

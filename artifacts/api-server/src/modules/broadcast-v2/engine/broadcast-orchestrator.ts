@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
+import { withHlsToken } from "../../../shared/hls-token.js";
 import { env } from "../../../config/env.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, setBroadcastMode, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
@@ -2887,7 +2888,14 @@ class BroadcastOrchestrator extends EventEmitter {
     return url;
   }
 
-  private async probeUrlReachability(url: string): Promise<boolean | null> {
+  private async probeUrlReachability(rawUrl: string): Promise<boolean | null> {
+    // Inject a short-lived HLS auth token when REQUIRE_HLS_TOKEN is enabled.
+    // Internal probes always target http://localhost:PORT/api/hls/… — the
+    // loopback bypass in video-serve.routes.ts would also allow them through,
+    // but adding the token here makes each probe self-contained and safe even
+    // in future multi-node configurations where probes may not be loopback.
+    const url = withHlsToken(rawUrl);
+
     // HLS manifests: use GET so we can validate the response body starts with
     // the required #EXTM3U tag. A HEAD request returns 200 even for empty or
     // stale-invalidated CDN manifests, causing dead streams to pass the filter
