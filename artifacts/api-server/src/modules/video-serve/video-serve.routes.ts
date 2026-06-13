@@ -994,6 +994,14 @@ export async function videoServeRoutes(app: FastifyInstance) {
       }
       req.raw.removeListener("close", _abortSeg);
       const segBuf = Buffer.concat(chunks);
+      // Release the individual chunk Buffer references immediately after concat.
+      // Without this, V8 keeps the source chunks array alive (and all its
+      // constituent Buffers) alongside the concatenated segBuf until the
+      // handler function returns — doubling peak heap pressure under concurrent
+      // HLS requests.  Setting .length = 0 removes all element references
+      // so the chunk Buffers become eligible for GC during the LRU write and
+      // reply.send() calls that follow.
+      chunks.length = 0;
       // Populate the LRU cache (write() is a no-op if the entry is too large
       // or caching is disabled via HLS_SEGMENT_CACHE_MB=0).
       hlsSegments().write(key, segBuf, contentType);

@@ -352,8 +352,12 @@ function sample() {
   // environments and this becomes a no-op).  Set EXPOSE_GC=1 in your process
   // manager / Render env and add --expose-gc to the start:prod node flags to
   // enable this safety valve.
+  // Nudge V8's GC when RSS is in the warn zone OR when heapUsed is growing
+  // faster than the alert threshold. Previously this only triggered on RSS
+  // pressure; adding the heapUsed guard lets the GC reclaim leaked JS objects
+  // before they push RSS past the restart threshold, buying recovery time.
   const gcFn = (global as { gc?: () => void }).gc;
-  if (rssAlertActive && gcFn) {
+  if ((rssAlertActive || heapUsedAlertActive) && gcFn) {
     gcFn();
   }
 

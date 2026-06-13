@@ -70,9 +70,32 @@ export interface StreamHealthDetailedStats extends StreamHealthStats {
 
 const WINDOW_MS = 5 * 60 * 1000;
 const BUCKET_SIZE_MS = 15_000;
+/**
+ * How long a session is considered "active" after its last telemetry POST.
+ * Matches the window used in getStats() / getDetailedStats().
+ */
+const SESSION_ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 
 const buckets: Bucket[] = [];
 const activeSessions = new Map<string, number>();
+
+/**
+ * Periodic GC for the activeSessions Map.
+ *
+ * Bug fix: record() adds entries but never prunes them — only getStats() /
+ * getDetailedStats() did. On a 24/7 server with many unique viewer session IDs,
+ * this caused the Map to grow indefinitely between admin-panel polls. The timer
+ * runs every 60 s (= 30× the 2-min session window), is unref'd so it never
+ * prevents clean process exit, and is an exact mirror of the inline prune in
+ * getStats() / getDetailedStats().
+ */
+const _sessionGcTimer = setInterval(() => {
+  const cutoff = Date.now() - SESSION_ACTIVE_WINDOW_MS;
+  for (const [id, ts] of activeSessions) {
+    if (ts < cutoff) activeSessions.delete(id);
+  }
+}, 60_000);
+_sessionGcTimer.unref?.();
 
 function currentBucket(): Bucket {
   const now = Date.now();
@@ -152,10 +175,10 @@ export const streamHealthAggregator = {
   getStats(): StreamHealthStats {
     purgeOldBuckets();
 
-    const SESSION_ACTIVE_WINDOW_MS = 2 * 60 * 1000;
     const now = Date.now();
+    const cutoff = now - SESSION_ACTIVE_WINDOW_MS;
     for (const [id, ts] of activeSessions) {
-      if (now - ts > SESSION_ACTIVE_WINDOW_MS) activeSessions.delete(id);
+      if (ts < cutoff) activeSessions.delete(id);
     }
 
     let totalStalls = 0;
@@ -202,10 +225,10 @@ export const streamHealthAggregator = {
   getDetailedStats(): StreamHealthDetailedStats {
     purgeOldBuckets();
 
-    const SESSION_ACTIVE_WINDOW_MS = 2 * 60 * 1000;
     const now = Date.now();
+    const cutoff = now - SESSION_ACTIVE_WINDOW_MS;
     for (const [id, ts] of activeSessions) {
-      if (now - ts > SESSION_ACTIVE_WINDOW_MS) activeSessions.delete(id);
+      if (ts < cutoff) activeSessions.delete(id);
     }
 
     let totalStalls = 0;

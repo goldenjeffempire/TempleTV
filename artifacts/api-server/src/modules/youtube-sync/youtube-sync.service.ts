@@ -1111,6 +1111,13 @@ export async function syncYouTubeChannel(triggeredBy: "scheduler" | "manual" = "
 
     // ── Flush the queue (batch → per-row → retry) ────────────────────────────
     const ingestion = await queue.flush();
+    // Release the 955 item references immediately after flush() extracts the
+    // summary.  Without this explicit clear(), the IngestionQueue instance
+    // (and all its NormalizedVideo objects) remain reachable until
+    // syncYouTubeChannel() fully returns — which can be many seconds later due
+    // to the cleanup-pass and persistSyncLog DB awaits below.  Clearing now
+    // lets V8 reclaim the objects during those awaits rather than after.
+    queue.clear();
 
     if (ingestion.warningRows > 0 || ingestion.allWarnings.length > 0) {
       logger.info(
