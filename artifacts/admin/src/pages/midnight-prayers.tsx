@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useSSEEvent } from "@/contexts/sse-context";
 import { uploadQueue, useUploadQueue, titleFromFilename, formatBytes } from "@/lib/upload-queue";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -327,6 +328,16 @@ export default function MidnightPrayersPage() {
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/diagnostics"] });
     });
   }, [qc]);
+
+  // SSE-driven invalidation — library-updated events arrive when other tabs
+  // upload or transcode videos, keeping this page's library list in sync.
+  useSSEEvent("videos-library-updated", () => {
+    void qc.invalidateQueries({ queryKey: ["mp-library"] });
+  });
+  useSSEEvent("transcoding-update", () => {
+    void qc.invalidateQueries({ queryKey: ["mp-library"] });
+    void qc.invalidateQueries({ queryKey: ["midnight-prayers/queue"] });
+  });
 
   // ── Queries ─────────────────────────────────────────────────────────────────
 

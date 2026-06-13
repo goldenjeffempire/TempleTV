@@ -1,5 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useSSEEvent } from "@/contexts/sse-context";
 import { PageHeader } from "@/components/shared/page-header";
 import { MetricCard } from "@/components/shared/metric-card";
 import { ErrorAlert } from "@/components/shared/error-alert";
@@ -444,6 +445,23 @@ export default function DiagnosticsPage() {
     refetchInterval: SLOW_POLL_MS,
     staleTime: SLOW_POLL_MS,
     retry: false,
+  });
+
+  const qc = useQueryClient();
+
+  // SSE-driven invalidation — surface real-time state changes immediately
+  // rather than waiting for the POLL_MS / SLOW_POLL_MS cycle.
+  useSSEEvent("transcoding-update", () => {
+    void qc.invalidateQueries({ queryKey: ["diagnostics", "transcoder-status"] });
+  });
+  useSSEEvent("broadcast-queue-updated", () => {
+    void qc.invalidateQueries({ queryKey: ["diagnostics", "broadcast-health"] });
+  });
+  useSSEEvent("stream-health-degraded", () => {
+    void qc.invalidateQueries({ queryKey: ["diagnostics", "stream-health"] });
+  });
+  useSSEEvent("stream-health-recovered", () => {
+    void qc.invalidateQueries({ queryKey: ["diagnostics", "stream-health"] });
   });
 
   const isRefreshing =

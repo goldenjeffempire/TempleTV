@@ -116,17 +116,18 @@ export async function healthRoutes(app: FastifyInstance) {
   const statusSchema = {
     tags: ["health"],
     summary: "Diagnostic snapshot (cheap, no I/O)",
-    response: { 200: StatusSchema },
+    response: { 200: StatusSchema, 429: z.object({ error: z.string() }) },
   };
-  r.get("/status", { schema: statusSchema }, statusHandler);
+  r.get("/status", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } }, schema: statusSchema }, statusHandler);
 
   r.get(
     "/readyz",
     {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
       schema: {
         tags: ["health"],
         summary: "Readiness probe — DB + cache + storage + broadcast engine",
-        response: { 200: HealthSchema, 503: HealthSchema },
+        response: { 200: HealthSchema, 503: HealthSchema, 429: z.object({ error: z.string() }) },
       },
     },
     async (_req, reply) => {

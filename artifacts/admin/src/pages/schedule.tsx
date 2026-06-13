@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError, isTransientError} from "@/lib/api";
+import { useSSEEvent } from "@/contexts/sse-context";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { Card, CardContent } from "@/components/ui/card";
@@ -80,6 +81,12 @@ export default function SchedulePage() {
     queryKey: ["schedule"],
     queryFn:  () => api.get<{ items: ScheduleEntry[]; total: number }>("/schedule"),
     staleTime: 30_000,
+  });
+
+  // SSE-driven invalidation — schedule changes pushed from other admin tabs
+  // are reflected immediately without relying on a manual Refresh click.
+  useSSEEvent("broadcast-schedule-updated", () => {
+    void qc.invalidateQueries({ queryKey: ["schedule"] });
   });
 
   const createMutation = useMutation({

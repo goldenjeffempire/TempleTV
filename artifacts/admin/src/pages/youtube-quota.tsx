@@ -1,5 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, isTransientError} from "@/lib/api";
+import { useSSEEvent } from "@/contexts/sse-context";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,12 +18,20 @@ interface QuotaStatus {
 }
 
 export default function YoutubeQuotaPage() {
+  const qc = useQueryClient();
+
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["youtube-quota"],
     queryFn: () => api.get<QuotaStatus>("/admin/youtube/quota").catch(() => null),
     refetchInterval: 60_000,
     staleTime: 55_000,
   });
+
+  // Refresh immediately when quota events arrive so operators see the updated
+  // usage figures without waiting for the next 60-second poll.
+  useSSEEvent("youtube-quota-throttled", () => { void qc.invalidateQueries({ queryKey: ["youtube-quota"] }); });
+  useSSEEvent("youtube-quota-exhausted", () => { void qc.invalidateQueries({ queryKey: ["youtube-quota"] }); });
+  useSSEEvent("youtube-quota-warning",   () => { void qc.invalidateQueries({ queryKey: ["youtube-quota"] }); });
 
   const pct = data ? Math.round((data.used / data.total) * 100) : 0;
 

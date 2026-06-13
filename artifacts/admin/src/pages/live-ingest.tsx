@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError, isTransientError} from "@/lib/api";
+import { useSSEEvent } from "@/contexts/sse-context";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -141,6 +142,18 @@ export default function LiveIngestPage() {
     refetchInterval: 30_000,
     staleTime: 15_000,
   });
+
+  // SSE-driven invalidation — health transitions and stream lifecycle events
+  // arrive in real-time so operators see endpoint status change instantly
+  // without waiting for the 30-second poll.
+  const invalidateEndpoints = () => { void qc.invalidateQueries({ queryKey: ["live-ingest-endpoints"] }); };
+  useSSEEvent("live-ingest-health",         invalidateEndpoints);
+  useSSEEvent("live-ingest-recovered",      invalidateEndpoints);
+  useSSEEvent("live-ingest-failover",       invalidateEndpoints);
+  useSSEEvent("live-ingest-promoted",       invalidateEndpoints);
+  useSSEEvent("live-ingest-stopped",        invalidateEndpoints);
+  useSSEEvent("live-ingest-stream-started", invalidateEndpoints);
+  useSSEEvent("live-ingest-stream-stopped", invalidateEndpoints);
 
   const createMutation = useMutation({
     mutationFn: (body: typeof BLANK_FORM) =>

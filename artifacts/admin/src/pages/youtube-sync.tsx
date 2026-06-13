@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError, isTransientError } from "@/lib/api";
+import { useSSEEvent } from "@/contexts/sse-context";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -226,6 +227,21 @@ export default function YoutubeSyncPage() {
   const quotaPct = quota ? Math.round((quota.used / quota.total) * 100) : 0;
   const isSyncing = status?.syncInProgress || triggerMutation.isPending;
   const isRecategorizing = recategorizeMutation.isPending;
+  // Disable manual sync at 95%+ to protect the remaining quota for auto-sync.
+  const isQuotaCritical = quotaPct >= 95;
+
+  // SSE-driven invalidation — keeps this page in sync with library changes
+  // that happen from other admin tabs without relying solely on polling.
+  useSSEEvent("videos-library-updated", () => {
+    void qc.invalidateQueries({ queryKey: ["yt-sync-status"] });
+    void qc.invalidateQueries({ queryKey: ["yt-category-stats"] });
+  });
+  useSSEEvent("youtube-quota-throttled", () => {
+    void qc.invalidateQueries({ queryKey: ["youtube-quota"] });
+  });
+  useSSEEvent("youtube-quota-exhausted", () => {
+    void qc.invalidateQueries({ queryKey: ["youtube-quota"] });
+  });
 
   return (
     <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-6">
@@ -240,7 +256,8 @@ export default function YoutubeSyncPage() {
             <Button
               size="sm"
               onClick={() => triggerMutation.mutate()}
-              disabled={isSyncing || isRecategorizing}
+              disabled={isSyncing || isRecategorizing || isQuotaCritical}
+              title={isQuotaCritical ? `YouTube API quota at ${quotaPct}% — sync disabled to protect remaining quota` : undefined}
               className="gap-1.5"
             >
               {isSyncing ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
@@ -273,11 +290,34 @@ export default function YoutubeSyncPage() {
             variant="outline"
             className="flex-shrink-0 border-amber-500/40 text-amber-700 hover:bg-amber-500/10 dark:text-amber-400"
             onClick={() => triggerMutation.mutate()}
-            disabled={isSyncing}
+            disabled={isSyncing || isQuotaCritical}
           >
             {isSyncing ? <Loader2 size={12} className="animate-spin mr-1" /> : <Play size={12} className="mr-1" />}
             Sync Now
           </Button>
+        </div>
+      )}
+
+      {/* Quota warning banner — shown when approaching or exceeding the daily limit */}
+      {!quotaLoading && quota && quotaPct >= 80 && (
+        <div className={`flex items-start gap-3 p-4 rounded-lg border text-sm ${
+          isQuotaCritical
+            ? "bg-red-500/8 border-red-500/30 text-red-700 dark:text-red-400"
+            : "bg-amber-500/8 border-amber-500/25 text-amber-700 dark:text-amber-400"
+        }`}>
+          <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="font-medium">
+              {isQuotaCritical
+                ? `YouTube API quota critical (${quotaPct}%) — manual sync disabled`
+                : `YouTube API quota high (${quotaPct}%)`}
+            </p>
+            <p className="text-xs mt-0.5 opacity-80">
+              {isQuotaCritical
+                ? `Only ${(quota.total - quota.used).toLocaleString()} units remaining. Manual sync is disabled to protect quota for automatic background syncs. Quota resets at ${new Date(quota.resetsAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} UTC.`
+                : `${(quota.total - quota.used).toLocaleString()} units remaining. Consider postponing manual syncs to preserve quota for automatic background syncs.`}
+            </p>
+          </div>
         </div>
       )}
 

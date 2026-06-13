@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError, isTransientError} from "@/lib/api";
+import { useSSEEvent } from "@/contexts/sse-context";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { Card, CardContent } from "@/components/ui/card";
@@ -51,6 +52,11 @@ export default function AlertsPage() {
     onSuccess: () => { toast.success("Alert resolved"); void qc.invalidateQueries({ queryKey: ["alerts"] }); },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed"),
   });
+
+  // SSE-driven invalidation — ops-alert events create new alert rows on the
+  // server; refresh immediately so the list reflects the new entry without
+  // waiting for the 30-second poll cycle.
+  useSSEEvent("ops-alert", () => { void qc.invalidateQueries({ queryKey: ["alerts"] }); });
 
   const alerts = data?.alerts ?? [];
   const active = alerts.filter(a => !a.resolvedAt);

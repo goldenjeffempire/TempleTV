@@ -140,7 +140,7 @@ function fmtBucketTs(ts: string, gran: "hour" | "4h" | "day"): string {
   } catch { return ts; }
 }
 
-// ── Live viewer count — polls /broadcast/viewers every 5 s ─────────────────
+// ── Live viewer count — polls /broadcast/viewers every 30 s ─────────────────
 function useLiveViewerCount() {
   const [count, setCount] = useState<number | null>(null);
   const [prev, setPrev] = useState<number | null>(null);

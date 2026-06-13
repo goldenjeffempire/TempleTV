@@ -1,5 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, isTransientError} from "@/lib/api";
+import { useSSEEvent } from "@/contexts/sse-context";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -116,12 +117,21 @@ function CategoryCard({ cat }: { cat: Category }) {
 }
 
 export default function LaunchReadinessPage() {
+  const qc = useQueryClient();
+
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["launch-readiness"],
     queryFn: () => api.get<ReadinessResponse>("/admin/launch/readiness"),
     refetchInterval: 60_000,
     staleTime: 55_000,
   });
+
+  // SSE-driven invalidation — any of these events can change the readiness
+  // report (new/failed transcodes, queue changes, library additions).
+  const invalidateReadiness = () => { void qc.invalidateQueries({ queryKey: ["launch-readiness"] }); };
+  useSSEEvent("broadcast-queue-updated", invalidateReadiness);
+  useSSEEvent("videos-library-updated",  invalidateReadiness);
+  useSSEEvent("transcoding-update",      invalidateReadiness);
 
   const { overallStatus, summary, categories, counts, environment } = data ?? {};
 

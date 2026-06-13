@@ -283,6 +283,102 @@ function YouTubeQuotaMonitor() {
   return null;
 }
 
+// ── OpsAlertMonitor ───────────────────────────────────────────────────────────
+// Surfaces server-side ops-alert SSE events as Sonner toasts so operators
+// receive critical system alerts (storage failures, DB pool exhaustion,
+// broadcast errors) regardless of which page they're on. The Operations page
+// shows the same events in its local event log; this component adds the
+// real-time toast layer that works across all admin pages.
+//
+// Deduplication: uses a stable key (level + message prefix) with a 2-minute
+// cooldown so a flapping alert doesn't spam the toast stack. Critical alerts
+// persist until manually dismissed; warnings auto-dismiss after 30 s.
+function OpsAlertMonitor() {
+  const seenRef = useRef<Map<string, number>>(new Map());
+
+  useSSEEvent("ops-alert", (data: unknown) => {
+    const d = data as { level?: string; message?: string; component?: string } | undefined;
+    const level = d?.level === "critical" ? "critical" : "warn";
+    const message = d?.message ?? "System alert";
+    const component = d?.component ? ` [${d.component}]` : "";
+    // Deduplicate: same level + first 60 chars of message within 2 min
+    const key = `${level}:${message.slice(0, 60)}`;
+    const now = Date.now();
+    const lastAt = seenRef.current.get(key) ?? 0;
+    if (now - lastAt < 120_000) return;
+    seenRef.current.set(key, now);
+
+    if (level === "critical") {
+      toast.error(`${message}${component}`, {
+        description: "Check the Operations page for details.",
+        duration: Infinity,
+        id: `ops-alert:${key}`,
+      });
+    } else {
+      toast.warning(`${message}${component}`, {
+        duration: 30_000,
+        id: `ops-alert:${key}`,
+      });
+    }
+  });
+  return null;
+}
+
+// ── StreamHealthMonitor ───────────────────────────────────────────────────────
+// Surfaces stream-health-degraded / stream-health-recovered SSE events as
+// toasts. Using the same toast id for degraded and recovered means the
+// recovery toast automatically replaces the warning — no manual dismiss needed.
+function StreamHealthMonitor() {
+  useSSEEvent("stream-health-degraded", (data: unknown) => {
+    const d = data as { dropPercent?: number; slopePct?: number } | undefined;
+    const drop = Math.round(d?.dropPercent ?? d?.slopePct ?? 0);
+    toast.warning(
+      drop > 0 ? `Stream health degraded — ${drop}% viewer drop detected` : "Stream health degraded",
+      { duration: Infinity, id: "stream-health-state" },
+    );
+  });
+  useSSEEvent("stream-health-recovered", (data: unknown) => {
+    const d = data as { count?: number } | undefined;
+    const cnt = Number(d?.count ?? 0);
+    toast.success(
+      cnt > 0 ? `Stream health recovered — ${cnt} viewers active` : "Stream health recovered",
+      { duration: 10_000, id: "stream-health-state" },
+    );
+  });
+  return null;
+}
+
+// ── DeadAirMonitor ────────────────────────────────────────────────────────────
+// Surfaces dead-air escalation and fallback SSE events as toasts so operators
+// immediately know when all content sources are blocked. Uses a stable id so
+// recovery/fallback events replace the escalation alert rather than stacking.
+function DeadAirMonitor() {
+  useSSEEvent("dead-air-escalation", (data: unknown) => {
+    const d = data as { allBlockedRecoveryCycles?: number } | undefined;
+    const cycles = Number(d?.allBlockedRecoveryCycles ?? 1);
+    toast.error(
+      `Dead air — all content sources blocked (recovery cycle ${cycles})`,
+      { description: "Open Master Control or Stream Health to investigate.", duration: Infinity, id: "dead-air-state" },
+    );
+  });
+  useSSEEvent("broadcast-dead-air-fallback", (data: unknown) => {
+    const d = data as { title?: string; kind?: string } | undefined;
+    const title = typeof d?.title === "string" ? d.title : null;
+    const kind = typeof d?.kind === "string" ? d.kind : "fallback";
+    toast.warning(
+      title ? `Dead-air ${kind} active: ${title}` : `Dead-air ${kind} activated`,
+      { duration: 30_000, id: "dead-air-state" },
+    );
+  });
+  useSSEEvent("broadcast-dead-air-recovered", () => {
+    toast.success("Dead-air cleared — content queue recovered", {
+      duration: 10_000,
+      id: "dead-air-state",
+    });
+  });
+  return null;
+}
+
 // ── Admin-only route guard ────────────────────────────────────────────────────
 // Wraps admin-only pages so that editors / moderators who navigate directly
 // to a protected URL (e.g. by bookmarking /users) are redirected to the
@@ -319,6 +415,9 @@ function AuthenticatedApp() {
     <SSEProvider>
       <SSEReconnectSync />
       <YouTubeQuotaMonitor />
+      <OpsAlertMonitor />
+      <StreamHealthMonitor />
+      <DeadAirMonitor />
       <AppLayout>
         <PanelErrorBoundary>
           <UploadQueuePanel />

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError, isTransientError} from "@/lib/api";
+import { useSSEEvent } from "@/contexts/sse-context";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { Card, CardContent } from "@/components/ui/card";
@@ -63,6 +64,12 @@ export default function PrayersPage() {
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["prayers"] }); setDeleting(null); toast.success("Prayer removed"); },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed"),
   });
+
+  // SSE-driven invalidation — new prayers and status changes arrive in
+  // real-time without waiting for the 30-second polling interval.
+  useSSEEvent("prayer-received", () => { void qc.invalidateQueries({ queryKey: ["prayers"] }); });
+  useSSEEvent("prayer-updated",  () => { void qc.invalidateQueries({ queryKey: ["prayers"] }); });
+  useSSEEvent("prayer-deleted",  () => { void qc.invalidateQueries({ queryKey: ["prayers"] }); });
 
   const prayers = data?.prayers ?? [];
   const pending = prayers.filter(p => p.status === "pending");

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError, isTransientError} from "@/lib/api";
+import { useSSEEvent } from "@/contexts/sse-context";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -54,6 +55,16 @@ export default function LiveYoutubePage() {
     queryFn: () => api.get<{ broadcasts: YoutubeScheduled[] }>("/youtube/live/broadcasts"),
     staleTime: 60_000,
     retry: 1,
+  });
+
+  // SSE-driven invalidation — refresh immediately when YouTube live state changes
+  // so operators see the updated status without waiting for the 30-second poll.
+  useSSEEvent("yt-status", () => {
+    void qc.invalidateQueries({ queryKey: ["youtube-live-status"] });
+    void qc.invalidateQueries({ queryKey: ["youtube-broadcasts"] });
+  });
+  useSSEEvent("youtube-live-status-changed", () => {
+    void qc.invalidateQueries({ queryKey: ["youtube-live-status"] });
   });
 
   const startMutation = useMutation({

@@ -120,6 +120,13 @@ export default function Dashboard() {
   });
   useSSEEvent("transcoding-update", () => { void qc.invalidateQueries({ queryKey: ["transcoding-queue"] }); });
   useSSEEvent("videos-library-updated", () => { void qc.invalidateQueries({ queryKey: ["admin-stats"] }); });
+  // Invalidate scheduled notifications when the schedule is updated so the
+  // "Scheduled Notifs" metric card stays accurate without waiting for the
+  // next full poll.
+  useSSEEvent("broadcast-schedule-updated", () => {
+    void qc.invalidateQueries({ queryKey: ["scheduled-notifications-summary"] });
+    void qc.invalidateQueries({ queryKey: ["admin-stats"] });
+  });
 
   const isLive = lastStatusPayload?.isLive ?? false;
   const viewerCount = lastStatusPayload?.deviceCount ?? readyz?.broadcast?.viewerCount ?? 0;
