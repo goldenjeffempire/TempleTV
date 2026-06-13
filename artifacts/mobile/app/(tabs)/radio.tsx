@@ -23,18 +23,10 @@ import { Feather } from "@expo/vector-icons";
 import { SymbolView } from "expo-symbols";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
-import { AppHeader } from "@/components/AppHeader";
-import { usePageSeo } from "@/hooks/usePageSeo";
 
 const ND = Platform.OS !== "web";
 
 export default function RadioScreen() {
-  usePageSeo({
-    title: "Temple TV Radio — Coming Soon",
-    description: "Live radio broadcasting from Temple TV is coming soon. Stay tuned.",
-    path: "/radio",
-  });
-
   const c      = useColors();
   const insets = useSafeAreaInsets();
 
@@ -62,9 +54,8 @@ export default function RadioScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
-      <AppHeader />
 
-      <View style={[styles.body, { paddingBottom: insets.bottom + 40 }]}>
+      <View style={[styles.body, { paddingTop: insets.top, paddingBottom: insets.bottom + 40 }]}>
         <Animated.View style={[styles.card, { opacity: fadeAnim }]}>
 
           {/* Icon */}

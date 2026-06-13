@@ -36,7 +36,6 @@ import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
-import { AppHeader } from "@/components/AppHeader";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import { useVideos } from "@/hooks/useVideos";
 import { VideoCard } from "@/components/VideoCard";
@@ -406,18 +405,17 @@ export default function WatchScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
-      <AppHeader
-        right={
-          <Pressable
-            onPress={() => router.push("/search")}
-            accessibilityLabel="Search"
-            accessibilityRole="button"
-            hitSlop={8}
-          >
-            <Feather name="search" size={22} color={c.foreground} />
-          </Pressable>
-        }
-      />
+      {/* Search toolbar — safe-area top + search icon only, no branding */}
+      <View style={[styles.searchToolbar, { paddingTop: insets.top, backgroundColor: c.background }]}>
+        <Pressable
+          onPress={() => router.push("/search")}
+          accessibilityLabel="Search"
+          accessibilityRole="button"
+          hitSlop={8}
+        >
+          <Feather name="search" size={22} color={c.foreground} />
+        </Pressable>
+      </View>
 
       {/* Stale cache banner — three states:
           1. isStale + refreshing:  "Showing cached content — refreshing…"
@@ -522,6 +520,13 @@ export default function WatchScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+
+  // ── Search toolbar (safe-area spacer + search icon) ──────────────────────────
+  searchToolbar: {
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+    alignItems: "flex-end",
+  },
 
   // ── Hero ────────────────────────────────────────────────────────────────────
   heroFallback: {

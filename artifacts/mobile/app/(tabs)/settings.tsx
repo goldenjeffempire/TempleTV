@@ -23,7 +23,6 @@ import { router } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
-import { AppHeader } from "@/components/AppHeader";
 import { GlassCard } from "@/components/GlassCard";
 import { Logo } from "@/components/Logo";
 import { usePlayer } from "@/context/PlayerContext";
@@ -245,16 +244,11 @@ export default function SettingsScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
-      <AppHeader />
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingBottom: insets.bottom + 100 }}
+        contentContainerStyle={{ paddingTop: insets.top, paddingBottom: insets.bottom + 100 }}
         showsVerticalScrollIndicator={false}
       >
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={[styles.headerTitle, { color: c.foreground }]}>Settings</Text>
-      </View>
 
       {/* Account */}
       <SectionTitle title="ACCOUNT" />
@@ -645,15 +639,6 @@ export default function SettingsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: {
-    paddingHorizontal: 20,
-    paddingBottom: 16,
-  },
-  headerTitle: {
-    fontSize: 28,
-    fontWeight: "700",
-    letterSpacing: -0.5,
-  },
   sectionTitle: {
     fontSize: 11,
     fontWeight: "700",

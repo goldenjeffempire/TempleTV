@@ -20,9 +20,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useColors } from "@/hooks/useColors";
-import { AppHeader } from "@/components/AppHeader";
 import { getApiBase } from "@/lib/apiBase";
-import { usePageSeo } from "@/hooks/usePageSeo";
 import { fetchChannels, type ApiChannel } from "@/services/api";
 import type { SermonCategory } from "@/types";
 
@@ -443,12 +441,6 @@ function SectionHeader({
 // ─── Main screen ───────────────────────────────────────────────────────────────
 
 export default function ChannelsTab() {
-  usePageSeo({
-    title: "Channels · Temple TV",
-    description: "Browse all live channels and content categories on Temple TV – JCTM Broadcasting Network.",
-    path: "/channels",
-  });
-
   const insets = useSafeAreaInsets();
   const colors = useColors();
   const { channels, loading, error, isRetrying, refetch } = useChannels();
@@ -561,14 +553,7 @@ export default function ChannelsTab() {
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <AppHeader />
-      <View style={styles.header}>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Channels</Text>
-        <Text style={[styles.headerSub, { color: colors.mutedForeground }]}>
-          Temple TV · JCTM Broadcasting Network
-        </Text>
-      </View>
+    <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
 
       <ScrollView
         showsVerticalScrollIndicator={false}
@@ -624,9 +609,6 @@ export default function ChannelsTab() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12 },
-  headerTitle: { fontSize: 28, fontWeight: "800", letterSpacing: -0.5 },
-  headerSub: { fontSize: 13, marginTop: 2 },
 
   scroll: { paddingHorizontal: 16, paddingTop: 4 },
 

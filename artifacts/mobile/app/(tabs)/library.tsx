@@ -25,7 +25,6 @@ import { Feather } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
-import { AppHeader } from "@/components/AppHeader";
 import { usePaginatedVideos } from "@/hooks/useVideos";
 import { SermonCard } from "@/components/SermonCard";
 import { getApiBase } from "@/lib/apiBase";
@@ -701,19 +700,9 @@ export default function LibraryScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={[styles.container, { backgroundColor: c.background }]}
+      style={[styles.container, { backgroundColor: c.background, paddingTop: insets.top }]}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <AppHeader />
-      {/* Header */}
-      <View
-        style={[
-          styles.header,
-          { backgroundColor: c.background, borderBottomColor: c.border },
-        ]}
-      >
-        <Text style={[styles.headerTitle, { color: c.foreground }]}>Library</Text>
-      </View>
 
       {/* Stale / refresh-fail indicator — only shown in videos mode, only when online
           (NetworkBanner already covers the offline case at the root). */}
@@ -848,16 +837,6 @@ export default function LibraryScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: {
-    paddingHorizontal: 20,
-    paddingBottom: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-  },
-  headerTitle: {
-    fontSize: 28,
-    fontWeight: "700",
-    letterSpacing: -0.5,
-  },
   modeRow: {
     flexDirection: "row",
     gap: 8,
