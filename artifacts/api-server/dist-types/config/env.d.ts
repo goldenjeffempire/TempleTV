@@ -6,12 +6,12 @@ import { z } from "zod";
 declare const Env: z.ZodObject<{
     NODE_ENV: z.ZodDefault<z.ZodEnum<["development", "test", "production"]>>;
     PORT: z.ZodDefault<z.ZodNumber>;
+    /** Dev-only: port the TV Vite dev server listens on (proxied at /tv/* in development). */
+    TV_DEV_PORT: z.ZodDefault<z.ZodNumber>;
+    /** Dev-only: port the Expo Metro web server listens on (proxied at /mobile/* in development). */
+    MOBILE_DEV_PORT: z.ZodDefault<z.ZodNumber>;
     HTTP_KEEPALIVE_MS: z.ZodDefault<z.ZodNumber>;
     HTTP_HEADERS_TIMEOUT_MS: z.ZodDefault<z.ZodNumber>;
-    REPLIT_DEV_DOMAIN: z.ZodOptional<z.ZodString>;
-    REPLIT_EXPO_DEV_DOMAIN: z.ZodOptional<z.ZodString>;
-    TV_DEV_PORT: z.ZodDefault<z.ZodNumber>;
-    MOBILE_DEV_PORT: z.ZodDefault<z.ZodNumber>;
     WEBHOOK_BASE_URL: z.ZodOptional<z.ZodString>;
     LOG_LEVEL: z.ZodDefault<z.ZodEnum<["fatal", "error", "warn", "info", "debug", "trace", "silent"]>>;
     DATABASE_URL: z.ZodString;
@@ -47,6 +47,7 @@ declare const Env: z.ZodObject<{
     SCHEDULED_NOTIF_POLL_MS: z.ZodDefault<z.ZodNumber>;
     SCHEDULED_NOTIF_MAX_ATTEMPTS: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_POLL_MS: z.ZodDefault<z.ZodNumber>;
+    TRANSCODER_THREADS: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     BROADCAST_AUTO_ENQUEUE_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     BROADCAST_QUEUE_MAX_ITEMS: z.ZodDefault<z.ZodNumber>;
@@ -55,6 +56,7 @@ declare const Env: z.ZodObject<{
     MEDIA_SCANNER_INITIAL_DELAY_MS: z.ZodDefault<z.ZodNumber>;
     BROADCAST_ROTATION_STRATEGY: z.ZodDefault<z.ZodEnum<["shuffle", "fifo"]>>;
     BROADCAST_ROTATION_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
+    BROADCAST_ROTATION_INITIAL_DELAY_MS: z.ZodDefault<z.ZodNumber>;
     DB_POOL_WARN_UTILIZATION: z.ZodDefault<z.ZodNumber>;
     BROADCAST_DEADAIR_FALLBACK_URL: z.ZodOptional<z.ZodString>;
     BROADCAST_DEADAIR_FALLBACK_AFTER_MS: z.ZodDefault<z.ZodNumber>;
@@ -84,6 +86,7 @@ declare const Env: z.ZodObject<{
     CDN_BASE_URL: z.ZodOptional<z.ZodString>;
     REQUIRE_HLS_TOKEN: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     HLS_TOKEN_SECRET: z.ZodOptional<z.ZodString>;
+    INTERNAL_HLS_BYPASS_SECRET: z.ZodOptional<z.ZodString>;
     YOUTUBE_WEBHOOK_SECRET: z.ZodOptional<z.ZodString>;
     HLS_TOKEN_TTL_SECONDS: z.ZodDefault<z.ZodNumber>;
     HLS_MAX_CONCURRENT: z.ZodDefault<z.ZodNumber>;
@@ -98,6 +101,7 @@ declare const Env: z.ZodObject<{
     YOUTUBE_SYNC_INTERVAL_MINS: z.ZodDefault<z.ZodNumber>;
     YOUTUBE_SYNC_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     YOUTUBE_AUTO_OVERRIDE_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
+    YOUTUBE_SHUFFLE_FALLBACK_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     PROD_SYNC_API_URL: z.ZodOptional<z.ZodString>;
     API_ORIGIN: z.ZodOptional<z.ZodString>;
     PROD_SYNC_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
@@ -118,14 +122,14 @@ declare const Env: z.ZodObject<{
     QUEUE_MIN_ITEMS: z.ZodDefault<z.ZodNumber>;
     STORAGE_HEALTH_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
-    DATABASE_URL: string;
     NODE_ENV: "development" | "test" | "production";
     PORT: number;
-    HTTP_KEEPALIVE_MS: number;
-    HTTP_HEADERS_TIMEOUT_MS: number;
     TV_DEV_PORT: number;
     MOBILE_DEV_PORT: number;
+    HTTP_KEEPALIVE_MS: number;
+    HTTP_HEADERS_TIMEOUT_MS: number;
     LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
+    DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
     JWT_ACCESS_TTL_SECONDS: number;
@@ -152,6 +156,7 @@ declare const Env: z.ZodObject<{
     SCHEDULED_NOTIF_POLL_MS: number;
     SCHEDULED_NOTIF_MAX_ATTEMPTS: number;
     TRANSCODER_POLL_MS: number;
+    TRANSCODER_THREADS: number;
     TRANSCODER_DISABLE: boolean;
     BROADCAST_AUTO_ENQUEUE_DISABLE: boolean;
     BROADCAST_QUEUE_MAX_ITEMS: number;
@@ -160,6 +165,7 @@ declare const Env: z.ZodObject<{
     MEDIA_SCANNER_INITIAL_DELAY_MS: number;
     BROADCAST_ROTATION_STRATEGY: "shuffle" | "fifo";
     BROADCAST_ROTATION_INTERVAL_MS: number;
+    BROADCAST_ROTATION_INITIAL_DELAY_MS: number;
     DB_POOL_WARN_UTILIZATION: number;
     BROADCAST_DEADAIR_FALLBACK_AFTER_MS: number;
     BROADCAST_WEBHOOK_TIMEOUT_MS: number;
@@ -187,6 +193,7 @@ declare const Env: z.ZodObject<{
     YOUTUBE_SYNC_INTERVAL_MINS: number;
     YOUTUBE_SYNC_DISABLE: boolean;
     YOUTUBE_AUTO_OVERRIDE_DISABLE: boolean;
+    YOUTUBE_SHUFFLE_FALLBACK_DISABLE: boolean;
     PROD_SYNC_INTERVAL_MS: number;
     PROD_SYNC_DISABLE: boolean;
     CLEANUP_RETENTION_HOURS: number;
@@ -196,8 +203,6 @@ declare const Env: z.ZodObject<{
     SEED_ADMIN_FORCE: boolean;
     QUEUE_MIN_ITEMS: number;
     STORAGE_HEALTH_INTERVAL_MS: number;
-    REPLIT_DEV_DOMAIN?: string | undefined;
-    REPLIT_EXPO_DEV_DOMAIN?: string | undefined;
     WEBHOOK_BASE_URL?: string | undefined;
     ADMIN_API_TOKEN?: string | undefined;
     ADMIN_API_TOKEN_IP_ALLOWLIST?: string | undefined;
@@ -217,6 +222,7 @@ declare const Env: z.ZodObject<{
     EXPO_ACCESS_TOKEN?: string | undefined;
     CDN_BASE_URL?: string | undefined;
     HLS_TOKEN_SECRET?: string | undefined;
+    INTERNAL_HLS_BYPASS_SECRET?: string | undefined;
     YOUTUBE_WEBHOOK_SECRET?: string | undefined;
     APP_VERSION?: string | undefined;
     YOUTUBE_API_KEY?: string | undefined;
@@ -237,12 +243,10 @@ declare const Env: z.ZodObject<{
     JWT_REFRESH_SECRET: string;
     NODE_ENV?: "development" | "test" | "production" | undefined;
     PORT?: number | undefined;
-    HTTP_KEEPALIVE_MS?: number | undefined;
-    HTTP_HEADERS_TIMEOUT_MS?: number | undefined;
-    REPLIT_DEV_DOMAIN?: string | undefined;
-    REPLIT_EXPO_DEV_DOMAIN?: string | undefined;
     TV_DEV_PORT?: number | undefined;
     MOBILE_DEV_PORT?: number | undefined;
+    HTTP_KEEPALIVE_MS?: number | undefined;
+    HTTP_HEADERS_TIMEOUT_MS?: number | undefined;
     WEBHOOK_BASE_URL?: string | undefined;
     LOG_LEVEL?: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent" | undefined;
     JWT_ACCESS_TTL_SECONDS?: number | undefined;
@@ -275,6 +279,7 @@ declare const Env: z.ZodObject<{
     SCHEDULED_NOTIF_POLL_MS?: number | undefined;
     SCHEDULED_NOTIF_MAX_ATTEMPTS?: number | undefined;
     TRANSCODER_POLL_MS?: number | undefined;
+    TRANSCODER_THREADS?: number | undefined;
     TRANSCODER_DISABLE?: string | boolean | undefined;
     BROADCAST_AUTO_ENQUEUE_DISABLE?: string | boolean | undefined;
     BROADCAST_QUEUE_MAX_ITEMS?: number | undefined;
@@ -283,6 +288,7 @@ declare const Env: z.ZodObject<{
     MEDIA_SCANNER_INITIAL_DELAY_MS?: number | undefined;
     BROADCAST_ROTATION_STRATEGY?: "shuffle" | "fifo" | undefined;
     BROADCAST_ROTATION_INTERVAL_MS?: number | undefined;
+    BROADCAST_ROTATION_INITIAL_DELAY_MS?: number | undefined;
     DB_POOL_WARN_UTILIZATION?: number | undefined;
     BROADCAST_DEADAIR_FALLBACK_URL?: string | undefined;
     BROADCAST_DEADAIR_FALLBACK_AFTER_MS?: number | undefined;
@@ -312,6 +318,7 @@ declare const Env: z.ZodObject<{
     CDN_BASE_URL?: string | undefined;
     REQUIRE_HLS_TOKEN?: string | boolean | undefined;
     HLS_TOKEN_SECRET?: string | undefined;
+    INTERNAL_HLS_BYPASS_SECRET?: string | undefined;
     YOUTUBE_WEBHOOK_SECRET?: string | undefined;
     HLS_TOKEN_TTL_SECONDS?: number | undefined;
     HLS_MAX_CONCURRENT?: number | undefined;
@@ -326,6 +333,7 @@ declare const Env: z.ZodObject<{
     YOUTUBE_SYNC_INTERVAL_MINS?: number | undefined;
     YOUTUBE_SYNC_DISABLE?: string | boolean | undefined;
     YOUTUBE_AUTO_OVERRIDE_DISABLE?: string | boolean | undefined;
+    YOUTUBE_SHUFFLE_FALLBACK_DISABLE?: string | boolean | undefined;
     PROD_SYNC_API_URL?: string | undefined;
     API_ORIGIN?: string | undefined;
     PROD_SYNC_INTERVAL_MS?: number | undefined;

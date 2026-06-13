@@ -101,6 +101,33 @@ export declare function ensureMidnightPrayersTable(): Promise<void>;
  */
 export declare function resetStuckProcessingVideos(): Promise<void>;
 /**
+ * Reset managed_videos rows stuck in transcodingStatus='encoding'.
+ *
+ * 'encoding' is the transient state written by the transcoder dispatcher
+ * when it starts a transcode job (job.status → processing, video → encoding).
+ * On success the video advances to 'hls_ready'; on clean failure the
+ * dispatcher resets it. But if the Node process is SIGKILL-ed mid-encode:
+ *
+ *   - The transcoding_job row is reset to 'queued' by resetOrphanedJobs()
+ *     (runs in the TranscoderDispatcher constructor at startup).
+ *   - The managed_videos row stays at 'encoding' because the reset path in
+ *     the dispatcher never ran.
+ *
+ * In that scenario the job will be re-claimed and will set the video to
+ * 'encoding' again — which is fine.  But if the job row itself was lost
+ * (e.g. manual deletion, a bug in the cleanup service, or the job was
+ * force-failed by the stuck-job watchdog without updating the video row),
+ * the video stays 'encoding' indefinitely with no job to advance it.
+ *
+ * This function resets such orphaned rows to 'queued' (or 'none') so the
+ * transcoder can pick them up on the next poll.  It is safe to run at every
+ * startup because the check is gated on "no active processing job" —
+ * a concurrent job that is legitimately mid-encode will NOT be reset.
+ *
+ * Called once at boot, non-blocking.
+ */
+export declare function resetStuckEncodingVideos(): Promise<void>;
+/**
  * Deactivate broadcast_queue rows that can never play in the v2 system.
  *
  * A row is "unresolvable" when it is not a YouTube item AND has no platform

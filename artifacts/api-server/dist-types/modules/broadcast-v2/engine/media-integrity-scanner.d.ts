@@ -28,6 +28,15 @@ declare class MediaIntegrityScannerImpl {
     stop(): void;
     getReport(): MediaScanReport;
     scan(): Promise<MediaScanReport>;
+    /**
+     * Reset all accumulated probe failure counts to zero.
+     *
+     * Call this after fixing an infrastructure issue (e.g. HLS 401 misconfiguration)
+     * so that items which built up consecutive failure counts during the broken period
+     * do not hit the auto-suspension threshold on their next successful probe cycle.
+     * Also persists the cleared state to DB so the reset survives a process restart.
+     */
+    clearFailureCounts(): void;
 }
 export declare const mediaIntegrityScanner: MediaIntegrityScannerImpl;
 export {};

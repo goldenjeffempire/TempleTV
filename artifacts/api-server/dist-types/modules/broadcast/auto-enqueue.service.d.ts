@@ -10,7 +10,7 @@ export declare function isAutoEnqueueEnabled(): boolean;
  */
 export declare function enqueueIfMissing(opts: {
     videoId: string;
-    reason: "upload-finalize" | "yt-sync" | "library-scan" | "manual-import" | "upload-recovery-on-restart";
+    reason: "upload-finalize" | "yt-sync" | "library-scan" | "manual-import" | "upload-recovery-on-restart" | "repair-all" | "enqueue-missing";
 }): Promise<{
     enqueued: boolean;
     queueItemId?: string;
@@ -35,7 +35,7 @@ export declare function enqueueIfMissing(opts: {
  * UX users expect from "add to queue" on the library page.
  */
 export declare function scanLibraryAndEnqueue(opts: {
-    reason: "yt-sync" | "self-heal-empty" | "self-heal-all-blocked" | "manual";
+    reason: "yt-sync" | "self-heal-empty" | "self-heal-all-blocked" | "manual" | "queue-health-guard" | "startup";
     maxToAdd?: number;
 }): Promise<{
     scanned: number;

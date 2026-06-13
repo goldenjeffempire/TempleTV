@@ -45,20 +45,20 @@ export declare const AuthTokensSchema: z.ZodObject<{
     }, "strip", z.ZodTypeAny, {
         id: string;
         email: string;
-        role: "admin" | "editor" | "user" | "system";
         displayName: string;
+        role: "admin" | "editor" | "user" | "system";
     }, {
         id: string;
         email: string;
-        role: "admin" | "editor" | "user" | "system";
         displayName: string;
+        role: "admin" | "editor" | "user" | "system";
     }>;
 }, "strip", z.ZodTypeAny, {
     user: {
         id: string;
         email: string;
-        role: "admin" | "editor" | "user" | "system";
         displayName: string;
+        role: "admin" | "editor" | "user" | "system";
     };
     refreshToken: string;
     accessToken: string;
@@ -68,8 +68,8 @@ export declare const AuthTokensSchema: z.ZodObject<{
     user: {
         id: string;
         email: string;
-        role: "admin" | "editor" | "user" | "system";
         displayName: string;
+        role: "admin" | "editor" | "user" | "system";
     };
     refreshToken: string;
     accessToken: string;
@@ -86,11 +86,11 @@ export declare const MfaChallengeSchema: z.ZodObject<{
     mfaRequired: z.ZodLiteral<true>;
     mfaToken: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    mfaRequired: true;
     mfaToken: string;
+    mfaRequired: true;
 }, {
-    mfaRequired: true;
     mfaToken: string;
+    mfaRequired: true;
 }>;
 export type MfaChallenge = z.infer<typeof MfaChallengeSchema>;
 /** Discriminated union: either full auth tokens or an MFA challenge. */
@@ -107,20 +107,20 @@ export declare const LoginResponseSchema: z.ZodUnion<[z.ZodObject<{
     }, "strip", z.ZodTypeAny, {
         id: string;
         email: string;
-        role: "admin" | "editor" | "user" | "system";
         displayName: string;
+        role: "admin" | "editor" | "user" | "system";
     }, {
         id: string;
         email: string;
-        role: "admin" | "editor" | "user" | "system";
         displayName: string;
+        role: "admin" | "editor" | "user" | "system";
     }>;
 }, "strip", z.ZodTypeAny, {
     user: {
         id: string;
         email: string;
-        role: "admin" | "editor" | "user" | "system";
         displayName: string;
+        role: "admin" | "editor" | "user" | "system";
     };
     refreshToken: string;
     accessToken: string;
@@ -130,8 +130,8 @@ export declare const LoginResponseSchema: z.ZodUnion<[z.ZodObject<{
     user: {
         id: string;
         email: string;
-        role: "admin" | "editor" | "user" | "system";
         displayName: string;
+        role: "admin" | "editor" | "user" | "system";
     };
     refreshToken: string;
     accessToken: string;
@@ -141,11 +141,11 @@ export declare const LoginResponseSchema: z.ZodUnion<[z.ZodObject<{
     mfaRequired: z.ZodLiteral<true>;
     mfaToken: z.ZodString;
 }, "strip", z.ZodTypeAny, {
-    mfaRequired: true;
     mfaToken: string;
+    mfaRequired: true;
 }, {
-    mfaRequired: true;
     mfaToken: string;
+    mfaRequired: true;
 }>]>;
 export type LoginResponse = z.infer<typeof LoginResponseSchema>;
 export declare const MfaSetupResponseSchema: z.ZodObject<{
@@ -216,17 +216,17 @@ export declare const MeResponseSchema: z.ZodObject<{
     mfaEnabled: z.ZodBoolean;
 }, "strip", z.ZodTypeAny, {
     id: string;
-    email: string;
-    role: "admin" | "editor" | "user" | "system";
     createdAt: string;
+    email: string;
     displayName: string;
+    role: "admin" | "editor" | "user" | "system";
     mfaEnabled: boolean;
 }, {
     id: string;
-    email: string;
-    role: "admin" | "editor" | "user" | "system";
     createdAt: string;
+    email: string;
     displayName: string;
+    role: "admin" | "editor" | "user" | "system";
     mfaEnabled: boolean;
 }>;
 /**

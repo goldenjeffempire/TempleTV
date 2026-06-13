@@ -115,10 +115,27 @@ export declare function reEnableAllSuspended(): Promise<number>;
  * items, we must look up BOTH the proxied URL (primary check) and the raw
  * normalized URL (backward compat / local sources).
  */
-export declare function getItemsHealth(rows: RawQueueRow[]): Record<string, {
+export interface ItemHealthEntry {
     status: "ok" | "bad";
     badUntilMs: number | null;
-}>;
+    /** How many consecutive probe/stall failures this URL has accumulated. */
+    failureCount: number;
+    /** The resolved URL that is blocked (for operator diagnostics). */
+    blockedUrl: string | null;
+}
+export declare function getItemsHealth(rows: RawQueueRow[]): Record<string, ItemHealthEntry>;
+/**
+ * Returns a snapshot of the bad-URL cache for monitoring and diagnostics.
+ * Cleans up expired entries as a side effect.
+ */
+export declare function getBadUrlStats(): {
+    blockedCount: number;
+    entries: Array<{
+        url: string;
+        expiresAtMs: number;
+        failureCount: number;
+    }>;
+};
 export interface RawQueueRow {
     id: string;
     videoId: string | null;

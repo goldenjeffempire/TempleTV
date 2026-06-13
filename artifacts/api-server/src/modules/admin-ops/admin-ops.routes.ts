@@ -2235,8 +2235,8 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       // Rough drain estimate: assume ~45 min per job for 1 worker
       const estimatedDrainMinutes = queueDepth > 0 ? queueDepth * 45 : null;
 
-      const activeJobInfo = hb.currentJobId && hb.currentVideoId
-        ? { jobId: hb.currentJobId, videoId: hb.currentVideoId, startedAt: new Date(hb.startedAtMs ?? Date.now()).toISOString() }
+      const activeJobInfo = hb.currentJobId && hb.currentJobVideoId
+        ? { jobId: hb.currentJobId, videoId: hb.currentJobVideoId, startedAt: new Date(hb.lastHeartbeatAt ?? Date.now()).toISOString() }
         : null;
 
       return {

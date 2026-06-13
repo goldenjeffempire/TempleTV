@@ -106,6 +106,17 @@ declare class MidnightPrayersService {
     saveConfig(patch: Partial<Pick<MidnightPrayersConfigData, "enabled" | "startHour" | "endHour" | "timezone">>): Promise<MidnightPrayersConfigData>;
     loadVideos(): Promise<void>;
     getVideos(): MPVideo[];
+    getDiagnostics(): Promise<{
+        total: number;
+        playable: number;
+        encoding: number;
+        failed: number;
+        queued: number;
+        inRotation: number;
+        deadAirRisk: boolean;
+        statusCounts: Record<string, number>;
+        config: MidnightPrayersConfigData;
+    }>;
     /**
      * Build a V2Snapshot-compatible object for the current moment in time.
      *

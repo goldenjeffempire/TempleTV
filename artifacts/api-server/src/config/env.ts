@@ -16,6 +16,10 @@ if (process.env.PGHOST && process.env.PGUSER && process.env.PGDATABASE) {
 const Env = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().nonnegative().default(8080),
+  /** Dev-only: port the TV Vite dev server listens on (proxied at /tv/* in development). */
+  TV_DEV_PORT: z.coerce.number().int().nonnegative().default(23876),
+  /** Dev-only: port the Expo Metro web server listens on (proxied at /mobile/* in development). */
+  MOBILE_DEV_PORT: z.coerce.number().int().nonnegative().default(18115),
   // HTTP server connection tuning. Node's built-in defaults (keepAliveTimeout=5s,
   // headersTimeout=60s) cause frequent TCP teardowns from CDN edge nodes and
   // HLS clients that keep connections alive for segment streaming. Raising

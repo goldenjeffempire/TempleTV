@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { broadcastOrchestrator } from "./engine/broadcast-orchestrator.js";
+import { mediaIntegrityScanner } from "./engine/media-integrity-scanner.js";
 import { broadcastFanout } from "./io/broadcast-fanout.js";
 import { getBroadcastHealthMonitorStatus } from "./engine/broadcast-health-monitor.js";
 import { getContentRotationStatus } from "./engine/content-rotation.js";
@@ -52,4 +53,4 @@ export declare function ensureBroadcastV2Started(): Promise<void>;
  * Called from main.ts shutdown handler before app.close().
  */
 export declare function stopBroadcastV2(): Promise<void>;
-export { broadcastOrchestrator, broadcastFanout, getBroadcastHealthMonitorStatus, getContentRotationStatus };
+export { broadcastOrchestrator, broadcastFanout, getBroadcastHealthMonitorStatus, getContentRotationStatus, mediaIntegrityScanner };

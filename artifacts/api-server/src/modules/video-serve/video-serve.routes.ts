@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { makeHlsToken, validateHlsToken } from "../../shared/hls-token.js";
+import { makeHlsToken } from "../../shared/hls-token.js";
 import { desc, eq } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { storage } from "../../infrastructure/storage.js";
@@ -133,43 +133,10 @@ function hlsSegments(): HlsSegmentLru {
 }
 
 // ── A3: HMAC token helpers ────────────────────────────────────────────────────
-// makeHlsToken / validateHlsToken are imported from the shared module (top of
-// file) so internal services can use the same token logic without duplicating
-// the crypto implementation.
+// makeHlsToken is imported from the shared module so other server-side callers
+// (media scanner, orchestrator probes) can sign tokens without duplicating the
+// crypto implementation.
 export { makeHlsToken };
-
-// ── A3b: Internal loopback bypass ────────────────────────────────────────────
-// Requests that originate from the Node.js process itself (media scanner,
-// orchestrator probes, /reprobe endpoint) always arrive on the loopback
-// interface. These callers cannot include a user-issued token because they
-// are server-to-server; they should never be denied access to our own HLS
-// assets. External clients still require a valid ?t=TOKEN parameter when
-// REQUIRE_HLS_TOKEN is enabled.
-function isLoopbackIp(ip: string): boolean {
-  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
-}
-
-/**
- * Returns true when the request originates from an internal service (media
- * scanner, orchestrator probe, queue validator, watchdog, etc.) that is
- * trusted to access HLS assets without a client-issued ?t=TOKEN.
- *
- * Two detection mechanisms are layered for defence-in-depth:
- *   1. **Loopback IP** — cheapest check; works for single-node deployments
- *      where internal services probe via http://127.0.0.1:PORT.
- *   2. **X-Internal-Token header** — works across multi-node deployments,
- *      reverse-proxy topologies, and Replit Dev Domains where the TCP source
- *      IP is not 127.0.0.1 even for same-process fetches. The secret is set
- *      via INTERNAL_HLS_BYPASS_SECRET and injected by the orchestrator and
- *      media integrity scanner on every internal probe request.
- */
-function isInternalRequest(req: { ip?: string; headers: Record<string, string | string[] | undefined> }): boolean {
-  if (isLoopbackIp(req.ip ?? "")) return true;
-  const secret = env.INTERNAL_HLS_BYPASS_SECRET;
-  if (!secret) return false;
-  const header = req.headers["x-internal-token"];
-  return typeof header === "string" && header === secret;
-}
 
 export async function videoServeRoutes(app: FastifyInstance) {
   // ── Startup advisory: warn when running in production without a CDN ───────

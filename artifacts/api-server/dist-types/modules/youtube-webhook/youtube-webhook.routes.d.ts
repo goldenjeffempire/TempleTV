@@ -12,7 +12,7 @@ export declare function startWebhookAutoRenewal(baseUrl: string): void;
  * Fire-and-forget — subscription failure does not block startup.
  *
  * @param baseUrl  The publicly-reachable base URL of this server,
- *                 e.g. "https://abc123.replit.dev" or "https://api.templetv.org.ng".
+ *                 e.g. "https://api.templetv.org.ng".
  *                 Must NOT have a trailing slash.
  */
 export declare function subscribeToYouTubePubSubHubbub(baseUrl: string): Promise<void>;

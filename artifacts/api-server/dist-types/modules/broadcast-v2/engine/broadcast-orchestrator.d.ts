@@ -164,6 +164,17 @@ declare class BroadcastOrchestrator extends EventEmitter {
     private reloadAttempts;
     private reloadSuccesses;
     /**
+     * Number of reloadInner() calls that were short-circuited by the queue
+     * hash check (queue content unchanged since last full reload).
+     *
+     * These are NOT counted in `reloadAttempts` or `reloadSuccesses` because
+     * they do no real work — they return immediately after confirming the queue
+     * hasn't changed. Without this separate counter the `successes/attempts`
+     * ratio in /health would be misleadingly low (e.g. 3/18 = 17%) even on a
+     * perfectly healthy server where the queue just hasn't changed in a while.
+     */
+    private reloadHashSkips;
+    /**
      * Drift monitor: mirrors the most recently persisted position checkpoint
      * in memory so getDriftInfo() can compare the orchestrator's real-time
      * position against where the checkpoint expected it to be — without any
@@ -305,6 +316,17 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * duration edits all produce a different hash.
      */
     private _lastQueueHash;
+    /**
+     * Reset the queue hash so the next reload() call fully re-resolves all
+     * items even if the raw DB rows haven't changed since the last reload.
+     *
+     * Call this before reload() whenever the resolution environment has changed
+     * but the DB content hasn't — e.g. after fixing API_ORIGIN, clearing
+     * bad-URL cache entries, or re-enabling suspended items. Without the hash
+     * reset, reloadInner() would short-circuit on the stale hash and return
+     * without re-attempting source resolution.
+     */
+    resetQueueHash(): void;
     reload(): Promise<void>;
     /**
      * Reload queue items from the DB but SKIP clearing the bad-URL cache.
@@ -375,6 +397,9 @@ declare class BroadcastOrchestrator extends EventEmitter {
     /** Wall-clock ms when the orchestrator last detected total queue exhaustion
      *  (consecutiveSkips >= items.length). Null if no exhaustion has occurred. */
     private lastDeadAirAt;
+    /** Rate-limiter for cycle-exhaustion auto-reloads. Prevents tight reload
+     *  loops when every source URL remains unreachable after recovery. */
+    private lastCycleExhaustionReloadAtMs;
     /** Timestamp (ms) when we first detected items loaded but all URLs blocked.
      *  Null when not in that state. Used for auto-recovery after the TTL window. */
     private allBlockedSinceMs;
@@ -630,6 +655,25 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * form (the key clients see), so eviction correctly gates what players receive.
      */
     private extractRawProbeUrl;
+    /**
+     * Convert an own-origin HLS URL to its `http://127.0.0.1:PORT/…` equivalent
+     * so orchestrator probes always reach the local server via loopback.
+     *
+     * Problem this solves: `normalizeQueueUrl()` resolves relative /api/hls/…
+     * paths using API_ORIGIN (e.g. https://api.templetv.org.ng). When the
+     * orchestrator then probes that external URL it exits the process, traverses
+     * the CDN/reverse-proxy, and arrives at the HLS handler with a non-loopback
+     * source IP — so `isInternalRequest()` returns false and REQUIRE_HLS_TOKEN
+     * forces a 401.  Converting to 127.0.0.1 short-circuits external routing
+     * and guarantees the loopback bypass fires.
+     *
+     * Own-origin detection: checks API_ORIGIN, RENDER_EXTERNAL_URL, and
+     * DEV_DOMAIN against the URL hostname. Only /api/hls/ and /api/v1/hls/
+     * paths are rewritten — other own-origin paths are unchanged.
+     */
+    private toLocalhostProbeUrl;
+    /** Build the standard internal-probe headers map. */
+    private internalProbeHeaders;
     private probeUrlReachability;
     /**
      * Issue a single HTTP probe with a 5 s timeout and return the numeric status
@@ -713,6 +757,8 @@ declare class BroadcastOrchestrator extends EventEmitter {
         lastReloadError: string | null;
         attempts: number;
         successes: number;
+        /** Hash-match short-circuits: queue was unchanged, full reload skipped. */
+        hashSkips: number;
     };
     /**
      * Cycle anchor drift diagnostics for /health.
@@ -782,6 +828,21 @@ declare class BroadcastOrchestrator extends EventEmitter {
     getSkipInfo(): {
         consecutiveSkips: number;
         lastDeadAirAt: number | null;
+    };
+    /**
+     * Dead-air fallback status snapshot for the /health endpoint.
+     *
+     * Covers both BROADCAST_DEADAIR_FALLBACK_URL (HLS/RTMP stream override, tracked
+     * by deadAirFallbackActive + fallbackOverrideActive) and the YouTube catalog
+     * shuffle fallback (tracked by ytShuffleFallback). Both are considered "fallback
+     * active" for the purpose of monitoring — either one means the broadcast is
+     * serving alternative content because the local queue was unavailable.
+     */
+    getDeadAirFallbackInfo(): {
+        fallbackActive: boolean;
+        fallbackUrl: string | null;
+        ytShuffleActive: boolean;
+        ytShuffleVideoId: string | null;
     };
     /**
      * Continuous on-air duration for /health and monitoring dashboards.
