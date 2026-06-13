@@ -38,11 +38,19 @@ import { withHlsToken } from "../../../shared/hls-token.js";
 
 // ── Duration probe helper ─────────────────────────────────────────────────────
 //
-// Lightweight ffprobe call that reads only the container header from a URL.
-// Used by the SUSPICIOUS_DURATION auto-reprobe path to correct stale < 10 s
-// duration values written during the moov-atom upload race.  Probes the URL
-// directly (ffprobe handles HTTP/HTTPS with range-request reads, so only the
-// moov atom is transferred — no full file download needed).
+// Multi-strategy ffprobe probe for HTTP(S) URLs.
+// Used by the SUSPICIOUS_DURATION and HLS-placeholder auto-reprobe paths.
+// Probes via HTTP range requests — ffprobe reads only the container header
+// (moov atom for MP4, EXTINF sum for HLS manifests) without a full download.
+//
+// Strategy 1: single ffprobe pass reading format+stream duration (JSON).
+//   Covers: MP4/MOV/WebM (format duration), MPEG-TS/fMP4/MKV (stream-level
+//   duration when format returns N/A), HLS VOD manifests (EXTINF sum).
+// Strategy 2: same with a 32 MB analyze budget for containers whose duration
+//   metadata is beyond the default probe window (~5 MB). HTTP-safe: ffprobe
+//   issues range requests so no full-file download occurs.
+// Strategy 3: ffmpeg container-open stderr "Duration:" parse. ffmpeg opens
+//   the URL via range requests and prints the Duration line before any decode.
 //
 // Returns null on any failure (ffprobe unavailable, timeout, corrupt header).
 
@@ -50,21 +58,35 @@ async function probeDurationFromUrl(url: string): Promise<number | null> {
   // Inject an HLS auth token when REQUIRE_HLS_TOKEN is enabled.
   // ffprobe fetches the URL via HTTP range requests — without the token the
   // server returns 401 and ffprobe exits with no output (duration = null).
-  // withHlsToken() is a no-op when REQUIRE_HLS_TOKEN is false, so this is
-  // always safe to call regardless of whether token auth is active.
   const probeUrl = withHlsToken(url);
+
+  // Strategy 1: fast header probe — format + stream duration, JSON output.
+  const s1 = await _probeUrlFfprobe(probeUrl, []);
+  if (s1 !== null) return s1;
+
+  // Strategy 2: deeper analyze budget (32 MB, HTTP-safe).
+  const s2 = await _probeUrlFfprobe(probeUrl, ["-analyzeduration", "32M", "-probesize", "32M"]);
+  if (s2 !== null) return s2;
+
+  // Strategy 3: ffmpeg container-open stderr "Duration:" parse.
+  return _probeUrlFfmpegFallback(probeUrl);
+}
+
+/** ffprobe pass querying format+stream duration via JSON; optional extraArgs prepended. */
+function _probeUrlFfprobe(
+  probeUrl: string,
+  extraArgs: string[],
+): Promise<number | null> {
   return new Promise<number | null>((resolve) => {
     let proc: ReturnType<typeof spawn> | null = null;
     try {
       proc = spawn("ffprobe", [
+        ...extraArgs,
         "-v", "quiet",
         "-print_format", "json",
-        "-show_entries", "format=duration",
+        "-show_entries", "format=duration:stream=duration",
         probeUrl,
       ], { stdio: ["ignore", "pipe", "ignore"] });
-      // Unref the child process so it does not prevent the Node event loop
-      // from exiting if the parent process receives SIGTERM while a reprobe
-      // is in flight.  The 45 s timeout above still kills it deterministically.
       proc.unref();
     } catch {
       resolve(null);
@@ -74,18 +96,57 @@ async function probeDurationFromUrl(url: string): Promise<number | null> {
     let stdout = "";
     proc.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
     const t = setTimeout(() => { try { proc?.kill(); } catch { /**/ } resolve(null); }, 45_000);
-    // Unref the timer so it does not prevent the Node event loop from exiting
-    // cleanly when SIGTERM arrives while a reprobe is in flight.  The proc is
-    // already unreffed above — unref here ensures NEITHER the child process nor
-    // the kill-timer holds the event loop open during graceful shutdown.
     t.unref?.();
     proc.on("close", () => {
       clearTimeout(t);
       try {
-        const parsed = JSON.parse(stdout) as { format?: { duration?: string } };
-        const dur = parseFloat(parsed.format?.duration ?? "");
-        resolve(!isNaN(dur) && dur > 0 ? dur : null);
-      } catch { resolve(null); }
+        const parsed = JSON.parse(stdout) as {
+          format?: { duration?: string };
+          streams?: Array<{ duration?: string }>;
+        };
+        const fmtDur = parseFloat(parsed.format?.duration ?? "");
+        if (Number.isFinite(fmtDur) && fmtDur > 0) { resolve(fmtDur); return; }
+        const streamDurs = (parsed.streams ?? [])
+          .map((s) => parseFloat(s.duration ?? ""))
+          .filter((d) => Number.isFinite(d) && d > 0);
+        if (streamDurs.length > 0) { resolve(Math.max(...streamDurs)); return; }
+      } catch { /* JSON parse failure */ }
+      resolve(null);
+    });
+    proc.on("error", () => { clearTimeout(t); resolve(null); });
+  });
+}
+
+/**
+ * ffmpeg container-open fallback for HTTP URLs: parses "Duration: HH:MM:SS.ms"
+ * from stderr.  ffmpeg uses range requests for the header and prints the
+ * Duration line before any decode, so this is fast even for large remote files.
+ * "Duration: N/A" produces no match → returns null.
+ */
+function _probeUrlFfmpegFallback(probeUrl: string): Promise<number | null> {
+  return new Promise<number | null>((resolve) => {
+    let proc: ReturnType<typeof spawn> | null = null;
+    try {
+      proc = spawn("ffmpeg", [
+        "-hide_banner",
+        "-i", probeUrl,
+      ], { stdio: ["ignore", "ignore", "pipe"] });
+      proc.unref();
+    } catch {
+      resolve(null);
+      return;
+    }
+    if (!proc.stderr) { resolve(null); return; }
+    let stderr = "";
+    proc.stderr.on("data", (b: Buffer) => { stderr += b.toString(); });
+    const t = setTimeout(() => { try { proc?.kill(); } catch { /**/ } resolve(null); }, 30_000);
+    t.unref?.();
+    proc.on("close", () => {
+      clearTimeout(t);
+      const m = stderr.match(/Duration:\s+(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      if (!m) { resolve(null); return; }
+      const secs = parseInt(m[1]!, 10) * 3600 + parseInt(m[2]!, 10) * 60 + parseFloat(m[3]!);
+      resolve(secs > 0 ? secs : null);
     });
     proc.on("error", () => { clearTimeout(t); resolve(null); });
   });

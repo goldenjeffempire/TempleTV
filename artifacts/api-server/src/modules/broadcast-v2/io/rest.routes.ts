@@ -26,6 +26,7 @@ import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { eq, and, isNull, isNotNull, sql, inArray } from "drizzle-orm";
 import { enqueueTranscode, boostTranscodePriority } from "../../transcoder/transcoder.queue.js";
+import { probeUploadedDuration } from "../../transcoder/transcoder.service.js";
 import { transcoderDispatcher } from "../../transcoder/transcoder.dispatcher.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { mediaIntegrityScanner } from "../engine/media-integrity-scanner.js";
@@ -300,6 +301,69 @@ async function checkRemoteTranscodeDiskSpace(
     );
     return null;
   }
+}
+
+// ── URL duration probe helper (used by reprobe endpoint) ─────────────────────
+//
+// 2-strategy chain for HTTP(S) URLs (no full-file download):
+//   S1: ffprobe format+stream JSON — covers MP4/TS/fMP4/MKV/HLS manifests.
+//   S2: ffmpeg container-open stderr "Duration:" — universal fallback; ffmpeg
+//       uses range requests for the header so only the container header is
+//       transferred, not the full file.
+async function _reprobeUrl(url: string): Promise<number | null> {
+  // Strategy 1: ffprobe format + stream duration in one JSON call.
+  const s1 = await new Promise<number | null>((resolve) => {
+    const proc = spawn("ffprobe", [
+      "-v", "quiet",
+      "-print_format", "json",
+      "-show_entries", "format=duration:stream=duration",
+      url,
+    ], { stdio: ["ignore", "pipe", "ignore"] });
+    proc.unref?.();
+    let stdout = "";
+    const t = setTimeout(() => { try { proc.kill(); } catch { /**/ } resolve(null); }, 45_000);
+    t.unref?.();
+    proc.stdout.on("data", (b: Buffer) => { stdout += b.toString(); });
+    proc.on("close", () => {
+      clearTimeout(t);
+      try {
+        const p = JSON.parse(stdout) as {
+          format?: { duration?: string };
+          streams?: Array<{ duration?: string }>;
+        };
+        const f = parseFloat(p.format?.duration ?? "");
+        if (Number.isFinite(f) && f > 0) { resolve(f); return; }
+        const durs = (p.streams ?? [])
+          .map((s) => parseFloat(s.duration ?? ""))
+          .filter((d) => Number.isFinite(d) && d > 0);
+        if (durs.length > 0) { resolve(Math.max(...durs)); return; }
+      } catch { /* JSON parse */ }
+      resolve(null);
+    });
+    proc.on("error", () => { clearTimeout(t); resolve(null); });
+  });
+  if (s1 !== null) return s1;
+
+  // Strategy 2: ffmpeg container-open stderr "Duration: HH:MM:SS.ms" parser.
+  return new Promise<number | null>((resolve) => {
+    const proc = spawn("ffmpeg", [
+      "-hide_banner",
+      "-i", url,
+    ], { stdio: ["ignore", "ignore", "pipe"] });
+    proc.unref?.();
+    let stderr = "";
+    const t = setTimeout(() => { try { proc.kill(); } catch { /**/ } resolve(null); }, 30_000);
+    t.unref?.();
+    proc.stderr.on("data", (b: Buffer) => { stderr += b.toString(); });
+    proc.on("close", () => {
+      clearTimeout(t);
+      const m = stderr.match(/Duration:\s+(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      if (!m) { resolve(null); return; }
+      const secs = parseInt(m[1]!, 10) * 3600 + parseInt(m[2]!, 10) * 60 + parseFloat(m[3]!);
+      resolve(secs > 0 ? secs : null);
+    });
+    proc.on("error", () => { clearTimeout(t); resolve(null); });
+  });
 }
 
 export async function restRoutes(app: FastifyInstance) {
@@ -1697,51 +1761,78 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     async (req, reply) => {
       const { id } = req.params as { id: string };
 
-      const [queueItem] = await db
-        .select()
+      // Join with managed_videos to get objectPath so we can probe via local
+      // object storage (most reliable: downloads to temp file, uses the
+      // 3-strategy chain in probeDurationSecs: ffprobe format+stream JSON →
+      // deep-scan ffprobe → ffmpeg "Duration:" stderr parser).
+      const [item] = await db
+        .select({
+          id:            schema.broadcastQueueTable.id,
+          videoId:       schema.broadcastQueueTable.videoId,
+          hlsMasterUrl:  schema.broadcastQueueTable.hlsMasterUrl,
+          localVideoUrl: schema.broadcastQueueTable.localVideoUrl,
+          durationSecs:  schema.broadcastQueueTable.durationSecs,
+          objectPath:    schema.videosTable.objectPath,
+        })
         .from(schema.broadcastQueueTable)
+        .leftJoin(
+          schema.videosTable,
+          eq(schema.broadcastQueueTable.videoId, schema.videosTable.id),
+        )
         .where(eq(schema.broadcastQueueTable.id, id))
         .limit(1);
-      if (!queueItem) return reply.code(404).send({ error: "Queue item not found" });
 
-      // Prefer HLS master playlist (lighter probe — ffprobe reads only the
-      // manifest) over a raw MP4 URL (requires downloading container header).
-      // normalizeQueueUrl absolutizes relative /api/... paths using the
-      // server's own origin so ffprobe can fetch via HTTP.
-      const rawUrl = queueItem.hlsMasterUrl ?? queueItem.localVideoUrl;
-      if (!rawUrl) return reply.code(400).send({ error: "Queue item has no probeable source URL" });
-      const probeUrl = normalizeQueueUrl(rawUrl) ?? rawUrl;
-      if (!probeUrl) return reply.code(400).send({ error: "Queue item has no probeable source URL" });
+      if (!item) return reply.code(404).send({ error: "Queue item not found" });
+      if (!item.hlsMasterUrl && !item.localVideoUrl && !item.objectPath) {
+        return reply.code(400).send({ error: "Queue item has no probeable source URL" });
+      }
 
-      const oldDurSecs = queueItem.durationSecs;
+      const oldDurSecs = item.durationSecs;
+      let newDur: number | null = null;
+      let probeMethod = "none";
 
-      // ffprobe: extract duration from the container format headers only.
-      // 45-second timeout matches the prod-sync probe budget.
-      const newDur = await new Promise<number | null>((resolve) => {
-        const proc = spawn("ffprobe", [
-          "-v", "error",
-          "-show_entries", "format=duration",
-          "-of", "default=noprint_wrappers=1:nokey=1",
-          probeUrl,
-        ]);
-        // unref() so a long-running probe (up to 45 s) does not prevent Node
-        // from completing a graceful shutdown when SIGTERM arrives mid-probe.
-        // The timer's proc.kill() still fires via the event loop if the process
-        // outlives its budget during normal operation.
-        proc.unref?.();
-        let out = "";
-        const timer = setTimeout(() => { proc.kill(); resolve(null); }, 45_000).unref();
-        proc.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
-        proc.on("close", (code) => {
-          clearTimeout(timer);
-          const v = parseFloat(out.trim());
-          resolve(code === 0 && Number.isFinite(v) && v > 0 ? v : null);
-        });
-        proc.on("error", () => { clearTimeout(timer); resolve(null); });
-      });
+      // ── Attempt 1: object-storage download → 3-strategy local probe ─────────
+      // probeUploadedDuration downloads the blob to a temp file and runs:
+      //   S1: ffprobe format+stream JSON  (covers MP4/TS/fMP4/MKV/WebM)
+      //   S2: deep-scan ffprobe 100M      (unusual container layouts)
+      //   S3: ffmpeg stderr Duration      (universal — works for any decodable file)
+      if (item.objectPath) {
+        newDur = await probeUploadedDuration(item.objectPath);
+        if (newDur !== null) probeMethod = "object-storage";
+      }
+
+      // ── Attempt 2: HLS master playlist → ffprobe EXTINF sum ─────────────────
+      if (newDur === null && item.hlsMasterUrl) {
+        const absUrl = normalizeQueueUrl(item.hlsMasterUrl) ?? item.hlsMasterUrl;
+        newDur = await _reprobeUrl(absUrl);
+        if (newDur !== null) probeMethod = "hls-manifest";
+      }
+
+      // ── Attempt 3: raw localVideoUrl → HTTP range-request probe ─────────────
+      if (newDur === null && item.localVideoUrl) {
+        const absUrl = normalizeQueueUrl(item.localVideoUrl) ?? item.localVideoUrl;
+        newDur = await _reprobeUrl(absUrl);
+        if (newDur !== null) probeMethod = "local-video-url";
+      }
 
       if (newDur === null) {
-        return reply.code(422).send({ error: "ffprobe could not determine duration for this source URL" });
+        req.log.warn(
+          {
+            itemId: id,
+            objectPath: item.objectPath,
+            hlsMasterUrl: item.hlsMasterUrl,
+            localVideoUrl: item.localVideoUrl,
+          },
+          "[broadcast-v2] reprobe: all probe strategies exhausted — duration could not be determined",
+        );
+        return reply.code(422).send({
+          error:
+            "Duration detection failed — all probe strategies exhausted " +
+            "(ffprobe format+stream, deep-scan 100M, ffmpeg fallback, HLS manifest, HTTP range). " +
+            "The file may use an unsupported container format, the source blob may be missing " +
+            "or corrupt, or the container has no duration metadata (live-stream segment). " +
+            "Check server logs for ffprobe/ffmpeg stderr details, or re-upload the source file.",
+        });
       }
 
       const newDurSecs = Math.round(newDur);
@@ -1755,13 +1846,13 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       // Also sync to managed_videos when a linked video row exists.
       // managed_videos.duration is a text column ("1800", "3723", etc.) that
       // stores seconds as a string — see faststart-recovery.ts for precedent.
-      if (queueItem.videoId) {
+      if (item.videoId) {
         await db
           .update(schema.videosTable)
           .set({ duration: String(newDurSecs) })
-          .where(eq(schema.videosTable.id, queueItem.videoId))
+          .where(eq(schema.videosTable.id, item.videoId))
           .catch((err: unknown) => {
-            req.log.warn({ err, videoId: queueItem.videoId }, "[broadcast-v2] reprobe: managed_videos update failed (non-fatal)");
+            req.log.warn({ err, videoId: item.videoId }, "[broadcast-v2] reprobe: managed_videos update failed (non-fatal)");
           });
       }
 
@@ -1772,7 +1863,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       adminEventBus.push("broadcast-queue-updated", { reason: "reprobe", itemId: id });
 
       req.log.info(
-        { itemId: id, oldDurSecs, newDurSecs, probeUrl },
+        { itemId: id, oldDurSecs, newDurSecs, probeMethod },
         "[broadcast-v2] duration re-probed successfully",
       );
       return { ok: true, oldDurSecs, newDurSecs };

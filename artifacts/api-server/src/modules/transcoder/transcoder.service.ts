@@ -437,37 +437,140 @@ function injectCodecsIntoMaster(
 }
 
 /**
- * Probe the duration of a video file via ffprobe.
- * Returns seconds or null on any failure.
+ * Probe the duration of a local video file via a 3-strategy fallback chain.
+ *
+ * Strategy 1 (fast):   A single ffprobe pass reading BOTH format-level and
+ *   stream-level duration (JSON output).  Covers MP4/MOV/WebM (format
+ *   duration in container header) and MPEG-TS/fMP4/MKV (stream-level
+ *   duration when the format field returns N/A).
+ *
+ * Strategy 2 (deep):   Same ffprobe call with -analyzeduration 100M
+ *   -probesize 100M.  For containers whose duration metadata is stored
+ *   beyond the default ~5 MB scan window (some AVI, unusual MPEG-TS
+ *   layouts, early fragmented-MP4 broadcast recordings).
+ *
+ * Strategy 3 (decode): ffmpeg container-open pass.  ffmpeg prints
+ *   "Duration: HH:MM:SS.ms" to stderr from the demuxer before any frame
+ *   decode begins, even when every ffprobe duration field returns N/A.
+ *   Works for virtually any format ffmpeg can open.
+ *
+ * Returns seconds (> 0) on success, null when all strategies fail.
  */
-async function probeDurationSecs(inputUrl: string): Promise<number | null> {
+async function probeDurationSecs(inputPath: string): Promise<number | null> {
+  // Strategy 1: single ffprobe pass — format + stream duration, JSON output.
+  const s1 = await _probeDurationFfprobe(inputPath, []);
+  if (s1 !== null) return s1;
+
+  logger.debug({ inputPath }, "transcoder: probeDurationSecs S1 failed — trying deep scan (S2)");
+
+  // Strategy 2: deeper analyze budget (100 MB) for unusual container layouts.
+  const s2 = await _probeDurationFfprobe(inputPath, ["-analyzeduration", "100M", "-probesize", "100M"]);
+  if (s2 !== null) return s2;
+
+  logger.debug({ inputPath }, "transcoder: probeDurationSecs S2 failed — trying ffmpeg fallback (S3)");
+
+  // Strategy 3: ffmpeg container-open stderr "Duration:" parser.
+  const s3 = await _probeDurationFfmpegFallback(inputPath);
+  if (s3 === null) {
+    logger.warn({ inputPath }, "transcoder: all 3 duration probe strategies failed — returning null");
+  }
+  return s3;
+}
+
+/**
+ * Single ffprobe pass querying BOTH format-level and stream-level duration.
+ * extraArgs are prepended before the input (e.g. -analyzeduration / -probesize).
+ * Prefers format duration; falls back to the maximum stream duration.
+ */
+function _probeDurationFfprobe(
+  inputPath: string,
+  extraArgs: string[],
+): Promise<number | null> {
   return new Promise((resolve) => {
     const proc = spawn("ffprobe", [
+      ...extraArgs,
       "-v", "error",
-      "-show_entries", "format=duration",
-      "-of", "default=noprint_wrappers=1:nokey=1",
-      inputUrl,
-    ]);
+      "-show_entries", "format=duration:stream=duration",
+      "-of", "json",
+      inputPath,
+    ], { stdio: ["ignore", "pipe", "pipe"] });
     proc.unref();
-    let out = "";
-    let settled = false;
-    const settle = (val: number | null) => {
-      if (settled) return;
-      settled = true;
-      resolve(val);
-    };
+
+    let stdout = "";
+    let stderr = "";
     const timer = setTimeout(() => {
       try { proc.kill("SIGKILL"); } catch { /* noop */ }
-      logger.warn({ inputUrl }, "transcoder: ffprobe duration timed out after 30 s");
-      settle(null);
+      logger.warn(
+        { inputPath, extraArgs: extraArgs.join(" ") },
+        "transcoder: ffprobe duration probe timed out",
+      );
+      resolve(null);
     }, PROBE_TIMEOUT_MS);
     timer.unref();
-    proc.stdout.on("data", (b: Buffer) => { out += b.toString(); });
-    proc.on("error", () => { clearTimeout(timer); settle(null); });
+
+    proc.stdout.on("data", (b: Buffer) => { stdout += b.toString(); });
+    proc.stderr.on("data", (b: Buffer) => { stderr += b.toString(); });
+    proc.on("error", () => { clearTimeout(timer); resolve(null); });
     proc.on("close", () => {
       clearTimeout(timer);
-      const v = parseFloat(out.trim());
-      settle(Number.isFinite(v) && v > 0 ? v : null);
+      if (stderr.trim()) {
+        logger.debug(
+          { inputPath, stderrTail: stderr.slice(-400).trim() },
+          "transcoder: ffprobe duration probe stderr",
+        );
+      }
+      try {
+        const parsed = JSON.parse(stdout) as {
+          format?: { duration?: string };
+          streams?: Array<{ duration?: string }>;
+        };
+        const fmtDur = parseFloat(parsed.format?.duration ?? "");
+        if (Number.isFinite(fmtDur) && fmtDur > 0) { resolve(fmtDur); return; }
+        // Stream-level duration covers MPEG-TS, fMP4, MKV where the format
+        // container header carries no duration (returns "N/A").
+        const streamDurs = (parsed.streams ?? [])
+          .map((s) => parseFloat(s.duration ?? ""))
+          .filter((d) => Number.isFinite(d) && d > 0);
+        if (streamDurs.length > 0) { resolve(Math.max(...streamDurs)); return; }
+      } catch { /* JSON parse failure — fall through */ }
+      resolve(null);
+    });
+  });
+}
+
+/**
+ * ffmpeg container-open fallback: parses "Duration: HH:MM:SS.ms" from stderr.
+ * ffmpeg prints this line from the demuxer before any frame decode begins,
+ * even for containers where all ffprobe format/stream duration fields are N/A.
+ * Fast (< 1 s for local files) because only the container header is read.
+ * "Duration: N/A" produces no regex match → returns null safely.
+ */
+function _probeDurationFfmpegFallback(inputPath: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const proc = spawn("ffmpeg", [
+      "-hide_banner",
+      "-i", inputPath,
+    ], { stdio: ["ignore", "ignore", "pipe"] });
+    proc.unref();
+
+    let stderr = "";
+    const timer = setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch { /* noop */ }
+      logger.warn({ inputPath }, "transcoder: ffmpeg duration fallback timed out after 30 s");
+      resolve(null);
+    }, PROBE_TIMEOUT_MS);
+    timer.unref();
+
+    proc.stderr.on("data", (b: Buffer) => { stderr += b.toString(); });
+    proc.on("error", () => { clearTimeout(timer); resolve(null); });
+    proc.on("close", () => {
+      clearTimeout(timer);
+      const m = stderr.match(/Duration:\s+(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      if (!m) { resolve(null); return; }
+      const secs = parseInt(m[1]!, 10) * 3600
+                 + parseInt(m[2]!, 10) * 60
+                 + parseFloat(m[3]!);
+      resolve(secs > 0 ? secs : null);
     });
   });
 }
