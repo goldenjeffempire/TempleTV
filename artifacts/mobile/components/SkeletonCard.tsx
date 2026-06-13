@@ -32,7 +32,11 @@ function Shimmer({ style }: { style: object }) {
 
 export function SkeletonVerticalCard() {
   return (
-    <View style={skeletonStyles.verticalCard}>
+    <View
+      style={skeletonStyles.verticalCard}
+      accessibilityElementsHidden={true}
+      importantForAccessibility="no-hide-descendants"
+    >
       <Shimmer style={skeletonStyles.verticalThumb} />
       <Shimmer style={skeletonStyles.title1} />
       <Shimmer style={skeletonStyles.title2} />
@@ -43,7 +47,11 @@ export function SkeletonVerticalCard() {
 
 export function SkeletonHorizontalCard() {
   return (
-    <View style={skeletonStyles.horizontalCard}>
+    <View
+      style={skeletonStyles.horizontalCard}
+      accessibilityElementsHidden={true}
+      importantForAccessibility="no-hide-descendants"
+    >
       <Shimmer style={skeletonStyles.horizontalThumb} />
       <View style={skeletonStyles.horizontalInfo}>
         <Shimmer style={skeletonStyles.title1} />
@@ -56,7 +64,11 @@ export function SkeletonHorizontalCard() {
 
 export function SkeletonLiveBanner() {
   return (
-    <View style={[skeletonStyles.liveBanner, { borderRadius: colors.radius }]}>
+    <View
+      style={[skeletonStyles.liveBanner, { borderRadius: colors.radius }]}
+      accessibilityElementsHidden={true}
+      importantForAccessibility="no-hide-descendants"
+    >
       <Shimmer style={skeletonStyles.liveThumb} />
     </View>
   );
@@ -161,8 +173,8 @@ const heroSkeletonStyles = StyleSheet.create({
 });
 
 const skeletonStyles = StyleSheet.create({
-  verticalCard: { width: 180, gap: 8, padding: 4 },
-  verticalThumb: { width: 180, height: 101, borderRadius: 12 },
+  verticalCard: { width: 200, gap: 8, padding: 4 },
+  verticalThumb: { width: 200, height: 113, borderRadius: 12 },
   horizontalCard: { flexDirection: "row", gap: 12, padding: 12, marginHorizontal: 16, marginBottom: 8 },
   horizontalThumb: { width: 120, height: 68, borderRadius: 8 },
   horizontalInfo: { flex: 1, gap: 8, justifyContent: "center" },

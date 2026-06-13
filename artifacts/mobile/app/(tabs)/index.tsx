@@ -295,13 +295,6 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
           </View>
 
 
-          {/* ── Current program title ── */}
-          {hasActiveBroadcast && !!broadcastTitle && (
-            <Text style={styles.heroBroadcastTitle} numberOfLines={2}>
-              {broadcastTitle}
-            </Text>
-          )}
-
           {/* ── CTA button ── */}
           {!watchNowDisabled && (
             <Pressable
@@ -615,16 +608,6 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   heroBadges: { flexDirection: "row", gap: 8, alignItems: "center", flexWrap: "wrap" },
-  heroBroadcastTitle: {
-    fontSize: 18,
-    fontWeight: "800",
-    color: "#fff",
-    lineHeight: 24,
-    letterSpacing: -0.4,
-    textShadowColor: "rgba(0,0,0,0.7)",
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 8,
-  },
   onAirBadge: {
     flexDirection: "row",
     alignItems: "center",

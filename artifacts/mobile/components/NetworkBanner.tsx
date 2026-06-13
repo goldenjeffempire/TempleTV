@@ -52,6 +52,9 @@ export function NetworkBanner({ visible, recovered = false, message }: NetworkBa
         styles.container,
         { backgroundColor: bgColor, transform: [{ translateY: slideAnim }], pointerEvents: "none" },
       ]}
+      accessibilityRole="alert"
+      accessibilityLiveRegion={recovered ? "polite" : "assertive"}
+      accessibilityLabel={label}
     >
       <View style={[styles.iconWrap, { backgroundColor: iconBg }]}>
         <Feather name={iconName} size={13} color={iconColor} />

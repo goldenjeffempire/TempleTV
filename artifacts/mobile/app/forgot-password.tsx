@@ -68,6 +68,8 @@ export default function ForgotPasswordScreen() {
           <Pressable
             onPress={() => router.canGoBack() ? router.back() : router.replace("/login")}
             style={[styles.backBtn, { top: insets.top + 8 }]}
+            accessibilityRole="button"
+            accessibilityLabel="Go back"
             hitSlop={8}
           >
             <View style={styles.backBtnInner}>

@@ -3,6 +3,7 @@ import {
   Animated,
   Dimensions,
   Easing,
+  InteractionManager,
   Modal,
   Platform,
   Pressable,
@@ -77,23 +78,22 @@ export function AuthGateModal() {
     const target = pendingPlayback; // capture before closeAuthGate clears it
     closeAuthGate();
     if (target) {
-      setTimeout(
-        () => router.push({ pathname: target.pathname as any, params: target.params }),
-        60,
-      );
+      InteractionManager.runAfterInteractions(() => {
+        router.push({ pathname: target.pathname as any, params: target.params });
+      });
     }
   };
 
   const goToSignup = () => {
     closeAuthGate({ keepPending: true });
-    // Small delay lets the close animation start before navigation so
-    // the route push doesn't visually compete with the fade-out.
-    setTimeout(() => router.push("/signup"), 60);
+    // Wait for the close animation to settle before navigating so the
+    // route push doesn't visually compete with the fade-out.
+    InteractionManager.runAfterInteractions(() => router.push("/signup"));
   };
 
   const goToLogin = () => {
     closeAuthGate({ keepPending: true });
-    setTimeout(() => router.push("/login"), 60);
+    InteractionManager.runAfterInteractions(() => router.push("/login"));
   };
 
   const reasonText =

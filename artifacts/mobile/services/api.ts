@@ -520,9 +520,16 @@ export async function fetchPlaylistById(id: string): Promise<ApiPlaylistDetail> 
     videoId?: string;
     youtubeId?: string;
     title?: string;
+    description?: string;
     thumbnailUrl?: string;
     duration?: string;
     category?: string;
+    preacher?: string;
+    publishedAt?: string | null;
+    importedAt?: string;
+    localVideoUrl?: string | null;
+    hlsMasterUrl?: string | null;
+    youtubeLiveStatus?: string | null;
   };
   type RawPlaylistDetail = {
     id: string;
@@ -554,18 +561,18 @@ export async function fetchPlaylistById(id: string): Promise<ApiPlaylistDetail> 
     id: v.videoId ?? v.id,
     youtubeId: v.youtubeId ?? "",
     title: v.title ?? "",
-    description: "",
+    description: v.description ?? "",
     thumbnailUrl: v.thumbnailUrl ?? "",
     duration: v.duration ?? "",
     category: v.category ?? "",
-    preacher: "",
-    publishedAt: null,
-    importedAt: "",
+    preacher: v.preacher ?? "",
+    publishedAt: v.publishedAt ?? null,
+    importedAt: v.importedAt ?? "",
     viewCount: 0,
     videoSource: (v.youtubeId ? "youtube" : "local") as ApiVideo["videoSource"],
-    localVideoUrl: null,
-    hlsMasterUrl: null,
-    youtubeLiveStatus: (v as any).youtubeLiveStatus ?? null,
+    localVideoUrl: v.localVideoUrl ?? null,
+    hlsMasterUrl: v.hlsMasterUrl ?? null,
+    youtubeLiveStatus: v.youtubeLiveStatus ?? null,
   }));
 
   return { ...playlist, videos };

@@ -98,7 +98,7 @@ export default function HistoryScreen() {
         </Pressable>
         <Text style={[styles.headerTitle, { color: c.foreground }]}>Watch History</Text>
         {history.length > 0 && (
-          <Pressable onPress={handleClearAll} hitSlop={8}>
+          <Pressable onPress={handleClearAll} hitSlop={8} accessibilityRole="button" accessibilityLabel="Clear watch history">
             <Text style={styles.clearAll}>Clear All</Text>
           </Pressable>
         )}

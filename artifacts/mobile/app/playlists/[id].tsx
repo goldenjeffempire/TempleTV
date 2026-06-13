@@ -167,7 +167,7 @@ export default function PlaylistDetailScreen() {
           },
         ]}
       >
-        <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={12} accessibilityLabel="Go back">
+        <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
           <Feather name="arrow-left" size={22} color={c.foreground} />
         </Pressable>
         <Text style={[styles.headerTitle, { color: c.foreground }]} numberOfLines={1}>

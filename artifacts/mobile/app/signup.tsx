@@ -210,6 +210,9 @@ export default function SignupScreen() {
           <Pressable
             onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)")}
             style={[styles.backBtn, { top: insets.top + 8 }]}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+            hitSlop={8}
           >
             <View style={styles.backBtnInner}>
               <Feather name="x" size={18} color="rgba(255,255,255,0.7)" />

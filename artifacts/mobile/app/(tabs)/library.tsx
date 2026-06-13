@@ -437,6 +437,13 @@ export default function LibraryScreen() {
 
   const [mode, setMode] = useState<"videos" | "series" | "playlists">("videos");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 350);
+    return () => clearTimeout(t);
+  }, [search]);
+
   const [category, setCategory] = useState<SermonCategory>(() => {
     if (categoryParam && CATEGORIES.some((c) => c.value === categoryParam)) {
       return categoryParam as SermonCategory;
@@ -473,7 +480,7 @@ export default function LibraryScreen() {
     loadMoreError,
     retryCount,
     refetch,
-  } = usePaginatedVideos({ search, category, sort, source: "youtube" });
+  } = usePaginatedVideos({ search: debouncedSearch, category, sort, source: "youtube" });
 
   const { series, loading: seriesLoading, error: seriesError, refetch: refetchSeries } = useSeriesList();
   const { continueWatching } = useWatchProgress();
@@ -585,7 +592,12 @@ export default function LibraryScreen() {
               autoCorrect={false}
             />
             {search.length > 0 && (
-              <Pressable onPress={() => setSearch("")} hitSlop={8}>
+              <Pressable
+                onPress={() => { setSearch(""); setDebouncedSearch(""); }}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Clear search"
+              >
                 <Feather name="x" size={16} color={c.mutedForeground} />
               </Pressable>
             )}
@@ -753,7 +765,7 @@ export default function LibraryScreen() {
               keyExtractor={keyExtractor}
               renderItem={renderItem}
               ListHeaderComponent={ListHeader}
-              ListEmptyComponent={<EmptyState search={search} c={c} />}
+              ListEmptyComponent={<EmptyState search={debouncedSearch} c={c} />}
               ListFooterComponent={ListFooter}
               contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 100 }]}
               refreshControl={

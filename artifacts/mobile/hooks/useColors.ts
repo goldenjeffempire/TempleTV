@@ -37,11 +37,12 @@ export function useColors(): Palette & {
 
   const timeZone = useMemo(() => getTimeZone(), []);
 
-  // Priority: explicit user preference > time-of-day fallback.
-  // When theme is "system" (default), honour the original time-based palette
-  // so the behaviour is unchanged for users who have never opened Settings.
+  // Priority: explicit user preference (light/dark/system) > time-of-day fallback.
+  // When theme is "system", resolvedTheme already mirrors the OS colour scheme
+  // (handled by ThemeContext + Appearance.addChangeListener), so we use it
+  // directly rather than the legacy time-of-day heuristic.
   const isMidnightTheme: boolean =
-    themeCtx?.isLoaded && themeCtx.theme !== "system"
+    themeCtx?.isLoaded
       ? themeCtx.resolvedTheme === "dark"
       : isMidnightHour(hour);
 
