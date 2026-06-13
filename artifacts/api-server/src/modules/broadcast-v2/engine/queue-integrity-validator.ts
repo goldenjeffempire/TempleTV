@@ -231,6 +231,7 @@ class QueueIntegrityValidatorImpl {
           const isCorrupt = row.vErrCode === "CORRUPT_SOURCE";
           const isSourceMissing = row.vErrCode === "SOURCE_MISSING";
           const isDiskFull = row.vErrCode === "DISK_FULL";
+          const isAssemblyFailed = row.vErrCode === "ASSEMBLY_FAILED";
           const noFaststart = row.vFaststart === false;
           if (isCorrupt || isSourceMissing || isDiskFull || noFaststart) {
             issues.push({
@@ -248,6 +249,24 @@ class QueueIntegrityValidatorImpl {
                   ? "DISK_FULL error — transcoding failed due to insufficient disk space; free disk space and use Retry to re-transcode"
                   : "faststartApplied=false — moov at EOF, raw MP4 cannot be streamed; re-transcode or re-upload the source file") +
                 " and no HLS fallback. Item will skip every tick until deactivated.",
+            });
+          }
+          // ASSEMBLY_FAILED: blob assembly was interrupted mid-upload (DB lock,
+          // disk pressure, watchdog timeout). Unlike CORRUPT_SOURCE this is
+          // recoverable — the upload session was reset to 'uploading' so the
+          // operator can retry finalization from the upload panel. We surface it
+          // as a warning (not error) so operators see a re-upload prompt without
+          // the validator auto-deactivating the queue item (which would hide it).
+          if (isAssemblyFailed) {
+            issues.push({
+              severity: "warn",
+              itemId: row.id,
+              itemTitle: row.title,
+              code: "ASSEMBLY_FAILED",
+              message:
+                `Video '${row.videoId}' has transcodingStatus='failed' with ASSEMBLY_FAILED — ` +
+                "blob assembly was interrupted. The upload session has been reset; " +
+                "retry finalization from the upload panel to recover this video.",
             });
           }
         }

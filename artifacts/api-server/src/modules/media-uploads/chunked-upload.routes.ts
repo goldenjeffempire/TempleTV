@@ -379,8 +379,22 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             continue; // preserve the video row; do NOT classify as orphaned
           }
 
+          const blobSize = head.contentLength ?? 0;
           const assemblyComplete =
-            head.exists && (head.contentLength ?? 0) === row.sizeBytes && row.sizeBytes > 0;
+            head.exists && blobSize === row.sizeBytes && row.sizeBytes > 0;
+          const decision = assemblyComplete ? "recovered" : "orphaned";
+
+          app.log.info(
+            {
+              sessionId: row.sessionId,
+              videoId: row.completedVideoId,
+              blobSize,
+              declaredSize: row.sizeBytes,
+              blobExists: head.exists,
+              decision,
+            },
+            "[upload] onReady assembly triage",
+          );
 
           if (assemblyComplete) {
             // Blob is fully intact — the crash happened AFTER assembly completed
@@ -1432,14 +1446,19 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         const assemblyStartMs = Date.now();
 
         void (async () => {
-          // 60-minute assembly watchdog — if completeMultipartUpload hangs
-          // indefinitely (TOAST bloat, DB lock, disk pressure), mark the video
-          // failed and reset the session so the operator can retry from the
-          // upload panel without waiting for a server restart.
+          // Assembly watchdog — if completeMultipartUpload hangs indefinitely
+          // (TOAST bloat, DB lock, disk pressure), mark the video failed and
+          // reset the session so the operator can retry from the upload panel
+          // without waiting for a server restart. Default timeout is 4 hours
+          // (ASSEMBLY_WATCHDOG_MS) to accommodate large 4K/long-form files on
+          // slow storage I/O. Uses ASSEMBLY_FAILED (not CORRUPT_SOURCE) because
+          // the blob state is unknown at watchdog-fire time — the file is
+          // recoverable by retrying finalization from the upload panel.
           const assemblyWatchdog = setTimeout(() => {
             void (async () => {
+              const watchdogElapsedMin = Math.round(env.ASSEMBLY_WATCHDOG_MS / 60_000);
               capturedLog.error(
-                { sessionId, videoId, elapsed: "60min" },
+                { sessionId, videoId, elapsed: `${watchdogElapsedMin}min` },
                 "[finalize:bg] assembly watchdog fired — marking video failed, resetting session",
               );
               await Promise.allSettled([
@@ -1447,14 +1466,13 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   .update(videos)
                   .set({
                     transcodingStatus: "failed",
-                    // CORRUPT_SOURCE signals the queue-integrity-validator's
-                    // UNPLAYABLE_CORRUPT_UPLOAD check so it auto-deactivates
-                    // this queue item.  Without it the validator never fires
-                    // and the orchestrator keeps trying to play the
-                    // partially-assembled blob on every tick.
-                    transcodingErrorCode: "CORRUPT_SOURCE",
+                    // ASSEMBLY_FAILED: blob state is unknown (assembly may still
+                    // be running or may have been committed). Unlike CORRUPT_SOURCE
+                    // this is recoverable — retrying finalization from the upload
+                    // panel will either complete the assembly or restart it cleanly.
+                    transcodingErrorCode: "ASSEMBLY_FAILED",
                     transcodingErrorMessage:
-                      "Assembly watchdog timeout (60 min) — the blob was never fully assembled. " +
+                      `Assembly watchdog timeout (${watchdogElapsedMin} min) — the blob was never fully assembled. ` +
                       "Reset the session from the upload panel and retry the upload.",
                   })
                   .where(eq(videos.id, videoId)),
@@ -1468,7 +1486,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 sessionId,
                 session.sizeBytes,
                 "assembly_watchdog_timeout",
-                "Assembly watchdog timeout (60 min) — blob was never fully assembled.",
+                `Assembly watchdog timeout (${watchdogElapsedMin} min) — blob was never fully assembled.`,
               );
             })();
           }, env.ASSEMBLY_WATCHDOG_MS);
@@ -1847,21 +1865,28 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 "[finalize:bg] assembly committed but a later step threw — blob is PRESERVED; video row intact",
               );
             }
+            // Error code selection:
+            //   assemblyCommitted=false → ASSEMBLY_FAILED: the blob is absent or
+            //     partial; session is reset to 'uploading' so operator can retry
+            //     finalization from the upload panel (recoverable).
+            //   assemblyCommitted=true  → CORRUPT_SOURCE: the blob committed
+            //     successfully but a post-assembly step threw (e.g. a DB write).
+            //     The blob is intact but the video row may be in an inconsistent
+            //     state; use CORRUPT_SOURCE to signal the validator to auto-deactivate
+            //     this queue item until an operator investigates.
             await Promise.allSettled([
               db
                 .update(videos)
                 .set({
                   transcodingStatus: "failed",
-                  // CORRUPT_SOURCE signals the queue-integrity-validator's
-                  // UNPLAYABLE_CORRUPT_UPLOAD check so it auto-deactivates
-                  // this queue item.  Without it the validator never fires
-                  // and the orchestrator keeps trying to play the
-                  // partially-assembled blob on every tick.
-                  transcodingErrorCode: "CORRUPT_SOURCE",
-                  transcodingErrorMessage:
-                    `Assembly failed after ${Date.now() - assemblyStartMs} ms — ` +
-                    "the blob may be partially written. Reset the session from the " +
-                    "upload panel and retry the upload to recover.",
+                  transcodingErrorCode: assemblyCommitted ? "CORRUPT_SOURCE" : "ASSEMBLY_FAILED",
+                  transcodingErrorMessage: assemblyCommitted
+                    ? `A post-assembly step failed after ${Date.now() - assemblyStartMs} ms — ` +
+                      "the blob is intact but the video may need operator review. " +
+                      "Check logs for the specific error."
+                    : `Assembly failed after ${Date.now() - assemblyStartMs} ms — ` +
+                      "the blob was not committed. Reset the session from the " +
+                      "upload panel and retry the upload to recover.",
                 })
                 .where(eq(videos.id, videoId)),
               db
@@ -2000,13 +2025,14 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       const assemblyStartMsB = Date.now();
 
       void (async () => {
-        // 60-minute watchdog — guards against a hung finalizeFromDbFallback
-        // (DB lock contention, OOM mid-chunk). On expiry: mark video failed
-        // and reset the session so the operator can retry.
+        // Assembly watchdog (db_fallback path) — same rationale as Path A:
+        // uses env.ASSEMBLY_WATCHDOG_MS (default 4 h) and emits ASSEMBLY_FAILED
+        // (not CORRUPT_SOURCE) because the blob state is unknown at fire time.
         const watchdogB = setTimeout(() => {
           void (async () => {
+            const watchdogElapsedMinB = Math.round(env.ASSEMBLY_WATCHDOG_MS / 60_000);
             capturedLogB.error(
-              { sessionId, videoId: videoIdB, elapsed: "60min" },
+              { sessionId, videoId: videoIdB, elapsed: `${watchdogElapsedMinB}min` },
               "[finalize:db_fallback:bg] assembly watchdog fired — marking failed, resetting session",
             );
             await Promise.allSettled([
@@ -2014,14 +2040,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 .update(videos)
                 .set({
                   transcodingStatus: "failed",
-                  // CORRUPT_SOURCE signals the queue-integrity-validator's
-                  // UNPLAYABLE_CORRUPT_UPLOAD check so it auto-deactivates
-                  // this queue item.  Without it the validator never fires
-                  // and the orchestrator keeps trying to play the
-                  // partially-assembled blob on every tick.
-                  transcodingErrorCode: "CORRUPT_SOURCE",
+                  transcodingErrorCode: "ASSEMBLY_FAILED",
                   transcodingErrorMessage:
-                    "Assembly watchdog timeout (60 min) — the blob was never fully assembled. " +
+                    `Assembly watchdog timeout (${watchdogElapsedMinB} min) — the blob was never fully assembled. ` +
                     "Reset the session from the upload panel and retry the upload.",
                 })
                 .where(eq(videos.id, videoIdB)),
@@ -2035,10 +2056,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               sessionId,
               session.sizeBytes,
               "assembly_watchdog_timeout",
-              "Assembly watchdog timeout (60 min) — blob was never fully assembled.",
+              `Assembly watchdog timeout (${watchdogElapsedMinB} min) — blob was never fully assembled.`,
             );
           })();
-        }, 60 * 60 * 1000);
+        }, env.ASSEMBLY_WATCHDOG_MS);
         // .unref() so this timer does not prevent Node from exiting on SIGTERM
         // while the watchdog is pending.
         watchdogB.unref();
@@ -2306,20 +2327,18 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             { err, sessionId, videoId: videoIdB, assemblyMs: assemblyFailedMs },
             "[finalize:db_fallback:bg] ASSEMBLY FAILED — resetting session, marking video failed",
           );
+          // db_fallback path: the blob is assembled inline (not via
+          // completeMultipartUpload) so a catch here means the blob was
+          // never fully written — always use ASSEMBLY_FAILED (recoverable).
           await Promise.allSettled([
             db
               .update(videos)
               .set({
                 transcodingStatus: "failed",
-                // CORRUPT_SOURCE signals the queue-integrity-validator's
-                // UNPLAYABLE_CORRUPT_UPLOAD check so it auto-deactivates
-                // this queue item.  Without it the validator never fires
-                // and the orchestrator keeps trying to play the
-                // partially-assembled blob on every tick.
-                transcodingErrorCode: "CORRUPT_SOURCE",
+                transcodingErrorCode: "ASSEMBLY_FAILED",
                 transcodingErrorMessage:
                   `Assembly failed after ${assemblyFailedMs} ms — ` +
-                  "the blob may be partially written. Reset the session from the " +
+                  "the blob was not committed. Reset the session from the " +
                   "upload panel and retry the upload to recover.",
               })
               .where(eq(videos.id, videoIdB)),

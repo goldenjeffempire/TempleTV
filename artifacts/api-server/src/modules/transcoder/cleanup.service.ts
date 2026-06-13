@@ -307,7 +307,13 @@ export async function scheduleSourceCleanup(
   }
 
   try {
-    const retentionMs = env.CLEANUP_RETENTION_HOURS * 3_600_000;
+    // In production enforce a minimum 24-hour retention floor regardless of
+    // CLEANUP_RETENTION_HOURS so a misconfiguration (e.g. CLEANUP_RETENTION_HOURS=0)
+    // never causes source blobs to be deleted the instant HLS passes validation.
+    const effectiveRetentionHours = env.NODE_ENV === "production"
+      ? Math.max(env.CLEANUP_RETENTION_HOURS, 24)
+      : env.CLEANUP_RETENTION_HOURS;
+    const retentionMs = effectiveRetentionHours * 3_600_000;
     const cleanupAfter = new Date(Date.now() + retentionMs);
 
     // Mark as scheduled and record when cleanup becomes eligible.
@@ -320,7 +326,13 @@ export async function scheduleSourceCleanup(
       .where(eq(videos.id, videoId));
 
     logger.info(
-      { videoId, sourceObjectKey, cleanupAfter, retentionHours: env.CLEANUP_RETENTION_HOURS },
+      {
+        videoId,
+        sourceObjectKey,
+        cleanupAfter,
+        retentionHours: env.CLEANUP_RETENTION_HOURS,
+        effectiveRetentionHours,
+      },
       "[cleanup] source cleanup scheduled",
     );
 
@@ -419,6 +431,41 @@ async function runCleanupForVideo(
       },
       "[cleanup] HLS validation passed — proceeding with source deletion",
     );
+
+    // Step 1.5: Hard 24-hour safety floor on HLS age — independent of the
+    // configurable retention window. Even if CLEANUP_RETENTION_HOURS is set
+    // to 0 (dev) or a misconfigured value, never delete the source blob if
+    // the HLS master was written < 24 h ago. This guards against a transient
+    // false-pass during the propagation window (e.g. a storage cache returning
+    // a stale 200 for a segment that has not yet fully flushed to disk).
+    const masterKey = `transcoded/${videoId}/master.m3u8`;
+    const masterAgeResult = await db.execute(sql`
+      SELECT created_at FROM storage_blobs WHERE key = ${masterKey} LIMIT 1
+    `);
+    if (masterAgeResult.rows.length > 0) {
+      const masterCreatedAt = (masterAgeResult.rows[0] as { created_at: Date | string }).created_at;
+      const masterCreatedMs = masterCreatedAt instanceof Date
+        ? masterCreatedAt.getTime()
+        : new Date(masterCreatedAt).getTime();
+      const ageMs = Date.now() - masterCreatedMs;
+      const minAgeMs = 24 * 3_600_000;
+      if (ageMs < minAgeMs) {
+        const ageHours = Math.round((ageMs / 3_600_000) * 10) / 10;
+        log.warn(
+          { masterCreatedAt, ageHours, minAgeHours: 24 },
+          "[cleanup] HLS master < 24 h old — deferring source deletion (hard safety floor)",
+        );
+        await db
+          .update(videos)
+          .set({
+            sourceCleanupStatus: "scheduled",
+            sourceCleanupAttempts: attempts,
+            sourceCleanupAfter: new Date(masterCreatedMs + minAgeMs),
+          })
+          .where(eq(videos.id, videoId));
+        return false;
+      }
+    }
 
     // Step 2: Delete source blob + associated upload session/chunks.
     const { bytesFreed } = await deleteSourceBlob(videoId, sourceObjectKey);

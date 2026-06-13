@@ -382,12 +382,15 @@ const Env = z.object({
   // Maximum wall-clock time (ms) for the background blob-assembly task that
   // runs after a chunked video upload is finalized. The iterative bytea-concat
   // loop is O(n²) in PostgreSQL I/O — a 2 GB file (250 chunks) can legitimately
-  // take 40+ minutes on Replit's shared Neon DB. Default 90 minutes leaves
-  // a 50% safety margin. Set ASSEMBLY_WATCHDOG_MS=5400000 for very large
-  // files or slow DB instances. When the watchdog fires the video is marked
-  // transcodingStatus='failed' and the session resets to 'uploading' so the
-  // operator can retry finalization from the upload queue panel.
-  ASSEMBLY_WATCHDOG_MS: z.coerce.number().int().positive().default(90 * 60_000),
+  // take 40+ minutes on Replit's shared Neon DB, and large 4K/long-form files
+  // (4 GB+, 500+ chunks) can legitimately take 90+ minutes on slow storage.
+  // Default 4 hours (240 min) provides ample headroom for the largest expected
+  // files without falsely marking them ASSEMBLY_FAILED. Operators who need a
+  // shorter timeout can set ASSEMBLY_WATCHDOG_MS explicitly.
+  // When the watchdog fires the video is marked transcodingStatus='failed' /
+  // transcodingErrorCode='ASSEMBLY_FAILED' and the session resets to 'uploading'
+  // so the operator can retry finalization from the upload queue panel.
+  ASSEMBLY_WATCHDOG_MS: z.coerce.number().int().positive().default(240 * 60_000),
   // ── SMTP / email ────────────────────────────────────────────────────────
   // Non-sensitive connection params (set as plain env vars).
   // SMTP_PASS must be provided as a secret — it is never logged.

@@ -226,11 +226,11 @@ export async function scanLibraryAndEnqueue(opts: {
             isNotNull(videosTable.hlsMasterUrl),
             isNotNull(videosTable.localVideoUrl),
           ),
-          // Pre-filter: exclude unrecoverable uploads at the SQL level to avoid
-          // wasting a roundtrip per row inside isPlayableForBroadcast.
-          // CORRUPT_SOURCE = moov atom absent; SOURCE_MISSING = source blob gone
-          // from storage. Both require a fresh re-upload.
-          sql`(${videosTable.transcodingErrorCode} IS NULL OR ${videosTable.transcodingErrorCode} NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING'))`,
+          // Pre-filter: exclude unrecoverable/unassembled uploads at the SQL level
+          // to avoid wasting a roundtrip per row inside isPlayableForBroadcast.
+          // CORRUPT_SOURCE = moov atom absent; SOURCE_MISSING = source blob gone;
+          // ASSEMBLY_FAILED = blob never committed (session reset to 'uploading').
+          sql`(${videosTable.transcodingErrorCode} IS NULL OR ${videosTable.transcodingErrorCode} NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING', 'ASSEMBLY_FAILED'))`,
           // Pre-filter: exclude raw MP4s that are known-unplayable (failed
           // transcoding + faststart explicitly failed + no HLS manifest).
           //
@@ -341,11 +341,17 @@ function isPlayableForBroadcast(row: {
   // is baked into the playlist manifest). Always safe to broadcast.
   if (row.hlsMasterUrl && row.hlsMasterUrl.trim() !== "") return true;
 
-  // Unrecoverable upload: CORRUPT_SOURCE = the source file has no moov atom (or
-  // the moov is so broken that FFmpeg cannot remux it) — the raw MP4 cannot be
-  // streamed via HTTP range requests. SOURCE_MISSING = the source blob no longer
-  // exists in storage. Either way, re-uploading the source file is the only fix.
-  if (row.transcodingErrorCode === "CORRUPT_SOURCE" || row.transcodingErrorCode === "SOURCE_MISSING") return false;
+  // Unrecoverable / unassembled uploads:
+  //   CORRUPT_SOURCE  = moov atom absent; the raw MP4 cannot be streamed.
+  //   SOURCE_MISSING  = source blob no longer exists in storage.
+  //   ASSEMBLY_FAILED = blob assembly was interrupted; blob absent / partial.
+  // All three require the operator to retry from the upload panel before the
+  // video can be broadcast.
+  if (
+    row.transcodingErrorCode === "CORRUPT_SOURCE" ||
+    row.transcodingErrorCode === "SOURCE_MISSING" ||
+    row.transcodingErrorCode === "ASSEMBLY_FAILED"
+  ) return false;
 
   // Raw local MP4 (no HLS yet): safe to broadcast ONLY when the moov atom is
   // positioned at byte 0 (faststartApplied = true or null). If transcoding
