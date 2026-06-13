@@ -58,7 +58,7 @@ interface EngineHealth {
   itemCount: number;
   uptimeMs: number;
   boot: { started: boolean; busBridgeInstalled: boolean; startAttempts: number; lastStartError: string | null };
-  reload: { lastReloadAtMs: number | null; lastReloadOk: boolean; attempts: number; successes: number };
+  reload: { lastReloadAtMs: number | null; lastReloadOk: boolean; attempts: number; successes: number; hashSkips?: number };
   allBlocked?: { allSourcesBlocked: boolean; allBlockedSinceMs: number | null; allBlockedDurationMs: number | null };
 }
 
@@ -512,11 +512,18 @@ export default function StreamHealthPage() {
                     <span className="text-xs text-muted-foreground">Reload success</span>
                   </div>
                   <p className="text-xl font-bold tabular-nums">
-                    {engineHealth.reload.attempts > 0
-                      ? `${Math.round((engineHealth.reload.successes / engineHealth.reload.attempts) * 100)}%`
-                      : "—"}
+                    {(() => {
+                      const fullRuns = engineHealth.reload.attempts;
+                      if (fullRuns === 0) return "—";
+                      return `${Math.round((engineHealth.reload.successes / fullRuns) * 100)}%`;
+                    })()}
                   </p>
-                  <p className="text-[10px] text-muted-foreground mt-0.5">{engineHealth.reload.successes}/{engineHealth.reload.attempts} ok</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                    {engineHealth.reload.successes}/{engineHealth.reload.attempts} full reloads ok
+                    {(engineHealth.reload.hashSkips ?? 0) > 0 && (
+                      <span className="ml-1 opacity-60">· {engineHealth.reload.hashSkips} skipped (unchanged)</span>
+                    )}
+                  </p>
                 </div>
               </div>
               <div className="space-y-0">

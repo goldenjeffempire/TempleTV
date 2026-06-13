@@ -316,6 +316,17 @@ class BroadcastOrchestrator extends EventEmitter {
   private reloadAttempts = 0;
   private reloadSuccesses = 0;
   /**
+   * Number of reloadInner() calls that were short-circuited by the queue
+   * hash check (queue content unchanged since last full reload).
+   *
+   * These are NOT counted in `reloadAttempts` or `reloadSuccesses` because
+   * they do no real work — they return immediately after confirming the queue
+   * hasn't changed. Without this separate counter the `successes/attempts`
+   * ratio in /health would be misleadingly low (e.g. 3/18 = 17%) even on a
+   * perfectly healthy server where the queue just hasn't changed in a while.
+   */
+  private reloadHashSkips = 0;
+  /**
    * Drift monitor: mirrors the most recently persisted position checkpoint
    * in memory so getDriftInfo() can compare the orchestrator's real-time
    * position against where the checkpoint expected it to be — without any
@@ -1110,7 +1121,6 @@ class BroadcastOrchestrator extends EventEmitter {
       return;
     }
     this._reloadInProgress = true;
-    this.reloadAttempts += 1;
     const prev = this.snapshot();
     const prevCurrentId = prev.current?.id ?? null;
     const reloadNow = Date.now();
@@ -1154,6 +1164,11 @@ class BroadcastOrchestrator extends EventEmitter {
         .join("|");
       if (queueHash === this._lastQueueHash) {
         // Nothing changed — update diagnostics and return fast.
+        // Counted separately as a hash-skip (not a reload attempt) so the
+        // attempts/successes ratio in /health stays meaningful even when
+        // the queue is stable for long stretches (e.g. a 5-item queue
+        // unchanged for an hour would otherwise show 1/120 = 0.8% "success").
+        this.reloadHashSkips += 1;
         this.lastReloadAtMs = Date.now();
         this.lastReloadOk = true;
         this.lastReloadError = null;
@@ -1169,6 +1184,12 @@ class BroadcastOrchestrator extends EventEmitter {
       // Reset hash so the next non-empty reload always re-computes.
       this._lastQueueHash = "";
     }
+
+    // Past the hash-check gate — this is a full resolution run.
+    // Only count attempts here (after the hash short-circuit) so the
+    // successes/attempts ratio in /health reflects actual reload work,
+    // not hash-match no-ops that return in microseconds.
+    this.reloadAttempts += 1;
 
     // Pre-resolve sources ONCE per load — toItem() calls resolveSource() which
     // may throw or warn. Doing this here means snapshot() never triggers
@@ -3455,6 +3476,8 @@ class BroadcastOrchestrator extends EventEmitter {
     lastReloadError: string | null;
     attempts: number;
     successes: number;
+    /** Hash-match short-circuits: queue was unchanged, full reload skipped. */
+    hashSkips: number;
   } {
     return {
       lastReloadAtMs: this.lastReloadAtMs,
@@ -3462,6 +3485,7 @@ class BroadcastOrchestrator extends EventEmitter {
       lastReloadError: this.lastReloadError,
       attempts: this.reloadAttempts,
       successes: this.reloadSuccesses,
+      hashSkips: this.reloadHashSkips,
     };
   }
 
