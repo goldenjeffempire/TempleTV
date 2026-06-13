@@ -46,6 +46,7 @@ import {
 } from "../webhook/webhook.service.js";
 import { runFaststart } from "../../transcoder/faststart.service.js";
 import { driftAggregator } from "../engine/drift-aggregator.js";
+import { ytShuffleFallback } from "../engine/youtube-shuffle-fallback.js";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
 const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
@@ -449,6 +450,10 @@ export async function restRoutes(app: FastifyInstance) {
       },
       airingHistory: broadcastOrchestrator.getAiringHistory(),
       youtubeAutoOverride: getYouTubeAutoOverrideStats(),
+      /** YouTube catalog shuffle fallback status (activates when local queue is empty). */
+      ytShuffle: ytShuffleFallback.getInfo(),
+      /** Dead-air fallback status — covers both BROADCAST_DEADAIR_FALLBACK_URL and YouTube shuffle. */
+      deadAirFallback: broadcastOrchestrator.getDeadAirFallbackInfo(),
       viewerSlope: getViewerSlopeStatus(),
       /** Broadcast health monitor (external orchestrator watchdog) status. */
       healthMonitor: hmStatus,

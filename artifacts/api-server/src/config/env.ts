@@ -544,6 +544,27 @@ const Env = z.object({
     .transform((v) => v === true || v === "true" || v === "1")
     .default(false),
 
+  // Set to "1" or "true" to disable the YouTube catalog shuffle fallback.
+  //
+  // The shuffle fallback activates when the broadcast queue has no locally
+  // playable content for >60 s (after scanLibraryAndEnqueue returns 0) and
+  // cycles through YouTube catalog videos (managed_videos with
+  // videoSource='youtube') using a broadcast YouTube override so viewers always
+  // see content. It auto-deactivates the moment a local queue item becomes
+  // available.
+  //
+  // Disable when:
+  //   • No YouTube catalog exists (YOUTUBE_SYNC_DISABLE=true + no manual imports)
+  //   • The operator prefers dead air over showing uncontrolled catalog content
+  //   • BROADCAST_DEADAIR_FALLBACK_URL is configured as the preferred backstop
+  //
+  // Default: enabled (false). A startup warning fires in production when this
+  // AND BROADCAST_DEADAIR_FALLBACK_URL are both unset/disabled.
+  YOUTUBE_SHUFFLE_FALLBACK_DISABLE: z
+    .union([z.boolean(), z.string()])
+    .transform((v) => v === true || v === "true" || v === "1")
+    .default(false),
+
   // ── Cross-environment broadcast queue sync ───────────────────────────────
   // When set, this server periodically pulls the broadcast queue from an
   // upstream environment (typically production) and upserts the items into

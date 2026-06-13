@@ -10,6 +10,7 @@ import { checkpointRepo } from "../repository/checkpoint.repo.js";
 import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, type RawQueueRow } from "../repository/queue.repo.js";
 import { faststartRecoveryWorker } from "./faststart-recovery.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
+import { ytShuffleFallback } from "./youtube-shuffle-fallback.js";
 import { playbackAnalytics } from "./playback-analytics.js";
 import { scanLibraryAndEnqueue } from "../../broadcast/auto-enqueue.service.js";
 import { sendBroadcastWebhook } from "../webhook/webhook.service.js";
@@ -578,6 +579,22 @@ class BroadcastOrchestrator extends EventEmitter {
                   "[broadcast-v2] self-heal: library scan promoted playable videos into empty queue — reloading",
                 );
                 this.scheduleSelfHealReload("self-heal-library-scan");
+              } else if (
+                !ytShuffleFallback.isActive &&
+                this.mode !== "override" &&
+                !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE
+              ) {
+                // Library scan returned 0 playable local items and the queue is
+                // still empty — activate the YouTube catalog shuffle fallback so
+                // viewers see content while local uploads are unavailable.
+                void ytShuffleFallback
+                  .activate((opts) => this.startOverride(opts))
+                  .catch((err: unknown) =>
+                    logger.warn(
+                      { err },
+                      "[broadcast-v2] YouTube shuffle fallback activate failed (non-fatal)",
+                    ),
+                  );
               }
             })
             .catch((err) => {
@@ -629,6 +646,21 @@ class BroadcastOrchestrator extends EventEmitter {
                   "[broadcast-v2] self-heal: library scan promoted videos into all-blocked queue — reloading",
                 );
                 this.scheduleSelfHealReload("self-heal-all-blocked-library-scan");
+              } else if (
+                !ytShuffleFallback.isActive &&
+                this.mode !== "override" &&
+                !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE
+              ) {
+                // All-blocked scan also returned 0 — activate YouTube shuffle fallback
+                // so viewers see content while all local sources remain unreachable.
+                void ytShuffleFallback
+                  .activate((opts) => this.startOverride(opts))
+                  .catch((err: unknown) =>
+                    logger.warn(
+                      { err },
+                      "[broadcast-v2] YouTube shuffle fallback activate (all-blocked) failed (non-fatal)",
+                    ),
+                  );
               }
             })
             .catch((err) => {
@@ -1249,6 +1281,24 @@ class BroadcastOrchestrator extends EventEmitter {
       // — stale values could cause the fallback to apply within milliseconds
       // of a new empty-queue window instead of waiting the full threshold.
       this.deadAirDetectedAtMs = null;
+
+      // Auto-clear the YouTube shuffle fallback when the queue recovers local
+      // playable content. Only stops the override if this module started it
+      // (activeOverrideId matches the current override), so operator-applied
+      // overrides with a different ID are left untouched.
+      if (
+        ytShuffleFallback.isActive &&
+        ytShuffleFallback.activeOverrideId !== null &&
+        this.override?.id === ytShuffleFallback.activeOverrideId
+      ) {
+        const stopFn = (): Promise<void> => this.stopOverride();
+        void ytShuffleFallback.deactivate(stopFn).catch((err: unknown) =>
+          logger.warn(
+            { err, channel: this.channelId },
+            "[broadcast-v2] yt-shuffle deactivate on queue recovery failed (non-fatal)",
+          ),
+        );
+      }
     }
     // Mirror playable-queue depth as a Prometheus gauge for dashboards/alerts.
     broadcastQueueDepth.set({ channel: this.channelId, ...SERVICE_LABELS }, this.items.length);
@@ -3349,6 +3399,29 @@ class BroadcastOrchestrator extends EventEmitter {
     return {
       consecutiveSkips: this.consecutiveSkips,
       lastDeadAirAt: this.lastDeadAirAt,
+    };
+  }
+
+  /**
+   * Dead-air fallback status snapshot for the /health endpoint.
+   *
+   * Covers both BROADCAST_DEADAIR_FALLBACK_URL (HLS/RTMP stream override, tracked
+   * by deadAirFallbackActive + fallbackOverrideActive) and the YouTube catalog
+   * shuffle fallback (tracked by ytShuffleFallback). Both are considered "fallback
+   * active" for the purpose of monitoring — either one means the broadcast is
+   * serving alternative content because the local queue was unavailable.
+   */
+  getDeadAirFallbackInfo(): {
+    fallbackActive: boolean;
+    fallbackUrl: string | null;
+    ytShuffleActive: boolean;
+    ytShuffleVideoId: string | null;
+  } {
+    return {
+      fallbackActive: this.deadAirFallbackActive || this.fallbackOverrideActive,
+      fallbackUrl: env.BROADCAST_DEADAIR_FALLBACK_URL ?? null,
+      ytShuffleActive: ytShuffleFallback.isActive,
+      ytShuffleVideoId: ytShuffleFallback.getInfo().videoId,
     };
   }
 

@@ -375,6 +375,22 @@ async function main() {
       }
     }
 
+    // Dead-air backstop check: warn when BOTH automatic fallbacks are disabled.
+    // If the broadcast queue empties (all transcodes fail, no uploads, etc.) and
+    // neither backstop is configured, viewers will see a blank screen indefinitely.
+    //   • BROADCAST_DEADAIR_FALLBACK_URL — HLS/RTMP stream applied as override
+    //   • YouTube catalog shuffle fallback — cycles YouTube catalog videos
+    // One or both should be configured on every production deployment.
+    if (!env.BROADCAST_DEADAIR_FALLBACK_URL && env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE) {
+      configWarnings.push(
+        "No dead-air backstop configured: BROADCAST_DEADAIR_FALLBACK_URL is unset AND " +
+        "YOUTUBE_SHUFFLE_FALLBACK_DISABLE=true. If the broadcast queue runs empty, " +
+        "viewers will see a blank screen until content is manually added. " +
+        "Set BROADCAST_DEADAIR_FALLBACK_URL to an HLS stream, or remove " +
+        "YOUTUBE_SHUFFLE_FALLBACK_DISABLE to enable the YouTube catalog shuffle fallback.",
+      );
+    }
+
     if (configErrors.length > 0) {
       logger.error(
         { configErrors, configWarnings },

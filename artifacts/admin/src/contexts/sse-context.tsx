@@ -134,6 +134,7 @@ const KNOWN_EVENTS = [
   "live-ingest-stream-started", "live-ingest-stream-stopped",
   "broadcast-v2-stall", "broadcast-v2-queue-issues",
   "dead-air-escalation",
+  "broadcast-dead-air-fallback", "broadcast-dead-air-recovered",
   "feedback-received", "youtube-quota-warning",
   "youtube-live-status-changed",
   // Viewer-slope monitor events — emitted when sustained viewer-count drops
@@ -181,6 +182,14 @@ function summarize(event: string, data: unknown): string | null {
     case "dead-air-escalation": {
       const cycles = Number(d.allBlockedRecoveryCycles ?? 1);
       return `Dead air — all sources blocked (recovery cycle ${cycles})`;
+    }
+    case "broadcast-dead-air-fallback": {
+      const title = typeof d.title === "string" ? d.title : null;
+      const kind = typeof d.kind === "string" ? d.kind : "fallback";
+      return title ? `Dead-air ${kind} active: ${title}` : `Dead-air ${kind} activated`;
+    }
+    case "broadcast-dead-air-recovered": {
+      return "Dead-air fallback cleared — local queue recovered";
     }
     case "stream-health-degraded": {
       const drop = Number(d.dropPercent ?? d.slopePct ?? 0);

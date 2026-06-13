@@ -266,7 +266,15 @@ export async function scanLibraryAndEnqueue(opts: {
           )`,
         ),
       )
-      .orderBy(desc(videosTable.importedAt))
+      .orderBy(
+        // For self-heal refills use RANDOM() so the broadcast rotates through
+        // the entire library in a different order each cycle instead of always
+        // leading with the newest content — essential for 24/7 variety guarantee.
+        // Scheduled yt-sync and manual/startup fills keep newest-first order.
+        (opts.reason === "self-heal-empty" || opts.reason === "self-heal-all-blocked")
+          ? sql`RANDOM()`
+          : desc(videosTable.importedAt),
+      )
       .limit(limit);
 
     let enqueued = 0;
