@@ -7,6 +7,7 @@ import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
 import { transcodingQueueDepth, SERVICE_LABELS } from "../../infrastructure/metrics.js";
 import { runTranscode, checkFfmpegAvailable } from "./transcoder.service.js";
+import { enqueueTranscode } from "./transcoder.queue.js";
 import { scheduleSourceCleanup } from "./cleanup.service.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
@@ -926,8 +927,14 @@ class TranscoderDispatcher {
     const ORPHAN_AGE_MS = 45 * 60_000;
     const cutoff = new Date(Date.now() - ORPHAN_AGE_MS);
     try {
-      const result = await db.execute<{ id: string }>(sql`
-        SELECT v.id
+      // Select object_path and hls_master_url alongside id so we can create
+      // missing transcoding_jobs rows after the status reset (see below).
+      const result = await db.execute<{
+        id: string;
+        object_path: string | null;
+        hls_master_url: string | null;
+      }>(sql`
+        SELECT v.id, v.object_path, v.hls_master_url
         FROM managed_videos v
         WHERE v.transcoding_status IN ('processing', 'queued')
           AND v.updated_at < ${cutoff}
@@ -939,8 +946,11 @@ class TranscoderDispatcher {
         LIMIT 20
       `);
 
-      const stuckIds = (result.rows as Array<{ id: string }>).map((r) => r.id);
-      if (stuckIds.length === 0) return;
+      type OrphanRow = { id: string; object_path: string | null; hls_master_url: string | null };
+      const stuckRows = result.rows as OrphanRow[];
+      if (stuckRows.length === 0) return;
+
+      const stuckIds = stuckRows.map((r) => r.id);
 
       logger.warn(
         { count: stuckIds.length, videoIds: stuckIds },
@@ -964,6 +974,40 @@ class TranscoderDispatcher {
         reason: "faststart-orphan-watchdog-reset",
         count: stuckIds.length,
       });
+
+      // For each recovered video that still needs HLS (no hls_master_url) and
+      // has a source blob (object_path set), create the missing transcoding_jobs
+      // row. Without this step the dispatcher never picks the video up — it
+      // only polls transcoding_jobs, not managed_videos directly. A server
+      // crash between faststart starting (transcodingStatus='processing') and
+      // enqueueTranscode being called leaves the video in limbo: the status
+      // reset above puts it back to 'queued', but no job exists to process it.
+      const needsTranscode = stuckRows.filter(
+        (r) => r.object_path && !r.hls_master_url,
+      );
+      if (needsTranscode.length > 0) {
+        let jobsCreated = 0;
+        for (const row of needsTranscode) {
+          try {
+            await enqueueTranscode({ videoId: row.id, videoPath: row.object_path! });
+            jobsCreated++;
+          } catch (enqErr) {
+            logger.warn(
+              { err: enqErr, videoId: row.id },
+              "[transcoder] faststart-orphan watchdog: failed to enqueue HLS for recovered video (non-fatal)",
+            );
+          }
+        }
+        if (jobsCreated > 0) {
+          logger.info(
+            { jobsCreated, videoIds: needsTranscode.map((r) => r.id) },
+            "[transcoder] faststart-orphan watchdog: created missing transcoding_jobs rows for recovered videos",
+          );
+          // Wake the dispatcher immediately so encoding starts on the next
+          // tick rather than waiting for the next poll interval.
+          this.nudge();
+        }
+      }
     } catch (err) {
       logger.warn({ err }, "[transcoder] faststart-orphan watchdog sweep failed (non-fatal)");
     }

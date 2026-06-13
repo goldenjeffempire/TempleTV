@@ -214,6 +214,7 @@ export async function scanLibraryAndEnqueue(opts: {
         transcodingStatus: videosTable.transcodingStatus,
         faststartApplied: videosTable.faststartApplied,
         transcodingErrorCode: videosTable.transcodingErrorCode,
+        s3MirroredAt: videosTable.s3MirroredAt,
       })
       .from(videosTable)
       .where(
@@ -231,6 +232,15 @@ export async function scanLibraryAndEnqueue(opts: {
           // CORRUPT_SOURCE = moov atom absent; SOURCE_MISSING = source blob gone;
           // ASSEMBLY_FAILED = blob never committed (session reset to 'uploading').
           sql`(${videosTable.transcodingErrorCode} IS NULL OR ${videosTable.transcodingErrorCode} NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING', 'ASSEMBLY_FAILED'))`,
+          // Pre-filter: exclude local videos whose blob has not yet been
+          // committed to storage (pre-committed rows where completeMultipartUpload
+          // is still running in the background). s3_mirrored_at is set only after
+          // completeMultipartUpload succeeds; without this guard the self-heal
+          // scan would add a broadcast-queue entry for a video whose storage blob
+          // does not yet exist, causing the orchestrator to attempt playback of
+          // an empty URL. Non-local sources (e.g. HLS) are excluded from this
+          // guard since they have no s3_mirrored_at stamp.
+          sql`(${videosTable.videoSource} != 'local' OR ${videosTable.s3MirroredAt} IS NOT NULL)`,
           // Pre-filter: exclude raw MP4s that are known-unplayable (failed
           // transcoding + faststart explicitly failed + no HLS manifest).
           //
