@@ -67,23 +67,15 @@ const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
   "jctm.org.ng",
   ".jctm.org.ng",
   // Local development: allow localhost and loopback so locally-uploaded
-  // videos resolve when running without a public origin (no Replit/Render
-  // env vars, no API_ORIGIN configured). This allowlist gates what URLs the
-  // orchestrator sends to player clients in broadcast snapshots — it does NOT
-  // control what HTTP requests this server makes itself (no SSRF exposure).
-  // A player client that receives a localhost URL simply connects to its own
-  // loopback, which is the correct behaviour in a local dev setup where the
-  // API server and players run on the same machine.
+  // videos resolve when running without a public origin (no DEV_DOMAIN /
+  // RENDER_EXTERNAL_URL / API_ORIGIN configured). This allowlist gates what
+  // URLs the orchestrator sends to player clients in broadcast snapshots — it
+  // does NOT control what HTTP requests this server makes itself (no SSRF
+  // exposure). A player client that receives a localhost URL simply connects
+  // to its own loopback, which is the correct behaviour in a local dev setup
+  // where the API server and players run on the same machine.
   "localhost",
   "127.0.0.1",
-  // Replit environments: *.replit.dev is the dev-proxy domain (REPLIT_DEV_DOMAIN);
-  // *.repl.co covers legacy Replit URLs; *.replit.app is the production deployment
-  // domain used by Replit Deployments. All three must be in the allowlist so that
-  // normalizeQueueUrl() output for locally-uploaded content passes the resolver
-  // when the server is deployed or previewed on Replit infrastructure.
-  ".replit.dev",
-  ".repl.co",
-  ".replit.app",
 ];
 
 const HLS_EXT = /\.m3u8(?:$|\?|#)/i;

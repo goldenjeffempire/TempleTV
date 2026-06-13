@@ -119,31 +119,4 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   return context.resolveRequest(context, moduleName, platform);
 };
 
-// ─── Replit origin header passthrough ────────────────────────────────────────
-// When running inside the Replit dev environment, Expo's Metro dev server
-// rejects requests whose Origin header matches the Replit proxy domain.
-// Stripping the Origin before it reaches Metro's CORS check lets the bundler
-// serve correctly to the Expo Go / dev-client app tunnelled through Replit.
-const replitDomain = process.env.REPLIT_DEV_DOMAIN;
-const replitExpoDomain = process.env.REPLIT_EXPO_DEV_DOMAIN;
-
-const allowedDomains = [replitDomain, replitExpoDomain].filter(Boolean);
-
-if (allowedDomains.length > 0) {
-  const originalEnhance = config.server?.enhanceMiddleware;
-
-  config.server = config.server ?? {};
-  config.server.enhanceMiddleware = (middleware) => {
-    const enhanced = originalEnhance ? originalEnhance(middleware) : middleware;
-
-    return (req, res, next) => {
-      const origin = req.headers["origin"];
-      if (origin && allowedDomains.some((d) => origin.includes(d))) {
-        delete req.headers["origin"];
-      }
-      enhanced(req, res, next);
-    };
-  };
-}
-
 module.exports = config;

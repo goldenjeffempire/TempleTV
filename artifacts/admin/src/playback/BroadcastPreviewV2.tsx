@@ -319,13 +319,11 @@ function classifySourceFailure(
 
     // Detect legacy *.onrender.com URLs — these are absolute HLS/upload URLs
     // stored in the production DB before a custom domain was configured. They
-    // fail in the admin preview browser because:
-    //   1. CORS: the Render service doesn't allow *.worf.replit.dev origins.
-    //   2. Render free-tier sleep: the service may be spun down.
-    // Real viewers on TV/mobile are unaffected — the production API rewrites
-    // these to the canonical host before emitting broadcast snapshots.
-    // prod-sync now rewrites them locally too; this branch covers any items
-    // already synced before the fix and clears operator concern.
+    // may fail in the admin preview browser due to CORS restrictions and
+    // Render free-tier sleep. Real viewers on TV/mobile are unaffected —
+    // the production API rewrites these to the canonical host before emitting
+    // broadcast snapshots. prod-sync rewrites them locally too; this branch
+    // covers any items synced before the fix and clears operator concern.
     let isRenderHost = false;
     try {
       isRenderHost = new URL(url).hostname.endsWith(".onrender.com");

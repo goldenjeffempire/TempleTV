@@ -1212,7 +1212,7 @@ class BroadcastOrchestrator extends EventEmitter {
         { queueSize: rawRows.length },
         "[broadcast-v2] ALL queue items rejected at pre-resolution — entering OFF_AIR safe mode. " +
           "If videos were uploaded locally and NODE_ENV=production is set, ensure API_ORIGIN is configured " +
-          "or that RENDER_EXTERNAL_URL / REPLIT_DEV_DOMAIN resolves to this server's public HTTPS origin. " +
+          "or that RENDER_EXTERNAL_URL / DEV_DOMAIN resolves to this server's public HTTPS origin. " +
           "Use 'Reload from queue' in the admin console to retry immediately after fixing the environment.",
       );
       // Reset the hash so the NEXT normal drift-poll re-attempts resolution
@@ -2901,8 +2901,8 @@ class BroadcastOrchestrator extends EventEmitter {
    * and guarantees the loopback bypass fires.
    *
    * Own-origin detection: checks API_ORIGIN, RENDER_EXTERNAL_URL, and
-   * REPLIT_DEV_DOMAIN against the URL hostname. Only /api/hls/ and
-   * /api/v1/hls/ paths are rewritten — other own-origin paths are unchanged.
+   * DEV_DOMAIN against the URL hostname. Only /api/hls/ and /api/v1/hls/
+   * paths are rewritten — other own-origin paths are unchanged.
    */
   private toLocalhostProbeUrl(url: string): string {
     try {
@@ -2910,8 +2910,7 @@ class BroadcastOrchestrator extends EventEmitter {
       const ownHostnames = [
         env.API_ORIGIN,
         process.env["RENDER_EXTERNAL_URL"],
-        process.env["REPLIT_DEV_DOMAIN"],
-        process.env["REPLIT_DOMAINS"]?.split(",")[0]?.trim(),
+        process.env["DEV_DOMAIN"],
       ]
         .filter(Boolean)
         .map((h) => {

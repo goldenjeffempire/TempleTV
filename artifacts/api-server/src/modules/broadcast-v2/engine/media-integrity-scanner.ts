@@ -52,8 +52,7 @@ function toLocalhostProbeUrl(url: string): string {
     const ownHostnames = [
       env.API_ORIGIN,
       process.env["RENDER_EXTERNAL_URL"],
-      process.env["REPLIT_DEV_DOMAIN"],
-      process.env["REPLIT_DOMAINS"]?.split(",")[0]?.trim(),
+      process.env["DEV_DOMAIN"],
     ]
       .filter(Boolean)
       .map((h) => {
