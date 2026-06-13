@@ -120,6 +120,7 @@ export function useWatchHistory() {
               category: cloudCategoryToSermonCategory(ch.videoCategory),
               preacher: "",
               date: ch.watchedAt.slice(0, 10),
+              videoSource: "youtube",
             },
           }));
 

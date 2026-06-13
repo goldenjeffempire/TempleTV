@@ -108,6 +108,7 @@ export function useFavorites() {
             category: cloudCategoryToSermonCategory(cf.videoCategory),
             preacher: "",
             date: cf.createdAt.slice(0, 10),
+            videoSource: "youtube",
           }));
 
         if (cloudOnly.length === 0) return;
