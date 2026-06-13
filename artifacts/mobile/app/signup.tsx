@@ -226,7 +226,7 @@ export default function SignupScreen() {
               <View style={styles.dividerLine} />
             </View>
 
-            <Text style={styles.title}>Join Temple TV</Text>
+            <Text style={styles.title}>Create Account</Text>
             <Text style={styles.subtitle}>
               Free access to live worship, sermons, and 24/7 broadcasting — synced across all your devices.
             </Text>

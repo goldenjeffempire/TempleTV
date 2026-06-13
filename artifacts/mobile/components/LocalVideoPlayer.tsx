@@ -125,7 +125,7 @@ function LocalAudioModeCard({
       {title ? (
         <View style={audioStyles.meta}>
           <Text style={audioStyles.metaTitle} numberOfLines={2}>{title}</Text>
-          <Text style={audioStyles.metaArtist}>Temple TV JCTM</Text>
+          <Text style={audioStyles.metaArtist}>JCTM</Text>
         </View>
       ) : null}
 

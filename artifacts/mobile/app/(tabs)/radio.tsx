@@ -85,7 +85,7 @@ export default function RadioScreen() {
           </View>
 
           {/* Heading */}
-          <Text style={[styles.heading, { color: c.foreground }]}>Temple TV Radio</Text>
+          <Text style={[styles.heading, { color: c.foreground }]}>Radio</Text>
 
           {/* Sub-copy */}
           <Text style={[styles.body2, { color: c.mutedForeground }]}>

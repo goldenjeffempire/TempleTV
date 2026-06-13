@@ -625,7 +625,7 @@ export default function SettingsScreen() {
       <View style={styles.appInfo}>
         <Logo />
         <Text style={[styles.appVersion, { color: c.mutedForeground }]}>
-          Temple TV · v{APP_VERSION}
+          v{APP_VERSION}
         </Text>
         <Text style={[styles.appTagline, { color: c.mutedForeground }]}>
           Changing lives with the word of God
