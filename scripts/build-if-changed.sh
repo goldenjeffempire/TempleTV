@@ -71,30 +71,37 @@ else
 fi
 
 # ── Mobile web ────────────────────────────────────────────────────────────────
-# Watches: app/, components/, hooks/, context/, constants/, modules/ (all exist).
-# Uses EXPO_BASE_URL=/mobile so assets resolve correctly under the /mobile prefix.
-MOBILE_DIST="artifacts/mobile/web-dist/index.html"
-
-# Build a list of mobile source dirs that actually exist to avoid find errors.
-MOBILE_SRCDIRS=""
-for d in artifacts/mobile/app artifacts/mobile/components artifacts/mobile/hooks \
-          artifacts/mobile/context artifacts/mobile/constants artifacts/mobile/modules; do
-  [ -d "$d" ] && MOBILE_SRCDIRS="$MOBILE_SRCDIRS $d"
-done
-
-if [ ! -f "$MOBILE_DIST" ]; then
-  echo "[build] Mobile web dist not found — building..."
-  EXPO_BASE_URL=/mobile CI=true pnpm --filter @workspace/mobile run build:web
-elif [ -n "$MOBILE_SRCDIRS" ]; then
-  # shellcheck disable=SC2086
-  CHANGED=$(find $MOBILE_SRCDIRS \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) \
-    -newer "$MOBILE_DIST" -print -quit 2>/dev/null)
-  if [ -n "$CHANGED" ]; then
-    echo "[build] Mobile web source changed (e.g. $CHANGED) — rebuilding..."
-    EXPO_BASE_URL=/mobile CI=true pnpm --filter @workspace/mobile run build:web
-  else
-    echo "[build] Mobile web dist is up to date — skipping rebuild."
-  fi
+# Skip mobile web build when expo is not available (e.g. Replit dev environment
+# where mobile dependencies are not installed — mobile requires a native build
+# via EAS and cannot be previewed in the browser).
+if ! command -v expo >/dev/null 2>&1 && [ ! -d "artifacts/mobile/node_modules/.bin" ]; then
+  echo "[build] Mobile web: expo not available — skipping (native build via EAS)."
 else
-  echo "[build] Mobile web: no source dirs found — skipping check."
+  # Watches: app/, components/, hooks/, context/, constants/, modules/ (all exist).
+  # Uses EXPO_BASE_URL=/mobile so assets resolve correctly under the /mobile prefix.
+  MOBILE_DIST="artifacts/mobile/web-dist/index.html"
+
+  # Build a list of mobile source dirs that actually exist to avoid find errors.
+  MOBILE_SRCDIRS=""
+  for d in artifacts/mobile/app artifacts/mobile/components artifacts/mobile/hooks \
+            artifacts/mobile/context artifacts/mobile/constants artifacts/mobile/modules; do
+    [ -d "$d" ] && MOBILE_SRCDIRS="$MOBILE_SRCDIRS $d"
+  done
+
+  if [ ! -f "$MOBILE_DIST" ]; then
+    echo "[build] Mobile web dist not found — building..."
+    EXPO_BASE_URL=/mobile CI=true pnpm --filter @workspace/mobile run build:web
+  elif [ -n "$MOBILE_SRCDIRS" ]; then
+    # shellcheck disable=SC2086
+    CHANGED=$(find $MOBILE_SRCDIRS \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) \
+      -newer "$MOBILE_DIST" -print -quit 2>/dev/null)
+    if [ -n "$CHANGED" ]; then
+      echo "[build] Mobile web source changed (e.g. $CHANGED) — rebuilding..."
+      EXPO_BASE_URL=/mobile CI=true pnpm --filter @workspace/mobile run build:web
+    else
+      echo "[build] Mobile web dist is up to date — skipping rebuild."
+    fi
+  else
+    echo "[build] Mobile web: no source dirs found — skipping check."
+  fi
 fi
