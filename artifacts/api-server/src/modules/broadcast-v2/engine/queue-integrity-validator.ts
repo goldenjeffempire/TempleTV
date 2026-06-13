@@ -34,6 +34,7 @@ import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { normalizeQueueUrl } from "../repository/queue.repo.js";
 import { enqueueTranscode } from "../../transcoder/transcoder.queue.js";
+import { withHlsToken } from "../../../shared/hls-token.js";
 
 // ── Duration probe helper ─────────────────────────────────────────────────────
 //
@@ -46,6 +47,12 @@ import { enqueueTranscode } from "../../transcoder/transcoder.queue.js";
 // Returns null on any failure (ffprobe unavailable, timeout, corrupt header).
 
 async function probeDurationFromUrl(url: string): Promise<number | null> {
+  // Inject an HLS auth token when REQUIRE_HLS_TOKEN is enabled.
+  // ffprobe fetches the URL via HTTP range requests — without the token the
+  // server returns 401 and ffprobe exits with no output (duration = null).
+  // withHlsToken() is a no-op when REQUIRE_HLS_TOKEN is false, so this is
+  // always safe to call regardless of whether token auth is active.
+  const probeUrl = withHlsToken(url);
   return new Promise<number | null>((resolve) => {
     let proc: ReturnType<typeof spawn> | null = null;
     try {
@@ -53,7 +60,7 @@ async function probeDurationFromUrl(url: string): Promise<number | null> {
         "-v", "quiet",
         "-print_format", "json",
         "-show_entries", "format=duration",
-        url,
+        probeUrl,
       ], { stdio: ["ignore", "pipe", "ignore"] });
       // Unref the child process so it does not prevent the Node event loop
       // from exiting if the parent process receives SIGTERM while a reprobe

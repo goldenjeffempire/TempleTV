@@ -76,12 +76,14 @@ const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
   // API server and players run on the same machine.
   "localhost",
   "127.0.0.1",
-  // Replit dev/staging environments: *.replit.dev is the public proxy domain
-  // for Replit-hosted services. *.repl.co covers older Replit URLs.
-  // These are used when REPLIT_DEV_DOMAIN is set and normalizeQueueUrl()
-  // absolutizes upload paths to the Replit public HTTPS origin.
+  // Replit environments: *.replit.dev is the dev-proxy domain (REPLIT_DEV_DOMAIN);
+  // *.repl.co covers legacy Replit URLs; *.replit.app is the production deployment
+  // domain used by Replit Deployments. All three must be in the allowlist so that
+  // normalizeQueueUrl() output for locally-uploaded content passes the resolver
+  // when the server is deployed or previewed on Replit infrastructure.
   ".replit.dev",
   ".repl.co",
+  ".replit.app",
 ];
 
 const HLS_EXT = /\.m3u8(?:$|\?|#)/i;

@@ -547,4 +547,4 @@ export async function stopBroadcastV2(): Promise<void> {
   );
 }
 
-export { broadcastOrchestrator, broadcastFanout, getBroadcastHealthMonitorStatus, getContentRotationStatus };
+export { broadcastOrchestrator, broadcastFanout, getBroadcastHealthMonitorStatus, getContentRotationStatus, mediaIntegrityScanner };

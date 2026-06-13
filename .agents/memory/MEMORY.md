@@ -1,3 +1,4 @@
+- [HLS auth gaps](hls-auth-gaps.md) — probeDurationFromUrl needs withHlsToken; .replit.app missing from SSRF allowlist; mediaIntegrityScanner must be in index.ts export statement.
 - [Dead-air SSRF localhost fix](dead-air-ssrf-localhost-fix.md) — isAllowed() must NOT block localhost in production without API_ORIGIN/RENDER_EXTERNAL_URL; adds REPLIT_DEV_DOMAIN fallback + hash-reset on all-rejected.
 - [Mobile "Couldn't refresh" root causes](mobile-couldnt-refresh-bugs.md) — 5 bugs: 304 never cleared isStale/refreshFailed; no bg retry after failure (stuck 5min); no network-recovery trigger; hero suppressEventsOverride not wired; WS heartbeat watchdog fired every ~60s on healthy connection (lastHeartbeatMsRef never updated from actual WS frames).
 - [Ops-alert cooldown pattern](ops-alert-cooldown-pattern.md) — polling workers that emit ops-alert on every cycle need lastOpsAlertAtMs+cooldown; reset on recovery so first breach always fires.
