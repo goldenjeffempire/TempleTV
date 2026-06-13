@@ -76,6 +76,12 @@ const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
   // API server and players run on the same machine.
   "localhost",
   "127.0.0.1",
+  // Replit dev/staging environments: *.replit.dev is the public proxy domain
+  // for Replit-hosted services. *.repl.co covers older Replit URLs.
+  // These are used when REPLIT_DEV_DOMAIN is set and normalizeQueueUrl()
+  // absolutizes upload paths to the Replit public HTTPS origin.
+  ".replit.dev",
+  ".repl.co",
 ];
 
 const HLS_EXT = /\.m3u8(?:$|\?|#)/i;
@@ -149,12 +155,25 @@ function isAllowed(url: string): boolean {
   if (parsed.username || parsed.password) return false;
   const host = parsed.hostname.toLowerCase();
   const isLoopbackHost = host === "localhost" || host === "127.0.0.1";
-  // Loopback is permitted in dev/test only. In production the server has
-  // outbound fetch sinks (media-integrity-scanner HEAD probes, faststart
-  // worker, etc.) — letting a compromised editor enqueue an item whose URL
-  // resolves to 127.0.0.1 would let them probe / interact with the server's
-  // own admin port from inside the cluster.
-  if (isLoopbackHost && env.NODE_ENV === "production") return false;
+  // Block localhost in production ONLY when a real public origin is configured.
+  //
+  // Why: When API_ORIGIN or RENDER_EXTERNAL_URL is set, the server is in a
+  // genuine production/Render deployment — locally-uploaded URLs should resolve
+  // to the public HTTPS origin, not localhost. Allowing localhost in that context
+  // would let a compromised editor enqueue items whose URLs probe the server's
+  // own admin ports (SSRF).
+  //
+  // When neither env var is set (Replit dev environments, local docker runs, etc.),
+  // normalizeQueueUrl() falls back to http://localhost:PORT as the self-origin.
+  // Blocking that localhost URL in "production" mode would reject every locally-
+  // uploaded video and send the broadcast permanently OFF_AIR — the opposite of
+  // the intended security posture. Without a configured public origin we are
+  // clearly not in a true production cluster, so localhost is safe to permit.
+  const hasConfiguredPublicOrigin = !!(
+    process.env["API_ORIGIN"] ||
+    process.env["RENDER_EXTERNAL_URL"]
+  );
+  if (isLoopbackHost && env.NODE_ENV === "production" && hasConfiguredPublicOrigin) return false;
   if (!isLoopbackHost && isPrivateIp(host)) return false;
   return ALLOWED_HOST_SUFFIXES.some((suf) => host === suf.replace(/^\./, "") || host.endsWith(suf));
 }

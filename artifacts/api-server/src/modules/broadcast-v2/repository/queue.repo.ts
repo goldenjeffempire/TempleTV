@@ -100,9 +100,11 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
   //                              localhost is now in the SSRF allowlist so the resolver
   //                              accepts these URLs and the player can load uploads from
   //                              the dev server running on the same machine.
+  const replitDomain = process.env["REPLIT_DEV_DOMAIN"];
   const publicBase = (
     (IS_PROD_NODE_ENV ? env.API_ORIGIN : undefined) ??
-    process.env["RENDER_EXTERNAL_URL"]
+    process.env["RENDER_EXTERNAL_URL"] ??
+    (replitDomain ? `https://${replitDomain}` : undefined)
   )?.replace(/\/+$/, "");
   const base = publicBase ?? `http://localhost:${env.PORT ?? 5000}`;
   const path = raw.startsWith("/") ? raw : `/${raw}`;
@@ -138,9 +140,11 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
  *   3. http://localhost:PORT fallback
  */
 function getOwnBase(): string {
+  const replitDomain = process.env["REPLIT_DEV_DOMAIN"];
   const publicBase = (
     (IS_PROD_NODE_ENV ? env.API_ORIGIN : undefined) ??
-    process.env["RENDER_EXTERNAL_URL"]
+    process.env["RENDER_EXTERNAL_URL"] ??
+    (replitDomain ? `https://${replitDomain}` : undefined)
   )?.replace(/\/+$/, "");
   const base = publicBase ?? `http://localhost:${env.PORT ?? 5000}`;
   return /^https?:\/\//i.test(base) ? base : `https://${base}`;

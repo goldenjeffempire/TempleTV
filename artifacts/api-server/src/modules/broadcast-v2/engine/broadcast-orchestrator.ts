@@ -902,6 +902,20 @@ class BroadcastOrchestrator extends EventEmitter {
    */
   private _lastQueueHash = "";
 
+  /**
+   * Reset the queue hash so the next reload() call fully re-resolves all
+   * items even if the raw DB rows haven't changed since the last reload.
+   *
+   * Call this before reload() whenever the resolution environment has changed
+   * but the DB content hasn't — e.g. after fixing API_ORIGIN, clearing
+   * bad-URL cache entries, or re-enabling suspended items. Without the hash
+   * reset, reloadInner() would short-circuit on the stale hash and return
+   * without re-attempting source resolution.
+   */
+  resetQueueHash(): void {
+    this._lastQueueHash = "";
+  }
+
   async reload(): Promise<void> {
     // All concurrent callers share the same in-flight promise — no duplicate
     // DB reads while a reload is already running.
@@ -1196,9 +1210,16 @@ class BroadcastOrchestrator extends EventEmitter {
       logger.error(
         { queueSize: rawRows.length },
         "[broadcast-v2] ALL queue items rejected at pre-resolution — entering OFF_AIR safe mode. " +
-          "Action required: set API_ORIGIN=https://api.templetv.org.ng in production env (fixes relative upload URLs), " +
-          "or re-upload / re-transcode the affected videos, then reload the queue from the admin console.",
+          "If videos were uploaded locally and NODE_ENV=production is set, ensure API_ORIGIN is configured " +
+          "or that RENDER_EXTERNAL_URL / REPLIT_DEV_DOMAIN resolves to this server's public HTTPS origin. " +
+          "Use 'Reload from queue' in the admin console to retry immediately after fixing the environment.",
       );
+      // Reset the hash so the NEXT normal drift-poll re-attempts resolution
+      // rather than short-circuiting forever on the stale hash.  Without
+      // this, all-rejected states can only recover via a health-monitor
+      // forced reload (minutes away) or an operator action — even if the
+      // underlying env-var issue has been fixed between polls.
+      this._lastQueueHash = "";
     } else if (resolved.length < rawRows.length) {
       logger.warn(
         { total: rawRows.length, playable: resolved.length, rejected: rawRows.length - resolved.length },

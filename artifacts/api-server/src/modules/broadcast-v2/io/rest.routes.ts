@@ -702,6 +702,10 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       logger.info({ reEnabled }, "[broadcast-v2] reload: re-enabled suspended queue items before reload");
     }
     clearAllBadUrls();
+    // Reset the queue hash so reloadInner() re-resolves all items even when
+    // the raw DB rows haven't changed — critical when the environment changed
+    // (e.g. API_ORIGIN set, bad-URL cache cleared) but DB content is the same.
+    broadcastOrchestrator.resetQueueHash();
     faststartRecoveryWorker.resetAttempts();
     void faststartRecoveryWorker.sweep().catch((err) =>
       logger.warn({ err }, "[broadcast-v2] reload: faststart-recovery sweep failed (non-fatal)"),
