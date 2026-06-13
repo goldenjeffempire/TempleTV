@@ -215,3 +215,9 @@ id = "6mBBWO3P3N1dCYI-ZR4AK"
 uri = "file://artifacts/mobile/dist/temple-tv-android-v34.tar.gz"
 type = "unspecified"
 title = "Temple TV — Android v1.0.5 (versionCode 34, .aab + upload cert)"
+
+[[outputs]]
+id = "VbRuD9wc-WZNEtWLXYtre"
+uri = "file://screenshots/icon-suite-preview.png"
+type = "image"
+title = "Temple TV — Production Icon Suite"
