@@ -31,7 +31,9 @@ export function useEmergencyAlerts() {
         }
       })
       .catch((err: unknown) => {
-        console.warn("[useEmergencyAlerts] initial fetch failed — real-time SSE will still deliver new alerts:", err);
+        if (__DEV__) {
+          console.warn("[useEmergencyAlerts] initial fetch failed — real-time SSE will still deliver new alerts:", err);
+        }
       });
   }, []);
 

@@ -164,7 +164,9 @@ function NotificationOptInGate() {
       // Services on some Android flavours, or the user declining the OS
       // permission dialog. Log for diagnostics but do not surface a modal —
       // the opt-in is already marked seen so the user won't be prompted again.
-      console.warn("[PushOptIn] registerForPushTokenAsync failed:", err);
+      if (__DEV__) {
+        console.warn("[PushOptIn] registerForPushTokenAsync failed:", err);
+      }
     }
   };
 

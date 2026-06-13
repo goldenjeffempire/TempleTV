@@ -10,6 +10,31 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## v1.0.24 — 2026-06-13
+
+### Release Name
+Latest update done in the mobile app
+
+### Changed
+- **Version bump**: Android `versionCode` 69 → 70, iOS `buildNumber` `202606131431`. Targets v1.0.24 release candidate.
+
+### Fixed (Mobile)
+- **Bare `console.warn` in production builds** — two unguarded calls in `hooks/useEmergencyAlerts.ts` (`.catch` handler) and `app/_layout.tsx` (push-opt-in registration failure) now wrapped with `if (__DEV__)`. Prevents diagnostic noise appearing in device logs and crash reporters on production Hermes builds.
+
+### Fixed (Server / Infrastructure)
+- **`MEMORY_RESTART_RSS_MB` missing from `docker-compose.prod.yml`** (critical): The env var was absent, so the watchdog defaulted to 768 MB which is below `MEMORY_WARN_RSS_MB=1500 MB` — causing the process to enter a restart loop on any normal HLS traffic. Fixed: `MEMORY_RESTART_RSS_MB=1800` added explicitly.
+- **Memory limits raised across all deployment layers** to match production-grade hosts (≥ 2 GiB RAM):
+  - `env.ts` defaults: `MEMORY_WARN_RSS_MB` 512 → 1024 MB, `MEMORY_RESTART_RSS_MB` 768 → 1536 MB.
+  - Replit `Start API` workflow: `--max-old-space-size` 900 → 2048, `MEMORY_WARN` 1000 → 1500, `MEMORY_RESTART` 1400 → 2500.
+  - Replit deployment run command: same values as workflow above.
+  - `package.json` `start:prod`: `--max-old-space-size` 460 → 1536 MB; added `start:render-paid` script for paid Render plans.
+  - Docker Redis: `maxmemory` 512 MB → 1 GB, container limit 600 MB → 1200 MB.
+  - `main.ts` pre-flight: boundary for MEMORY_RESTART warning raised 600 → 800 MB.
+- **`memory-watchdog.ts` comments** updated with accurate per-host-class sizing formulas (2 GiB, 4 GiB, constrained 512 MiB).
+- **`render.yaml`** documents paid-tier upgrade path: switch `startCommand` from `start:render-free` → `start:render-paid` and adjust `HLS_MAX_CONCURRENT` / `MEMORY_*` env vars proportionally.
+
+---
+
 ## v1.0.23 — 2026-06-13
 
 ### Fixed
