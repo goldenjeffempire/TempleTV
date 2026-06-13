@@ -18,7 +18,7 @@ import {
 } from "react-native";
 import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
-import { router, useLocalSearchParams } from "expo-router";
+import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { usePlaylistDetail, type PlaylistVideo } from "@/hooks/usePlaylists";
@@ -153,6 +153,7 @@ export default function PlaylistDetailScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
+      <Stack.Screen options={{ headerShown: false }} />
       <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
 
       {/* Header */}

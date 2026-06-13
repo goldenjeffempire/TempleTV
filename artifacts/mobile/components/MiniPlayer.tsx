@@ -49,9 +49,9 @@ export function MiniPlayer() {
   if (!currentSermon && !isLive && !isBroadcastMode) return null;
 
   const title = isLive
-    ? "Temple TV Live"
+    ? "Live"
     : isBroadcastMode
-      ? (broadcastTitle ?? "Temple TV")
+      ? (broadcastTitle ?? "Live")
       : currentSermon?.title ?? "";
 
   const subtitle = isLive

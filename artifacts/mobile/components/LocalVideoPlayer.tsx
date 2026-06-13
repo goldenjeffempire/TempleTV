@@ -415,8 +415,8 @@ export function LocalVideoPlayer({
     loadAndPlayTrack({
       id: effectiveUrl,
       url: effectiveUrl,
-      title: title ?? "Temple TV",
-      artist: "Temple TV JCTM",
+      title: title ?? "Now Playing",
+      artist: "JCTM Ministries",
       artwork: thumbnailUrl,
       isLiveStream: false,
     })

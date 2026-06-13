@@ -42,7 +42,7 @@ import {
   useWindowDimensions,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { router, useLocalSearchParams } from "expo-router";
+import { router, Stack, useLocalSearchParams } from "expo-router";
 import { parseBoolParam, parseNumberParam } from "@/lib/params";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
@@ -460,7 +460,7 @@ export default function PlayerScreen() {
   const youtubeId    = params.youtubeId ?? params.videoId ?? "";
   const hlsUrl       = params.hlsUrl ?? params.hlsMasterUrl ?? params.localVideoUrl ?? "";
   const thumbnailUrl = params.thumbnailUrl ?? params.thumbnail ?? "";
-  const preacher     = params.preacher ?? "Temple TV";
+  const preacher     = params.preacher ?? "JCTM Ministries";
   const duration     = params.duration ?? "";
   const category     = params.category ?? "";
   const description  = params.description ?? "";
@@ -1095,7 +1095,8 @@ export default function PlayerScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
-      <StatusBar barStyle="light-content" backgroundColor="#000" />
+      <Stack.Screen options={{ headerShown: false }} />
+      <StatusBar barStyle="light-content" />
       <ScrollView
         showsVerticalScrollIndicator={false}
         bounces
@@ -1276,7 +1277,7 @@ export default function PlayerScreen() {
                 )}
               </View>
               <Text style={[styles.channelName, { color: c.foreground }]} numberOfLines={2} accessibilityRole="header">
-                {broadcastProgramTitle ?? "Temple TV"}
+                {broadcastProgramTitle ?? ""}
               </Text>
               <Text style={[styles.channelSub, { color: c.mutedForeground }]}>JCTM Ministries</Text>
             </View>
@@ -1539,7 +1540,7 @@ export default function PlayerScreen() {
                     <Feather name="minimize-2" size={20} color="#fff" />
                   </Pressable>
                   <Text numberOfLines={1} style={styles.fsTitleText} ellipsizeMode="tail">
-                    {isLive ? "Temple TV — Live" : title}
+                    {isLive ? "Live Broadcast" : title}
                   </Text>
                   {isLive && (
                     <View style={styles.fsLiveBadgeWrap}>

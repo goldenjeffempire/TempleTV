@@ -12,7 +12,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { router } from "expo-router";
+import { router, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useAuth } from "@/context/AuthContext";
@@ -185,6 +185,7 @@ export default function SignupScreen() {
 
   return (
     <View style={styles.root}>
+      <Stack.Screen options={{ headerShown: false }} />
       <LinearGradient
         colors={["#0d0014", "#160a28", "#0a0010"]}
         start={{ x: 0.2, y: 0 }}

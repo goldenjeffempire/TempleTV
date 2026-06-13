@@ -12,7 +12,7 @@ import {
   View,
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
-import { router, useLocalSearchParams } from "expo-router";
+import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { apiResetPassword, validatePasswordStrength } from "@/services/authApi";
@@ -63,6 +63,7 @@ export default function ResetPasswordScreen() {
 
   return (
     <View style={styles.root}>
+      <Stack.Screen options={{ headerShown: false }} />
       <LinearGradient
         colors={["#0d0014", "#160a28", "#0a0010"]}
         start={{ x: 0.2, y: 0 }}

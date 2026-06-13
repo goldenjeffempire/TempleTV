@@ -14,7 +14,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { router } from "expo-router";
+import { router, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -128,6 +128,7 @@ export default function DonateScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
+      <Stack.Screen options={{ headerShown: false }} />
       <View style={[styles.header, { paddingTop: insets.top + 8, borderBottomColor: c.border }]}>
         <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8} accessibilityRole="button" accessibilityLabel="Go back">
           <Feather name="arrow-left" size={22} color={c.foreground} />

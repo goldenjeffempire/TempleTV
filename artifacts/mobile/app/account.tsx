@@ -28,7 +28,7 @@ import {
   View,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/context/AuthContext";
@@ -165,6 +165,7 @@ export default function AccountScreen() {
   if (!isLoggedIn || !user) {
     return (
       <View style={[styles.root, { backgroundColor: c.background }]}>
+        <Stack.Screen options={{ headerShown: false }} />
         <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
         <View style={[styles.header, { paddingTop: insets.top + 8, borderBottomColor: c.border }]}>
           <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
@@ -200,6 +201,7 @@ export default function AccountScreen() {
       style={{ flex: 1, backgroundColor: c.background }}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
+      <Stack.Screen options={{ headerShown: false }} />
       <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
 
       {/* ── Header ────────────────────────────────────────────────────── */}

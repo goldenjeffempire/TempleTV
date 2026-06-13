@@ -11,7 +11,7 @@ import {
   View,
   ActivityIndicator,
 } from "react-native";
-import { router } from "expo-router";
+import { router, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
@@ -84,6 +84,7 @@ export default function LinkTvScreen() {
       style={[styles.flex, { backgroundColor: c.background }]}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
+      <Stack.Screen options={{ headerShown: false }} />
       <ScrollView
         contentContainerStyle={[
           styles.scroll,
