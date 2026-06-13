@@ -466,11 +466,13 @@ services:
       # as a proxy. All player surfaces (TV, mobile, web, Chromecast, VLC) can
       # load manifests and segments without a signed token.
       #
-      # REQUIRE_HLS_TOKEN is kept here as an explicit false so the Render.com
-      # dashboard cannot accidentally override it to true and re-block viewers.
+      # REQUIRE_HLS_TOKEN — set to "false" in the Render dashboard (operator-
+      # controlled). Keeping it sync:false (rather than value:"false") satisfies
+      # the verify:env-secrets rule that any _TOKEN key must never have a
+      # committed literal value.
       # HLS_TOKEN_SECRET is retained for internal orchestrator probe signing.
       - key: REQUIRE_HLS_TOKEN
-        value: "false"
+        sync: false
       - key: HLS_TOKEN_SECRET
         sync: false
 
