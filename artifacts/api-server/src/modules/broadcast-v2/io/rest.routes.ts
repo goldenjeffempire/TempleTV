@@ -450,10 +450,21 @@ export async function restRoutes(app: FastifyInstance) {
       },
       airingHistory: broadcastOrchestrator.getAiringHistory(),
       youtubeAutoOverride: getYouTubeAutoOverrideStats(),
-      /** YouTube catalog shuffle fallback status (activates when local queue is empty). */
-      ytShuffle: ytShuffleFallback.getInfo(),
-      /** Dead-air fallback status — covers both BROADCAST_DEADAIR_FALLBACK_URL and YouTube shuffle. */
-      deadAirFallback: broadcastOrchestrator.getDeadAirFallbackInfo(),
+      /**
+       * Unified dead-air backstop status.
+       *
+       * `fallbackActive`  — true when BROADCAST_DEADAIR_FALLBACK_URL HLS/RTMP stream
+       *                     override is currently live (either path: applyDeadAirFallback
+       *                     or escalateDeadAir BROADCAST_DEADAIR_FALLBACK_AFTER_MS).
+       * `fallbackUrl`     — configured BROADCAST_DEADAIR_FALLBACK_URL (null if unset).
+       * `ytShuffleActive` — true when the YouTube catalog shuffle fallback is live.
+       * `ytShuffleVideoId`— youtubeId of the currently-playing shuffle video (null if inactive).
+       * `ytShuffle`       — full detail snapshot for the admin panel.
+       */
+      deadAir: {
+        ...broadcastOrchestrator.getDeadAirFallbackInfo(),
+        ytShuffle: ytShuffleFallback.getInfo(),
+      },
       viewerSlope: getViewerSlopeStatus(),
       /** Broadcast health monitor (external orchestrator watchdog) status. */
       healthMonitor: hmStatus,

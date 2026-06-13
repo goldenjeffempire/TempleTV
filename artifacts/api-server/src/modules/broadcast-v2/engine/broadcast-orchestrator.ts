@@ -552,6 +552,22 @@ class BroadcastOrchestrator extends EventEmitter {
     this.selfHealEmptyTimer = setInterval(() => {
       if (!this.started) return;
       if (this.items.length === 0) {
+        // ── YouTube shuffle fallback: advance to next video if override ended ──
+        // When the shuffle fallback is active but the running override has ended
+        // naturally (endsAtMs expired → override = null), advance immediately to
+        // the next catalog video without waiting for the full EMPTY_POLLS_BEFORE_*
+        // threshold.  This ensures continuous playback with no dead-air gap.
+        if (ytShuffleFallback.isActive && !this.override && !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE) {
+          void ytShuffleFallback
+            .advance((opts) => this.startOverride(opts))
+            .catch((err: unknown) =>
+              logger.warn(
+                { err },
+                "[broadcast-v2] YouTube shuffle fallback advance failed (non-fatal)",
+              ),
+            );
+        }
+
         this.scheduleSelfHealReload("empty-queue-poll");
         this.consecutiveEmptyPolls += 1;
 
@@ -582,7 +598,12 @@ class BroadcastOrchestrator extends EventEmitter {
               } else if (
                 !ytShuffleFallback.isActive &&
                 this.mode !== "override" &&
-                !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE
+                !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE &&
+                this.items.length === 0
+                // Race guard: re-check that the queue is still empty before activating.
+                // Between the scan start and this .then() callback, an operator could
+                // have added items (bus bridge fires reloadInner, this.items updates).
+                // Activating over a non-empty queue would evict newly-added content.
               ) {
                 // Library scan returned 0 playable local items and the queue is
                 // still empty — activate the YouTube catalog shuffle fallback so
@@ -649,7 +670,10 @@ class BroadcastOrchestrator extends EventEmitter {
               } else if (
                 !ytShuffleFallback.isActive &&
                 this.mode !== "override" &&
-                !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE
+                !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE &&
+                this.items.length === 0
+                // Race guard: re-check queue state; items could have appeared
+                // via a concurrent bus-bridge reload between scan start and .then()
               ) {
                 // All-blocked scan also returned 0 — activate YouTube shuffle fallback
                 // so viewers see content while all local sources remain unreachable.
@@ -1255,6 +1279,10 @@ class BroadcastOrchestrator extends EventEmitter {
           { channel: this.channelId, resolvedCount: resolved.length },
           "[broadcast-v2] dead-air fallback override auto-cleared — queue has recovered playable content",
         );
+        adminEventBus.push("broadcast-dead-air-recovered", {
+          kind: "hls-fallback-url",
+          recoveredAtMs: Date.now(),
+        });
         void this.stopOverride().catch((err) =>
           logger.warn({ err, channel: this.channelId }, "[broadcast-v2] dead-air fallback override stop failed (non-fatal)"),
         );
@@ -1271,6 +1299,10 @@ class BroadcastOrchestrator extends EventEmitter {
           { channel: this.channelId, resolvedCount: resolved.length },
           "[broadcast-v2] dead-air fallback: queue recovered via direct reload — stopping BROADCAST_DEADAIR_FALLBACK_URL override",
         );
+        adminEventBus.push("broadcast-dead-air-recovered", {
+          kind: "hls-escalation",
+          recoveredAtMs: Date.now(),
+        });
         void this.stopOverride().catch((err: unknown) =>
           logger.warn({ err, channel: this.channelId }, "[broadcast-v2] dead-air fallback: stopOverride failed on direct-reload recovery (non-fatal)"),
         );
@@ -1940,6 +1972,12 @@ class BroadcastOrchestrator extends EventEmitter {
         { channel: this.channelId, overrideId: ov.id, kind, url: fallbackUrl },
         "[broadcast-v2] dead-air fallback override activated — will auto-clear when queue recovers",
       );
+      adminEventBus.push("broadcast-dead-air-fallback", {
+        kind: "hls-fallback-url",
+        url: fallbackUrl,
+        overrideId: ov.id,
+        activatedAtMs: Date.now(),
+      });
     }).catch((err) => {
       this.deadAirFallbackActive = false;
       this.deadAirFallbackOverrideId = null;
@@ -2046,6 +2084,11 @@ class BroadcastOrchestrator extends EventEmitter {
                   { channel: this.channelId, fallbackUrl },
                   "[broadcast-v2] dead-air fallback override is now ACTIVE",
                 );
+                adminEventBus.push("broadcast-dead-air-fallback", {
+                  kind: "hls-escalation",
+                  url: fallbackUrl,
+                  activatedAtMs: Date.now(),
+                });
               })
               .catch((err: unknown) => {
                 logger.warn(

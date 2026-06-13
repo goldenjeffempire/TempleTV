@@ -3,23 +3,32 @@
  *
  * Dead-air backstop that activates when the broadcast queue has no locally
  * playable content.  Queries managed_videos for YouTube catalog entries
- * (videoSource='youtube', youtubeId IS NOT NULL), shuffles them, and applies
- * a YouTube override frame to the orchestrator so viewers see content while
- * local uploads are unavailable.
+ * (videoSource='youtube', youtubeId IS NOT NULL), Fisher-Yates shuffles them,
+ * and applies a finite-duration YouTube override frame to the orchestrator so
+ * viewers see content while local uploads are unavailable.
  *
  * Lifecycle:
  *   activate()   — called by the orchestrator self-heal timer after
  *                  scanLibraryAndEnqueue returns 0 and the queue stays empty.
+ *                  Starts the first shuffled video with a 20-minute override.
+ *   advance()    — called by the orchestrator self-heal timer when the shuffle
+ *                  is active but the running override has ended (natural end).
+ *                  Moves to the next playlist position immediately, re-shuffling
+ *                  on wraparound for ongoing variety.
  *   deactivate() — called by the orchestrator reloadInner when at least one
- *                  locally-playable queue item is resolved.
+ *                  locally-playable queue item is resolved.  Auto-clears the
+ *                  running override (only if IDs match — never evicts operator
+ *                  overrides).
  *
  * Design constraints:
  *   - No module-init import of broadcastOrchestrator (avoids circular dep).
  *     The orchestrator passes start/stop callbacks at call time.
  *   - Fisher-Yates shuffle for quality randomness with no native dependency.
  *   - Idempotent activate(): silently no-ops when already active or activating.
- *   - Safe deactivate(): silently no-ops when not active.
+ *   - Safe advance()/deactivate(): silently no-ops when not active.
  *   - All DB / override calls are try/catch — errors never crash the orchestrator.
+ *   - Emits "broadcast-dead-air-fallback" / "broadcast-dead-air-recovered" on
+ *     adminEventBus so admin SSE clients and the activity log can surface state.
  */
 
 import { and, eq, isNotNull } from "drizzle-orm";
@@ -28,6 +37,9 @@ import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { env } from "../../../config/env.js";
 import type { V2Override } from "../domain/types.js";
+
+/** How long each shuffle-fallback video runs before the orchestrator advances. */
+const YT_SHUFFLE_VIDEO_DURATION_MS = 20 * 60 * 1000; // 20 minutes
 
 type StartOverrideFn = (opts: {
   kind: V2Override["kind"];
@@ -52,8 +64,10 @@ export interface YtShuffleFallbackInfo {
   activatedAtMs: number | null;
   lastDeactivatedAtMs: number | null;
   activateCount: number;
+  advanceCount: number;
   deactivateCount: number;
   catalogSize: number;
+  playlistIndex: number;
   lastError: string | null;
 }
 
@@ -79,9 +93,14 @@ class YtShuffleFallback {
   private _activatedAtMs: number | null = null;
   private _lastDeactivatedAtMs: number | null = null;
   private _activateCount = 0;
+  private _advanceCount = 0;
   private _deactivateCount = 0;
   private _lastError: string | null = null;
-  private _catalogSize = 0;
+
+  /** Full shuffled playlist (populated by activate(), re-shuffled on wraparound). */
+  private _shuffledPlaylist: YtVideoEntry[] = [];
+  /** Current index in the shuffled playlist. */
+  private _playlistIndex = 0;
 
   get isActive(): boolean { return this._active; }
 
@@ -91,8 +110,8 @@ class YtShuffleFallback {
   /**
    * Activate the YouTube shuffle fallback.
    *
-   * Queries managed_videos for YouTube catalog entries, picks a random one, and
-   * applies a YouTube override on the orchestrator via the provided callback.
+   * Queries managed_videos for YouTube catalog entries, Fisher-Yates shuffles
+   * them, and starts the first video with a 20-minute finite-duration override.
    * Idempotent: silently no-ops when already active or when YOUTUBE_SHUFFLE_FALLBACK_DISABLE=true.
    */
   async activate(startOverride: StartOverrideFn): Promise<void> {
@@ -120,8 +139,6 @@ class YtShuffleFallback {
           typeof r.youtubeId === "string" && r.youtubeId.length > 0,
       );
 
-      this._catalogSize = entries.length;
-
       if (entries.length === 0) {
         logger.info(
           "[yt-shuffle] no YouTube catalog entries found — YouTube shuffle fallback inactive",
@@ -129,14 +146,15 @@ class YtShuffleFallback {
         return;
       }
 
-      const shuffled = fisherYatesShuffle(entries);
-      const pick = shuffled[0]!;
+      this._shuffledPlaylist = fisherYatesShuffle(entries);
+      this._playlistIndex = 0;
+      const pick = this._shuffledPlaylist[0]!;
 
       const override = await startOverride({
         kind: "youtube",
         url: buildYouTubeUrl(pick.youtubeId),
         title: pick.title,
-        endsAtMs: null,
+        endsAtMs: Date.now() + YT_SHUFFLE_VIDEO_DURATION_MS,
         resumeQueueOnEnd: true,
       });
 
@@ -154,6 +172,7 @@ class YtShuffleFallback {
           title: pick.title,
           overrideId: override.id,
           catalogSize: entries.length,
+          playlistIndex: 0,
         },
         "[yt-shuffle] YouTube shuffle fallback ACTIVATED — queue empty, cycling YouTube catalog",
       );
@@ -163,11 +182,96 @@ class YtShuffleFallback {
         videoId: pick.youtubeId,
         title: pick.title,
         catalogSize: entries.length,
+        playlistIndex: 0,
         activatedAtMs: this._activatedAtMs,
       });
     } catch (err) {
       this._lastError = err instanceof Error ? err.message : String(err);
       logger.warn({ err }, "[yt-shuffle] failed to activate YouTube shuffle fallback (non-fatal)");
+    } finally {
+      this._activating = false;
+    }
+  }
+
+  /**
+   * Advance to the next video in the shuffled playlist.
+   *
+   * Called by the orchestrator self-heal timer when the shuffle fallback is
+   * active but the running override has naturally ended (endsAtMs expired +
+   * this.override === null).  Starts the next video immediately with a new
+   * 20-minute finite override, re-shuffling the full catalog on wraparound.
+   *
+   * Idempotent: silently no-ops when not active or already activating.
+   */
+  async advance(startOverride: StartOverrideFn): Promise<void> {
+    if (!this._active || this._activating) return;
+    if (env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE) {
+      // Disabled mid-session — treat as deactivate without stopOverride since
+      // the override already ended naturally (this.override === null).
+      this._active = false;
+      this._activeOverrideId = null;
+      this._currentVideoId = null;
+      this._currentVideoTitle = null;
+      this._lastDeactivatedAtMs = Date.now();
+      return;
+    }
+
+    this._activating = true;
+    try {
+      if (this._shuffledPlaylist.length === 0) {
+        // Playlist was lost (e.g. after a hot-reload) — fall back to activate()
+        // which re-queries the catalog and re-shuffles.
+        this._activating = false;
+        this._active = false; // Allow activate() to run
+        await this.activate(startOverride);
+        return;
+      }
+
+      this._playlistIndex += 1;
+      if (this._playlistIndex >= this._shuffledPlaylist.length) {
+        // Reached the end — re-shuffle for ongoing variety without repetition
+        this._shuffledPlaylist = fisherYatesShuffle(this._shuffledPlaylist);
+        this._playlistIndex = 0;
+      }
+
+      const pick = this._shuffledPlaylist[this._playlistIndex]!;
+
+      const override = await startOverride({
+        kind: "youtube",
+        url: buildYouTubeUrl(pick.youtubeId),
+        title: pick.title,
+        endsAtMs: Date.now() + YT_SHUFFLE_VIDEO_DURATION_MS,
+        resumeQueueOnEnd: true,
+      });
+
+      this._activeOverrideId = override.id;
+      this._currentVideoId = pick.youtubeId;
+      this._currentVideoTitle = pick.title;
+      this._advanceCount += 1;
+      this._lastError = null;
+
+      logger.info(
+        {
+          videoId: pick.youtubeId,
+          title: pick.title,
+          overrideId: override.id,
+          catalogSize: this._shuffledPlaylist.length,
+          playlistIndex: this._playlistIndex,
+        },
+        "[yt-shuffle] YouTube shuffle fallback ADVANCED — next catalog video started",
+      );
+
+      adminEventBus.push("broadcast-dead-air-fallback", {
+        kind: "youtube-shuffle",
+        videoId: pick.youtubeId,
+        title: pick.title,
+        catalogSize: this._shuffledPlaylist.length,
+        playlistIndex: this._playlistIndex,
+        activatedAtMs: this._activatedAtMs,
+      });
+    } catch (err) {
+      this._lastError = err instanceof Error ? err.message : String(err);
+      logger.warn({ err }, "[yt-shuffle] advance() failed to start next YouTube video (non-fatal)");
     } finally {
       this._activating = false;
     }
@@ -189,6 +293,8 @@ class YtShuffleFallback {
     this._activeOverrideId = null;
     this._currentVideoId = null;
     this._currentVideoTitle = null;
+    this._shuffledPlaylist = [];
+    this._playlistIndex = 0;
     this._lastDeactivatedAtMs = Date.now();
     this._deactivateCount += 1;
 
@@ -220,8 +326,10 @@ class YtShuffleFallback {
       activatedAtMs: this._activatedAtMs,
       lastDeactivatedAtMs: this._lastDeactivatedAtMs,
       activateCount: this._activateCount,
+      advanceCount: this._advanceCount,
       deactivateCount: this._deactivateCount,
-      catalogSize: this._catalogSize,
+      catalogSize: this._shuffledPlaylist.length,
+      playlistIndex: this._playlistIndex,
       lastError: this._lastError,
     };
   }
