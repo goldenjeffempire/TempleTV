@@ -1,0 +1,7 @@
+{
+  "name": "shell-quote",
+  "version": "1.8.3",
+  "description": "Local stub — bypasses Replit package firewall for Expo web builds",
+  "main": "index.js",
+  "license": "MIT"
+}
