@@ -22,7 +22,9 @@ services:
       LOG_LEVEL: info
       RUN_MODE: all
       MALLOC_ARENA_MAX: "2"
+      NODE_OPTIONS: "--max-old-space-size=1536 --max-http-header-size=16384"
       MEMORY_WARN_RSS_MB: "1500"
+      MEMORY_RESTART_RSS_MB: "1800"
       HTTP_KEEPALIVE_MS: "75000"
       HTTP_HEADERS_TIMEOUT_MS: "80000"
       SHUTDOWN_DRAIN_MS: "10000"
@@ -118,14 +120,14 @@ services:
     command: >
       redis-server
         --appendonly yes
-        --maxmemory 512mb
+        --maxmemory 1gb
         --maxmemory-policy allkeys-lru
         --requirepass ${REDIS_PASSWORD:-}
         --loglevel notice
     deploy:
       resources:
         limits:
-          memory: 600m
+          memory: 1200m
     logging:
       driver: json-file
       options:

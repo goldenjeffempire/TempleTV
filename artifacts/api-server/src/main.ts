@@ -313,22 +313,25 @@ async function main() {
     }
     if (env.MEMORY_RESTART_RSS_MB < 300) {
       // Genuinely unsafe — less than 300 MB leaves no headroom for V8 heap +
-      // pg pool + pino buffers and will cause constant OOM restart loops.
+      // pg pool + pino buffers and will cause constant OOM restart loops before
+      // serving a single request. Minimum viable value is ~400 MB.
       configErrors.push(
         `MEMORY_RESTART_RSS_MB=${env.MEMORY_RESTART_RSS_MB} is dangerously low — ` +
         "the server will OOM-restart before completing a single request; " +
-        "set to at least 400 MB (e.g. 470 for a 512 MiB free-tier host)",
+        "set to at least 400 MB for constrained hosts, 1536 MB for production.",
       );
-    } else if (env.MEMORY_RESTART_RSS_MB < 600) {
-      // Warning for constrained hosts (free tier): 400–599 MB is functional
-      // provided HLS_MAX_CONCURRENT is tuned to keep estimated peak RSS below
-      // MEMORY_RESTART_RSS_MB. For a 512 MiB host: HLS_MAX_CONCURRENT=5 gives
-      // ~420 MiB peak, so MEMORY_RESTART_RSS_MB=470 is safe and correct.
+    } else if (env.MEMORY_RESTART_RSS_MB < 800) {
+      // Advisory for constrained hosts: 400–799 MB is functional provided
+      // HLS_MAX_CONCURRENT, transcoding, and upload concurrency are tuned to
+      // keep estimated peak RSS below MEMORY_RESTART_RSS_MB.
+      // Formula: baseline(~350 MB) + 24×HLS_MAX_CONCURRENT + transcode_peak_mb
+      // For unconstrained production hosts set MEMORY_RESTART_RSS_MB ≥ 1536.
       configWarnings.push(
         `MEMORY_RESTART_RSS_MB=${env.MEMORY_RESTART_RSS_MB} is below the recommended ` +
-        "600 MB for unconstrained hosts. On a 512 MiB host this is correct — " +
-        "verify that HLS_MAX_CONCURRENT is set low enough that the estimated peak " +
-        "RSS stays below this threshold (5 concurrent ≈ 420 MiB peak).",
+        "1536 MB for production hosts with ≥ 2 GiB RAM. This is intentional on " +
+        "memory-constrained instances (512 MiB–1 GiB) — verify HLS_MAX_CONCURRENT " +
+        "and TRANSCODER_DISABLE are tuned appropriately for your available memory. " +
+        "Formula: MEMORY_RESTART_RSS_MB = 350 + 24×HLS_MAX_CONCURRENT + transcode_peak_mb.",
       );
     }
     if (!env.REQUIRE_HLS_TOKEN) {

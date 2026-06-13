@@ -526,20 +526,24 @@ export function startMemoryWatchdog(): void {
   );
 
   // Warn operators when MEMORY_RESTART_RSS_MB is configured too aggressively
-  // for a server that serves HLS segments.  Under concurrent HLS load each
-  // in-flight segment holds an 8 MiB Buffer; combined with V8 heap and shared
-  // libraries (~300 MB baseline), RSS can easily exceed threshold at normal load.
+  // for a server that serves HLS segments, runs FFmpeg transcodes, and assembles
+  // large uploads.  RSS budget components:
+  //   baseline      ≈ 300–400 MB  (V8 heap + glibc arenas + pg pool + pino)
+  //   HLS           ≈ 24 MB per concurrent stream (16 MiB BYTEA + 8 MiB Buffer)
+  //   FFmpeg encode ≈ 200–800 MB per active job (depends on resolution/codec)
+  //   upload assembly ≈ O(1) in Node (iterative pg UPDATE), negligible heap cost
   //
-  // Recommended minimum: 600 MB.  If you must run below 600 MB, lower
-  // HLS_MAX_CONCURRENT proportionally (default: 30 → peak HLS Buffer memory ≈
-  // 240 MB + 150 MB baseline = 390 MB, safely within a 430 MB threshold).
+  // Recommended minimums:
+  //   2 GiB host:  MEMORY_RESTART_RSS_MB=1536  (default)
+  //   4 GiB host:  MEMORY_RESTART_RSS_MB=3072
+  //   Constrained (512 MiB free-tier): MEMORY_RESTART_RSS_MB=460, HLS_MAX_CONCURRENT=5
   //
-  // Previous root cause of Render restart loops: MEMORY_RESTART_RSS_MB=430 with
-  // HLS_MAX_CONCURRENT=50 pushed RSS to 550+ MB → restart cycle every ~5 min.
+  // Previous root cause of restart loops: MEMORY_RESTART_RSS_MB set below the
+  // estimated peak RSS caused the watchdog to fire on normal HLS load.
   const effectiveRestartMb = Math.max(env.MEMORY_RESTART_RSS_MB, env.MEMORY_WARN_RSS_MB);
   if (effectiveRestartMb < 350) {
     // < 350 MB is genuinely dangerous on any host — RSS at idle typically
-    // reaches 350+ MB (V8 heap + glibc arenas + pg pool + pino buffers) and
+    // reaches 300–380 MB (V8 heap + glibc arenas + pg pool + pino buffers) and
     // the process would restart before serving a single request.
     logger.warn(
       {
@@ -549,23 +553,25 @@ export function startMemoryWatchdog(): void {
         recommendedMinimumMb: 400,
       },
       "[memory-watchdog] MEMORY_RESTART_RSS_MB is dangerously low — the process " +
-      "will restart before it can serve requests. Set to ≥ 400 MB. " +
-      "For 512 MiB free-tier hosts use HLS_MAX_CONCURRENT=5 and MEMORY_RESTART_RSS_MB=470.",
+      "will restart before it can serve requests. Set to ≥ 400 MB for constrained hosts, " +
+      "≥ 1536 MB for production hosts with ≥ 2 GiB RAM.",
     );
   } else if (effectiveRestartMb < 500) {
-    // 350–499 MB: acceptable on a 512 MiB constrained host (e.g. Render free
-    // tier) when HLS_MAX_CONCURRENT is capped low enough that peak RSS stays
-    // below the threshold. Formula: 24×HLS_MAX_CONCURRENT + 300 + 30 margin.
-    // At HLS_MAX_CONCURRENT=5: peak ≈ 420 MiB, so 470 MB is safe and correct.
+    // 350–499 MB: acceptable on memory-constrained hosts (512 MiB free tier)
+    // when HLS_MAX_CONCURRENT is tuned low enough that peak RSS stays under
+    // the threshold. Formula: baseline(~350 MB) + 24×HLS_MAX_CONCURRENT.
+    // At HLS_MAX_CONCURRENT=5: peak ≈ 470 MB — set MEMORY_RESTART_RSS_MB=470.
+    // For production hosts with ≥ 2 GiB RAM set MEMORY_RESTART_RSS_MB ≥ 1536.
     logger.info(
       {
         MEMORY_RESTART_RSS_MB: env.MEMORY_RESTART_RSS_MB,
         MEMORY_WARN_RSS_MB: env.MEMORY_WARN_RSS_MB,
         effectiveRestartMb,
-        note: "constrained-host mode — ensure HLS_MAX_CONCURRENT is capped appropriately",
+        note: "constrained-host mode — verify HLS_MAX_CONCURRENT and TRANSCODER_DISABLE match your host RAM",
       },
       "[memory-watchdog] running in constrained-host mode (restart threshold < 500 MB). " +
-      "This is correct for 512 MiB free-tier hosts with HLS_MAX_CONCURRENT ≤ 5.",
+      "Intentional on memory-constrained instances. For ≥ 2 GiB production hosts " +
+      "set MEMORY_RESTART_RSS_MB ≥ 1536 and MEMORY_WARN_RSS_MB ≥ 1024.",
     );
   }
 }

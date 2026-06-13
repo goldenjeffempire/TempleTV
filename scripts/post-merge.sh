@@ -30,9 +30,9 @@ git config core.hooksPath scripts/git-hooks 2>/dev/null || true
 # agree. Any drift between server contract and frontends fails fast here so it
 # never reaches production.
 #
-# Typecheck (tsc --build) is skipped on Replit: the Replit free-tier sandbox
-# has ~512 MB heap and tsc --build across the full monorepo reliably OOMs
-# (same reason render.yaml uses verify:render instead of verify). All other
+# Typecheck (tsc --build) is skipped on Replit post-merge: tsc --build across
+# the full monorepo is memory-intensive (~2 GiB peak) and is already enforced
+# in CI (GitHub Actions). All other
 # guardrails (codegen drift, catalog sync, react-types-singleton, etc.) still
 # run. Typecheck runs in CI (GitHub Actions, which has a full 7 GB heap).
 if [ "${RENDER:-false}" = "true" ]; then

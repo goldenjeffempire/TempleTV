@@ -7,8 +7,9 @@
   "scripts": {
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs",
-    "start:prod": "node --max-old-space-size=460 --max-http-header-size=16384 --expose-gc --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs",
+    "start:prod": "node --max-old-space-size=1536 --max-http-header-size=16384 --expose-gc --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs",
     "start:render-free": "node --max-old-space-size=256 --max-http-header-size=16384 --expose-gc --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs",
+    "start:render-paid": "node --max-old-space-size=1536 --max-http-header-size=16384 --expose-gc --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs",
     "typecheck": "NODE_OPTIONS='--max-old-space-size=4096' tsc -p tsconfig.json --noEmit",
     "test": "echo 'vitest not available in Replit environment'",
     "test:watch": "echo 'vitest not available in Replit environment'",

@@ -129,33 +129,43 @@ const Env = z.object({
   //
   // MEMORY_WARN_RSS_MB  — ops-alert SSE is emitted after SUSTAIN_SAMPLES (3)
   //   consecutive samples above this value so the admin console can surface a
-  //   warning banner. Set this low enough to get early notice without causing
-  //   restarts. Default 512 MB suits the --max-old-space-size=460 heap limit
-  //   with headroom for V8 overhead, Buffer pools, and shared libs.
+  //   warning banner. Set low enough to get early notice without triggering
+  //   restarts. Default 1024 MB suits a 2–4 GiB production host with headroom
+  //   for concurrent HLS streams, upload assembly, FFmpeg transcoding, and the
+  //   V8 heap. Override lower on memory-constrained hosts (see below).
   //
   // MEMORY_RESTART_RSS_MB — SIGTERM is sent after CRITICAL_SAMPLES_FOR_EXIT
   //   (10) consecutive samples above THIS value so the supervisor can restart
-  //   cleanly. Must be ≥ MEMORY_WARN_RSS_MB. Setting it equal to MEMORY_WARN_RSS_MB
-  //   kills healthy servers that merely sit above the low warn watermark.
-  //   Under --max-old-space-size=460 a warm Node process uses 380–480 MB RSS
-  //   via JIT + DB buffers + HLS segment Buffers (8 MiB each × HLS_MAX_CONCURRENT).
-  //   Default 768 MB: safe headroom for 30 concurrent HLS streams (240 MB peak
-  //   HLS buffer) + 460 MB heap + 68 MB shared-lib baseline = ~768 MB ceiling.
+  //   cleanly. Must be ≥ MEMORY_WARN_RSS_MB. Default 1536 MB provides ample
+  //   headroom for large uploads, concurrent HLS (8 MiB Buffer × concurrent
+  //   streams), FFmpeg transcoding (up to 1 GiB per job), broadcast queue
+  //   processing, and the V8 heap — without triggering unnecessary restarts
+  //   under normal workloads. The warn/restart gap (512 MB) gives operators
+  //   clear notice well before a restart is triggered.
   //
-  // Recommended production config on a 1 GiB host (Replit deployment):
-  //   MEMORY_WARN_RSS_MB=512   MEMORY_RESTART_RSS_MB=768
-  // For a 512 MB constrained host (lower HLS_MAX_CONCURRENT to 10):
-  //   MEMORY_WARN_RSS_MB=380   MEMORY_RESTART_RSS_MB=600
-  MEMORY_WARN_RSS_MB: z.coerce.number().int().positive().default(512),
-  MEMORY_RESTART_RSS_MB: z.coerce.number().int().positive().default(768),
+  // Production config reference (override via env vars):
+  //   2 GiB host:  MEMORY_WARN_RSS_MB=1024  MEMORY_RESTART_RSS_MB=1536
+  //   4 GiB host:  MEMORY_WARN_RSS_MB=2048  MEMORY_RESTART_RSS_MB=3072
+  //   8 GiB host:  MEMORY_WARN_RSS_MB=4096  MEMORY_RESTART_RSS_MB=6144
+  //
+  // Constrained host overrides (free tier / shared instances):
+  //   512 MiB:     MEMORY_WARN_RSS_MB=380   MEMORY_RESTART_RSS_MB=460
+  //   1 GiB:       MEMORY_WARN_RSS_MB=700   MEMORY_RESTART_RSS_MB=900
+  //
+  // RSS formula for sizing: baseline_mb + (24 × HLS_MAX_CONCURRENT) + transcode_peak_mb
+  //   baseline ≈ 300–400 MB (V8 heap + pg pool + glibc arenas + pino + shared libs)
+  //   HLS      ≈ 24 MB per concurrent stream (16 MiB pg BYTEA hex + 8 MiB Buffer)
+  //   transcode ≈ 200–800 MB per active FFmpeg job (depends on resolution/codec)
+  MEMORY_WARN_RSS_MB: z.coerce.number().int().positive().default(1024),
+  MEMORY_RESTART_RSS_MB: z.coerce.number().int().positive().default(1536),
 
   // pg connection pool maximum. Each replica holds at most this many live
   // connections to Postgres/Neon. 25 is safe for a 2 GiB / 1-vCPU container.
   // Raised from 20 → 25 to provide headroom for concurrent HLS_MAX_CONCURRENT
   // requests each holding a pool connection during BYTEA streaming, plus
   // concurrent chunk uploads (up to 6 via semaphore) + background workers.
-  // Each connection costs ~5–10 MB RSS on pg side; 25 ≈ 125–250 MB, well within
-  // the 512 MB Replit container budget.
+  // Each connection costs ~5–10 MB RSS on pg side; 25 ≈ 125–250 MB.
+  // On memory-constrained hosts lower DB_POOL_MAX proportionally.
   DB_POOL_MAX: z.coerce.number().int().positive().default(25),
 
   // How long (ms) a pool connection may sit idle before it is evicted.
@@ -479,19 +489,22 @@ const Env = z.object({
   //   Node.js + API baseline RSS                 : ~300 MiB
   //
   //   At HLS_MAX_CONCURRENT=10 (default):
-  //     V8 hex strings  : 10 × 16 MiB = 160 MiB  (within 460 MiB cap ✓)
+  //     V8 hex strings  : 10 × 16 MiB = 160 MiB
   //     External buffers: 10 ×  8 MiB =  80 MiB
-  //     Total peak RSS  : ~540 MiB    (fits MEMORY_RESTART_RSS_MB=768 ✓)
+  //     Total peak RSS  : ~540 MiB    (well under MEMORY_RESTART_RSS_MB=1536 ✓)
   //
-  //   At HLS_MAX_CONCURRENT=30 (former default — DO NOT USE on 460 MiB heap):
-  //     V8 hex strings  : 30 × 16 MiB = 480 MiB  > 460 MiB V8 cap → OOM! ✗
-  //     External buffers: 30 ×  8 MiB = 240 MiB
-  //     Total peak RSS  : ~1020 MiB   → triggers MEMORY_RESTART_RSS_MB
+  //   At HLS_MAX_CONCURRENT=20 (production default):
+  //     V8 hex strings  : 20 × 16 MiB = 320 MiB
+  //     External buffers: 20 ×  8 MiB = 160 MiB
+  //     Total peak RSS  : ~780 MiB    (fits MEMORY_RESTART_RSS_MB=1536 ✓)
+  //
+  //   At HLS_MAX_CONCURRENT=30:
+  //     Total peak RSS  : ~1020 MiB   — safe on ≥ 2 GiB hosts, OOM on 512 MiB
   //
   // Recommended values by deployment size:
-  //   Development (--max-old-space-size=460, 512 MB container): 10  (default)
-  //   Production  (--max-old-space-size=900, 2 GiB container) : 20  (set via env)
-  //   Production  (--max-old-space-size=460, 1 GiB container) : 10
+  //   Production  (--max-old-space-size=2048, ≥ 4 GiB host) : 30  (set via env)
+  //   Production  (--max-old-space-size=1536, ≥ 2 GiB host) : 20  (set via env)
+  //   Constrained (--max-old-space-size=256,  512 MiB host)  :  5  (render free)
   //
   // Raise MEMORY_RESTART_RSS_MB proportionally when raising this value.
   // video-serve.routes.ts emits a startup WARN when the budget would overflow.
