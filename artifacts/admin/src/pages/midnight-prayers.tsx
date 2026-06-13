@@ -345,7 +345,7 @@ export default function MidnightPrayersPage() {
     staleTime: 30_000,
   });
 
-  const { data: queueData, refetch: refetchQueue } = useQuery<MPQueueResponse>({
+  const { data: queueData } = useQuery<MPQueueResponse>({
     queryKey: ["midnight-prayers/queue"],
     queryFn: () => api.get<MPQueueResponse>("/midnight-prayers/queue"),
     staleTime: 60_000,

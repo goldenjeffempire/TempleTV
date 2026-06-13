@@ -80,6 +80,18 @@ export interface UseV2BroadcastResult {
    * server is reachable.
    */
   forceReconnect: () => void;
+  /**
+   * Resets the FSM bind state and immediately retries the current item.
+   *
+   * Use this in FATAL and RECOVERING overlay "Try Again" / "Tap to reconnect"
+   * buttons rather than `forceReconnect` alone.  `forceReconnect` only
+   * reconnects the WebSocket transport — the machine stays in its current
+   * state until the server sends a new snapshot.  `forceRebind` also calls
+   * `machine.requestManualRebind()` which transitions the machine back to
+   * PREPARING_ACTIVE and re-issues bind + play for the active buffer, giving
+   * the user an immediate escape from a stuck RECOVERING or FATAL state.
+   */
+  forceRebind: () => void;
 }
 
 // ── Module-level session store ──────────────────────────────────────────────
@@ -869,10 +881,24 @@ export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResul
     session?.transport.forceReconnect();
   }, [session]);
 
+  // Stable forceRebind — resets the FSM bind state AND reconnects the transport.
+  // This is the correct action for "Try Again" / "Tap to reconnect" overlays:
+  // forceReconnect() alone only drops and re-establishes the WS socket; the
+  // machine stays stuck in FATAL / RECOVERING until the server sends a snapshot
+  // that advances the queue.  requestManualRebind() transitions the machine back
+  // to PREPARING_ACTIVE and re-issues bind + play, giving the user an immediate
+  // escape regardless of server-side state.
+  const forceRebind = useCallback(() => {
+    if (!session) return;
+    session.machine.requestManualRebind();
+    session.transport.forceReconnect();
+  }, [session]);
+
   return {
     snapshot,
     connected,
     attach: { A: attachA, B: attachB },
     forceReconnect,
+    forceRebind,
   };
 }

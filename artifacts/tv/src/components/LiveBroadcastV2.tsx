@@ -436,7 +436,7 @@ export function LiveBroadcastV2({
     (_video: HTMLVideoElement, _url: string): (() => void) => () => {},
     [],
   );
-  const { snapshot, connected, attach, forceReconnect } = useV2Broadcast({ baseUrl: effectiveBaseUrl, attachHls, attachYouTube });
+  const { snapshot, connected, attach, forceRebind } = useV2Broadcast({ baseUrl: effectiveBaseUrl, attachHls, attachYouTube });
   const fatalFiredRef = useRef(false);
 
   // Local video element refs — shadow attach.A / attach.B so we can find the
@@ -595,6 +595,24 @@ export function LiveBroadcastV2({
     return () => clearInterval(id);
   }, [snapshot.state, snapshot.fatalEnteredAtMs, snapshot.fatalAttemptCount]);
 
+  // Counts seconds spent in any RECOVERING state. Once ≥ 10 s, the overlay
+  // gains a "Try Again" button so the viewer can trigger a manual rebind
+  // rather than waiting for the full auto-retry cycle to complete. Resets
+  // to 0 immediately when the state changes away from RECOVERING.
+  const [recoveringSecs, setRecoveringSecs] = useState(0);
+  useEffect(() => {
+    if (
+      snapshot.state !== "RECOVERING_PRIMARY" &&
+      snapshot.state !== "RECOVERING_FAILOVER"
+    ) {
+      setRecoveringSecs(0);
+      return;
+    }
+    setRecoveringSecs(0);
+    const id = setInterval(() => setRecoveringSecs((s) => s + 1), 1_000);
+    return () => clearInterval(id);
+  }, [snapshot.state]);
+
   type OverlayContent = { primary: string; secondary?: string; showRefresh?: boolean } | null;
 
   const overlay = useMemo((): OverlayContent => {
@@ -631,10 +649,22 @@ export function LiveBroadcastV2({
       snapshot.state === "PREPARING_NEXT"
     ) return null;
     // Recovery states — transient buffer errors, not a true off-air condition.
+    // After 10 s expose a "Try Again" button so viewers don't have to wait for
+    // the full auto-retry cycle (which can run 3–4 passes before FATAL).
     if (
       snapshot.state === "RECOVERING_PRIMARY" ||
       snapshot.state === "RECOVERING_FAILOVER"
-    ) return { primary: "Tuning in…" };
+    ) {
+      return {
+        primary: snapshot.state === "RECOVERING_FAILOVER"
+          ? "Switching to backup stream…"
+          : "Tuning in…",
+        secondary: recoveringSecs >= 10
+          ? "Recovery is taking longer than expected."
+          : undefined,
+        showRefresh: recoveringSecs >= 10,
+      };
+    }
     // SKIP_PENDING: exhausted retries, waiting for server to advance queue.
     if (snapshot.state === "SKIP_PENDING") return { primary: "Checking stream quality…" };
     // LIVE_OVERRIDE_ACTIVE with HLS/RTMP: show "Tuning in…" while the manifest
@@ -652,7 +682,7 @@ export function LiveBroadcastV2({
       secondary: "We'll be back shortly.",
     };
     return null;
-  }, [snapshot.state, server, overridePlaying, fatalRetrySecsLeft]);
+  }, [snapshot.state, server, overridePlaying, fatalRetrySecsLeft, recoveringSecs]);
 
   const title = server?.override?.title ?? server?.current?.title ?? "Temple TV Live";
   const isOnAir = !overlay && !!(server?.current || server?.override);
@@ -1067,15 +1097,14 @@ export function LiveBroadcastV2({
           {overlay?.showRefresh && (
             <button
               onClick={() => {
-                // Prefer a transport reconnect over a full page reload: it is
-                // faster (no SPA re-init, no new WS handshake from scratch),
-                // and if the FATAL state was caused by a transient network
-                // blip the reconnect self-heals without clearing page state.
-                // Fall back to reload only if the transport fails to produce
-                // a healthy connection within the normal backoff window —
-                // which is handled automatically by the machine's 30 s
-                // FATAL auto-recovery timer in parallel with this action.
-                forceReconnect();
+                // forceRebind() resets the FSM bind state AND reconnects the
+                // transport. forceReconnect() alone only re-establishes the
+                // WebSocket — the machine stays in FATAL/RECOVERING until the
+                // server sends a new snapshot that advances the queue.
+                // requestManualRebind() (called inside forceRebind) transitions
+                // the machine back to PREPARING_ACTIVE and re-issues bind+play
+                // so the viewer gets an immediate escape from any stuck state.
+                forceRebind();
               }}
               style={{
                 marginTop: "clamp(6px, 1vh, 14px)",
