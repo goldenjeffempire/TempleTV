@@ -15,6 +15,9 @@
 #   Admin  : artifacts/admin/src       + all lib/* packages
 #   TV     : artifacts/tv/src          + all lib/* packages
 #   Mobile : artifacts/mobile/{app,components,hooks,context,constants,modules}
+#
+# Note: -print -quit is used instead of "| head -1" to avoid SIGPIPE (exit 141)
+# under set -o pipefail when find exits early after the first match.
 set -euo pipefail
 
 # ── API server ────────────────────────────────────────────────────────────────
@@ -24,7 +27,7 @@ if [ ! -f "$API_DIST" ]; then
   echo "[build] API dist not found — building API server..."
   pnpm --filter @workspace/api-server run build
 else
-  CHANGED=$(find artifacts/api-server/src lib -name '*.ts' -newer "$API_DIST" 2>/dev/null | head -1)
+  CHANGED=$(find artifacts/api-server/src lib -name '*.ts' -newer "$API_DIST" -print -quit 2>/dev/null)
   if [ -n "$CHANGED" ]; then
     echo "[build] API source changed (e.g. $CHANGED) — rebuilding API server..."
     pnpm --filter @workspace/api-server run build
@@ -41,7 +44,7 @@ if [ ! -f "$ADMIN_DIST" ]; then
   NODE_ENV=production CI=true pnpm --filter @workspace/admin run build
 else
   CHANGED=$(find artifacts/admin/src lib \( -name '*.ts' -o -name '*.tsx' -o -name '*.css' \) \
-    -newer "$ADMIN_DIST" 2>/dev/null | head -1)
+    -newer "$ADMIN_DIST" -print -quit 2>/dev/null)
   if [ -n "$CHANGED" ]; then
     echo "[build] Admin SPA source changed (e.g. $CHANGED) — rebuilding..."
     NODE_ENV=production CI=true pnpm --filter @workspace/admin run build
@@ -58,7 +61,7 @@ if [ ! -f "$TV_DIST" ]; then
   BASE_PATH=/tv/ NODE_ENV=production CI=true pnpm --filter @workspace/tv run build
 else
   CHANGED=$(find artifacts/tv/src lib \( -name '*.ts' -o -name '*.tsx' -o -name '*.css' \) \
-    -newer "$TV_DIST" 2>/dev/null | head -1)
+    -newer "$TV_DIST" -print -quit 2>/dev/null)
   if [ -n "$CHANGED" ]; then
     echo "[build] TV SPA source changed (e.g. $CHANGED) — rebuilding..."
     BASE_PATH=/tv/ NODE_ENV=production CI=true pnpm --filter @workspace/tv run build
@@ -68,11 +71,11 @@ else
 fi
 
 # ── Mobile web ────────────────────────────────────────────────────────────────
-# Watches: app/, components/, hooks/, context/, constants/, modules/ (all exist)
+# Watches: app/, components/, hooks/, context/, constants/, modules/ (all exist).
 # Uses EXPO_BASE_URL=/mobile so assets resolve correctly under the /mobile prefix.
 MOBILE_DIST="artifacts/mobile/web-dist/index.html"
 
-# Build a list of mobile source dirs that actually exist to avoid find errors
+# Build a list of mobile source dirs that actually exist to avoid find errors.
 MOBILE_SRCDIRS=""
 for d in artifacts/mobile/app artifacts/mobile/components artifacts/mobile/hooks \
           artifacts/mobile/context artifacts/mobile/constants artifacts/mobile/modules; do
@@ -85,7 +88,7 @@ if [ ! -f "$MOBILE_DIST" ]; then
 elif [ -n "$MOBILE_SRCDIRS" ]; then
   # shellcheck disable=SC2086
   CHANGED=$(find $MOBILE_SRCDIRS \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' \) \
-    -newer "$MOBILE_DIST" 2>/dev/null | head -1)
+    -newer "$MOBILE_DIST" -print -quit 2>/dev/null)
   if [ -n "$CHANGED" ]; then
     echo "[build] Mobile web source changed (e.g. $CHANGED) — rebuilding..."
     EXPO_BASE_URL=/mobile CI=true pnpm --filter @workspace/mobile run build:web
