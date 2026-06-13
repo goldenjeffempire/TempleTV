@@ -64,6 +64,10 @@ localPort = 5000
 externalPort = 80
 
 [[ports]]
+localPort = 8080
+externalPort = 8080
+
+[[ports]]
 localPort = 23745
 externalPort = 4200
 
@@ -74,10 +78,6 @@ externalPort = 3000
 [[ports]]
 localPort = 23877
 externalPort = 6800
-
-[[ports]]
-localPort = 8080
-externalPort = 8080
 
 [nix]
 channel = "stable-25_05"
@@ -113,11 +113,11 @@ SENTRY_TRACES_RATE = "0.2"
 DB_STATEMENT_TIMEOUT_MS = "30000"
 REFRESH_TOKEN_STRICT_IP_CHECK = "false"
 API_ORIGIN = "https://api.templetv.org.ng"
-QUEUE_MIN_ITEMS = "3"
+QUEUE_MIN_ITEMS = "10"
+CLEANUP_RETENTION_HOURS = "24"
 
 [userenv.development]
 PROD_SYNC_API_URL = "https://api.templetv.org.ng"
 
 [userenv.production]
 SHUTDOWN_PRECLOSE_DELAY_MS = "5000"
-CLEANUP_RETENTION_HOURS = "24"

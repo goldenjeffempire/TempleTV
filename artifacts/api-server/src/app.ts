@@ -570,7 +570,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         const { fileURLToPath } = await import("node:url");
         const { existsSync, createReadStream } = await import("node:fs");
         const thisDir = resolve(fileURLToPath(import.meta.url), "..");
-        const root = resolve(thisDir, "../..");
+        const root = resolve(thisDir, "../../..");
         const idx = resolve(root, "artifacts/admin/dist/public/index.html");
         if (existsSync(idx)) {
           reply.header("Content-Type", "text/html; charset=utf-8");
@@ -979,9 +979,9 @@ export async function buildApp(): Promise<FastifyInstance> {
     // Using import.meta.url is reliable:
     //   this file in the build = .../artifacts/api-server/dist/app.mjs
     //   dirname(file)          = .../artifacts/api-server/dist/
-    //   up 2 levels            = project root  (.../src/)
+    //   up 3 levels            = project root  (workspace root)
     const thisDir = pathResolve(fileURLToPath(import.meta.url), "..");
-    const projectRoot = pathResolve(thisDir, "../..");
+    const projectRoot = pathResolve(thisDir, "../../..");
     // Mobile web app — built with: EXPO_BASE_URL=/mobile expo export --platform web --output-dir web-dist
     mountSpa(pathResolve(projectRoot, "artifacts/mobile/web-dist"), "/mobile");
     // TV web app  — built with: BASE_PATH=/tv/ vite build
