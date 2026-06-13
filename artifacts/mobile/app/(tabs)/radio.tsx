@@ -12,7 +12,7 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   return <ErrorFallback error={error} resetError={retry} />;
 }
 
-import React, { useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef } from "react";
 import {
   Animated,
   Platform,
@@ -23,6 +23,7 @@ import {
 import { Feather } from "@expo/vector-icons";
 import { SymbolView } from "expo-symbols";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useFocusEffect } from "expo-router";
 import { useColors } from "@/hooks/useColors";
 
 const ND = Platform.OS !== "web";
@@ -36,22 +37,28 @@ export default function RadioScreen() {
   // Slow fade in for the whole card
   const fadeAnim  = useRef(new Animated.Value(0)).current;
 
+  // Fade-in plays once on mount
   useEffect(() => {
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 600,
       useNativeDriver: ND,
     }).start();
+  }, [fadeAnim]);
 
-    const pulse = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.08, duration: 1800, useNativeDriver: ND }),
-        Animated.timing(pulseAnim, { toValue: 1,    duration: 1800, useNativeDriver: ND }),
-      ]),
-    );
-    pulse.start();
-    return () => pulse.stop();
-  }, [pulseAnim, fadeAnim]);
+  // Pulse only runs while this tab is focused — stops when the user switches tabs
+  useFocusEffect(
+    useCallback(() => {
+      const pulse = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 1.08, duration: 1800, useNativeDriver: ND }),
+          Animated.timing(pulseAnim, { toValue: 1,    duration: 1800, useNativeDriver: ND }),
+        ]),
+      );
+      pulse.start();
+      return () => pulse.stop();
+    }, [pulseAnim]),
+  );
 
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>

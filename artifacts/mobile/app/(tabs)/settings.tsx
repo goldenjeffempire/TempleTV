@@ -223,9 +223,15 @@ export default function SettingsScreen() {
       {
         text: "Sign Out",
         style: "destructive",
-        onPress: async () => {
-          stopPlayback();
-          await signOut();
+        onPress: () => {
+          void (async () => {
+            try {
+              stopPlayback();
+              await signOut();
+            } catch {
+              /* swallow — sign-out errors should not surface to the user */
+            }
+          })();
         },
       },
     ]);

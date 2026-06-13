@@ -189,9 +189,10 @@ export function MiniPlayer() {
   );
 
   // Bottom positioning — sits just above the bottom tab bar.
-  // Tab bar = 49pt constant + insets.bottom (home indicator / gesture nav).
-  // +4 visual gap. Web keeps the original constant (tab bar = fixed 84pt).
-  const bottomOffset = Platform.OS === "web" ? 84 : 53 + insets.bottom;
+  // TAB_BAR_HEIGHT = 49pt (React Navigation default) + 4pt visual gap.
+  // Web tab bar is fixed at 84pt (see tabs/_layout.tsx).
+  const TAB_BAR_HEIGHT = 49;
+  const bottomOffset = Platform.OS === "web" ? 84 : TAB_BAR_HEIGHT + 4 + insets.bottom;
 
   if (Platform.OS === "ios") {
     return (

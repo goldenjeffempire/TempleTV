@@ -25,13 +25,17 @@ export const secureStorage = {
       await AsyncStorage.setItem(key, value);
       return;
     }
-    await SecureStore.setItemAsync(key, value, {
-      // AFTER_FIRST_UNLOCK allows auth tokens to be read in background
-      // while the screen is locked (e.g. during background audio playback).
-      // WHEN_UNLOCKED_THIS_DEVICE_ONLY would silently fail token reads
-      // whenever the user's screen is locked, breaking auto-refresh mid-stream.
-      keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-    });
+    try {
+      await SecureStore.setItemAsync(key, value, {
+        // AFTER_FIRST_UNLOCK allows auth tokens to be read in background
+        // while the screen is locked (e.g. during background audio playback).
+        // WHEN_UNLOCKED_THIS_DEVICE_ONLY would silently fail token reads
+        // whenever the user's screen is locked, breaking auto-refresh mid-stream.
+        keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+      });
+    } catch {
+      /* swallow — keystore may be temporarily unavailable (e.g. Android post-reboot) */
+    }
   },
   async removeItem(key: string): Promise<void> {
     if (Platform.OS === "web") {

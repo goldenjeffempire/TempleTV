@@ -816,8 +816,9 @@ export default function LibraryScreen() {
             </View>
           ) : seriesError ? (
             <View style={[styles.errorBar, { backgroundColor: "#ef4444" + "22", marginHorizontal: 16 }]}>
-              <Text style={{ color: "#ef4444", fontSize: 13 }}>{seriesError} — </Text>
-              <Pressable onPress={refetchSeries}>
+              <Feather name="alert-circle" size={13} color="#ef4444" />
+              <Text style={{ color: "#ef4444", fontSize: 13, flex: 1, marginLeft: 6 }}>{seriesError}</Text>
+              <Pressable onPress={refetchSeries} accessibilityRole="button" accessibilityLabel="Retry loading series">
                 <Text style={{ color: "#ef4444", fontSize: 13, fontWeight: "600" }}>Retry</Text>
               </Pressable>
             </View>

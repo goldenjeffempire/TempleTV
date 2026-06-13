@@ -9,6 +9,7 @@ import { getApiBase } from "@/lib/apiBase";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
 
 const PUSH_TOKEN_KEY = "@temple_tv/push_token";
+const PUSH_TOKEN_PENDING_KEY = "@temple_tv/push_token_pending";
 const ANDROID_CHANNEL_ID = "temple-tv-default";
 const EMERGENCY_CHANNEL_ID = "temple-tv-emergency";
 
@@ -59,8 +60,15 @@ async function registerTokenWithServer(token: string): Promise<void> {
       body: JSON.stringify({ token, platform }),
       signal: AbortSignal.timeout(10000),
     });
+    // Clear any pending-retry key on success
+    await AsyncStorage.removeItem(PUSH_TOKEN_PENDING_KEY).catch(() => undefined);
   } catch {
-    // Non-critical — will retry on next launch
+    // Persist token so the next launch can retry server registration
+    try {
+      await AsyncStorage.setItem(PUSH_TOKEN_PENDING_KEY, token);
+    } catch {
+      // Storage unavailable — token will be re-fetched from EAS on the next launch
+    }
   }
 }
 
@@ -97,6 +105,16 @@ export async function registerForPushTokenAsync(): Promise<string | null> {
   if (!N) return null;
 
   try {
+    // Retry any token whose server registration failed on a previous launch
+    try {
+      const pendingToken = await AsyncStorage.getItem(PUSH_TOKEN_PENDING_KEY);
+      if (pendingToken) {
+        await registerTokenWithServer(pendingToken);
+      }
+    } catch {
+      // Non-critical — proceed with normal registration flow
+    }
+
     await setupAndroidNotificationChannel();
 
     const { status: existingStatus } = await N.getPermissionsAsync();
