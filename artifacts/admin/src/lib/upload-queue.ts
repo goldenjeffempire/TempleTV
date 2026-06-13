@@ -68,6 +68,13 @@ export interface UploadItem {
   category: string;
   preacher: string;
   featured: boolean;
+  /**
+   * When true the video is hidden from the public library until an admin
+   * explicitly publishes it. When false it is visible in the catalog as soon
+   * as the upload finishes. Defaults to true (broadcast-only) to match the
+   * pre-existing server behaviour.
+   */
+  broadcastOnly: boolean;
   status: UploadStatus;
   /** 0–100. Reserves 0–90 for chunk upload, 90–100 for finalize. */
   progress: number;
@@ -139,6 +146,11 @@ export interface EnqueueParams {
   preacher: string;
   description: string;
   featured: boolean;
+  /**
+   * When false the video will be visible in the public library immediately
+   * after upload. When true (default) it is broadcast-only until published.
+   */
+  broadcastOnly?: boolean;
   priority?: number;
 }
 
@@ -333,6 +345,7 @@ class UploadQueueEngine {
                 category: s.category,
                 preacher: s.preacher,
                 featured: s.featured,
+                broadcastOnly: s.broadcastOnly ?? true,
                 status: "paused",
                 // Restore last-known progress so the bar shows the correct
                 // position rather than jumping back to 0.  finalizeOnly items
@@ -586,6 +599,7 @@ class UploadQueueEngine {
         category: f.category || "sermon",
         preacher: f.preacher || "",
         featured: f.featured ?? false,
+        broadcastOnly: f.broadcastOnly ?? true,
         status: "pending",
         progress: 0,
         speed: 0,
@@ -616,6 +630,7 @@ class UploadQueueEngine {
         category: item.category,
         preacher: item.preacher,
         featured: item.featured,
+        broadcastOnly: item.broadcastOnly,
         addedAt: item.addedAt,
         priority: item.priority,
         finalizeOnly: false,
@@ -1138,6 +1153,7 @@ class UploadQueueEngine {
         category: item.category || "sermon",
         preacher: item.preacher || "",
         featured: item.featured ?? false,
+        broadcastOnly: item.broadcastOnly ?? true,
         totalChunks,
         totalBytes: file.size,
         ext,

@@ -41,6 +41,14 @@ export interface PersistedUploadSession {
   category: string;
   preacher: string;
   featured: boolean;
+  /**
+   * When false (default on old records) the video is broadcast-only and hidden
+   * from the public library. When true it will be visible in the catalog
+   * immediately after upload finishes. Optional for backward compat with IDB
+   * records written before this field was added — treated as true (broadcast
+   * only) when absent.
+   */
+  broadcastOnly?: boolean;
   addedAt: number;
   priority: number;
   /**

@@ -212,6 +212,7 @@ export default function VideosPage() {
   const [bulkCategory, setBulkCategory] = useState("sermon");
   const [bulkPreacher, setBulkPreacher] = useState("");
   const [bulkFeatured, setBulkFeatured] = useState(false);
+  const [bulkPublishToLibrary, setBulkPublishToLibrary] = useState(false);
   const [dialogDragOver, setDialogDragOver] = useState(false);
   const [titleErrors, setTitleErrors] = useState<Set<string>>(new Set());
 
@@ -836,6 +837,7 @@ export default function VideosPage() {
       category: bulkCategory || "sermon",
       preacher: bulkPreacher.trim(),
       featured: bulkFeatured,
+      broadcastOnly: !bulkPublishToLibrary,
     })));
     toast.success(`${dialogFiles.length} file${dialogFiles.length > 1 ? "s" : ""} added to upload queue`);
     setUploadOpen(false);
@@ -1392,7 +1394,7 @@ export default function VideosPage() {
         open={uploadOpen}
         onOpenChange={(open) => {
           setUploadOpen(open);
-          if (!open) { setDialogFiles([]); setDialogDragOver(false); setBulkFeatured(false); }
+          if (!open) { setDialogFiles([]); setDialogDragOver(false); setBulkFeatured(false); setBulkPublishToLibrary(false); }
         }}
       >
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-hidden flex flex-col">
@@ -1478,6 +1480,17 @@ export default function VideosPage() {
                       <p className="text-[10px] text-muted-foreground/70">Show on home screen hero</p>
                     </div>
                     <Switch checked={bulkFeatured} onCheckedChange={setBulkFeatured} />
+                  </div>
+                  <div className="flex items-center justify-between pt-1 border-t border-border/40 mt-1">
+                    <div>
+                      <Label className="text-xs font-medium text-muted-foreground">Publish to library</Label>
+                      <p className="text-[10px] text-muted-foreground/70">
+                        {bulkPublishToLibrary
+                          ? "Visible in the public catalog immediately after upload"
+                          : "Broadcast only — hide from public catalog until you publish manually"}
+                      </p>
+                    </div>
+                    <Switch checked={bulkPublishToLibrary} onCheckedChange={setBulkPublishToLibrary} />
                   </div>
                 </div>
 

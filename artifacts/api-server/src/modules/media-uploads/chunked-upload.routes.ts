@@ -106,6 +106,11 @@ const InitBodySchema = z.object({
     .union([z.boolean(), z.string()])
     .optional()
     .transform((v) => (typeof v === "string" ? v === "true" : (v ?? false))),
+  broadcastOnly: z
+    .union([z.boolean(), z.string()])
+    .optional()
+    .transform((v) => (typeof v === "string" ? v === "true" : (v ?? true)))
+    .default(true),
   durationSecs: z
     .union([z.number(), z.string()])
     .optional()
@@ -523,11 +528,33 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             .delete(schema.broadcastQueueTable)
             .where(inArray(schema.broadcastQueueTable.videoId, orphanedVideoIds))
             .catch(() => {});
-          // Delete the video rows — blobs are missing/corrupt so these rows are useless.
+          // Mark video rows as failed instead of deleting them. Deleting caused
+          // the "disappearing video" bug — the admin saw the upload succeed, the
+          // row appeared in the panel, then vanished silently on the next server
+          // restart. Keeping the row with transcodingStatus="failed" +
+          // transcodingErrorCode="ASSEMBLY_FAILED" preserves the title and
+          // metadata so the admin sees a "Re-upload required" badge and knows
+          // exactly what happened. They can delete and re-upload to recover.
           await db
-            .delete(videos)
+            .update(videos)
+            .set({
+              transcodingStatus: "failed",
+              transcodingErrorCode: "ASSEMBLY_FAILED",
+              transcodingErrorMessage:
+                "Upload assembly was interrupted by a server restart before " +
+                "the file could be fully written. Delete this video and " +
+                "re-upload to recover.",
+              objectPath: null,     // blob is gone → sourceAvailable: false → "Re-upload required" badge
+              localVideoUrl: null,  // no longer streamable
+            })
             .where(inArray(videos.id, orphanedVideoIds))
-            .catch(() => {});
+            .catch((err: unknown) =>
+              app.log.warn({ err }, "[upload] recovery: failed to mark orphaned video rows as failed (non-fatal)"),
+            );
+          // Notify the admin panel so the failed status appears immediately.
+          for (const videoId of orphanedVideoIds) {
+            adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-interrupted-on-restart" });
+          }
         }
         // Delete partially-written destination blobs so the next finalize attempt
         // gets a clean objectKey instead of appending to a corrupt partial blob.
@@ -551,7 +578,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               destBlobsDeleted: orphanedObjectKeys.length,
               ids: orphanedSessionIds,
             },
-            "[upload] reset interrupted assembling sessions — orphaned video rows and partial blobs cleaned up",
+            "[upload] reset interrupted assembling sessions — video rows preserved with failed status, partial blobs cleaned up",
           );
         }
       }
@@ -766,6 +793,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           category: body.category ?? "sermon",
           preacher: body.preacher ?? "",
           featured: body.featured ?? false,
+          broadcastOnly: body.broadcastOnly ?? true,
           contentType,
           sizeBytes: Number(body.totalBytes),
           totalChunks: Number(body.totalChunks),
@@ -1154,7 +1182,18 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           db
             .delete(schema.broadcastQueueTable)
             .where(eq(schema.broadcastQueueTable.videoId, session.completedVideoId)),
-          db.delete(videos).where(eq(videos.id, session.completedVideoId)),
+          db
+            .update(videos)
+            .set({
+              transcodingStatus: "failed",
+              transcodingErrorCode: "ASSEMBLY_FAILED",
+              transcodingErrorMessage:
+                "Upload assembly was interrupted by a server restart. " +
+                "Delete this video and re-upload to recover.",
+              objectPath: null,
+              localVideoUrl: null,
+            })
+            .where(eq(videos.id, session.completedVideoId)),
           db
             .update(sessions)
             .set({ completedVideoId: null })
@@ -1429,7 +1468,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               objectPath: objectKey,
               uploadedBy: session.uploadedBy ?? null,
               s3MirroredAt: null, // set after background assembly confirms blob exists
-              broadcastOnly: true, // hidden from public library until admin publishes
+              broadcastOnly: session.broadcastOnly ?? true,
               transcodingStatus: "queued", // background assembly + faststart in progress
             })
             .returning();
@@ -2021,7 +2060,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             objectPath: fallbackObjectKey,
             uploadedBy: session.uploadedBy ?? null,
             s3MirroredAt: null,
-            broadcastOnly: true,
+            broadcastOnly: session.broadcastOnly ?? true,
             transcodingStatus: "queued",
           })
           .returning();

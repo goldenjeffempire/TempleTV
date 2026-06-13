@@ -37,6 +37,7 @@ export const uploadSessionsTable = pgTable(
     category: text("category").notNull().default("sermon"),
     preacher: text("preacher").notNull().default(""),
     featured: boolean("featured").notNull().default(false),
+    broadcastOnly: boolean("broadcast_only").notNull().default(true),
     contentType: text("content_type").notNull().default("video/mp4"),
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
     totalChunks: integer("total_chunks").notNull(),
