@@ -886,23 +886,30 @@ class QueueIntegrityValidatorImpl {
       // unknown status) combined with zero playable URLs = permanently unplayable.
       // The reverse-pass below re-activates these rows if the video later gains
       // playable URLs (e.g. after a successful re-transcode or re-upload).
-      const orphanedFailedIds = rows
-        .filter((r) => {
-          const isOrphaned =
-            r.videoId !== null &&
-            r.videoId2 !== null &&
-            !r.vLocalUrl &&
-            !r.vHlsUrl &&
-            !r.qLocalUrl &&
-            !r.qHlsUrl;
-          const isYoutube = r.vSource === "youtube";
-          const isActivelyTranscoding =
-            r.vStatus === "queued" ||
-            r.vStatus === "encoding" ||
-            r.vStatus === "processing";
-          return isOrphaned && !isYoutube && !isActivelyTranscoding;
-        })
-        .map((r) => r.id);
+      //
+      // Split orphans into two groups:
+      //   healable   — video has a storage blob (objectPath) and the source was
+      //                NOT cleaned up AND the failure is not terminal. These are
+      //                auto-transcoded: deactivated now, re-activated by the
+      //                reverse pass once transcodingStatus reaches 'hls_ready'.
+      //   permanent  — no source blob, terminal failure, or faststart explicitly
+      //                failed. Deactivated permanently; re-upload required.
+      const orphanedFailedRows = rows.filter((r) => {
+        const isOrphaned =
+          r.videoId !== null &&
+          r.videoId2 !== null &&
+          !r.vLocalUrl &&
+          !r.vHlsUrl &&
+          !r.qLocalUrl &&
+          !r.qHlsUrl;
+        const isYoutube = r.vSource === "youtube";
+        const isActivelyTranscoding =
+          r.vStatus === "queued" ||
+          r.vStatus === "encoding" ||
+          r.vStatus === "processing";
+        return isOrphaned && !isYoutube && !isActivelyTranscoding;
+      });
+      const orphanedFailedIds = orphanedFailedRows.map((r) => r.id);
 
       if (orphanedFailedIds.length > 0) {
         try {
@@ -941,6 +948,70 @@ class QueueIntegrityValidatorImpl {
             { err: fixErr, count: orphanedFailedIds.length },
             "[queue-validator] AUTO-FIX: failed to deactivate ORPHANED_VIDEO_REF items (non-fatal)",
           );
+        }
+      }
+
+      // ── Auto-heal: enqueue transcoding for recoverable ORPHANED_VIDEO_REF items ──
+      // Items that have a storage blob (objectPath) and a non-terminal status can
+      // be automatically recovered by re-enqueueing transcoding. The queue item
+      // stays deactivated (it has no playable URL now) and the reverse pass below
+      // will re-activate it once transcodingStatus reaches 'hls_ready'.
+      //
+      // Skipped when:
+      //   • objectPath is null — upload never completed (re-upload required)
+      //   • sourceCleanupStatus = 'deleted' — source blob has been cleaned up
+      //   • vFaststart === false — file explicitly failed faststart (unplayable)
+      //   • Terminal error codes: CORRUPT_SOURCE, SOURCE_MISSING, DISK_FULL
+      {
+        const healableOrphans = orphanedFailedRows.filter((r) => {
+          if (!r.videoId2 || !r.vObjectPath) return false;
+          if (r.vSourceCleanup === "deleted") return false;
+          if (r.vFaststart === false) return false;
+          const isTerminal =
+            r.vStatus === "failed" &&
+            (r.vErrCode === "CORRUPT_SOURCE" ||
+              r.vErrCode === "SOURCE_MISSING" ||
+              r.vErrCode === "DISK_FULL");
+          return !isTerminal;
+        });
+
+        for (const row of healableOrphans) {
+          if (!row.videoId2 || !row.vObjectPath) continue;
+          void (async () => {
+            try {
+              // Reconstruct localVideoUrl from objectPath if it was lost.
+              // The upload pipeline sets localVideoUrl = /api/v1/uploads/{objectPath}.
+              // If it is null here the finalize step was interrupted before writing it.
+              // Restore it so enqueueTranscode has a valid source path.
+              const restoredLocalUrl = normalizeQueueUrl(`/api/v1/uploads/${row.vObjectPath}`);
+              if (!restoredLocalUrl) return;
+              if (!row.vLocalUrl) {
+                await db
+                  .update(schema.videosTable)
+                  .set({ localVideoUrl: restoredLocalUrl })
+                  .where(eq(schema.videosTable.id, row.videoId2!));
+              }
+              await enqueueTranscode({
+                videoId: row.videoId2!,
+                videoPath: row.vLocalUrl ?? restoredLocalUrl,
+                priority: 3,
+              });
+              logger.info(
+                { itemId: row.id, videoId: row.videoId2, objectPath: row.vObjectPath },
+                "[queue-validator] AUTO-HEAL: ORPHANED_VIDEO_REF — source blob intact; " +
+                "enqueued transcoding. Item will return to rotation automatically once HLS is ready.",
+              );
+              adminEventBus.push("videos-library-updated", {
+                reason: "integrity-fix-orphaned-video-ref-auto-heal",
+                videoId: row.videoId2,
+              });
+            } catch (healErr) {
+              logger.warn(
+                { err: healErr, itemId: row.id, videoId: row.videoId2 },
+                "[queue-validator] AUTO-HEAL: ORPHANED_VIDEO_REF transcoding enqueue failed (non-fatal)",
+              );
+            }
+          })();
         }
       }
 

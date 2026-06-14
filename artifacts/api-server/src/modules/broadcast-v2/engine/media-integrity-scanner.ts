@@ -208,10 +208,62 @@ function extractFirstVariantUrl(masterText: string, masterUrl: string): string |
 }
 
 /**
+ * Extract the first segment URI from a variant HLS playlist body.
+ * Returns a fully-resolved absolute URL, or null if none can be found.
+ * Non-comment, non-blank lines that are not #EXT* tags are segment URIs.
+ */
+function extractFirstSegmentUrl(variantText: string, variantUrl: string): string | null {
+  const lines = variantText.split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
+    try {
+      const base = new URL(variantUrl);
+      base.pathname = base.pathname.replace(/\/[^/]*$/, "/");
+      return new URL(trimmed, base).href;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * HEAD-probe a single HLS segment to confirm it is accessible.
+ * Only a definitive 404 is treated as failure. Timeouts and 5xx responses
+ * are ambiguous (CDN / storage transient) and return ok: true to avoid
+ * false-positive deactivations of otherwise healthy items.
+ */
+async function probeFirstSegment(
+  url: string,
+  intHeaders: Record<string, string>,
+): Promise<{ ok: boolean; status: number | null; reason?: string }> {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { method: "HEAD", signal: ac.signal, headers: { ...intHeaders } });
+    clearTimeout(t);
+    if (res.status === 404) {
+      return { ok: false, status: 404, reason: "segment 404 — deleted or expired from storage" };
+    }
+    return { ok: true, status: res.status };
+  } catch {
+    clearTimeout(t);
+    return { ok: true, status: null };
+  }
+}
+
+/**
  * Probe a single HLS variant playlist to confirm it has actual segments (#EXTINF).
  * A valid master playlist can reference a variant that is 404 or empty, causing
  * all clients to stall without the server ever seeing an error on the master URL.
  * This probe catches that failure mode before the item ever reaches air.
+ *
+ * Additionally probes the first segment URI to catch the case where segments
+ * were deleted from storage after the playlist was written (e.g. storage migration,
+ * TTL-based cleanup, or a partial-success transcode that wrote the playlist but
+ * failed before uploading all segments).
  */
 async function probeHlsVariant(
   url: string,
@@ -256,6 +308,24 @@ async function probeHlsVariant(
         status: res.status,
         reason: "HLS variant playlist contains no #EXTINF segments",
       };
+    }
+    // Probe the first segment URI to catch the case where segments were deleted
+    // from storage after the playlist was written. The variant text check above
+    // only confirms the playlist is well-formed; the segments themselves may be
+    // 404 (storage migration, TTL cleanup, partial-success transcode).
+    // Only definitive 404 is treated as failure to avoid false positives from
+    // CDN transients. The segment URL inherits the variant URL's internal token
+    // via relative-URL resolution against the already-tokenised variant URL.
+    const firstSegUrl = extractFirstSegmentUrl(text, url);
+    if (firstSegUrl) {
+      const segResult = await probeFirstSegment(withHlsToken(firstSegUrl), intHeaders);
+      if (!segResult.ok) {
+        return {
+          ok: false,
+          status: segResult.status,
+          reason: `HLS segment unreachable: ${segResult.reason ?? `HTTP ${segResult.status}`}`,
+        };
+      }
     }
     return { ok: true, status: res.status };
   } catch (err) {

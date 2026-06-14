@@ -25,7 +25,7 @@ import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { eq, and, isNull, isNotNull, sql, inArray, or } from "drizzle-orm";
-import { enqueueTranscode, boostTranscodePriority } from "../../transcoder/transcoder.queue.js";
+import { enqueueTranscode, boostTranscodePriority, retryAllFailed } from "../../transcoder/transcoder.queue.js";
 import { probeUploadedDuration } from "../../transcoder/transcoder.service.js";
 import { transcoderDispatcher } from "../../transcoder/transcoder.dispatcher.js";
 import { logger } from "../../../infrastructure/logger.js";
@@ -1239,6 +1239,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
             overrideStopped: z.boolean(),
             libraryScanned: z.number().int(),
             libraryEnqueued: z.number().int(),
+            retriedFailed: z.number().int(),
             hlsTriggered: z.number().int(),
             orchestratorReloaded: z.boolean(),
             currentItemCount: z.number().int(),
@@ -1457,6 +1458,21 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 8 (override stop) failed (non-fatal)");
       }
 
+      // ── Phase 8.5: Retry recoverable failed transcoding jobs ──────────────
+      // Re-arms transcoding_jobs rows where status='failed' and the source
+      // blob is still present. Pairs with Phase 10 (autoEnqueueMissingHls)
+      // which handles items with no HLS but no existing job entry.
+      let retriedFailed = 0;
+      try {
+        retriedFailed = await retryAllFailed();
+        if (retriedFailed > 0) {
+          transcoderDispatcher.nudge();
+          req.log.info({ retriedFailed }, "[broadcast-v2] repair-queue: Phase 8.5 — re-armed failed transcoding jobs");
+        }
+      } catch (err) {
+        req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 8.5 (retry failed jobs) failed (non-fatal)");
+      }
+
       // ── Phase 9: Library scan — enqueue eligible videos ───────────────────
       let libraryScanned = 0;
       let libraryEnqueued = 0;
@@ -1542,6 +1558,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         overrideStopped,
         libraryScanned,
         libraryEnqueued,
+        retriedFailed,
         hlsTriggered,
         orchestratorReloaded,
         currentItemCount: finalItemCount,

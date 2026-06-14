@@ -2397,6 +2397,7 @@ function BroadcastV2PageInner() {
         overrideStopped: boolean;
         libraryScanned: number;
         libraryEnqueued: number;
+        retriedFailed: number;
         hlsTriggered: number;
         orchestratorReloaded: boolean;
         currentItemCount: number;
@@ -2416,6 +2417,8 @@ function BroadcastV2PageInner() {
       const detail = [
         fixCount > 0 && `${fixCount} URL${fixCount !== 1 ? "s" : ""} fixed`,
         result.libraryEnqueued > 0 && `${result.libraryEnqueued} enqueued`,
+        result.retriedFailed > 0 && `${result.retriedFailed} transcode job${result.retriedFailed !== 1 ? "s" : ""} retried`,
+        result.hlsTriggered > 0 && `${result.hlsTriggered} HLS job${result.hlsTriggered !== 1 ? "s" : ""} triggered`,
         result.itemsReEnabled > 0 && `${result.itemsReEnabled} re-enabled`,
         result.orphansDeactivated > 0 && `${result.orphansDeactivated} orphans removed`,
       ]

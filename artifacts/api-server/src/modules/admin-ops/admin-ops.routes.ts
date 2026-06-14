@@ -46,6 +46,7 @@ import { uploadSessions } from "../media-uploads/upload-sessions.js";
 import { cache } from "../../infrastructure/cache.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { broadcastOrchestrator } from "../broadcast-v2/engine/broadcast-orchestrator.js";
+import { clearAllBadUrls, reEnableAllSuspended } from "../broadcast-v2/repository/queue.repo.js";
 import { adminEventBus } from "./admin-event-bus.js";
 import { verifyAccessToken } from "../auth/jwt.js";
 import { requireRole } from "../auth/rbac.js";
@@ -2266,13 +2267,15 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
-        summary: "One-click full pipeline repair: retry failed + reset orphans + enqueue missing",
+        summary: "One-click full pipeline repair: retry failed + reset orphans + enqueue missing + clear broadcast blocks",
         response: {
           200: z.object({
             ok: z.literal(true),
             retriedFailed: z.number(),
             resetOrphaned: z.number(),
             enqueuedMissing: z.number(),
+            reEnabledItems: z.number(),
+            badUrlCacheCleared: z.boolean(),
           }),
           429: z.object({ error: z.string() }),
         },
@@ -2329,17 +2332,38 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         transcoderDispatcher.nudge();
       }
 
-      // Step 5: Push SSE events to refresh all admin UI panels
+      // Step 5: Clear the in-memory bad-URL cache so the orchestrator stops
+      // blocking items whose URLs were temporarily blacklisted. Must run after
+      // the dispatcher nudge so transcoding jobs start before the orchestrator
+      // reloads and re-evaluates each item's source reachability.
+      clearAllBadUrls();
+
+      // Step 6: Re-enable any validator-deactivated broadcast queue items so
+      // videos that were auto-suspended return to rotation. This includes items
+      // deactivated for hls_storage_missing that have since been re-transcoded
+      // (the reverse pass in the validator re-activates them on the next cycle,
+      // but re-enabling here gives immediate relief without waiting).
+      const reEnabledItems = await reEnableAllSuspended();
+
+      // Step 7: Reload the orchestrator if anything changed so clients see the
+      // now-unblocked items within the current drift window rather than waiting
+      // up to 30 s for the next scheduled reload.
+      if (retriedFailed > 0 || resetOrphaned > 0 || reEnabledItems > 0 || enqueuedMissing > 0) {
+        void broadcastOrchestrator.reload().catch(() => {});
+      }
+
+      // Step 8: Push SSE events to refresh all admin UI panels
       adminEventBus.push("transcoding-update", {
         type: "repair-all",
         retriedFailed,
         resetOrphaned,
         enqueuedMissing,
+        reEnabledItems,
       });
       adminEventBus.push("videos-library-updated", { reason: "repair-all" });
       adminEventBus.push("broadcast-queue-updated", { reason: "repair-all" });
 
-      return { ok: true as const, retriedFailed, resetOrphaned, enqueuedMissing };
+      return { ok: true as const, retriedFailed, resetOrphaned, enqueuedMissing, reEnabledItems, badUrlCacheCleared: true };
     },
   );
 
