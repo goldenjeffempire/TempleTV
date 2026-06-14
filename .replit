@@ -35,7 +35,7 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "CI=true COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 NODE_OPTIONS='--max-old-space-size=1536' pnpm install --ignore-scripts --frozen-lockfile --filter '!@workspace/mobile' && NODE_ENV=production VITE_API_BASE_URL=https://api.templetv.org.ng PORT=5000 pnpm --filter @workspace/admin run dev"
+args = "CI=true COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 NODE_OPTIONS='--max-old-space-size=1536' pnpm install --ignore-scripts --frozen-lockfile --filter '!@workspace/mobile' && NODE_ENV=production PORT=5000 pnpm --filter @workspace/admin run dev"
 waitForPort = 5000
 
 [[workflows.workflow]]

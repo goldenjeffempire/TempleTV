@@ -23,7 +23,7 @@ import { logger } from "../../infrastructure/logger.js";
 // ── Wire types (mirrors lib/player-core/src/types.ts) ────────────────────────
 
 export interface MPV2Source {
-  kind: "hls" | "mp4";
+  kind: "hls" | "mp4" | "youtube";
   url: string;
   expiresAtMs: number | null;
 }
@@ -74,6 +74,7 @@ interface MPVideo {
   durationSecs: number;
   localVideoUrl: string | null;
   hlsMasterUrl: string | null;
+  youtubeId: string | null;
 }
 
 export interface MidnightPrayersConfigData {
@@ -298,6 +299,7 @@ class MidnightPrayersService {
           duration: schema.videosTable.duration,
           localVideoUrl: schema.videosTable.localVideoUrl,
           hlsMasterUrl: schema.videosTable.hlsMasterUrl,
+          youtubeId: schema.videosTable.youtubeId,
           faststartApplied: schema.videosTable.faststartApplied,
           transcodingStatus: schema.videosTable.transcodingStatus,
           videoSource: schema.videosTable.videoSource,
@@ -306,14 +308,16 @@ class MidnightPrayersService {
         .where(
           and(
             eq(schema.videosTable.category, CHANNEL_ID),
-            // Exclude YouTube-sourced videos
-            eq(schema.videosTable.videoSource, "local"),
-            // Only playable videos: needs an HLS manifest or a faststart MP4
+            // Playable videos: HLS manifest, faststart MP4, or YouTube video
             or(
               isNotNull(schema.videosTable.hlsMasterUrl),
               and(
                 isNotNull(schema.videosTable.localVideoUrl),
                 eq(schema.videosTable.faststartApplied, true),
+              ),
+              and(
+                isNotNull(schema.videosTable.youtubeId),
+                eq(schema.videosTable.videoSource, "youtube"),
               ),
             ),
           ),
@@ -329,6 +333,7 @@ class MidnightPrayersService {
           : DEFAULT_DURATION_SECS,
         localVideoUrl: absolutise(r.localVideoUrl ?? null),
         hlsMasterUrl:  absolutise(r.hlsMasterUrl  ?? null),
+        youtubeId: r.youtubeId ?? null,
       }));
 
       logger.debug("[midnight-prayers] queue refreshed — %d videos", this.videos.length);
@@ -488,8 +493,12 @@ class MidnightPrayersService {
         thumbnailUrl: v.thumbnailUrl,
         durationSecs: v.durationSecs,
         source: {
-          kind: v.hlsMasterUrl ? "hls" : "mp4",
-          url: (v.hlsMasterUrl ?? v.localVideoUrl)!,
+          kind: v.hlsMasterUrl ? "hls" : v.youtubeId ? "youtube" : "mp4",
+          url: v.hlsMasterUrl
+            ? v.hlsMasterUrl
+            : v.youtubeId
+              ? `https://www.youtube.com/embed/${v.youtubeId}?autoplay=1&rel=0`
+              : v.localVideoUrl!,
           expiresAtMs: null,
         },
         failoverSource: null,

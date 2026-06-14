@@ -47,12 +47,12 @@ async function repairZeroDurations(): Promise<number> {
   try {
     const result = await db.execute(
       sql`
-        UPDATE ${q}
-        SET ${q.durationSecs} = GREATEST(60, ROUND(${v.duration}::numeric))
+        UPDATE broadcast_queue
+        SET duration_secs = GREATEST(60, ROUND(${v.duration}::numeric))
         FROM ${v}
-        WHERE ${q.videoId} = ${v.id}
-          AND ${q.isActive} = true
-          AND ${q.durationSecs} = 0
+        WHERE broadcast_queue.video_id = ${v.id}
+          AND broadcast_queue.is_active = true
+          AND broadcast_queue.duration_secs = 0
           AND ${v.duration} IS NOT NULL
           AND ${v.duration} != '0'
           AND ${v.duration}::numeric > 0
