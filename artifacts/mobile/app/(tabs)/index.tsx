@@ -425,8 +425,13 @@ export default function WatchScreen() {
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
-      {/* Search toolbar — safe-area top + search icon only, no branding */}
+      {/* App header — logo left, search right */}
       <View style={[styles.searchToolbar, { paddingTop: insets.top, backgroundColor: c.background }]}>
+        <Image
+          source={require("@/assets/images/temple-tv-logo.png")}
+          style={styles.headerLogo}
+          resizeMode="contain"
+        />
         <Pressable
           onPress={() => router.push("/search")}
           accessibilityLabel="Search"
@@ -541,11 +546,17 @@ export default function WatchScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
 
-  // ── Search toolbar (safe-area spacer + search icon) ──────────────────────────
+  // ── App header (logo left, search right) ─────────────────────────────────────
   searchToolbar: {
     paddingHorizontal: 20,
-    paddingBottom: 8,
-    alignItems: "flex-end",
+    paddingBottom: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  headerLogo: {
+    width: 110,
+    height: 38,
   },
 
   // ── OMEGA emergency banner ───────────────────────────────────────────────────
