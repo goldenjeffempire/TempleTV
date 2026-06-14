@@ -10,6 +10,20 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## v1.0.26 — 2026-06-14
+
+### Release Name
+Header-free player experience
+
+### Fixed (Mobile)
+- **Dark "Temple TV" navigation bar removed** (all screens): The Expo Router Stack header was rendering a dark bar with the app name above the video player and other screens on Android. Root cause: `headerShown: false` suppresses the header layout but React Navigation on Android can still briefly paint the bar on navigation. Fix: added `header: () => null` (replaces the renderer entirely) alongside `headerShown: false` and `title: ""` to the root Stack `screenOptions` and every individual `Stack.Screen` entry in `_layout.tsx`, the Tabs navigator `screenOptions` in `(tabs)/_layout.tsx`, and all inline `<Stack.Screen>` declarations across every screen (channels, index, library, radio, settings, player, login, signup, account, donate, change-password, link, favorites, history, series, search, playlists, contact, not-found).
+- **Removed dead `AppHeader` component**: `components/AppHeader.tsx` was defined but never imported anywhere in the app. Deleted to keep the codebase clean.
+
+### Changed
+- **Version bump**: Android `versionCode` 73 → 74. Targets v1.0.26 release candidate.
+
+---
+
 ## v1.0.24 — 2026-06-13
 
 ### Release Name
