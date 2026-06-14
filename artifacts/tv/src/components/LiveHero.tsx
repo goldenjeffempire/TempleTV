@@ -52,7 +52,6 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
     : null;
 
   const broadcastItem = broadcastCurrent?.item ?? null;
-  const hasBroadcast = !isLive && broadcastItem !== null;
   // A scheduled live service is starting soon — surfaced in the off-air
   // hero copy so viewers know what's coming. The unified live SSE flips
   // `isLive` true the moment the stream goes hot, at which point this
@@ -99,13 +98,24 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
   // bad URL on item N doesn't prevent item N+1 from loading.
   const [broadcastVideoFailed, setBroadcastVideoFailed] = useState(false);
   const broadcastItemId = broadcastItem?.id ?? null;
-  // The v2 player is self-contained: it resolves its own source via the
-  // broadcast-v2 API and doesn't require the hero-level item to carry
-  // hlsMasterUrl / localVideoUrl. Guarding on those fields was causing the
-  // player to never mount when the BroadcastItem (from /api/playback/state)
-  // didn't include those optional fields — resulting in a permanent black
-  // hero. Now we only require a broadcast item to be present (hasBroadcast).
-  const showLiveBroadcast = hasBroadcast && !broadcastVideoFailed;
+  // The v2 player is fully self-contained: it connects directly to the
+  // broadcast-v2 engine via WebSocket/SSE and handles ALL states internally —
+  // queue playback, YouTube override, shuffle-fallback, FATAL recovery, and
+  // the off-air "Temple TV is currently off-air" overlay.
+  //
+  // We no longer gate on `broadcastItem !== null` (hasBroadcast) because:
+  //   1. When the broadcast engine is in override mode (e.g. YouTube shuffle
+  //      fallback active after an empty queue), `broadcastItem` from the
+  //      legacy /api/playback/state endpoint is null — even though the
+  //      engine IS running and serving content. Gating on it caused the
+  //      player to never mount, producing a permanent black hero.
+  //   2. The v2 component owns its own "off-air" overlay for the truly-
+  //      empty case, so a no-content guard here is redundant and harmful.
+  //
+  // Gate only on `!isLive` (no YouTube LIVE NOW active) and `!broadcastVideoFailed`
+  // (kept for future onFatal wiring, currently always false since no onFatal
+  // prop is passed to LiveBroadcastV2 in this hero context).
+  const showLiveBroadcast = !isLive && !broadcastVideoFailed;
 
   useEffect(() => {
     const id = requestAnimationFrame(() => setMounted(true));
@@ -451,9 +461,16 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
               </div>
             </div>
           </>
-        ) : hasBroadcast ? (
+        ) : !isLive ? (
           <>
-            {/* ── State 2: 24/7 Broadcast On Air ── */}
+            {/* ── State 2: 24/7 Broadcast On Air ──
+                Shown whenever there is no YouTube LIVE NOW stream active.
+                The broadcast engine may be playing queue items, running a
+                YouTube shuffle-fallback override, or showing its own "off
+                air" overlay — LiveBroadcastV2 handles all those internally.
+                We use `!isLive` (not `hasBroadcast`) so this panel always
+                appears when the engine is active, even when `broadcastItem`
+                is null (override/shuffle-fallback mode with empty local queue). */}
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <div
                 className="flex items-center gap-2 rounded-full"

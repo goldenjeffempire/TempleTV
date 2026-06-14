@@ -198,6 +198,14 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
           // the exact moment currently airing rather than the cached position.
           // isLive=true → no scrubber, no SPACE/pause hint, no manual controls.
           onPlay(id, "Temple TV", hlsUrl, computeLiveBroadcastPosition(), true);
+        } else {
+          // Broadcast engine is active but in override/shuffle-fallback mode
+          // (no queue item in the legacy API snapshot).  LiveBroadcastHlsPlayer
+          // uses LiveBroadcastV2 which connects directly to broadcast-v2 and is
+          // fully self-contained — it doesn't need a specific videoId or hlsUrl.
+          // Pass a sentinel hlsUrl ("broadcast-v2") so Player.tsx routes to
+          // LiveBroadcastHlsPlayer (the `if (hlsUrl && isLive)` branch).
+          onPlay("broadcast-v2", "Temple TV", "broadcast-v2", 0, true);
         }
         return;
       }
