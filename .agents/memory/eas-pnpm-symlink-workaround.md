@@ -78,15 +78,39 @@ CI=true COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 NODE_OPTIONS='--max-
 
 Also requires `CI=true` to suppress the "no TTY" abort when switching registries removes the existing modules dir.
 
+## Minimal symlink fix (faster alternative, works when pnpm store is pre-populated)
+
+Instead of the full pnpm install + bulk symlink procedure above, two targeted symlinks are enough when the pnpm virtual store already contains the packages:
+
+```bash
+CONFIG_PLUGINS_SRC="$(pwd)/node_modules/.pnpm/@expo+config-plugins@54.0.4/node_modules/@expo/config-plugins"
+
+# 1. Mobile local plugins (./plugins/*.js require '@expo/config-plugins')
+mkdir -p artifacts/mobile/node_modules/@expo
+ln -sf "$CONFIG_PLUGINS_SRC" artifacts/mobile/node_modules/@expo/config-plugins
+
+# 2. @sentry/react-native pnpm virtual package (its plugin also requires it)
+SENTRY_PKG="$(ls -d node_modules/.pnpm/@sentry+react-native@*/node_modules/@sentry/react-native 2>/dev/null | head -1)"
+mkdir -p "$SENTRY_PKG/node_modules/@expo"
+ln -sf "$CONFIG_PLUGINS_SRC" "$SENTRY_PKG/node_modules/@expo/config-plugins"
+
+# Then run the build
+cd artifacts/mobile && GIT_INDEX_FILE=/tmp/eas-build-index \
+  EXPO_TOKEN="$EXPO_ACCESS_TOKEN" \
+  eas build --platform android --profile production-android --non-interactive --no-wait
+```
+
+The full install procedure is still needed when node_modules/.pnpm is empty (fresh Replit environment).
+
 ## Build History
 
 | Version  | versionCode | EAS Build ID                                 | Date       |
 |----------|-------------|----------------------------------------------|------------|
+| v1.0.25  | 73          | 11ff9e87-f2c7-4f38-a5f7-9f08e5690296         | 2026-06-14 |
+| v1.0.24  | 71          | b76ea257-20ae-4404-ba33-d60b0a55ce84         | 2026-06-13 |
 | v1.0.23  | 69          | 0f32b4d4-b561-4543-a9eb-e97c035e2d5b         | 2026-06-13 |
 | v1.0.22  | 68          | 123b1492-3812-4113-a0f4-436db03f39ec         | 2026-06-13 |
 | v1.0.21  | 66          | 433dd53a-b767-418a-9d52-837bbfe7697c         | 2026-06-12 |
 | v1.0.20  | 64          | 08228548-183c-45d4-9572-92c93e7e9649         | 2026-06-12 |
 | v1.0.19  | 59          | af9a8fc5-de4c-40ba-a1a0-db6736366b92         | 2026-06-10 |
 | v1.0.18  | 58          | abccb181-a324-4c03-bef6-4b51ec10e8e0         | 2026-06-09 |
-| v1.0.17  | 57          | (previous session)                            | 2026-06-09 |
-| v1.0.16  | 55          | 68bb1351-ecb7-4923-a39f-a6c8d0e06f73         | prior      |

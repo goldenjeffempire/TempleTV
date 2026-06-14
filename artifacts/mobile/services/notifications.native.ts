@@ -335,6 +335,27 @@ export async function cancelAllNotifications(): Promise<void> {
  * After a successful revocation the token is removed from local storage so
  * a fresh sign-in re-registers a clean token.
  */
+/**
+ * Retry push token server registration for any token that was successfully
+ * obtained from EAS but whose server registration failed (e.g. due to a
+ * network error on first launch). Call this on every app foreground so that
+ * devices that came online after the initial grant eventually register without
+ * requiring the user to re-open Settings.
+ */
+export async function retryPendingPushToken(): Promise<void> {
+  if (Platform.OS === "web") return;
+  const N = getNotifications();
+  if (!N) return;
+  try {
+    const pendingToken = await AsyncStorage.getItem(PUSH_TOKEN_PENDING_KEY);
+    if (pendingToken) {
+      await registerTokenWithServer(pendingToken);
+    }
+  } catch {
+    // Non-critical — will retry on next foreground
+  }
+}
+
 export async function unregisterCurrentPushToken(): Promise<void> {
   try {
     const token = await AsyncStorage.getItem(PUSH_TOKEN_KEY);

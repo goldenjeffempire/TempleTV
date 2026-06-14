@@ -22,6 +22,7 @@ import React, {
   useState,
 } from "react";
 import { AppState, AppStateStatus, Linking, Platform } from "react-native";
+import { retryPendingPushToken } from "@/services/notifications";
 import Constants from "expo-constants";
 import {
   type VersionCheckResult,
@@ -181,6 +182,10 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         // called first (e.g. after tapping an app_update push notification),
         // in which case it fires immediately on foreground.
         void runVersionCheck();
+        // Retry server-side push token registration for any token that was
+        // obtained from EAS but failed to reach the server (e.g. first launch
+        // with no network). The call is a fast no-op when no pending token exists.
+        void retryPendingPushToken();
       }
     });
 
