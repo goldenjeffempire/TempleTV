@@ -6,7 +6,8 @@ import { env } from "../../../config/env.js";
  * hosts. Add CDN/origin hosts here when onboarding new providers.
  */
 const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
-  // AWS / CloudFront CDN
+  // External video hosting — AWS S3 / CloudFront (source-side only; not used
+  // for Temple TV's own storage or delivery — those use the production DB)
   ".cloudfront.net",
   ".amazonaws.com",
   // Render.com hosting — covers the default *.onrender.com service URLs

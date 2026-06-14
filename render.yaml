@@ -360,6 +360,25 @@ services:
       - key: QUEUE_MIN_ITEMS
         value: "5"
 
+      # ── Dead-air prevention ────────────────────────────────────────────────
+      # BROADCAST_DEADAIR_FALLBACK_URL — HLS/RTMP stream URL applied as a
+      # broadcast override when the queue has been completely blocked for
+      # BROADCAST_DEADAIR_FALLBACK_AFTER_MS (default 5 min). Set this to a
+      # looping "Be right back" HLS stream so viewers never see a blank screen.
+      # Auto-clears the moment the queue recovers playable local content.
+      # The YouTube catalog shuffle fallback (enabled by default) also prevents
+      # dead air — BROADCAST_DEADAIR_FALLBACK_URL adds a second layer of
+      # protection if you want to show branded placeholder content instead.
+      # Example: https://your-cdn.com/fallback/be-right-back.m3u8
+      - key: BROADCAST_DEADAIR_FALLBACK_URL
+        sync: false
+
+      # BROADCAST_DEADAIR_FALLBACK_AFTER_MS — how long (ms) the engine waits
+      # with all sources blocked before applying the fallback. Default: 300000
+      # (5 minutes). Lower to 60000 for faster dead-air recovery.
+      - key: BROADCAST_DEADAIR_FALLBACK_AFTER_MS
+        sync: false
+
       # STORAGE_HEALTH_INTERVAL_MS: how often the storage health monitor probes
       # object storage with a write/head/delete cycle. Default: 60000 (60 s).
       # Raised to 120 s on the free tier to halve storage probe I/O without

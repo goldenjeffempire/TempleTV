@@ -295,16 +295,9 @@ async function main() {
         "signature verification is disabled; spoofed syncs possible",
       );
     }
-    if (!env.CDN_BASE_URL) {
-      // Warning only — origin-direct HLS is functional but will saturate under
-      // high concurrent viewership. On single-instance free-tier deployments
-      // this is an expected trade-off; set CDN_BASE_URL when you add a CDN.
-      configWarnings.push(
-        "CDN_BASE_URL unset — all HLS segment requests hit origin directly; " +
-        "origin will saturate under concurrent viewership; set CDN_BASE_URL to " +
-        "a CloudFront/Cloudflare distribution to offload origin traffic",
-      );
-    }
+    // CDN_BASE_URL is intentionally optional on free-tier deployments.
+    // HLS_MAX_CONCURRENT already caps concurrent streams to protect origin.
+    // Log at INFO (not WARN/ERROR) — no CDN is the expected free-tier config.
     if (!env.HLS_TOKEN_SECRET) {
       configErrors.push(
         "HLS_TOKEN_SECRET unset — HLS streams use public fallback signing key; " +

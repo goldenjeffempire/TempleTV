@@ -145,12 +145,11 @@ export async function videoServeRoutes(app: FastifyInstance) {
   // edge layer and set CDN_BASE_URL=https://cdn.yourdomain.com to offload
   // that traffic and reduce latency for geographically distributed viewers.
   if (env.NODE_ENV === "production" && !env.CDN_BASE_URL) {
-    logger.error(
-      "video-serve: CDN_BASE_URL is not set in production. All HLS segment " +
-      "requests will hit this origin server directly — under concurrent viewership " +
-      "this exhausts origin bandwidth and memory (HLS_MAX_CONCURRENT buffers in RAM). " +
-      "Set CDN_BASE_URL to a CDN edge URL (e.g. https://cdn.templetv.org.ng) to offload " +
-      "segment traffic and protect origin from saturation.",
+    logger.info(
+      "video-serve: CDN_BASE_URL not set — HLS segments served from origin. " +
+      "This is expected on free-tier deployments; HLS_MAX_CONCURRENT already caps " +
+      "concurrent streams to protect origin. Set CDN_BASE_URL to a CDN edge URL " +
+      "when upgrading to a plan that supports higher concurrency.",
     );
   }
 

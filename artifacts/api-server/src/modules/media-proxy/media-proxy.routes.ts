@@ -36,8 +36,8 @@ import { logger } from "../../infrastructure/logger.js";
 const IS_PRODUCTION = env.NODE_ENV === "production";
 
 const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
-  ".cloudfront.net",
-  ".amazonaws.com",
+  ".cloudfront.net",   // external video sources only — not Temple TV's own delivery
+  ".amazonaws.com",    // external video sources only — not Temple TV's own delivery
   ".onrender.com",
   "youtube.com",
   "youtu.be",
