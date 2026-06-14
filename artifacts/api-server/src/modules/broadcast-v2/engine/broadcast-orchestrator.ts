@@ -1745,7 +1745,35 @@ class BroadcastOrchestrator extends EventEmitter {
    * time inside reloadInner() and its result is stored in CachedQueueItem.
    */
   private projectItem(item: CachedQueueItem, startsAtMs: number): V2Item | null {
-    if (item.primaryUrl && isKnownBadUrl(item.primaryUrl)) return null;
+    const primaryBad = !!(item.primaryUrl && isKnownBadUrl(item.primaryUrl));
+
+    if (primaryBad) {
+      // Primary URL is blocked in the bad-URL cache (e.g. HLS not yet available,
+      // or a transient fetch failure). Promote the failoverSource (MP4) to primary
+      // so the item can air immediately while HLS transcoding is in progress.
+      // Once the bad-URL TTL expires (20 s → 3 min → 5 min) the orchestrator
+      // automatically retries the HLS URL on the next snapshot call.
+      const fo = item.failoverSource;
+      if (fo && !isKnownBadUrl(fo.url)) {
+        logger.debug(
+          { itemId: item.id, blockedUrl: item.primaryUrl, failoverKind: fo.kind },
+          "[broadcast-v2] projectItem: primary URL blocked — serving via failoverSource (MP4)",
+        );
+        return {
+          id: item.id,
+          title: item.title,
+          thumbnailUrl: item.thumbnailUrl,
+          durationSecs: item.durationSecs,
+          source: { kind: fo.kind, url: fo.url },
+          failoverSource: null, // already on the fallback path; no further failover
+          startsAtMs,
+          endsAtMs: startsAtMs + item.durationSecs * 1000,
+        };
+      }
+      // Primary is bad AND no usable failoverSource → skip this slot.
+      return null;
+    }
+
     return {
       id: item.id,
       title: item.title,

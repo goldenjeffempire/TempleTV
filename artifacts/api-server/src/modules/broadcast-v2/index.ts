@@ -334,22 +334,26 @@ function startSupervisedWorkers(): void {
     onCircuitOpen: makeCircuitOpenCallback("content-rotation"),
   });
 
-  // Queue Health Guard: proactively detects when the active queue count falls
-  // below QUEUE_MIN_ITEMS (default 5) and auto-rebuilds from the library.
-  // Complements the orchestrator's own empty-queue self-heal — fires while
-  // content is still playing so there is always a buffer before dead air.
-  // Initial delay matches the queue-integrity-validator so both run after the
-  // first validator pass (which may deactivate invalid items, reducing count).
-  if (env.QUEUE_MIN_ITEMS > 0) {
-    workerSupervisor.spawn({
-      name: "queue-health-guard",
-      fn: () => queueHealthGuard.scan(),
-      intervalMs: 5 * 60_000,
-      initialDelayMs: 2 * 60_000,
-      backoffMs: [30_000, 60_000, 3 * 60_000],
-      onCircuitOpen: makeCircuitOpenCallback("queue-health-guard"),
-    });
-  }
+  // Queue Reconciliation Guard: continuous full-library reconciliation that
+  // ensures every eligible video is in the active broadcast queue.  Also
+  // repairs zero-duration items and re-enables system-deactivated rows.
+  //
+  // Runs unconditionally (not gated on QUEUE_MIN_ITEMS > 0) because the
+  // reconciliation is needed regardless of the minimum-threshold setting —
+  // its primary purpose is ensuring all eligible videos enter rotation, not
+  // just filling up to a threshold.
+  //
+  // Initial delay: 90 s — lets the DB pool warm, the integrity validator
+  // run its first pass (which may deactivate invalid items), and the
+  // orchestrator complete its first reload before we scan the full library.
+  workerSupervisor.spawn({
+    name: "queue-health-guard",
+    fn: () => queueHealthGuard.scan(),
+    intervalMs: 3 * 60_000,
+    initialDelayMs: 90_000,
+    backoffMs: [30_000, 60_000, 3 * 60_000],
+    onCircuitOpen: makeCircuitOpenCallback("queue-health-guard"),
+  });
 
   logger.info("[broadcast-v2] supervised workers registered");
 }
