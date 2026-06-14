@@ -1,80 +1,48 @@
 import React from "react";
-import { Image, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { Image, type StyleProp, type ViewStyle } from "react-native";
 
 /**
- * Temple TV brand wordmark — bird icon + "Temple" + ".tv" in brand red.
+ * Temple TV official logo image component.
  *
- * Used on auth screens (dark bg, white text by default) and the settings footer.
- * Pass `textColor` to match the host surface; ".tv" is always brand red (#E8002C).
+ * Renders the full Temple TV logo PNG (dove + wordmark) at the requested size.
+ * The image is transparent-background so it works on any surface.
  *
- * Size presets drive the icon and font size proportionally:
- *   sm → 20px icon / 14px text
- *   md → 28px icon / 20px text
- *   lg → 36px icon / 26px text  (used on auth screens)
- *   hero → 48px icon / 36px text
+ * Size presets (height in px — width scales automatically via aspectRatio):
+ *   sm   → 28 px tall  (settings footer, compact spots)
+ *   md   → 40 px tall  (auth sub-headers, cards)
+ *   lg   → 56 px tall  (auth main header)
+ *   hero → 80 px tall  (splash / onboarding)
  */
 
 type LogoSize = "sm" | "md" | "lg" | "hero";
 
-const CONFIG: Record<LogoSize, { birdSize: number; fontSize: number }> = {
-  sm:   { birdSize: 20, fontSize: 14 },
-  md:   { birdSize: 28, fontSize: 20 },
-  lg:   { birdSize: 36, fontSize: 26 },
-  hero: { birdSize: 48, fontSize: 36 },
+const HEIGHT: Record<LogoSize, number> = {
+  sm:   28,
+  md:   40,
+  lg:   56,
+  hero: 80,
 };
-
-const BRAND_RED = "#E8002C";
 
 interface LogoProps {
   size?: LogoSize;
-  textColor?: string;
   decorative?: boolean;
   style?: StyleProp<ViewStyle>;
 }
 
 export function Logo({
   size = "md",
-  textColor = "#ffffff",
   decorative = false,
   style,
 }: LogoProps) {
-  const { birdSize, fontSize } = CONFIG[size];
+  const height = HEIGHT[size];
 
   return (
-    <View
-      style={[{ flexDirection: "row", alignItems: "center", gap: 6 }, style]}
+    <Image
+      source={require("@/assets/images/temple-tv-logo-full.png")}
+      style={[{ height, width: height * 2.8 }, style]}
+      resizeMode="contain"
       accessible={!decorative}
-      accessibilityRole={decorative ? undefined : "image"}
       accessibilityLabel={decorative ? undefined : "Temple TV"}
-    >
-      <Image
-        source={require("@/assets/images/adaptive-icon-foreground.png")}
-        style={{ width: birdSize, height: birdSize, tintColor: textColor }}
-        resizeMode="contain"
-        accessibilityElementsHidden
-      />
-      <View style={{ flexDirection: "row", alignItems: "baseline" }}>
-        <Text
-          style={{
-            fontSize,
-            fontWeight: "700",
-            letterSpacing: -0.5,
-            color: textColor,
-          }}
-        >
-          Temple
-        </Text>
-        <Text
-          style={{
-            fontSize,
-            fontWeight: "700",
-            letterSpacing: -0.5,
-            color: BRAND_RED,
-          }}
-        >
-          .tv
-        </Text>
-      </View>
-    </View>
+    />
   );
 }

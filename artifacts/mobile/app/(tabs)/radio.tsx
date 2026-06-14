@@ -25,6 +25,7 @@ import { SymbolView } from "expo-symbols";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import { useColors } from "@/hooks/useColors";
+import { ScreenHeader } from "@/components/ScreenHeader";
 
 const ND = Platform.OS !== "web";
 
@@ -63,8 +64,9 @@ export default function RadioScreen() {
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
+      <ScreenHeader title="Radio" />
 
-      <View style={[styles.body, { paddingTop: insets.top, paddingBottom: insets.bottom + 40 }]}>
+      <View style={[styles.body, { paddingBottom: insets.bottom + 40 }]}>
         <Animated.View style={[styles.card, { opacity: fadeAnim }]}>
 
           {/* Icon */}

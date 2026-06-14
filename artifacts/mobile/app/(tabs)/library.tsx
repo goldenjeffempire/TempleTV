@@ -25,6 +25,7 @@ import { Feather } from "@expo/vector-icons";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
+import { ScreenHeader } from "@/components/ScreenHeader";
 import { usePaginatedVideos } from "@/hooks/useVideos";
 import { SermonCard } from "@/components/SermonCard";
 import { getApiBase } from "@/lib/apiBase";
@@ -712,10 +713,11 @@ export default function LibraryScreen() {
 
   return (
     <KeyboardAvoidingView
-      style={[styles.container, { backgroundColor: c.background, paddingTop: insets.top }]}
+      style={[styles.container, { backgroundColor: c.background }]}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
+      <ScreenHeader title="Library" />
 
       {/* Stale / refresh-fail indicator — only shown in videos mode, only when online
           (NetworkBanner already covers the offline case at the root). */}

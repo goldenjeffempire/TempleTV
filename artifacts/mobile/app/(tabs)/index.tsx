@@ -46,6 +46,7 @@ import { getApiBase } from "@/lib/apiBase";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import { usePlayer } from "@/context/PlayerContext";
 import { useBroadcastSync } from "@/hooks/useBroadcastSync";
+import { ScreenHeader } from "@/components/ScreenHeader";
 import type { Sermon, SermonCategory } from "@/types";
 
 const CATEGORY_ROWS: SermonCategory[] = [
@@ -425,6 +426,7 @@ export default function WatchScreen() {
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
+      <ScreenHeader title="Watch" />
 
       {/* Stale cache banner — three states:
           1. isStale + refreshing:  "Showing cached content — refreshing…"
@@ -434,7 +436,6 @@ export default function WatchScreen() {
         <View style={[
           styles.staleBanner,
           refreshFailed && styles.staleBannerFailed,
-          { marginTop: insets.top + 6 },
         ]}>
           <Feather
             name={refreshFailed ? "wifi-off" : "clock"}

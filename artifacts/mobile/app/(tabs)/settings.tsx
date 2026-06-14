@@ -21,6 +21,7 @@ import {
 import { Feather } from "@expo/vector-icons";
 import { router, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ScreenHeader } from "@/components/ScreenHeader";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
@@ -251,9 +252,10 @@ export default function SettingsScreen() {
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
+      <ScreenHeader title="Settings" />
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ paddingTop: insets.top, paddingBottom: insets.bottom + 100 }}
+        contentContainerStyle={{ paddingTop: 8, paddingBottom: insets.bottom + 100 }}
         showsVerticalScrollIndicator={false}
       >
 
@@ -629,7 +631,7 @@ export default function SettingsScreen() {
 
       {/* App info */}
       <View style={styles.appInfo}>
-        <Logo textColor={c.foreground} />
+        <Logo />
         <Text style={[styles.appVersion, { color: c.mutedForeground }]}>
           v{APP_VERSION}
         </Text>

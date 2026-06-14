@@ -20,6 +20,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { router, Stack, useFocusEffect } from "expo-router";
 import { useColors } from "@/hooks/useColors";
+import { ScreenHeader } from "@/components/ScreenHeader";
 import { getApiBase } from "@/lib/apiBase";
 import { fetchChannels, type ApiChannel } from "@/services/api";
 import type { SermonCategory } from "@/types";
@@ -552,8 +553,9 @@ export default function ChannelsTab() {
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
+      <ScreenHeader title="Channel" />
 
       <ScrollView
         showsVerticalScrollIndicator={false}
