@@ -5,7 +5,8 @@
       "namespace": "android_app",
       "package_name": "com.templetv.jctm",
       "sha256_cert_fingerprints": [
-        "REPLACE_WITH_GOOGLE_PLAY_APP_SIGNING_SHA256_FINGERPRINT"
+        "6A:F3:4B:41:00:20:7A:0F:42:57:FC:B6:79:F2:E8:34:39:98:00:2C:79:AD:88:75:68:A4:77:DE:91:40:BA:B3",
+        "E5:AF:AD:EB:60:28:31:E2:43:A9:26:C2:CB:F3:0F:71:0F:C8:96:CB:4A:3C:33:2B:27:37:C9:1B:E5:6A:2A:EE"
       ]
     }
   }
