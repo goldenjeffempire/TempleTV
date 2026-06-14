@@ -80,7 +80,7 @@ export default function ResetPasswordScreen() {
         >
           <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
             <View style={styles.logoWrap}>
-              <Logo style={styles.logo} />
+              <Logo size="lg" />
             </View>
 
             {done ? (
@@ -184,7 +184,6 @@ const styles = StyleSheet.create({
   scroll: { flexGrow: 1, paddingHorizontal: 28 },
   content: { flex: 1 },
   logoWrap: { alignItems: "center", marginTop: 60, marginBottom: 28 },
-  logo: { width: 120, height: 52 },
   iconCircle: {
     width: 64, height: 64, borderRadius: 32,
     backgroundColor: "rgba(34,197,94,0.12)",

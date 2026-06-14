@@ -255,7 +255,7 @@ export default function LoginScreen() {
             ]}
           >
             <View style={styles.logoWrap}>
-              <Logo style={styles.logo} />
+              <Logo size="lg" style={{ marginBottom: 20 }} />
               <View style={styles.dividerLine} />
             </View>
 
@@ -451,7 +451,6 @@ const styles = StyleSheet.create({
   },
   content: { flex: 1 },
   logoWrap: { alignItems: "center", marginTop: 52, marginBottom: 32 },
-  logo: { width: 130, height: 56, marginBottom: 20 },
   dividerLine: {
     width: 48,
     height: 2,

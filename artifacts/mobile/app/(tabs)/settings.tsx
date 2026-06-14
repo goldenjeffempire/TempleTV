@@ -629,7 +629,7 @@ export default function SettingsScreen() {
 
       {/* App info */}
       <View style={styles.appInfo}>
-        <Logo />
+        <Logo textColor={c.foreground} />
         <Text style={[styles.appVersion, { color: c.mutedForeground }]}>
           v{APP_VERSION}
         </Text>
