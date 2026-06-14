@@ -38,6 +38,15 @@ export const AddQueueItemSchema = z
     thumbnailUrl: z.string().max(2048).default(""),
     durationSecs: z.number().int().positive().max(60 * 60 * 12).default(1800),
     localVideoUrl: z.string().max(2048).nullable().optional(),
+    /**
+     * HLS master playlist URL. Stored on the queue row so the orchestrator's
+     * source resolver is self-contained — no managed_videos join required for
+     * initial source lookup. Populated immediately when the video already has
+     * HLS at enqueue time (e.g. repair-all or library-scan after transcoding);
+     * written by transcoder.dispatcher.ts UPDATE when transcoding completes for
+     * videos that were enrolled in the queue early as MP4-only.
+     */
+    hlsMasterUrl: z.string().max(2048).nullable().optional(),
     videoSource: z.enum(["youtube", "local", "hls"]).default("youtube"),
     sortOrder: z.number().int().min(0).max(1_000_000).optional(),
   })

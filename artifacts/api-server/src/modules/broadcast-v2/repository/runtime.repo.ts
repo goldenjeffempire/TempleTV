@@ -139,4 +139,39 @@ export const runtimeRepo = {
       { count: number; lastFailedAtMs: number | null }
     >;
   },
+
+  /**
+   * Persist the current broadcast queue as a DB-backed snapshot so it survives
+   * process restarts even when the broadcast_queue table is temporarily
+   * unreachable. Primary DR source — eliminates the /tmp filesystem dependency.
+   * Non-throwing; callers fire-and-forget.
+   */
+  async saveQueueBackup(
+    channelId: string,
+    backup: { channelId: string; savedAt: number; items: unknown[] },
+  ): Promise<void> {
+    await db
+      .update(t)
+      .set({ queueBackup: backup as unknown as Record<string, unknown>, updatedAt: new Date() })
+      .where(eq(t.channelId, channelId));
+  },
+
+  /**
+   * Load the DB-backed queue snapshot. Returns null when no row exists, the
+   * column is NULL, the backup is empty, or the savedAt timestamp is older
+   * than 24 hours (pre-signed CDN URLs may have expired).
+   */
+  async loadQueueBackup(
+    channelId: string,
+  ): Promise<{ channelId: string; savedAt: number; items: unknown[] } | null> {
+    const [row] = await db
+      .select({ queueBackup: t.queueBackup })
+      .from(t)
+      .where(eq(t.channelId, channelId))
+      .limit(1);
+    if (!row?.queueBackup) return null;
+    const backup = row.queueBackup as unknown as { channelId: string; savedAt: number; items: unknown[] };
+    if (!Array.isArray(backup.items) || backup.items.length === 0) return null;
+    return backup;
+  },
 };

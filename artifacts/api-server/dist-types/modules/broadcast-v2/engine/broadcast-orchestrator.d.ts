@@ -358,15 +358,23 @@ declare class BroadcastOrchestrator extends EventEmitter {
     private rebuildItemOffsets;
     private static queueBackupPath;
     /**
-     * Persist the current in-memory queue to a local JSON file.
-     * Fire-and-forget — failures are logged but never thrown.
-     * Only writes when the queue is non-empty so a transient empty-queue poll
-     * never overwrites a valid backup with an empty array.
+     * Persist the current in-memory queue as a DB-backed snapshot (primary) and
+     * to a local JSON file (secondary). Fire-and-forget — failures are logged but
+     * never thrown. Only writes when the queue is non-empty so a transient
+     * empty-queue poll never overwrites a valid backup with an empty array.
+     *
+     * Priority on load: DB backup → filesystem backup → OFF_AIR.
+     * The DB backup eliminates the /tmp ephemeral filesystem dependency; the
+     * filesystem backup remains as a tertiary safety net for the rare case where
+     * both broadcast_queue AND broadcast_runtime_state are unreachable.
      */
     private saveQueueBackup;
     /**
-     * Load the last-known queue from the local filesystem backup.
-     * Returns null when the file is absent, malformed, or older than 24 hours.
+     * Load the last-known queue. Tries three sources in priority order:
+     *   1. DB-backed snapshot in broadcast_runtime_state.queue_backup
+     *   2. Local filesystem backup in BROADCAST_QUEUE_BACKUP_DIR (default /tmp)
+     *   3. null → orchestrator boots in OFF_AIR mode
+     * Returns null when all sources are absent, malformed, or older than 24 hours.
      * Never throws.
      */
     private loadQueueBackup;

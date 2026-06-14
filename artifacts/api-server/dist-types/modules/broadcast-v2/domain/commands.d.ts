@@ -2,8 +2,8 @@ import { z } from "zod/v4";
 export declare const EnqueueCommand: z.ZodObject<{
     videoId: z.ZodString;
     position: z.ZodDefault<z.ZodOptional<z.ZodEnum<{
-        end: "end";
         next: "next";
+        end: "end";
     }>>>;
     idempotencyKey: z.ZodString;
 }, z.core.$strip>;
@@ -18,8 +18,8 @@ export declare const SkipCommand: z.ZodObject<{
 export declare const StartOverrideCommand: z.ZodObject<{
     kind: z.ZodEnum<{
         youtube: "youtube";
-        rtmp: "rtmp";
         hls: "hls";
+        rtmp: "rtmp";
     }>;
     url: z.ZodString;
     title: z.ZodString;

@@ -1211,23 +1211,33 @@ class TranscoderDispatcher {
           })
           .where(eq(videos.id, job.videoId));
 
-        // Sync the real duration to any broadcast_queue rows that reference
-        // this video. The queue row is written at upload-finalize time with
-        // a 1800-second placeholder (before ffprobe runs); this corrects it
-        // so the orchestrator's cycle timing matches the actual video length.
-        if (result.durationSecs && result.durationSecs > 10) {
-          const roundedDuration = Math.round(result.durationSecs);
-          await db
-            .update(schema.broadcastQueueTable)
-            .set({ durationSecs: roundedDuration })
-            .where(eq(schema.broadcastQueueTable.videoId, job.videoId))
-            .catch((err) => {
-              logger.warn(
-                { err, videoId: job.videoId, durationSecs: roundedDuration },
-                "transcoder: broadcast_queue duration sync failed (non-fatal)",
-              );
-            });
-        }
+        // Sync the real duration and the HLS master URL to any broadcast_queue
+        // rows that reference this video.
+        //
+        // duration_secs: written at upload-finalize time as a 1800 s placeholder
+        // (before ffprobe runs); correcting it ensures the orchestrator's cycle
+        // timing matches the actual video length.
+        //
+        // hls_master_url: the queue row is inserted at upload-finalize time with
+        // only localVideoUrl set (MP4-first immediate enrollment). Once HLS
+        // transcoding completes, we stamp hls_master_url on the existing queue
+        // row so the orchestrator's source resolver immediately prefers HLS over
+        // the raw MP4 on the next reload — no re-enqueue needed.
+        await db
+          .update(schema.broadcastQueueTable)
+          .set({
+            hlsMasterUrl: result.masterPlaylistUrl,
+            ...(result.durationSecs && result.durationSecs > 10
+              ? { durationSecs: Math.round(result.durationSecs) }
+              : {}),
+          })
+          .where(eq(schema.broadcastQueueTable.videoId, job.videoId))
+          .catch((err: unknown) => {
+            logger.warn(
+              { err, videoId: job.videoId },
+              "transcoder: broadcast_queue hls_master_url + duration sync failed (non-fatal)",
+            );
+          });
 
         adminEventBus.push("transcoding-update", {
           videoId: job.videoId,

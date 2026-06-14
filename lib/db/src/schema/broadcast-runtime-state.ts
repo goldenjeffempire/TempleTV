@@ -25,6 +25,12 @@ export const broadcastRuntimeStateTable = pgTable(
     // dodge suspension by triggering a restart before hitting the threshold.
     // Shape: { [itemId]: { count: number; lastFailedAtMs: number | null } }
     scannerFailureCounts: jsonb("scanner_failure_counts"),
+    // DB-backed queue backup: a snapshot of the last known good queue items,
+    // persisted after every successful orchestrator reload. Used as a primary
+    // fallback when broadcast_queue is temporarily unreachable at boot (e.g.
+    // transient PG connection issue). Eliminates the /tmp filesystem dependency.
+    // Shape: { channelId: string; savedAt: number; items: CachedQueueItem[] }
+    queueBackup: jsonb("queue_backup"),
     // $onUpdateFn ensures the column is refreshed on every Drizzle-driven UPDATE,
     // not just on INSERT (defaultNow() only fires at INSERT time).
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdateFn(() => new Date()),

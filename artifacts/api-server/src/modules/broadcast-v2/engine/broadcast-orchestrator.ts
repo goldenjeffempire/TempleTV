@@ -1077,45 +1077,82 @@ class BroadcastOrchestrator extends EventEmitter {
   }
 
   /**
-   * Persist the current in-memory queue to a local JSON file.
-   * Fire-and-forget — failures are logged but never thrown.
-   * Only writes when the queue is non-empty so a transient empty-queue poll
-   * never overwrites a valid backup with an empty array.
+   * Persist the current in-memory queue as a DB-backed snapshot (primary) and
+   * to a local JSON file (secondary). Fire-and-forget — failures are logged but
+   * never thrown. Only writes when the queue is non-empty so a transient
+   * empty-queue poll never overwrites a valid backup with an empty array.
+   *
+   * Priority on load: DB backup → filesystem backup → OFF_AIR.
+   * The DB backup eliminates the /tmp ephemeral filesystem dependency; the
+   * filesystem backup remains as a tertiary safety net for the rare case where
+   * both broadcast_queue AND broadcast_runtime_state are unreachable.
    */
   private saveQueueBackup(): void {
     const items = this.items;
     if (items.length === 0) return;
+    const payload = { channelId: this.channelId, savedAt: Date.now(), items };
+
+    // Primary: DB-backed (survives /tmp eviction and container restarts)
+    void runtimeRepo.saveQueueBackup(this.channelId, payload).catch((err) => {
+      logger.debug({ err }, "[broadcast-v2] queue backup DB write failed (non-fatal)");
+    });
+
+    // Secondary: filesystem (last-resort when broadcast_runtime_state is also unreachable)
     const filePath = BroadcastOrchestrator.queueBackupPath(this.channelId);
-    const payload = JSON.stringify({ channelId: this.channelId, savedAt: Date.now(), items });
-    fs.writeFile(filePath, payload, "utf8", (err) => {
-      if (err) logger.debug({ err, filePath }, "[broadcast-v2] queue backup write failed (non-fatal)");
+    fs.writeFile(filePath, JSON.stringify(payload), "utf8", (err) => {
+      if (err) logger.debug({ err, filePath }, "[broadcast-v2] queue backup filesystem write failed (non-fatal)");
     });
   }
 
   /**
-   * Load the last-known queue from the local filesystem backup.
-   * Returns null when the file is absent, malformed, or older than 24 hours.
+   * Load the last-known queue. Tries three sources in priority order:
+   *   1. DB-backed snapshot in broadcast_runtime_state.queue_backup
+   *   2. Local filesystem backup in BROADCAST_QUEUE_BACKUP_DIR (default /tmp)
+   *   3. null → orchestrator boots in OFF_AIR mode
+   * Returns null when all sources are absent, malformed, or older than 24 hours.
    * Never throws.
    */
   private async loadQueueBackup(): Promise<CachedQueueItem[] | null> {
+    const STALE_MS = 24 * 60 * 60 * 1_000;
+
+    // ── Source 1: DB-backed backup (primary) ─────────────────────────────────
+    try {
+      const dbBackup = await runtimeRepo.loadQueueBackup(this.channelId);
+      if (dbBackup && Array.isArray(dbBackup.items) && dbBackup.items.length > 0) {
+        const ageMs = Date.now() - (dbBackup.savedAt ?? 0);
+        if (ageMs <= STALE_MS) {
+          logger.info(
+            { items: dbBackup.items.length, ageMin: Math.round(ageMs / 60_000) },
+            "[broadcast-v2] queue backup loaded from DB — broadcast_queue temporarily unavailable; resuming from snapshot (self-heal will refresh from DB)",
+          );
+          return dbBackup.items as CachedQueueItem[];
+        }
+        logger.warn(
+          { ageMin: Math.round(ageMs / 60_000) },
+          "[broadcast-v2] DB queue backup too stale (>24 h) — trying filesystem",
+        );
+      }
+    } catch (err) {
+      logger.debug({ err }, "[broadcast-v2] DB queue backup load failed — falling back to filesystem");
+    }
+
+    // ── Source 2: filesystem backup (secondary) ───────────────────────────────
     const filePath = BroadcastOrchestrator.queueBackupPath(this.channelId);
     try {
       const raw = fs.readFileSync(filePath, "utf8");
       const parsed = JSON.parse(raw) as { channelId: string; savedAt: number; items: CachedQueueItem[] };
       if (!Array.isArray(parsed.items) || parsed.items.length === 0) return null;
       const ageMs = Date.now() - (parsed.savedAt ?? 0);
-      // Reject backups older than 24 hours — pre-signed CDN URLs will have
-      // expired and locally-uploaded URLs may have been replaced by new paths.
-      if (ageMs > 24 * 60 * 60 * 1_000) {
+      if (ageMs > STALE_MS) {
         logger.warn(
           { ageMs: Math.round(ageMs / 60_000) + " min", filePath },
-          "[broadcast-v2] queue backup too stale (>24 h) — ignoring; booting OFF_AIR",
+          "[broadcast-v2] filesystem queue backup too stale (>24 h) — ignoring; booting OFF_AIR",
         );
         return null;
       }
       logger.info(
         { items: parsed.items.length, ageMin: Math.round(ageMs / 60_000), filePath },
-        "[broadcast-v2] queue backup loaded — DB unavailable at boot; resuming from cached items (self-heal will refresh from DB)",
+        "[broadcast-v2] queue backup loaded from filesystem — DB unavailable at boot; resuming from cached items (self-heal will refresh from DB)",
       );
       return parsed.items;
     } catch {

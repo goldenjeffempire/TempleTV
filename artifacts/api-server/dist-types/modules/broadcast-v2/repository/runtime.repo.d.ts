@@ -50,4 +50,25 @@ export declare const runtimeRepo: {
         count: number;
         lastFailedAtMs: number | null;
     }> | null>;
+    /**
+     * Persist the current broadcast queue as a DB-backed snapshot so it survives
+     * process restarts even when the broadcast_queue table is temporarily
+     * unreachable. Primary DR source — eliminates the /tmp filesystem dependency.
+     * Non-throwing; callers fire-and-forget.
+     */
+    saveQueueBackup(channelId: string, backup: {
+        channelId: string;
+        savedAt: number;
+        items: unknown[];
+    }): Promise<void>;
+    /**
+     * Load the DB-backed queue snapshot. Returns null when no row exists, the
+     * column is NULL, the backup is empty, or the savedAt timestamp is older
+     * than 24 hours (pre-signed CDN URLs may have expired).
+     */
+    loadQueueBackup(channelId: string): Promise<{
+        channelId: string;
+        savedAt: number;
+        items: unknown[];
+    } | null>;
 };

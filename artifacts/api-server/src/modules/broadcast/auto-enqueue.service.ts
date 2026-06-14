@@ -123,6 +123,11 @@ export async function enqueueIfMissing(opts: {
       thumbnailUrl: row.thumbnailUrl ?? "",
       durationSecs,
       localVideoUrl: row.localVideoUrl ?? null,
+      // Populate the queue row's hls_master_url immediately so the orchestrator
+      // source resolver uses HLS from the first load — no reload required.
+      // For MP4-only videos this is null; transcoder.dispatcher.ts UPDATEs it
+      // to the HLS URL when transcoding completes.
+      hlsMasterUrl: row.hlsMasterUrl ?? null,
       videoSource: row.videoSource as "youtube" | "local" | "hls",
     });
     logger.info(

@@ -27,6 +27,12 @@ export interface Cache {
 }
 export declare function cache(): Cache;
 /**
+ * Proactively sweep expired entries from the in-process cache.
+ * Called by the memory watchdog during RSS / heap-growth pressure events.
+ * Returns 0 when the backend is Redis (TTL managed server-side).
+ */
+export declare function purgeExpiredCacheEntries(): number;
+/**
  * Register a cache instance under a human-readable name.
  * Idempotent — registering the same name twice replaces the previous entry.
  */
