@@ -275,20 +275,33 @@ class QueueIntegrityValidatorImpl {
         }
 
         // UNPLAYABLE_CORRUPT_UPLOAD: video transcoding permanently failed AND
-        // the source file is known-unplayable: either an explicit error code
-        // (CORRUPT_SOURCE / SOURCE_MISSING / DISK_FULL) OR faststart was
-        // explicitly attempted and failed (faststartApplied === false).
-        // Without HLS there is no fallback stream.
-        // These items WILL cause repeated auto-skip cycles every tick — they must
-        // be deactivated immediately to stop burning skip budget. The auto-fix
-        // below handles the deactivation; the reverse pass re-activates them if
-        // HLS ever becomes available (e.g. via remote re-transcode).
+        // the source file is known-absent — no URL exists anywhere.
         //
-        // IMPORTANT: noFaststart must use === false, NOT the ! operator.
-        // faststartApplied is a nullable boolean: NULL means faststart was never
-        // attempted (video may still be playable as a raw MP4); false means
-        // faststart was explicitly run and failed (moov at EOF — unplayable).
-        // !null === true would incorrectly flag every never-processed video.
+        // Only two error codes indicate a truly absent/corrupt source:
+        //   CORRUPT_SOURCE  — moov atom is absent; the file cannot be decoded
+        //                     at all. Re-upload required.
+        //   SOURCE_MISSING  — storage blob was deleted; no bytes to serve.
+        //                     Re-upload required.
+        //
+        // These are the ONLY cases where we surface "error" severity and the
+        // auto-fix pass (below) deactivates the queue item. Without HLS there
+        // is genuinely no fallback; every orchestrator tick will auto-skip the
+        // item, burning the skip budget.
+        //
+        // NOT treated as errors (admitted to broadcast, shown as warnings):
+        //   DISK_FULL — transcoding failed due to disk space. The SOURCE FILE
+        //               still exists at localVideoUrl. Faststart-recovery runs
+        //               in the background; player + auto-skip handles failures.
+        //   faststartApplied=false — moov is at EOF but the file exists. The
+        //               faststart-recovery worker actively retries relocation.
+        //               Admitted to queue; player buffers or skips gracefully.
+        //   ASSEMBLY_FAILED — blob assembly interrupted (recoverable; operator
+        //               can retry finalization). Surfaced as a separate warn.
+        //
+        // IMPORTANT: noFaststart uses === false (NOT the ! operator).
+        // faststartApplied is a nullable boolean: NULL = never attempted (may
+        // still stream as a raw MP4); false = explicitly run and failed (moov
+        // at EOF). !null === true would flag every unprocessed video.
         if (
           row.videoId &&
           row.videoId2 !== null &&
@@ -301,7 +314,9 @@ class QueueIntegrityValidatorImpl {
           const isDiskFull = row.vErrCode === "DISK_FULL";
           const isAssemblyFailed = row.vErrCode === "ASSEMBLY_FAILED";
           const noFaststart = row.vFaststart === false;
-          if (isCorrupt || isSourceMissing || isDiskFull || noFaststart) {
+
+          // Truly absent source — item is unplayable and will be deactivated.
+          if (isCorrupt || isSourceMissing) {
             issues.push({
               severity: "error",
               itemId: row.id,
@@ -310,21 +325,48 @@ class QueueIntegrityValidatorImpl {
               message:
                 `Video '${row.videoId}' has transcodingStatus='failed' with ` +
                 (isCorrupt
-                  ? "CORRUPT_SOURCE error — moov atom absent; re-upload the source file"
-                  : isSourceMissing
-                  ? "SOURCE_MISSING error — source blob deleted from storage; re-upload the source file"
-                  : isDiskFull
-                  ? "DISK_FULL error — transcoding failed due to insufficient disk space; free disk space and use Retry to re-transcode"
-                  : "faststartApplied=false — moov at EOF, raw MP4 cannot be streamed; re-transcode or re-upload the source file") +
-                " and no HLS fallback. Item will skip every tick until deactivated.",
+                  ? "CORRUPT_SOURCE error — moov atom absent; file cannot be decoded. Re-upload the source file to restore."
+                  : "SOURCE_MISSING error — source blob deleted from storage. Re-upload the source file to restore.") +
+                " No HLS fallback. Item is deactivated from broadcast until re-uploaded.",
             });
           }
+
+          // Source file exists but moov may be at EOF — admitted to broadcast.
+          // Faststart-recovery worker retries moov relocation in background.
+          if (isDiskFull) {
+            issues.push({
+              severity: "warn",
+              itemId: row.id,
+              itemTitle: row.title,
+              code: "DISK_FULL_TRANSCODE_FAILED",
+              message:
+                `Video '${row.videoId}' has transcodingStatus='failed' with DISK_FULL error — ` +
+                "transcoding failed due to insufficient disk space. The source file is intact and the item " +
+                "is admitted to broadcast. Free disk space and use Retry to re-transcode, or run faststart " +
+                "to ensure progressive streaming.",
+            });
+          }
+
+          // Moov at EOF — file exists but range-streaming may stall.
+          // Admitted to broadcast; faststart-recovery worker actively retries.
+          if (noFaststart) {
+            issues.push({
+              severity: "warn",
+              itemId: row.id,
+              itemTitle: row.title,
+              code: "FASTSTART_FAILED_NO_HLS",
+              message:
+                `Video '${row.videoId}' has transcodingStatus='failed' and faststartApplied=false — ` +
+                "moov atom is at EOF, which may cause slow initial buffering on some clients. " +
+                "The item is admitted to broadcast and the faststart-recovery worker will retry " +
+                "moov relocation. Re-transcode via HLS to eliminate the issue permanently.",
+            });
+          }
+
           // ASSEMBLY_FAILED: blob assembly was interrupted mid-upload (DB lock,
           // disk pressure, watchdog timeout). Unlike CORRUPT_SOURCE this is
           // recoverable — the upload session was reset to 'uploading' so the
-          // operator can retry finalization from the upload panel. We surface it
-          // as a warning (not error) so operators see a re-upload prompt without
-          // the validator auto-deactivating the queue item (which would hide it).
+          // operator can retry finalization from the upload panel.
           if (isAssemblyFailed) {
             issues.push({
               severity: "warn",
@@ -739,32 +781,36 @@ class QueueIntegrityValidatorImpl {
         }
       }
 
-      // ── Auto-fix: deactivate UNPLAYABLE_CORRUPT_UPLOAD items ─────────────────
-      // Items whose video has permanently failed transcoding AND is known-
-      // unplayable (explicit error code OR faststartApplied === false) AND has
-      // no HLS are structurally unplayable — every orchestrator tick will
-      // auto-skip them, burning the 5-skip budget and eventually triggering
-      // dead-air filler.  Deactivating them stops the skip spiral and lets the
-      // validator surface a clear "re-upload required" message in diagnostics.
+      // ── Auto-fix: deactivate truly absent-source items (CORRUPT_SOURCE / SOURCE_MISSING) ──
+      // Items whose video has permanently failed transcoding AND the source file is
+      // truly absent/corrupt are structurally unplayable — every orchestrator tick will
+      // auto-skip them, burning the 5-skip budget. Deactivating stops the skip spiral
+      // and surfaces a clear "re-upload required" message in diagnostics.
       //
-      // IMPORTANT: use === false for the faststart guard, NOT the ! operator.
-      // faststartApplied is a nullable boolean — NULL means faststart was never
-      // attempted (video may still stream as a raw MP4); false means it was
-      // explicitly run and failed (moov at EOF).  !null === true would incorrectly
-      // deactivate every never-processed failed video.
+      // Only two conditions warrant deactivation (source truly absent):
+      //   CORRUPT_SOURCE — moov atom absent; file cannot be decoded at all.
+      //   SOURCE_MISSING — storage blob was deleted; no bytes to serve.
       //
-      // Reverse pass below re-activates when HLS becomes available or when
-      // faststart is later confirmed successful (e.g. after remote re-transcode).
+      // NOT deactivated (source file exists — admitted to broadcast):
+      //   DISK_FULL          — transcoding failed due to disk space; source intact.
+      //   faststartApplied=false — moov at EOF; file exists; faststart-recovery
+      //                        worker actively retries moov relocation.
+      //   ASSEMBLY_FAILED    — recoverable; operator can retry finalization.
+      //
+      // These non-deactivation cases are surfaced as warnings in the diagnostics
+      // issue list above. The faststart-recovery worker and the player watchdog +
+      // bad-URL cache + auto-skip handle them without operator action.
+      //
+      // Reverse pass below re-activates when HLS becomes available (re-transcode).
       const corruptUploadItemIds = rows
         .filter((r) => {
           if (!r.videoId || r.videoId2 === null) return false;
           if (r.qHlsUrl || r.vHlsUrl) return false; // HLS available — safe
           if (r.vStatus !== "failed") return false;  // still transcoding — leave active
+          // Only deactivate when the source is truly absent — no URL can be served.
           return (
             r.vErrCode === "CORRUPT_SOURCE" ||
-            r.vErrCode === "SOURCE_MISSING" ||
-            r.vErrCode === "DISK_FULL" ||
-            r.vFaststart === false           // explicitly failed, NOT null (never attempted)
+            r.vErrCode === "SOURCE_MISSING"
           );
         })
         .map((r) => r.id);
@@ -781,8 +827,8 @@ class QueueIntegrityValidatorImpl {
           logger.error(
             { count: corruptUploadItemIds.length, itemIds: corruptUploadItemIds },
             "[queue-validator] AUTO-FIX: deactivated UNPLAYABLE_CORRUPT_UPLOAD items " +
-            "(transcodingStatus=failed + no faststart/CORRUPT_SOURCE + no HLS) — " +
-            "removed from broadcast rotation; re-upload the source file or trigger a remote re-transcode to restore",
+            "(transcodingStatus=failed + CORRUPT_SOURCE or SOURCE_MISSING error + no HLS) — " +
+            "source file is absent; removed from broadcast rotation; re-upload the source file to restore",
           );
           adminEventBus.push("broadcast-queue-updated", {
             reason: "integrity-fix-corrupt-upload",

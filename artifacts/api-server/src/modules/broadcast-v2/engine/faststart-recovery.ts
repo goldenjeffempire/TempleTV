@@ -124,13 +124,28 @@ interface Candidate {
 async function findCandidatesOnce(
   faststartExpr: ReturnType<typeof sql>,
 ): Promise<Candidate[]> {
-  // Active queue items joined to local-source videos that v2.loadActive()
-  // would reject for missing faststart. Mirrors the WHERE-clause logic in
-  // queue.repo.ts:loadActive — including the HLS escape hatches (a row
-  // with hlsMasterUrl on either the queue row OR the joined video row is
-  // already admitted by loadActive regardless of faststart, so we MUST
-  // exclude it here or we will trigger needless ffmpeg work). Keep both
-  // in sync if the admission policy changes.
+  // Active queue items joined to local-source videos that may benefit from
+  // faststart moov-atom relocation. Covers two groups:
+  //
+  // Group 1: none/queued/encoding — video never had faststart applied.
+  //   faststartApplied IS NULL: moov position unknown; relocating to byte 0
+  //   enables range-streaming and eliminates initial-buffering stalls.
+  //
+  // Group 2: failed — transcoding or a prior faststart run permanently failed,
+  //   but the source file still exists (objectPath IS NOT NULL). For
+  //   faststartApplied=false rows: moov is confirmed at EOF; re-running
+  //   faststart can relocate it so the file range-streams cleanly. For
+  //   faststartApplied=null rows: faststart was never attempted despite the
+  //   file being present; running it now improves streaming quality.
+  //
+  // loadActive() now admits all of these to the broadcast queue (any row
+  // with a localVideoUrl is admitted regardless of faststart status). This
+  // worker is therefore a quality optimizer, not a gating prerequisite —
+  // videos already air, but faststart makes them stream faster and reduces
+  // player stall probability.
+  //
+  // HLS escape hatch: rows with hlsMasterUrl on either the queue row or
+  // joined video row are already streaming via HLS; faststart is irrelevant.
   const rows = await db
     .select({
       videoId: v.id,
@@ -145,7 +160,9 @@ async function findCandidatesOnce(
         eq(q.isActive, true),
         eq(v.videoSource, "local"),
         isNotNull(v.objectPath),
-        inArray(v.transcodingStatus, ["none", "queued", "encoding"]),
+        // Group 1: not yet transcoded — faststart was never attempted.
+        // Group 2: failed — source file still exists; faststart can fix moov.
+        inArray(v.transcodingStatus, ["none", "queued", "encoding", "failed"]),
         // Exclude rows already admitted by loadActive() via the HLS
         // escape hatches — both the joined video's hlsMasterUrl and the
         // queue-row-level hlsMasterUrl (operator-set / live-ingest).

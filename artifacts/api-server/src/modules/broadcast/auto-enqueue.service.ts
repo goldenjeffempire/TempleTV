@@ -246,23 +246,13 @@ export async function scanLibraryAndEnqueue(opts: {
           // an empty URL. Non-local sources (e.g. HLS) are excluded from this
           // guard since they have no s3_mirrored_at stamp.
           sql`(${videosTable.videoSource} != 'local' OR ${videosTable.s3MirroredAt} IS NOT NULL)`,
-          // Pre-filter: exclude raw MP4s that are known-unplayable (failed
-          // transcoding + faststart explicitly failed + no HLS manifest).
-          //
-          // IMPORTANT: use = false, NOT IS NULL.
-          // faststartApplied is a nullable boolean:
-          //   NULL  = faststart was never attempted → unknown moov position,
-          //           but we give the file the benefit of the doubt (same rule
-          //           as isPlayableForBroadcast which uses === false).
-          //   false = faststart was explicitly run and FAILED → moov at EOF.
-          // Adding "OR faststartApplied IS NULL" would exclude freshly uploaded
-          // videos that have not yet gone through the faststart pipeline, causing
-          // them to never enter the broadcast queue.
-          sql`NOT (
-            ${videosTable.transcodingStatus} = 'failed'
-            AND ${videosTable.faststartApplied} = false
-            AND ${videosTable.hlsMasterUrl} IS NULL
-          )`,
+          // Note: transcoding status, faststart status, and moov position are
+          // NOT pre-filtered here. Queue admission depends only on source
+          // availability (localVideoUrl or hlsMasterUrl). The faststart-recovery
+          // worker handles moov relocation in the background; the player watchdog
+          // + bad-URL cache + auto-skip handles playback failures gracefully.
+          // Only truly absent sources (CORRUPT_SOURCE / SOURCE_MISSING /
+          // ASSEMBLY_FAILED error codes, filtered above) are excluded.
           // NOT EXISTS subquery — keeps the JOIN cheap and the candidate set
           // small; the dedupe inside enqueueIfMissing is the authoritative
           // backstop for the race where two concurrent scans run at once.
@@ -376,28 +366,16 @@ function isPlayableForBroadcast(row: {
     row.transcodingErrorCode === "ASSEMBLY_FAILED"
   ) return false;
 
-  // Raw local MP4 (no HLS yet): safe to broadcast ONLY when the moov atom is
-  // positioned at byte 0 (faststartApplied = true or null). If transcoding
-  // permanently failed (status = 'failed') AND faststart was explicitly run
-  // and failed (faststartApplied === false), the moov is at EOF — browsers
-  // buffer the entire file before playing.
-  //
-  // IMPORTANT: use === false, NOT the ! operator.
-  // faststartApplied is a nullable boolean:
-  //   null  = faststart was never attempted → unknown moov position, but we
-  //           give the file the benefit of the doubt so it can broadcast.
-  //   false = faststart was explicitly run and FAILED → moov at EOF, confirmed
-  //           unplayable via HTTP range streaming.
-  // !null === true would block every file where faststart has not yet run —
-  // including freshly uploaded videos that are queued but not yet processed.
-  // The queue-integrity-validator uses the same === false guard for consistency.
+  // Raw local MP4 (no HLS yet): any video with a local source URL is
+  // broadcast-eligible. Queue admission depends only on source availability —
+  // moov position, faststart status, and transcoding outcomes do NOT gate
+  // admission. The faststart-recovery worker relocates the moov atom in the
+  // background for un-faststarted files; the player watchdog + bad-URL cache
+  // + auto-skip handles the rare case where a file cannot be range-streamed
+  // before faststart completes. This eliminates "Off Air" windows caused by
+  // admin inaction on videos that are structurally present but technically
+  // imperfect.
   if (row.localVideoUrl && row.localVideoUrl.trim() !== "") {
-    if (
-      row.transcodingStatus === "failed" &&
-      row.faststartApplied === false
-    ) {
-      return false;
-    }
     return true;
   }
 

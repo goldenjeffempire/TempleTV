@@ -827,34 +827,33 @@ export const queueRepo = {
               inArray(v.transcodingStatus, ["none", "queued", "encoding"]),
               // 'processing': faststart.service is running the moov-atom relocation.
               //
-              // Admit when faststartApplied IS NULL or true:
-              //   NULL  = faststart was never attempted before. The file at
-              //           localVideoUrl was already admitted as 'none'/'queued'/
-              //           'encoding' (identical moov-position knowledge: unknown).
-              //           Blocking here creates a needless off-air gap: the same
-              //           blob was playable one tick ago and the multipart reassembly
-              //           is not yet visible (completeMultipartUpload is atomic).
-              //           Give the benefit of the doubt — if the moov really is at
-              //           EOF the 20 s watchdog + auto-skip handles it gracefully.
-              //   true  = previous faststart confirmed moov at byte 0. Safe to serve.
-              //
-              // Block when faststartApplied=false (first run confirmed FAILED):
-              //   false = faststart explicitly ran and failed → moov confirmed at
-              //           EOF. Without HLS the file cannot be range-streamed. Only
-              //           the top-level `isNotNull(v.hlsMasterUrl)` clause above can
-              //           admit this item (which it does when HLS has since been
-              //           transcoded). No additional handling needed here.
-              and(
-                eq(v.transcodingStatus, "processing"),
-                or(
-                  eq(v.faststartApplied, true),
-                  isNull(v.faststartApplied),
-                ),
-              ),
-              // 'failed': still require faststart or HLS confirmed safe to stream.
+              // Admitted unconditionally: the ORIGINAL blob at localVideoUrl is
+              // always readable during a faststart re-upload because multipart parts
+              // are not visible until completeMultipartUpload commits them atomically.
+              // Even when faststartApplied=false (prior faststart run failed), the
+              // source file still exists at localVideoUrl; faststart-recovery will
+              // retry. The player watchdog + bad-URL cache + auto-skip handle any
+              // range-streaming failure gracefully. Queue admission depends only on
+              // source availability, not on moov position.
+              eq(v.transcodingStatus, "processing"),
+              // 'failed': transcoding or faststart permanently failed.
+              // Admitted whenever ANY playable source URL exists — either an HLS
+              // master on the queue row or joined video row, OR a localVideoUrl.
+              // The faststart-recovery worker actively attempts to fix moov position
+              // for failed+faststartApplied=false items in the background; the
+              // player watchdog + bad-URL cache + auto-skip handles any unrecoverable
+              // streaming failures without operator action.
+              // Only items with truly absent sources (CORRUPT_SOURCE / SOURCE_MISSING
+              // error codes — detected by the queue-integrity-validator and deactivated
+              // there) have no URL and therefore fail this admission clause naturally.
               and(
                 eq(v.transcodingStatus, "failed"),
-                or(isNotNull(q.hlsMasterUrl), isNotNull(v.hlsMasterUrl), eq(v.faststartApplied, true)),
+                or(
+                  isNotNull(q.hlsMasterUrl),
+                  isNotNull(v.hlsMasterUrl),
+                  isNotNull(v.localVideoUrl),
+                  isNotNull(q.localVideoUrl),
+                ),
               ),
             ),
           ),
