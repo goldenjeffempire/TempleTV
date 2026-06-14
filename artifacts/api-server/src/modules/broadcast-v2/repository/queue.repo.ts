@@ -266,21 +266,27 @@ function proxyExternalSource<T extends Pick<V2Source, "kind" | "url">>(
 // which is acceptable. Persistent blacklisting belongs in the DB layer and is
 // future work.
 
-export const BAD_URL_TTL_MS = 90_000; // 90 seconds — base TTL for first failure
+export const BAD_URL_TTL_MS = 90_000; // 90 seconds — base TTL for persistent failures
 
 // ── Exponential backoff TTL schedule ────────────────────────────────────────
+// First failure: 20 s — brief window that allows a transient stall (network
+// blip, CDN cold-start, brief 503) to self-recover before the orchestrator
+// forward-scans past the item.  If the URL fails again within those 20 s the
+// count becomes 2 → 3-minute block, making repeated failures progressively
+// more penalised.
+//
 // URLs that repeatedly fail get exponentially longer blacklist windows so a
 // genuinely broken source doesn't flood the orchestrator's snapshot() logic
-// with fruitless retries every 90 s. After 4+ failures the URL stays out of
-// rotation for 10 minutes — long enough to expire while the transcoder
-// produces a replacement HLS stream, or for an operator to swap the source.
+// with fruitless retries. After 4+ failures the URL stays out of rotation for
+// 10 minutes — long enough to expire while the transcoder produces a
+// replacement HLS stream, or for an operator to swap the source.
 //
 // The per-URL failure counts live in `badUrlFailureCounts` (separate from
 // badUrlSkipCounts which is per-itemId). Counts are cleared on clearBadUrl()
 // and clearAllBadUrls() so a manual operator clear gives a clean slate.
 function badUrlTtlForCount(count: number): number {
-  if (count <= 1) return 90_000;   // 90 s
-  if (count === 2) return 180_000; // 3 min
+  if (count <= 1) return 20_000;   // 20 s — first failure: brief recovery window
+  if (count === 2) return 180_000; // 3 min — second failure: persistent problem
   if (count === 3) return 300_000; // 5 min
   return 600_000;                   // 10 min (4+)
 }

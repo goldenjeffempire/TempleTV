@@ -166,10 +166,15 @@ const SKIP_PENDING_FATAL_THRESHOLD = 3;
  *
  * Successive FATAL entries use exponential backoff (capped at
  * FATAL_BACKOFF_MAX_MS) so many clients sharing a permanently broken source
- * do not all hammer the API at 30-second intervals in lockstep (thundering
- * herd).  The attempt counter resets whenever the machine reaches PLAYING.
+ * do not all hammer the API in lockstep (thundering herd). The attempt
+ * counter resets whenever the machine reaches PLAYING.
+ *
+ * Reduced from 30 s → 10 s so the admin preview and viewer surfaces
+ * recover within one tick cycle rather than waiting half a minute after
+ * an HLS 404 or a transient MP4 load failure.  The 2× exponential backoff
+ * still applies on repeated entries (10 → 20 → 40 → 80 → 160 → 240 s cap).
  */
-const FATAL_AUTO_RECOVERY_MS = 30_000;
+const FATAL_AUTO_RECOVERY_MS = 10_000;
 
 /**
  * Upper ceiling for the FATAL auto-recovery backoff.
@@ -648,16 +653,21 @@ export class PlayerMachine {
           this.lastEndedItemStartsAtMs = null;
           this.naturalEndRetries = 0;
           // Fall through to bindActive below.
-        } else if (this.lastEndedAtMs !== null && Date.now() - this.lastEndedAtMs > 30_000) {
+        } else if (this.lastEndedAtMs !== null && Date.now() - this.lastEndedAtMs > 5_000) {
           // TTL safety valve: if the naturalItemEnd POST failed to reach the
           // server (network error, timeout), the server keeps showing this
-          // item as current with endsAtMs far in the future. After 30 s we
+          // item as current with endsAtMs far in the future. After 5 s we
           // assume the signal was lost — extend the guard and retry the POST
-          // so the server can advance. After 3 retries (~90 s total) the
+          // so the server can advance. After 3 retries (~15 s total) the
           // guard is released as a last resort.
+          //
+          // Reduced from 30 s → 5 s: a 30 s retry window caused a visible
+          // off-air gap on every item transition whenever the first POST
+          // was dropped (brief WS reconnect, server restart). 5 s is still
+          // long enough to avoid a race with the server's own processing.
           this.naturalEndRetries += 1;
           if (this.naturalEndRetries <= 3) {
-            this.lastEndedAtMs = Date.now(); // extend guard by another 30 s
+            this.lastEndedAtMs = Date.now(); // extend guard by another 5 s
             this.onNaturalEndCb?.(server.current.id); // retry POST /natural-end
             return;
           }
@@ -677,6 +687,13 @@ export class PlayerMachine {
           }
           // Fall through to bindActive below (server has advanced).
         } else {
+          // Still within the guard window — re-poll for fresh server state
+          // so the machine sees the advanced anchor as soon as the server
+          // processes the naturalItemEnd POST (usually within 1-2 s).
+          // requestSnapshot() has an inflight guard so rapid calls are safe.
+          if (this.lastEndedAtMs !== null && Date.now() - this.lastEndedAtMs > 3_000) {
+            this.onNeedSnapshotCb?.();
+          }
           return;
         }
       }

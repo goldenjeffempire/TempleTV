@@ -259,6 +259,21 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * permanently blocked.
      */
     private readonly durationWriteInFlight;
+    /**
+     * When snapshot() forward-scans past a bad-URL-blocked item, the found
+     * item's startsAtMs is in the future. Immediately advancing cycleStartedAtMs
+     * (the "anchor fix") is correct long-term but causes premature skips if the
+     * stall was transient — e.g. a single CDN blip blocks an item for 20 s
+     * while the URL is temporarily unreachable.
+     *
+     * These two fields implement a 15-second delay: tickInner() records the
+     * first time a forward-scan result is seen, and only applies the anchor
+     * fix once the same result has persisted for FORWARD_SCAN_ANCHOR_FIX_DELAY_MS.
+     * If the bad URL expires (20-s first-failure TTL) before the delay elapses,
+     * the pending fix is cancelled and the item re-enters rotation normally.
+     */
+    private pendingAnchorFixItemId;
+    private pendingAnchorFixFirstSeenMs;
     constructor();
     /**
      * Boot the orchestrator. NEVER throws — any failure falls back to a safe

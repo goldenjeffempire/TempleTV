@@ -1370,7 +1370,7 @@ function BroadcastV2PageInner() {
     queryKey: ["broadcast-v2-live-state"],
     queryFn: () => api.get<{ state: V2Snapshot }>("/broadcast-v2/state"),
     refetchInterval: sseGated60s,
-    staleTime: 50_000,
+    staleTime: 8_000,
   });
 
   const testWebhookMutation = useMutation({
@@ -1836,6 +1836,9 @@ function BroadcastV2PageInner() {
     // mutations (add, remove, reprobe, transcode-remote) change which issues
     // are present — bust the 60 s server-side cache so the panel stays current.
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+    // Source health reflects URL reachability and bad-URL cache state —
+    // must refresh whenever the queue changes (item added/removed/cleared).
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
     clearTimeout(reloadTimer.current);
     reloadTimer.current = setTimeout(() => {
       api

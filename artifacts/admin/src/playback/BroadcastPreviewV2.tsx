@@ -393,7 +393,7 @@ export function BroadcastPreviewV2({ className }: Props) {
   // for real viewers. A preview failure (storage credentials unavailable in
   // the admin browser, CORS, or any other admin-environment issue) is not
   // evidence that the source is broken for TV/mobile/web viewers.
-  const { snapshot, connected, attach } = useV2Broadcast({
+  const { snapshot, connected, attach, forceRebind } = useV2Broadcast({
     baseUrl,
     attachHls,
     enableStallReport: false,
@@ -443,6 +443,46 @@ export function BroadcastPreviewV2({ className }: Props) {
     const id = setInterval(() => setNowMs(Date.now()), 500);
     return () => clearInterval(id);
   }, []);
+
+  // ── Auto-recovery from FATAL ────────────────────────────────────────────────
+  // The admin preview has `enableStallReport: false` so it never blocks sources
+  // for real viewers. However, HLS 404s or MP4 moov-seek timeouts in the admin
+  // browser still push the machine to FATAL — which without intervention shows
+  // "Stream unavailable — auto-retry in N s" for up to 30 s (now 10 s globally,
+  // but the first FATAL still feels long in the control room context).
+  //
+  // Calling forceRebind() after 8 s in FATAL:
+  //   1. Clears the FATAL recovery timer and resets primaryRetries → 0
+  //   2. Re-requests a fresh snapshot so the machine sees the latest server state
+  //   3. Re-tries binding the same source — works after a transient HLS 404 or
+  //      after the transcoder produces the missing HLS segments
+  //
+  // Exponential-backoff still applies (the underlying machine fatalAttemptCount
+  // remains, so three rapid FATAL cycles still escalate to 20/40/80 s).
+  // This only accelerates the FIRST recovery attempt from 10 s → 8 s and
+  // gives the admin operator a much faster "self-healing" experience.
+  const fatalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (snapshot.state === "FATAL") {
+      if (!fatalTimerRef.current) {
+        fatalTimerRef.current = setTimeout(() => {
+          fatalTimerRef.current = null;
+          forceRebind();
+        }, 8_000);
+      }
+    } else {
+      if (fatalTimerRef.current) {
+        clearTimeout(fatalTimerRef.current);
+        fatalTimerRef.current = null;
+      }
+    }
+    return () => {
+      if (fatalTimerRef.current) {
+        clearTimeout(fatalTimerRef.current);
+        fatalTimerRef.current = null;
+      }
+    };
+  }, [snapshot.state, forceRebind]);
 
   // Guard: only recalibrate when serverTimeMs genuinely changes so we don't
   // re-run on every render triggered by the 500 ms clock tick itself.

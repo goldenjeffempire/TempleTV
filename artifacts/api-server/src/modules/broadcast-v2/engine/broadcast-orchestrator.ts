@@ -412,6 +412,22 @@ class BroadcastOrchestrator extends EventEmitter {
    */
   private readonly durationWriteInFlight = new Set<string>();
 
+  /**
+   * When snapshot() forward-scans past a bad-URL-blocked item, the found
+   * item's startsAtMs is in the future. Immediately advancing cycleStartedAtMs
+   * (the "anchor fix") is correct long-term but causes premature skips if the
+   * stall was transient — e.g. a single CDN blip blocks an item for 20 s
+   * while the URL is temporarily unreachable.
+   *
+   * These two fields implement a 15-second delay: tickInner() records the
+   * first time a forward-scan result is seen, and only applies the anchor
+   * fix once the same result has persisted for FORWARD_SCAN_ANCHOR_FIX_DELAY_MS.
+   * If the bad URL expires (20-s first-failure TTL) before the delay elapses,
+   * the pending fix is cancelled and the item re-enters rotation normally.
+   */
+  private pendingAnchorFixItemId: string | null = null;
+  private pendingAnchorFixFirstSeenMs: number | null = null;
+
   constructor() {
     super();
     this.setMaxListeners(1024);
@@ -2292,6 +2308,57 @@ class BroadcastOrchestrator extends EventEmitter {
   private tickInner(): void {
     if (this.mode !== "queue") return;
     const snap = this.snapshot();
+
+    // ── Pending forward-scan anchor fix ──────────────────────────────────────
+    // tickInner records the first time a bad-URL forward-scan result appears.
+    // After FORWARD_SCAN_ANCHOR_FIX_DELAY_MS the fix is applied here — one
+    // check per tick — so the delay works even though the inner item-change
+    // block only runs once per item ID transition.
+    const FORWARD_SCAN_ANCHOR_FIX_DELAY_MS = 15_000;
+    if (this.pendingAnchorFixItemId !== null && this.pendingAnchorFixFirstSeenMs !== null) {
+      const nowPending = Date.now();
+      if (
+        snap.current !== null &&
+        snap.current.id === this.pendingAnchorFixItemId &&
+        snap.current.startsAtMs > nowPending + 1000 // still forward-scanned
+      ) {
+        if (nowPending - this.pendingAnchorFixFirstSeenMs >= FORWARD_SCAN_ANCHOR_FIX_DELAY_MS) {
+          // Delay elapsed — apply the anchor fix now
+          const idx = this.items.findIndex((it) => it.id === snap.current!.id);
+          if (idx !== -1) {
+            let offsetMs = 0;
+            for (let i = 0; i < idx; i++) offsetMs += this.items[i]!.durationSecs * 1000;
+            this.cycleStartedAtMs = nowPending - offsetMs;
+            this.lastCurrentItemStartsAtMs = nowPending;
+            logger.info(
+              {
+                itemId: snap.current.id,
+                stuckMs: nowPending - this.pendingAnchorFixFirstSeenMs,
+                newCycleStartedAtMs: this.cycleStartedAtMs,
+              },
+              "[broadcast-v2] forward-scan anchor fix applied after delay — bad-URL slot skipped",
+            );
+            void this.bump("item.advanced", { itemId: snap.current.id, title: snap.current.title })
+              .catch((err: unknown) => logger.warn({ err }, "[broadcast-v2] pending anchor fix: bump failed (non-fatal)"));
+            this.emitSnapshot();
+          }
+          this.pendingAnchorFixItemId = null;
+          this.pendingAnchorFixFirstSeenMs = null;
+        }
+        // else: delay not yet elapsed — leave anchor as-is; item may still recover
+      } else {
+        // Item recovered (bad URL expired) or queue changed — cancel the pending fix
+        if (this.pendingAnchorFixItemId !== null) {
+          logger.info(
+            { cancelledItemId: this.pendingAnchorFixItemId },
+            "[broadcast-v2] forward-scan anchor fix cancelled — item recovered before delay elapsed",
+          );
+        }
+        this.pendingAnchorFixItemId = null;
+        this.pendingAnchorFixFirstSeenMs = null;
+      }
+    }
+
     if (!snap.current) {
       // Architect-flagged: a single bad item could stall the cycle. If we
       // have queue items but cannot project a current item, the most likely
@@ -2511,36 +2578,39 @@ class BroadcastOrchestrator extends EventEmitter {
       //      window — causing a SYNCING gap on every transition.
       //
       // Fix: if the found item's startsAtMs is in the future (> now + 1 s),
-      // immediately advance cycleStartedAtMs so that item's slot starts NOW.
+      // advance cycleStartedAtMs so that item's slot starts NOW.
       //
-      // Formula: cycleStartedAtMs = now − Σ durationMs of items before this
-      // item in the cycle.  After the adjustment, snapshot() returns
-      // startsAtMs ≈ now, elapsed is correct, and the preload timer fires at
-      // the right wall-clock time relative to the video's actual start.
+      // Deferred application (15 s): the fix is NOT applied immediately.
+      // pendingAnchorFixItemId is set here and the pending-check block at the
+      // top of tickInner() applies the fix after FORWARD_SCAN_ANCHOR_FIX_DELAY_MS.
+      // This gives the bad URL's 20-s first-failure TTL time to expire and
+      // the item to recover naturally — preventing a single transient stall
+      // from permanently advancing past an otherwise healthy video.
       //
       // Guard (> now + 1 s) tolerates sub-second clock jitter so natural item
       // advances (startsAtMs within a tick of now) don't trigger the fix.
       const nowForAnchorFix = Date.now();
       if (snap.current.startsAtMs > nowForAnchorFix + 1000) {
-        const idx = this.items.findIndex(it => it.id === snap.current!.id);
-        if (idx !== -1) {
-          let offsetMs = 0;
-          for (let i = 0; i < idx; i++) offsetMs += this.items[i]!.durationSecs * 1000;
-          this.cycleStartedAtMs = nowForAnchorFix - offsetMs;
-          this.lastCurrentItemStartsAtMs = nowForAnchorFix;
+        // Record first occurrence; the pending-check block at the top of
+        // tickInner() applies the anchor adjustment after the delay.
+        if (this.pendingAnchorFixItemId !== snap.current.id) {
+          this.pendingAnchorFixItemId = snap.current.id;
+          this.pendingAnchorFixFirstSeenMs = nowForAnchorFix;
           logger.info(
             {
               itemId: snap.current.id,
-              skippedSlotMs: snap.current.startsAtMs - nowForAnchorFix,
-              newCycleStartedAtMs: this.cycleStartedAtMs,
-              itemOffsetMs: offsetMs,
+              futureMs: snap.current.startsAtMs - nowForAnchorFix,
             },
-            "[broadcast-v2] forward-scan anchor fix — bad-URL slot skipped, cycle anchor advanced to now",
+            "[broadcast-v2] forward-scan detected — anchor fix deferred 15 s (transient-stall recovery window)",
           );
-        } else {
-          this.lastCurrentItemStartsAtMs = snap.current.startsAtMs;
         }
+        this.lastCurrentItemStartsAtMs = snap.current.startsAtMs;
       } else {
+        // Normal advance — clear any pending forward-scan fix
+        if (this.pendingAnchorFixItemId !== null) {
+          this.pendingAnchorFixItemId = null;
+          this.pendingAnchorFixFirstSeenMs = null;
+        }
         this.lastCurrentItemStartsAtMs = snap.current.startsAtMs;
       }
 
