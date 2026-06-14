@@ -425,30 +425,6 @@ export default function WatchScreen() {
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
-      {/* App header — logo left, search right */}
-      <View style={[styles.searchToolbar, { paddingTop: insets.top, backgroundColor: c.background }]}>
-        {/* Brand wordmark: bird icon + "Temple" + ".tv" in red */}
-        <View style={styles.headerLogoContainer} accessibilityRole="image" accessibilityLabel="Temple TV">
-          <Image
-            source={require("@/assets/images/adaptive-icon-foreground.png")}
-            style={[styles.headerBird, { tintColor: c.foreground }]}
-            resizeMode="contain"
-            accessibilityElementsHidden
-          />
-          <View style={styles.headerWordmark}>
-            <Text style={[styles.headerTempleText, { color: c.foreground }]}>Temple</Text>
-            <Text style={styles.headerDotTv}>.tv</Text>
-          </View>
-        </View>
-        <Pressable
-          onPress={() => router.push("/search")}
-          accessibilityLabel="Search"
-          accessibilityRole="button"
-          hitSlop={8}
-        >
-          <Feather name="search" size={22} color={c.foreground} />
-        </Pressable>
-      </View>
 
       {/* Stale cache banner — three states:
           1. isStale + refreshing:  "Showing cached content — refreshing…"
@@ -458,6 +434,7 @@ export default function WatchScreen() {
         <View style={[
           styles.staleBanner,
           refreshFailed && styles.staleBannerFailed,
+          { marginTop: insets.top + 6 },
         ]}>
           <Feather
             name={refreshFailed ? "wifi-off" : "clock"}
@@ -553,39 +530,6 @@ export default function WatchScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-
-  // ── App header (logo left, search right) ─────────────────────────────────────
-  searchToolbar: {
-    paddingHorizontal: 20,
-    paddingBottom: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  headerLogoContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  headerBird: {
-    width: 32,
-    height: 32,
-  },
-  headerWordmark: {
-    flexDirection: "row",
-    alignItems: "baseline",
-  },
-  headerTempleText: {
-    fontSize: 22,
-    fontWeight: "700",
-    letterSpacing: -0.5,
-  },
-  headerDotTv: {
-    fontSize: 22,
-    fontWeight: "700",
-    letterSpacing: -0.5,
-    color: "#E8002C",
-  },
 
   // ── OMEGA emergency banner ───────────────────────────────────────────────────
   emergencyBanner: {
