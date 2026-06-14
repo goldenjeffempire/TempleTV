@@ -71,6 +71,22 @@ const WATCHDOG_STABLE_MS       = 25_000;
 const WATCHDOG_STABLE_PLAY_MS  = 30_000;
 
 /**
+ * How many seconds before the actual end of the video (per its `duration`
+ * property) to fire a `buffer-near-end` event that proactively loads the
+ * next item into the inactive buffer.
+ *
+ * This fires based on the HTML5 video element's real `duration` (the actual
+ * encoded file length) rather than the server's scheduled `durationSecs`
+ * (which may be a 1800-second placeholder for freshly-uploaded videos).
+ * Using the real duration guarantees the preload fires at the right moment
+ * even when the DB duration doesn't yet match the encoded file length —
+ * the most common cause of SYNCING black-screen gaps between queue items.
+ *
+ * Matches PRELOAD_LEAD_MS in machine.ts (90 s).
+ */
+const NEAR_END_LEAD_SECS = 90;
+
+/**
  * Return type of `createWebAdapter`.
  *
  * `apply`   — the `IntentHandler` fed into `PlayerMachine`.
@@ -135,6 +151,12 @@ export function createWebAdapter(
   });
 
   let activeId: "A" | "B" = initialActiveId;
+
+  // Tracks the last (boundUrl + duration) key for which buffer-near-end was
+  // fired per buffer.  A composite key prevents re-firing on the same item
+  // (timeupdate fires many times per second) while automatically resetting
+  // when the bound URL or reported duration changes (new item or loop pass).
+  const nearEndFiredKey: Record<"A" | "B", string | null> = { A: null, B: null };
 
   // Per-buffer bind load timeout.
   const loadTimers: Record<"A" | "B", ReturnType<typeof setTimeout> | null> = { A: null, B: null };
@@ -211,7 +233,22 @@ export function createWebAdapter(
     }, { signal });
 
     buf.el.addEventListener("timeupdate", () => {
-      if (id === activeId) watchdog.feed(buf.el.currentTime);
+      if (id !== activeId) return;
+      watchdog.feed(buf.el.currentTime);
+      // Fire buffer-near-end based on the video element's ACTUAL duration
+      // (encoded file length) rather than the server's scheduled durationSecs.
+      // This triggers proactive preloading of the next item even when the DB
+      // carries a 1800 s placeholder for freshly-uploaded videos, eliminating
+      // the SYNCING black-screen gap that occurs when the preload frame from the
+      // server arrives too late (or not at all) before the video naturally ends.
+      const { currentTime, duration } = buf.el;
+      if (duration > 0 && isFinite(duration) && duration - currentTime <= NEAR_END_LEAD_SECS) {
+        const nearEndKey = `${buf.boundUrl ?? ""}@${Math.floor(duration)}`;
+        if (nearEndFiredKey[id] !== nearEndKey) {
+          nearEndFiredKey[id] = nearEndKey;
+          cb.send({ type: "buffer-near-end", bufferId: id });
+        }
+      }
     }, { signal });
 
     buf.el.addEventListener("waiting", () => {
@@ -341,6 +378,11 @@ export function createWebAdapter(
 
   function bind(buf: WebBuffer, id: "A" | "B", item: V2Item | V2Override): void {
     const url = "source" in item ? item.source.url : item.url;
+    // Reset the near-end sentinel whenever the bound URL changes so
+    // buffer-near-end fires again for the freshly loaded item.
+    if (buf.boundUrl !== url) {
+      nearEndFiredKey[id] = null;
+    }
     if (buf.boundUrl === url) {
       // An ended element reports readyState=4 and error=null — both
       // "healthy" by the checks below — but calling play() on it without

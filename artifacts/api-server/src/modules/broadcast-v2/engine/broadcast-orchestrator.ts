@@ -1658,18 +1658,27 @@ class BroadcastOrchestrator extends EventEmitter {
     // long-duration queues.  Only applied when the anchor was not a fresh-start
     // (fresh starts begin at elapsed=0 so no slot can be near its end).
     if (this.items.length > 0 && this.cycleDurationMs > 0) {
-      const MIN_SKIP_REMAINING_MS = TICK_MS + 1_000; // 3 s — one tick + margin
+      const MIN_RESTART_REMAINING_MS = TICK_MS + 1_000; // 3 s — one tick + margin
       const elapsedNow = ((reloadNow - this.cycleStartedAtMs) % this.cycleDurationMs + this.cycleDurationMs) % this.cycleDurationMs;
       let acc = 0;
       for (let i = 0; i < this.items.length; i++) {
         const span = this.items[i]!.durationSecs * 1000;
         if (elapsedNow < acc + span) {
           const remaining = (acc + span) - elapsedNow;
-          if (remaining < MIN_SKIP_REMAINING_MS) {
-            this.cycleStartedAtMs -= remaining; // advance anchor past this slot
+          if (remaining < MIN_RESTART_REMAINING_MS) {
+            // For strict sequential playback: restart this item from the
+            // beginning rather than advancing past it.  The previous
+            // behaviour ("micro-play prevention") skipped items that had
+            // < 3 s remaining after a server restart — causing content to
+            // never play fully.  Restarting guarantees every queued video
+            // airs 100 % from start to finish even when the server comes back
+            // up mid-slot.  The old approach was designed for when viewers
+            // were already watching; the restart approach is strictly better
+            // for the 24/7 continuous-play use case.
+            this.cycleStartedAtMs = reloadNow - acc; // restart slot from position 0
             logger.info(
               { itemId: this.items[i]!.id, remainingMs: Math.round(remaining) },
-              "[broadcast-v2] reloadInner: skipping near-end slot to prevent micro-play",
+              "[broadcast-v2] reloadInner: near-end slot restarted from beginning for complete sequential playback",
             );
           }
           break;

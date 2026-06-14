@@ -518,6 +518,8 @@ export class PlayerMachine {
         return this.onBufferStalled(event.bufferId);
       case "buffer-ended":
         return this.onBufferEnded(event.bufferId);
+      case "buffer-near-end":
+        return this.onBufferNearEnd(event.bufferId);
       case "online":
         return this.onOnline();
       case "offline":
@@ -1183,6 +1185,37 @@ export class PlayerMachine {
         this.bindInactive(nextToEagerBind);
       }
     }
+  }
+
+  private onBufferNearEnd(bufferId: "A" | "B"): void {
+    // Only act on the active buffer's near-end signal.
+    if (bufferId !== this.snapshot.activeBufferId) return;
+
+    // Only proactively preload during stable playback states.  In recovering /
+    // handoff / skip states the inactive buffer may already be in use or the
+    // state machine is handling a failure — let those paths run their course.
+    const state = this.snapshot.state;
+    if (
+      state !== "PLAYING" &&
+      state !== "PREPARING_ACTIVE" &&
+      state !== "PREPARING_NEXT"
+    ) return;
+
+    // If the inactive buffer is already loaded (server preload frame arrived
+    // in time), nothing to do — HANDOFF will use it naturally.
+    const inactiveId = this.swappedId(this.snapshot.activeBufferId);
+    const inactiveItem = inactiveId === "A" ? this.snapshot.bufferA : this.snapshot.bufferB;
+    if (inactiveItem) return;
+
+    // Proactively bind the server's known next item into the idle inactive
+    // buffer so HANDOFF can fire immediately when the active video ends,
+    // eliminating the SYNCING → black-screen gap caused by late or missing
+    // server preload frames (common when durationSecs in the DB is a 1800 s
+    // placeholder that doesn't match the actual encoded file length).
+    const server = this.snapshot.lastServerSnapshot;
+    const nextToPreload = server?.next ?? server?.nextNext;
+    if (!nextToPreload) return;
+    this.bindInactive(nextToPreload);
   }
 
   private onOnline(): void {

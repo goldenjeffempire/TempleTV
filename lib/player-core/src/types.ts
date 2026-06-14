@@ -96,6 +96,7 @@ export type PlayerEvent =
   | { type: "buffer-error"; bufferId: "A" | "B"; error: string }
   | { type: "buffer-stalled"; bufferId: "A" | "B" }
   | { type: "buffer-ended"; bufferId: "A" | "B" }
+  | { type: "buffer-near-end"; bufferId: "A" | "B" }
   | { type: "online" }
   | { type: "offline" }
   | { type: "force-skip" };

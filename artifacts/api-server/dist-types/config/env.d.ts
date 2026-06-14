@@ -122,6 +122,7 @@ declare const Env: z.ZodObject<{
     QUEUE_MIN_ITEMS: z.ZodDefault<z.ZodNumber>;
     STORAGE_HEALTH_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
+    DATABASE_URL: string;
     NODE_ENV: "development" | "test" | "production";
     PORT: number;
     TV_DEV_PORT: number;
@@ -129,7 +130,6 @@ declare const Env: z.ZodObject<{
     HTTP_KEEPALIVE_MS: number;
     HTTP_HEADERS_TIMEOUT_MS: number;
     LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
-    DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
     JWT_ACCESS_TTL_SECONDS: number;
