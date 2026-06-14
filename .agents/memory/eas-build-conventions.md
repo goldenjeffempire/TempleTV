@@ -14,7 +14,7 @@ The `production` profile (combined iOS + Android) and all other store profiles u
 
 **How to apply:** Before every `eas build --platform android --profile production-android` run, check `app.json` `android.versionCode`, bump it by 1, commit, then build.
 
-**Last release:** v1.0.17, versionCode 57 — Build ID: b4ae225f-56c3-4af1-880a-1c42ac7cae30
+**Last release:** v1.0.27, versionCode 75 — Build ID: 13eee260-ae1f-4c45-8093-f196d9f5e48c
 
 ---
 
