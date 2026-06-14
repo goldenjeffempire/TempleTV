@@ -162,6 +162,213 @@ function getMissingChunks(received: number[], total: number): number[] {
   return Array.from({ length: total }, (_, i) => i).filter((i) => !set.has(i));
 }
 
+// ─── Background assembly retry ────────────────────────────────────────────────
+//
+// Spawns a fire-and-forget re-assembly task for an interrupted upload session.
+// Called from:
+//   • Startup recovery — when all chunks are still present but the assembled
+//     blob is missing (server restarted mid-assembly).
+//   • Admin retry endpoint — when an operator clicks "Retry Assembly" on a
+//     video that was left in ASSEMBLY_FAILED state.
+//
+// On success:  session → "completed"; video row restored (objectPath, s3MirroredAt,
+//              transcodingStatus cleared); faststart + HLS transcoding queued.
+// On failure:  video → ASSEMBLY_FAILED again; session → "uploading"; completedVideoId
+//              nulled so the belt-and-suspenders guard in /finalize does not re-fire.
+//
+async function spawnAssemblyRetry(
+  sessionId: string,
+  videoId: string,
+  log: FastifyInstance["log"],
+): Promise<void> {
+  void (async () => {
+    try {
+      // Re-load the full session row — needed for finalizeFromDbFallback.
+      const [session] = await db
+        .select()
+        .from(sessions)
+        .where(eq(sessions.sessionId, sessionId))
+        .limit(1);
+
+      if (!session) {
+        log.warn({ sessionId, videoId }, "[assembly-retry] session not found — aborting retry");
+        return;
+      }
+
+      const objectKey = session.objectKey;
+      if (!objectKey) {
+        log.warn({ sessionId, videoId }, "[assembly-retry] session has no objectKey — aborting retry");
+        await db
+          .update(videos)
+          .set({
+            transcodingStatus: "failed",
+            transcodingErrorCode: "ASSEMBLY_FAILED",
+            transcodingErrorMessage:
+              "Retry failed: upload session has no storage key. Delete this video and re-upload to recover.",
+          })
+          .where(eq(videos.id, videoId))
+          .catch(() => {});
+        await db
+          .update(sessions)
+          .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
+          .where(eq(sessions.sessionId, sessionId))
+          .catch(() => {});
+        adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-retry-no-key" });
+        return;
+      }
+
+      log.info(
+        { sessionId, videoId, storageBackend: session.storageBackend, objectKey },
+        "[assembly-retry] starting background re-assembly",
+      );
+
+      if (session.storageBackend === "db_fallback") {
+        // BYTEA chunks in upload_chunks.fallback_data — fully idempotent.
+        await finalizeFromDbFallback(session, session.totalChunks, log);
+      } else {
+        // DB-multipart path: assemble from existing part ETags.
+        if (!session.uploadId) {
+          throw new Error("session.uploadId is null — cannot re-assemble db-backend session");
+        }
+        const allChunks = await db
+          .select({ chunkIndex: chunks.chunkIndex, s3Etag: chunks.s3Etag })
+          .from(chunks)
+          .where(eq(chunks.sessionId, sessionId))
+          .orderBy(asc(chunks.chunkIndex));
+
+        if (allChunks.length !== session.totalChunks) {
+          throw new Error(
+            `Chunk count mismatch: expected ${session.totalChunks}, found ${allChunks.length}`,
+          );
+        }
+        const missingEtags = allChunks.filter((c) => !c.s3Etag);
+        if (missingEtags.length > 0) {
+          throw new Error(
+            `${missingEtags.length} chunk(s) are missing storage ETags — parts may have been partially consumed`,
+          );
+        }
+        await storage().completeMultipartUpload({
+          key: objectKey,
+          uploadId: session.uploadId,
+          parts: allChunks.map((c) => ({
+            partNumber: c.chunkIndex + 1,
+            etag: c.s3Etag as string,
+          })),
+        });
+      }
+
+      // Verify assembled blob size.
+      const head = await storage().headObject(objectKey);
+      if (!head.exists || (session.sizeBytes > 0 && head.contentLength !== session.sizeBytes)) {
+        throw new Error(
+          `Assembled blob size mismatch: expected ${session.sizeBytes} bytes, got ${head.contentLength ?? 0}`,
+        );
+      }
+
+      const localVideoUrl = storage().publicUrl(objectKey);
+
+      // Mark session completed + restore video row in parallel.
+      await Promise.all([
+        db
+          .update(sessions)
+          .set({ status: "completed", storageBackend: "db", updatedAt: new Date() })
+          .where(eq(sessions.sessionId, sessionId))
+          .catch((err: unknown) =>
+            log.warn({ err, sessionId }, "[assembly-retry] session completed update failed (non-fatal)"),
+          ),
+        db
+          .update(videos)
+          .set({
+            s3MirroredAt: new Date(),
+            objectPath: objectKey,
+            localVideoUrl,
+            transcodingStatus: "none",
+            transcodingErrorCode: null,
+            transcodingErrorMessage: null,
+          })
+          .where(eq(videos.id, videoId))
+          .catch((err: unknown) =>
+            log.warn({ err, videoId }, "[assembly-retry] video row restore failed (non-fatal)"),
+          ),
+      ]);
+
+      adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-retry-succeeded" });
+      void invalidateVideosCatalogCache();
+      log.info({ sessionId, videoId }, "[assembly-retry] assembly succeeded — running post-processing");
+
+      // Re-read video row for post-processing (faststart writes objectPath so it
+      // must be current; re-reading is cheaper than trusting our own update).
+      const [vRow] = await db
+        .select({
+          objectPath: videos.objectPath,
+          faststartApplied: videos.faststartApplied,
+          hlsMasterUrl: videos.hlsMasterUrl,
+        })
+        .from(videos)
+        .where(eq(videos.id, videoId))
+        .limit(1);
+
+      if (!vRow?.objectPath) {
+        log.warn({ videoId }, "[assembly-retry] post-processing skipped: no objectPath after update");
+        return;
+      }
+
+      // Broadcast queue slot.
+      try {
+        const enqResult = await enqueueIfMissing({ videoId, reason: "assembly-retry" });
+        if (enqResult.enqueued) {
+          adminEventBus.push("broadcast-queue-updated", { reason: "assembly-retry-enqueue", videoId });
+        }
+      } catch (err) {
+        log.warn({ err, videoId }, "[assembly-retry] enqueueIfMissing failed (non-fatal)");
+      }
+
+      // Faststart (move moov atom to front of MP4).
+      if (!vRow.faststartApplied) {
+        try {
+          await runFaststart(videoId, vRow.objectPath, { skipStatusUpdate: false });
+          log.info({ videoId }, "[assembly-retry] faststart applied");
+        } catch (fsErr) {
+          log.warn({ err: fsErr, videoId }, "[assembly-retry] faststart failed (non-fatal)");
+        }
+      }
+
+      // HLS transcoding.
+      if (!vRow.hlsMasterUrl) {
+        try {
+          await enqueueTranscode({ videoId, videoPath: vRow.objectPath });
+          if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
+          log.info({ videoId }, "[assembly-retry] HLS transcoding queued");
+        } catch (txErr) {
+          log.warn({ err: txErr, videoId }, "[assembly-retry] enqueueTranscode failed (non-fatal)");
+        }
+      }
+
+      log.info({ sessionId, videoId }, "[assembly-retry] complete ✓");
+
+    } catch (err) {
+      log.error({ err, sessionId, videoId }, "[assembly-retry] failed — marking video ASSEMBLY_FAILED");
+      await Promise.allSettled([
+        db
+          .update(videos)
+          .set({
+            transcodingStatus: "failed",
+            transcodingErrorCode: "ASSEMBLY_FAILED",
+            transcodingErrorMessage:
+              "Automatic re-assembly failed after server restart. " +
+              "Click 'Retry Assembly' to try again, or delete this video and re-upload.",
+          })
+          .where(eq(videos.id, videoId)),
+        db
+          .update(sessions)
+          .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
+          .where(eq(sessions.sessionId, sessionId)),
+      ]);
+      adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-retry-failed" });
+    }
+  })();
+}
+
 // ─── DB-fallback finalization ──────────────────────────────────────────────────
 
 async function finalizeFromDbFallback(
@@ -369,6 +576,8 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           completedVideoId: sessions.completedVideoId,
           objectKey: sessions.objectKey,
           sizeBytes: sessions.sizeBytes,
+          totalChunks: sessions.totalChunks,
+          storageBackend: sessions.storageBackend,
         })
         .from(sessions)
         .where(inArray(sessions.status, ["assembling"]));
@@ -379,6 +588,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         const orphanedSessionIds: string[] = [];
         const orphanedVideoIds: string[] = [];
         const orphanedObjectKeys: string[] = [];
+        const orphanedTotalChunks: number[] = [];
 
         for (const row of stuckRows) {
           // Sessions that never reached pre-commit (no video row yet) are
@@ -434,11 +644,99 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             recoveredSessionIds.push(row.sessionId);
             recoveredVideoIds.push(row.completedVideoId);
           } else {
-            // Blob is missing or truncated — assembly was genuinely interrupted.
-            // Clean up so the client can retry with a fresh video row.
+            // Blob is missing or truncated — assembly was interrupted.
+            // Will be re-classified below: "retriable" if all chunks are still
+            // present in upload_chunks, or "orphaned" (truly unrecoverable) if not.
             orphanedSessionIds.push(row.sessionId);
             orphanedVideoIds.push(row.completedVideoId);
             orphanedObjectKeys.push(row.objectKey);
+            orphanedTotalChunks.push(row.totalChunks);
+          }
+        }
+
+        // ── Re-classify orphaned → retriable where all chunks are still present ──
+        //
+        // For sessions whose blob assembly was interrupted mid-flight, the chunks
+        // (BYTEA for db_fallback, or part-ETags for db) are still stored in
+        // upload_chunks. We can automatically re-run assembly without asking the
+        // admin to delete and re-upload. Batch the count query to avoid N round trips.
+        const retriableSessionIds: string[] = [];
+        const retriableVideoIds: string[] = [];
+        const trulyOrphanedSessionIds: string[] = [];
+        const trulyOrphanedVideoIds: string[] = [];
+        const trulyOrphanedObjectKeys: string[] = [];
+
+        if (orphanedSessionIds.length > 0) {
+          // Batch chunk count: one query for all orphaned sessions.
+          const chunkCountRows = await db
+            .select({
+              sessionId: chunks.sessionId,
+              cnt: sql<number>`COUNT(*)::int`.as("cnt"),
+            })
+            .from(chunks)
+            .where(inArray(chunks.sessionId, orphanedSessionIds))
+            .groupBy(chunks.sessionId)
+            .catch(() => [] as Array<{ sessionId: string; cnt: number }>);
+
+          const chunkCounts = new Map<string, number>();
+          for (const r of chunkCountRows) chunkCounts.set(r.sessionId, r.cnt);
+
+          for (let i = 0; i < orphanedSessionIds.length; i++) {
+            const sid = orphanedSessionIds[i];
+            const vid = orphanedVideoIds[i];
+            const key = orphanedObjectKeys[i];
+            const total = orphanedTotalChunks[i] ?? 0;
+            const present = chunkCounts.get(sid) ?? 0;
+
+            if (total > 0 && present >= total) {
+              // All chunks are present — we can re-run assembly automatically.
+              app.log.info(
+                { sessionId: sid, videoId: vid, chunksPresent: present, totalChunks: total },
+                "[upload] recovery: all chunks present — scheduling auto-retry instead of ASSEMBLY_FAILED",
+              );
+              retriableSessionIds.push(sid);
+              retriableVideoIds.push(vid);
+            } else {
+              // Chunks are incomplete — nothing to assemble; needs re-upload.
+              app.log.warn(
+                { sessionId: sid, videoId: vid, chunksPresent: present, totalChunks: total },
+                "[upload] recovery: chunks incomplete — marking ASSEMBLY_FAILED (re-upload required)",
+              );
+              trulyOrphanedSessionIds.push(sid);
+              trulyOrphanedVideoIds.push(vid);
+              trulyOrphanedObjectKeys.push(key);
+            }
+          }
+        }
+
+        // ── Auto-retry retriable sessions ─────────────────────────────────
+        // Reset video rows back to a pending state, keep sessions in "assembling"
+        // (they were already there), and spawn a background re-assembly task.
+        // spawnAssemblyRetry handles success/failure and updates both rows.
+        if (retriableSessionIds.length > 0) {
+          await db
+            .update(videos)
+            .set({
+              transcodingStatus: "none",
+              transcodingErrorCode: null,
+              transcodingErrorMessage: null,
+              // objectPath + localVideoUrl preserved — session.objectKey is still valid;
+              // the blob just needs to be (re-)assembled into it.
+            })
+            .where(inArray(videos.id, retriableVideoIds))
+            .catch((err: unknown) =>
+              app.log.warn({ err }, "[upload] recovery: retriable video row reset failed (non-fatal)"),
+            );
+          for (const videoId of retriableVideoIds) {
+            adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-retry-scheduled" });
+          }
+          app.log.info(
+            { count: retriableSessionIds.length, videoIds: retriableVideoIds },
+            "[upload] recovery: scheduling background re-assembly for interrupted sessions with intact chunks",
+          );
+          // Fire all background retries (fire-and-forget — each handles its own error).
+          for (let i = 0; i < retriableSessionIds.length; i++) {
+            void spawnAssemblyRetry(retriableSessionIds[i], retriableVideoIds[i], app.log);
           }
         }
 
@@ -547,12 +845,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           }
         }
 
-        // ── Clean up genuinely interrupted sessions ────────────────────────
-        if (orphanedVideoIds.length > 0) {
+        // ── Clean up truly orphaned sessions (chunks incomplete — re-upload required) ──
+        if (trulyOrphanedVideoIds.length > 0) {
           // Remove broadcast_queue slots added optimistically at pre-commit time.
           await db
             .delete(schema.broadcastQueueTable)
-            .where(inArray(schema.broadcastQueueTable.videoId, orphanedVideoIds))
+            .where(inArray(schema.broadcastQueueTable.videoId, trulyOrphanedVideoIds))
             .catch(() => {});
           // Mark video rows as failed instead of deleting them. Deleting caused
           // the "disappearing video" bug — the admin saw the upload succeed, the
@@ -560,51 +858,51 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           // restart. Keeping the row with transcodingStatus="failed" +
           // transcodingErrorCode="ASSEMBLY_FAILED" preserves the title and
           // metadata so the admin sees a "Re-upload required" badge and knows
-          // exactly what happened. They can delete and re-upload to recover.
+          // exactly what happened. Chunks are incomplete so re-upload is the
+          // only recovery path.
           await db
             .update(videos)
             .set({
               transcodingStatus: "failed",
               transcodingErrorCode: "ASSEMBLY_FAILED",
               transcodingErrorMessage:
-                "Upload assembly was interrupted by a server restart before " +
-                "the file could be fully written. Delete this video and " +
-                "re-upload to recover.",
-              objectPath: null,     // blob is gone → sourceAvailable: false → "Re-upload required" badge
+                "Upload assembly was interrupted and upload data is incomplete. " +
+                "Delete this video and re-upload to recover.",
+              objectPath: null,     // blob is gone → sourceAvailable: false
               localVideoUrl: null,  // no longer streamable
             })
-            .where(inArray(videos.id, orphanedVideoIds))
+            .where(inArray(videos.id, trulyOrphanedVideoIds))
             .catch((err: unknown) =>
               app.log.warn({ err }, "[upload] recovery: failed to mark orphaned video rows as failed (non-fatal)"),
             );
           // Notify the admin panel so the failed status appears immediately.
-          for (const videoId of orphanedVideoIds) {
+          for (const videoId of trulyOrphanedVideoIds) {
             adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-interrupted-on-restart" });
           }
         }
         // Delete partially-written destination blobs so the next finalize attempt
         // gets a clean objectKey instead of appending to a corrupt partial blob.
-        for (const key of orphanedObjectKeys) {
+        for (const key of trulyOrphanedObjectKeys) {
           await db
             .execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`)
             .catch((err: unknown) =>
               app.log.warn({ err, key }, "[upload] partial dest blob cleanup failed (non-fatal)"),
             );
         }
-        if (orphanedSessionIds.length > 0) {
+        if (trulyOrphanedSessionIds.length > 0) {
           // Reset to "uploading" so the client's retry logic can re-attempt finalize.
           await db
             .update(sessions)
             .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
-            .where(inArray(sessions.sessionId, orphanedSessionIds));
+            .where(inArray(sessions.sessionId, trulyOrphanedSessionIds));
           app.log.warn(
             {
-              count: orphanedSessionIds.length,
-              orphanedVideoIds,
-              destBlobsDeleted: orphanedObjectKeys.length,
-              ids: orphanedSessionIds,
+              count: trulyOrphanedSessionIds.length,
+              trulyOrphanedVideoIds,
+              destBlobsDeleted: trulyOrphanedObjectKeys.length,
+              ids: trulyOrphanedSessionIds,
             },
-            "[upload] reset interrupted assembling sessions — video rows preserved with failed status, partial blobs cleaned up",
+            "[upload] reset interrupted assembling sessions (chunks incomplete) — video rows preserved with ASSEMBLY_FAILED status, partial blobs cleaned up",
           );
         }
       }
@@ -2587,6 +2885,127 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         return { status: "assembling" as const, videoId: session.completedVideoId ?? null, assemblyPercent };
       }
       return { status: "uploading" as const, videoId: null, assemblyPercent: null };
+    },
+  );
+
+  // ── POST /videos/upload/retry-assembly/:videoId ───────────────────────────
+  // Admin-initiated retry for videos stuck in ASSEMBLY_FAILED state.
+  // Finds the upload session via completedVideoId, counts whether all chunks
+  // are still present, and re-spawns a background assembly task if they are.
+  //
+  // Returns:
+  //   200 { canRetry: true,  message: string } — retry spawned
+  //   200 { canRetry: false, message: string } — cannot retry (re-upload required)
+  //   404                                       — video not found
+  r.post(
+    "/videos/upload/retry-assembly/:videoId",
+    {
+      schema: {
+        tags: ["uploads"],
+        params: z.object({ videoId: z.string().uuid() }),
+        response: {
+          200: z.object({ canRetry: z.boolean(), message: z.string() }),
+          404: z.object({ error: z.string() }),
+          429: z.object({ error: z.string() }),
+        },
+      },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (req, reply) => {
+      const { videoId } = req.params;
+
+      // Find the video row and verify it is in ASSEMBLY_FAILED state.
+      const [vRow] = await db
+        .select({
+          id: videos.id,
+          transcodingStatus: videos.transcodingStatus,
+          transcodingErrorCode: videos.transcodingErrorCode,
+        })
+        .from(videos)
+        .where(eq(videos.id, videoId))
+        .limit(1);
+
+      if (!vRow) {
+        return reply.code(404).send({ error: "Video not found" });
+      }
+
+      if (vRow.transcodingStatus !== "failed" || vRow.transcodingErrorCode !== "ASSEMBLY_FAILED") {
+        return {
+          canRetry: false,
+          message: `Video is not in ASSEMBLY_FAILED state (current status: ${vRow.transcodingStatus}${vRow.transcodingErrorCode ? `/${vRow.transcodingErrorCode}` : ""})`,
+        };
+      }
+
+      // Find the upload session via completedVideoId.
+      const [session] = await db
+        .select({
+          sessionId: sessions.sessionId,
+          totalChunks: sessions.totalChunks,
+          storageBackend: sessions.storageBackend,
+          status: sessions.status,
+          objectKey: sessions.objectKey,
+        })
+        .from(sessions)
+        .where(eq(sessions.completedVideoId, videoId))
+        .limit(1);
+
+      if (!session) {
+        return {
+          canRetry: false,
+          message:
+            "No upload session found for this video. " +
+            "The session may have expired. Delete this video and re-upload to recover.",
+        };
+      }
+
+      // Count chunks present in upload_chunks.
+      type CountRow = { cnt: number };
+      const countResult = await db.execute<CountRow>(
+        sql`SELECT COUNT(*)::int AS cnt FROM upload_chunks WHERE session_id = ${session.sessionId}`,
+      );
+      const rows = (countResult as unknown as { rows?: CountRow[] }).rows ??
+        (countResult as unknown as CountRow[]);
+      const chunksPresent = Number(rows[0]?.cnt ?? 0);
+
+      if (session.totalChunks <= 0 || chunksPresent < session.totalChunks) {
+        return {
+          canRetry: false,
+          message:
+            `Upload data is incomplete: ${chunksPresent} of ${session.totalChunks} chunk(s) are still stored. ` +
+            "Delete this video and re-upload to recover.",
+        };
+      }
+
+      // All chunks present — reset video to pending and spawn background retry.
+      await db
+        .update(videos)
+        .set({
+          transcodingStatus: "none",
+          transcodingErrorCode: null,
+          transcodingErrorMessage: null,
+        })
+        .where(eq(videos.id, videoId));
+
+      // Keep session in (or move back to) "assembling" so the finalize-status
+      // poller sees the right state during the retry.
+      await db
+        .update(sessions)
+        .set({ status: "assembling", completedVideoId: videoId, updatedAt: new Date() })
+        .where(eq(sessions.sessionId, session.sessionId));
+
+      adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-retry-requested" });
+
+      req.log.info(
+        { videoId, sessionId: session.sessionId, chunksPresent, totalChunks: session.totalChunks },
+        "[assembly-retry] admin-initiated retry — spawning background re-assembly",
+      );
+
+      void spawnAssemblyRetry(session.sessionId, videoId, req.log);
+
+      return {
+        canRetry: true,
+        message: "Assembly retry started. The video status will update automatically once complete.",
+      };
     },
   );
 }

@@ -67,6 +67,12 @@ interface AdminVideo {
    */
   sourceAvailable: boolean | null;
   /**
+   * Machine-readable error code for the most recent transcoding failure.
+   * "ASSEMBLY_FAILED" means the upload was interrupted before the file
+   * was fully assembled; the upload session may still have intact chunks.
+   */
+  transcodingErrorCode: string | null;
+  /**
    * Human-readable reason for the most recent transcoding failure.
    * null when the video has not failed or was successfully re-queued.
    */
@@ -553,6 +559,21 @@ export default function VideosPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Faststart request failed"),
+  });
+
+  const retryAssemblyMutation = useMutation({
+    mutationFn: (id: string) =>
+      api.post<{ canRetry: boolean; message: string }>(`/admin/videos/upload/retry-assembly/${id}`),
+    onSuccess: (res) => {
+      if (res.canRetry) {
+        toast.success("Assembly retry started — the video will update automatically once complete.");
+      } else {
+        toast.error(`Cannot retry: ${res.message}`);
+      }
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Retry request failed"),
   });
 
   const batchRetryMutation = useMutation({
@@ -1246,6 +1267,19 @@ export default function VideosPage() {
                     {v.transcodingStatus === "failed" && v.videoSource === "local" && (
                       <>
                         {v.sourceAvailable === false ? (
+                          v.transcodingErrorCode === "ASSEMBLY_FAILED" ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-5 text-[10px] px-1.5 border-blue-400 text-blue-700 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/30 flex items-center gap-0.5"
+                              title="The upload was interrupted mid-assembly. Click to attempt automatic recovery — no re-upload needed if all chunks are still stored."
+                              disabled={retryAssemblyMutation.isPending}
+                              onClick={(e) => { e.stopPropagation(); retryAssemblyMutation.mutate(v.id); }}
+                            >
+                              <RefreshCw size={9} className={`flex-shrink-0${retryAssemblyMutation.isPending ? " animate-spin" : ""}`} />
+                              Retry Assembly
+                            </Button>
+                          ) : (
                           <span title="Source file was deleted — delete this video and re-upload a fresh copy to recover.">
                             <Badge
                               variant="outline"
@@ -1255,6 +1289,7 @@ export default function VideosPage() {
                               Re-upload required
                             </Badge>
                           </span>
+                          )
                         ) : (
                           <Button
                             size="sm"
