@@ -86,7 +86,7 @@ export default function HistoryScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       <View
         style={[
           styles.header,

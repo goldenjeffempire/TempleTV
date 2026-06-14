@@ -84,7 +84,7 @@ export default function LinkTvScreen() {
       style={[styles.flex, { backgroundColor: c.background }]}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       <ScrollView
         contentContainerStyle={[
           styles.scroll,

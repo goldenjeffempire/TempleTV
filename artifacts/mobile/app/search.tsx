@@ -184,7 +184,7 @@ export default function SearchScreen() {
       style={[styles.root, { backgroundColor: c.background }]}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
 
       {/* ── Top bar ─────────────────────────────────────────────────────── */}

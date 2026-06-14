@@ -441,7 +441,7 @@ export default function WatchScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       {/* Search toolbar — safe-area top + search icon only, no branding */}
       <View style={[styles.searchToolbar, { paddingTop: insets.top, backgroundColor: c.background }]}>
         <Pressable

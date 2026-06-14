@@ -62,7 +62,7 @@ export default function RadioScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
 
       <View style={[styles.body, { paddingTop: insets.top, paddingBottom: insets.bottom + 40 }]}>
         <Animated.View style={[styles.card, { opacity: fadeAnim }]}>

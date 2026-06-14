@@ -123,6 +123,7 @@ function ClassicTabLayout() {
           tabBarActiveTintColor: colors.primary,
           tabBarInactiveTintColor: colors.mutedForeground,
           headerShown: false,
+          header: () => null,
           tabBarStyle: {
             position: "absolute",
             backgroundColor: isIOS ? "transparent" : colors.surfaceGlass,

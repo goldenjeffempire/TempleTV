@@ -410,13 +410,15 @@ function RootLayoutNav() {
     };
   }, []);
 
+  const noHeader = { headerShown: false, header: () => null, title: "" } as const;
+
   return (
-    <Stack screenOptions={{ headerShown: false, title: "" }}>
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+    <Stack screenOptions={noHeader}>
+      <Stack.Screen name="(tabs)" options={noHeader} />
       <Stack.Screen
         name="player"
         options={{
-          headerShown: false,
+          ...noHeader,
           presentation: "modal",
           animation: "slide_from_bottom",
         }}
@@ -424,7 +426,7 @@ function RootLayoutNav() {
       <Stack.Screen
         name="login"
         options={{
-          headerShown: false,
+          ...noHeader,
           presentation: "modal",
           animation: "slide_from_bottom",
         }}
@@ -432,7 +434,7 @@ function RootLayoutNav() {
       <Stack.Screen
         name="signup"
         options={{
-          headerShown: false,
+          ...noHeader,
           presentation: "modal",
           animation: "slide_from_bottom",
         }}
@@ -440,7 +442,7 @@ function RootLayoutNav() {
       <Stack.Screen
         name="donate"
         options={{
-          headerShown: false,
+          ...noHeader,
           presentation: "modal",
           animation: "slide_from_bottom",
         }}
@@ -448,7 +450,7 @@ function RootLayoutNav() {
       <Stack.Screen
         name="change-password"
         options={{
-          headerShown: false,
+          ...noHeader,
           presentation: "modal",
           animation: "slide_from_bottom",
         }}
@@ -456,36 +458,27 @@ function RootLayoutNav() {
       <Stack.Screen
         name="link"
         options={{
-          headerShown: false,
+          ...noHeader,
           presentation: "modal",
           animation: "slide_from_bottom",
         }}
       />
       <Stack.Screen
         name="favorites"
-        options={{
-          headerShown: false,
-          animation: "slide_from_right",
-        }}
+        options={{ ...noHeader, animation: "slide_from_right" }}
       />
       <Stack.Screen
         name="history"
-        options={{
-          headerShown: false,
-          animation: "slide_from_right",
-        }}
+        options={{ ...noHeader, animation: "slide_from_right" }}
       />
       <Stack.Screen
         name="series/[slug]"
-        options={{
-          headerShown: false,
-          animation: "slide_from_right",
-        }}
+        options={{ ...noHeader, animation: "slide_from_right" }}
       />
       <Stack.Screen
         name="search"
         options={{
-          headerShown: false,
+          ...noHeader,
           presentation: "modal",
           animation: "slide_from_bottom",
         }}
@@ -493,31 +486,22 @@ function RootLayoutNav() {
       <Stack.Screen
         name="account"
         options={{
-          headerShown: false,
+          ...noHeader,
           presentation: "modal",
           animation: "slide_from_bottom",
         }}
       />
       <Stack.Screen
         name="playlists"
-        options={{
-          headerShown: false,
-          animation: "slide_from_right",
-        }}
+        options={{ ...noHeader, animation: "slide_from_right" }}
       />
       <Stack.Screen
         name="playlists/[id]"
-        options={{
-          headerShown: false,
-          animation: "slide_from_right",
-        }}
+        options={{ ...noHeader, animation: "slide_from_right" }}
       />
       <Stack.Screen
         name="contact"
-        options={{
-          headerShown: false,
-          animation: "slide_from_right",
-        }}
+        options={{ ...noHeader, animation: "slide_from_right" }}
       />
     </Stack>
   );

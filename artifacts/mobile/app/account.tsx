@@ -165,7 +165,7 @@ export default function AccountScreen() {
   if (!isLoggedIn || !user) {
     return (
       <View style={[styles.root, { backgroundColor: c.background }]}>
-        <Stack.Screen options={{ headerShown: false }} />
+        <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
         <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
         <View style={[styles.header, { paddingTop: insets.top + 8, borderBottomColor: c.border }]}>
           <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
@@ -201,7 +201,7 @@ export default function AccountScreen() {
       style={{ flex: 1, backgroundColor: c.background }}
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
 
       {/* ── Header ────────────────────────────────────────────────────── */}

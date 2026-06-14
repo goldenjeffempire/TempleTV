@@ -50,7 +50,7 @@ export default function ForgotPasswordScreen() {
 
   return (
     <View style={styles.root}>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       <LinearGradient
         colors={["#0d0014", "#160a28", "#0a0010"]}
         start={{ x: 0.2, y: 0 }}

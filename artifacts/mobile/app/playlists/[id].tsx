@@ -153,7 +153,7 @@ export default function PlaylistDetailScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
 
       {/* Header */}

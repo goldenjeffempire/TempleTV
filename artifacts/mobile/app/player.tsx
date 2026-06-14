@@ -1084,7 +1084,7 @@ export default function PlayerScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       <StatusBar barStyle="light-content" />
       <ScrollView
         showsVerticalScrollIndicator={false}

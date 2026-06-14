@@ -250,7 +250,7 @@ export default function SettingsScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingTop: insets.top, paddingBottom: insets.bottom + 100 }}

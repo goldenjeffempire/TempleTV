@@ -553,7 +553,7 @@ export default function ChannelsTab() {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background, paddingTop: insets.top }]}>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
 
       <ScrollView
         showsVerticalScrollIndicator={false}

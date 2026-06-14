@@ -715,7 +715,7 @@ export default function LibraryScreen() {
       style={[styles.container, { backgroundColor: c.background, paddingTop: insets.top }]}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
 
       {/* Stale / refresh-fail indicator — only shown in videos mode, only when online
           (NetworkBanner already covers the offline case at the root). */}

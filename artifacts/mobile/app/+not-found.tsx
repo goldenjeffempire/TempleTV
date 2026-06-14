@@ -36,7 +36,7 @@ export default function NotFoundScreen() {
   // more than one frame (e.g. slow JS thread on low-end Android devices).
   return (
     <>
-      <Stack.Screen options={{ headerShown: false, animation: "none" }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "", animation: "none" }} />
       <View style={styles.root}>
         <ActivityIndicator size="large" color="#6A0DAD" />
       </View>

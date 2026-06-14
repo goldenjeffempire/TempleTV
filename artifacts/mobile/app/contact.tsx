@@ -183,7 +183,7 @@ export default function ContactScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       {/* ── Header ── */}
       <View
         style={[

@@ -263,7 +263,7 @@ export default function SeriesDetailScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
-      <Stack.Screen options={{ headerShown: false }} />
+      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       <FlatList
         data={data.episodes}
         keyExtractor={keyExtractor}
