@@ -42,7 +42,6 @@ import { getRedis } from "../../infrastructure/redis.js";
 import { sseCounter } from "../../infrastructure/sse-counter.js";
 import { wsCounter } from "../../infrastructure/ws-counter.js";
 import { storage } from "../../infrastructure/storage.js";
-import { uploadSessions } from "../media-uploads/upload-sessions.js";
 import { cache } from "../../infrastructure/cache.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { broadcastOrchestrator } from "../broadcast-v2/engine/broadcast-orchestrator.js";
@@ -1316,7 +1315,13 @@ export async function adminOpsRoutes(app: FastifyInstance) {
           uploadBytes: 0,
           hlsBytes: 0,
         },
-        uploadSessions: { active: uploadSessions.list().length },
+        uploadSessions: {
+          active: await db
+            .select({ count: sql<number>`COUNT(*)::int` })
+            .from(schema.uploadSessionsTable)
+            .where(inArray(schema.uploadSessionsTable.status, ["uploading", "assembling"]))
+            .then((r) => r[0]?.count ?? 0),
+        },
       };
     },
   );
@@ -1568,48 +1573,98 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   );
 
   // ── Active uploads ────────────────────────────────────────────────────────
-  // Reads from the same in-memory registry that the multipart-upload
-  // gateway (`modules/media-uploads`) writes into when `s3-multipart-init`
-  // succeeds. Surfaces every in-flight session for the admin Operations
-  // tab. Per-part progress isn't tracked server-side (the browser PUTs
-  // each part directly to S3), so we report 0 received chunks until the
-  // session is removed on `s3-multipart-complete` / `-abort`.
+  // Reads directly from the `upload_sessions` DB table — survives server
+  // restarts unlike the old in-memory registry which was wiped on cold boot.
+  // Joins with `upload_chunks` to show real per-file progress (uploadedChunks,
+  // receivedBytes, progressPercent) rather than always returning 0.
   r.get(
     "/uploads/active",
     {
       preHandler: requireAuth("editor"),
       schema: {
         tags: ["admin-ops"],
-        summary: "Active S3 multipart upload sessions",
+        summary: "Active upload sessions (DB-backed, restart-safe)",
         response: { 200: ActiveUploadsResponseSchema },
         security: [{ bearerAuth: [] }],
       },
     },
     async () => {
       const now = Date.now();
-      const list = uploadSessions.list();
-      return {
-        count: list.length,
-        sessions: list.map((s) => {
-          const ageSecs = Math.max(0, Math.floor((now - s.startedAt) / 1000));
-          return {
-            sessionId: s.sessionId,
-            title: s.title,
-            originalFilename: null,
-            category: "",
-            totalBytes: s.sizeBytes,
-            receivedBytes: 0,
-            totalChunks: s.totalParts,
-            uploadedChunks: 0,
-            progressPercent: 0,
-            ageSecs,
-            idleSecs: ageSecs,
-            finalizing: !!s.completedVideoId,
-            createdAt: new Date(s.startedAt).toISOString(),
-            lastActivity: new Date(s.startedAt).toISOString(),
-          };
-        }),
-      };
+
+      // Fetch all non-terminal sessions and their chunk progress in one query.
+      // LIMIT 50 guards against pathological cases (e.g. thousands of stale rows
+      // from a bug) blowing up the response payload.
+      const rows = await db.execute<{
+        session_id: string;
+        title: string;
+        original_filename: string | null;
+        category: string;
+        size_bytes: string;
+        total_chunks: number;
+        status: string;
+        completed_video_id: string | null;
+        created_at: string;
+        updated_at: string;
+        uploaded_chunks: string;
+        received_bytes: string;
+      }>(sql`
+        SELECT
+          s.session_id,
+          s.title,
+          s.original_filename,
+          s.category,
+          s.size_bytes,
+          s.total_chunks,
+          s.status,
+          s.completed_video_id,
+          s.created_at,
+          s.updated_at,
+          COUNT(c.id)::int                          AS uploaded_chunks,
+          COALESCE(SUM(c.size_bytes), 0)::bigint    AS received_bytes
+        FROM upload_sessions s
+        LEFT JOIN upload_chunks c ON c.session_id = s.session_id
+        WHERE s.status IN ('uploading', 'assembling')
+        GROUP BY s.session_id
+        ORDER BY s.created_at DESC
+        LIMIT 50
+      `);
+
+      type Row = (typeof rows)["rows"][number];
+      const sessions = (rows.rows as Row[]).map((s) => {
+        const createdAtMs = new Date(s.created_at).getTime();
+        const updatedAtMs = new Date(s.updated_at).getTime();
+        const ageSecs = Math.max(0, Math.floor((now - createdAtMs) / 1000));
+        const idleSecs = Math.max(0, Math.floor((now - updatedAtMs) / 1000));
+        const totalBytes = Number(s.size_bytes);
+        const uploadedChunks = Number(s.uploaded_chunks);
+        const totalChunks = Number(s.total_chunks);
+        const receivedBytes = Number(s.received_bytes);
+        const progressPercent =
+          totalBytes > 0
+            ? Math.min(99, Math.round((receivedBytes / totalBytes) * 100))
+            : totalChunks > 0
+            ? Math.min(99, Math.round((uploadedChunks / totalChunks) * 100))
+            : 0;
+
+        return {
+          sessionId: s.session_id,
+          title: s.title,
+          originalFilename: s.original_filename ?? null,
+          category: s.category,
+          totalBytes,
+          receivedBytes,
+          totalChunks,
+          uploadedChunks,
+          progressPercent,
+          ageSecs,
+          idleSecs,
+          finalizing: s.status === "assembling" || !!s.completed_video_id,
+          createdAt: new Date(s.created_at).toISOString(),
+          lastActivity: new Date(s.updated_at).toISOString(),
+        };
+      });
+
+      return { count: sessions.length, sessions };
     },
   );
 
