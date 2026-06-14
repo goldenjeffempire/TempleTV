@@ -106,6 +106,7 @@ The full install procedure is still needed when node_modules/.pnpm is empty (fre
 
 | Version  | versionCode | EAS Build ID                                 | Date       |
 |----------|-------------|----------------------------------------------|------------|
+| v1.0.26  | 74          | 9f855288-0b9e-4e90-ab7a-e010784bb183         | 2026-06-14 |
 | v1.0.25  | 73          | 11ff9e87-f2c7-4f38-a5f7-9f08e5690296         | 2026-06-14 |
 | v1.0.24  | 71          | b76ea257-20ae-4404-ba33-d60b0a55ce84         | 2026-06-13 |
 | v1.0.23  | 69          | 0f32b4d4-b561-4543-a9eb-e97c035e2d5b         | 2026-06-13 |
