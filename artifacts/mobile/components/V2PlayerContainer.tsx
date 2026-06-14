@@ -1393,6 +1393,30 @@ export function V2PlayerContainer({
   // haven't frozen. The counter resets to 0 whenever we leave a loading state.
   const PHASE_STEP_MS = 5_000;
   const [loadingPhase, setLoadingPhase] = useState(0);
+
+  // ── FATAL retry countdown ─────────────────────────────────────────────────
+  // Ticks every second while in FATAL state so the overlay shows the exact
+  // seconds remaining until the next auto-retry, matching the server-side
+  // exponential backoff schedule (30 s → 60 s → 120 s → 240 s max).
+  // Mirrors the TV LiveBroadcastV2 implementation.
+  const [fatalRetrySecsLeft, setFatalRetrySecsLeft] = useState<number | null>(null);
+  useEffect(() => {
+    if (snapshot.state !== "FATAL" || snapshot.fatalEnteredAtMs == null) {
+      setFatalRetrySecsLeft(null);
+      return;
+    }
+    const backoffMs = Math.min(
+      30_000 * Math.pow(2, Math.max(0, (snapshot.fatalAttemptCount ?? 1) - 1)),
+      240_000,
+    );
+    const tick = () => {
+      const remaining = backoffMs - (Date.now() - snapshot.fatalEnteredAtMs!);
+      setFatalRetrySecsLeft(Math.max(0, Math.ceil(remaining / 1_000)));
+    };
+    tick();
+    const id = setInterval(tick, 1_000);
+    return () => clearInterval(id);
+  }, [snapshot.state, snapshot.fatalEnteredAtMs, snapshot.fatalAttemptCount]);
   const phaseTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isLoadingState =
     snapshot.state === "BOOTSTRAP" ||
@@ -1610,9 +1634,15 @@ export function V2PlayerContainer({
     const p = loadingPhase;
 
     if (snapshot.state === "FATAL") {
+      const secsLabel =
+        fatalRetrySecsLeft == null
+          ? ""
+          : fatalRetrySecsLeft > 0
+          ? ` Auto-retrying in ${fatalRetrySecsLeft}s.`
+          : " Retrying now…";
       return {
         main: "Playback Error",
-        sub: "Please try again in a moment.",
+        sub: `Unable to load stream.${secsLabel}`,
         showSpinner: false,
         onRetry: forceRebind,
       };
@@ -1777,7 +1807,7 @@ export function V2PlayerContainer({
       };
     }
     return null;
-  }, [snapshot.state, server, loadingPhase, isOnline, isYouTubeOverride, videoReady, forceReconnect, forceRebind]);
+  }, [snapshot.state, server, loadingPhase, isOnline, isYouTubeOverride, videoReady, forceReconnect, forceRebind, fatalRetrySecsLeft]);
 
   // Poster: show the upcoming/current sermon thumbnail behind the buffers
   // while the player is still tuning in, off-air, reconnecting, or in any

@@ -219,7 +219,14 @@ function sample() {
         consecutiveSamples: consecutiveRssOver,
       },
     });
-  } else if (rssAlertActive && consecutiveRssOver % 10 === 0) {
+  } else if (rssAlertActive && consecutiveRssOver % 60 === 0) {
+    // Fire a "still elevated" reminder every 60 samples (60 × 30 s = 30 min).
+    // The previous cadence of every 10 samples (5 min) produced a new toast
+    // every 5 minutes even though the message text changes slightly each time
+    // (different rssMb value), bypassing the admin UI's code-based dedup and
+    // stacking identical-looking alerts in the notification panel. At 30 min
+    // the reminder is still timely for an overnight on-call check, but not
+    // noisy enough to fill the toast stack during a quiet steady-state.
     _emit?.({
       type: "ops-alert",
       data: {

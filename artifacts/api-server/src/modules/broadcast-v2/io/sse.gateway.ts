@@ -97,6 +97,13 @@ export async function sseRoutes(app: FastifyInstance) {
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
+      // Explicitly opt out of content-encoding so CDNs and reverse proxies
+      // (Nginx with gzip_types including text/event-stream, CloudFront with
+      // Accept-Encoding passthrough) don't attempt to gzip the stream.  A
+      // compressed SSE stream breaks the \n\n event framing: the decompressor
+      // buffers data before flushing, so the browser's EventSource parser
+      // never sees a complete event until the connection closes.
+      "Content-Encoding": "identity",
     });
 
     const lastEventId = req.headers["last-event-id"];

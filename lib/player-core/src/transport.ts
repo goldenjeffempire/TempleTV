@@ -424,11 +424,17 @@ export class V2Transport {
           this.wsPreferSseUntilWsOpens = false;
           this.sseReconnectCount = 0;
         }
-        // If there is no active socket AND no pending reconnect timer, the
-        // transport was stuck with no pending recovery (offline-skip path).
-        // Force-reconnect so playback resumes within ~150 ms of the browser
-        // reporting connectivity instead of waiting up to 22 s for the watchdog.
-        if (!this.stopped && !this.ws && !this.es && !this.reconnectTimer) {
+        // Reconnect immediately when online fires.
+        //
+        // forceReconnect() cancels any pending backoff timer itself, so calling
+        // it here unconditionally is safe and correct.  Critically: do NOT gate
+        // on `!this.reconnectTimer` — if a 30 s max-backoff timer is pending
+        // when the device comes back online (common on RN after airplane mode
+        // or a background-kill resume), the old guard left the transport idle
+        // for the remainder of the backoff period instead of reconnecting
+        // immediately.  The web hook (react.ts handleOnline) covers web
+        // surfaces, but RN surfaces rely solely on this handler.
+        if (!this.stopped && !this.ws && !this.es) {
           this.forceReconnect();
         }
       };
@@ -521,7 +527,20 @@ export class V2Transport {
       }
     }
     if (this.es) {
-      this.es.close();
+      // Mirror stop()'s teardown: call sseCleanup() to remove all named event
+      // listeners before closing the EventSource.  Calling es.close() alone
+      // does NOT remove addEventListener listeners in all browser runtimes,
+      // leaving the es → handler → transport closure chain alive and preventing
+      // GC from reclaiming the transport instance on TV environments (Tizen /
+      // webOS) that have weak garbage collectors.  sseCleanup() is null when
+      // the EventSource was opened without named listeners (fallback path), so
+      // the else branch handles that case safely.
+      if (this.sseCleanup) {
+        try { this.sseCleanup(); } catch { /* noop */ }
+        this.sseCleanup = null;
+      } else {
+        try { this.es.close(); } catch { /* noop */ }
+      }
       this.es = null;
     }
     this.backoffMs = INITIAL_BACKOFF_MS;

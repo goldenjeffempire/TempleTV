@@ -298,12 +298,18 @@ function OpsAlertMonitor() {
   const seenRef = useRef<Map<string, number>>(new Map());
 
   useSSEEvent("ops-alert", (data: unknown) => {
-    const d = data as { level?: string; message?: string; component?: string } | undefined;
+    const d = data as { level?: string; message?: string; component?: string; code?: string } | undefined;
     const level = d?.level === "critical" ? "critical" : "warn";
     const message = d?.message ?? "System alert";
     const component = d?.component ? ` [${d.component}]` : "";
-    // Deduplicate: same level + first 60 chars of message within 2 min
-    const key = `${level}:${message.slice(0, 60)}`;
+    // Prefer the structured `code` field (e.g. "memory-pressure") as the
+    // dedup/toast key so repeated alerts with changing metric values in their
+    // message text (e.g. "RSS still elevated: 414 MB … 415 MB … 419 MB") all
+    // map to the SAME key. This collapses them into a single toast that updates
+    // in place rather than stacking a new notification every emission.
+    // Fall back to message prefix for legacy events that have no code field.
+    const code = typeof d?.code === "string" && d.code.length > 0 ? d.code : null;
+    const key = code ? `${level}:${code}` : `${level}:${message.slice(0, 60)}`;
     const now = Date.now();
     const lastAt = seenRef.current.get(key) ?? 0;
     if (now - lastAt < 120_000) return;
