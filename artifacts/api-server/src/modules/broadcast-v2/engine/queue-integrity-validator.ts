@@ -852,14 +852,23 @@ class QueueIntegrityValidatorImpl {
       }
 
       // ── Auto-fix (reverse): re-activate corrupt_upload items that are now playable ──
-      // Re-activates items deactivated as 'corrupt_upload' once any of these
-      // conditions are true:
-      //   1. HLS manifest is now present (successful re-transcode or re-upload).
-      //   2. faststart_applied is now true (faststart worker succeeded since deactivation).
-      //   3. faststart_applied IS NULL AND local_video_url IS NOT NULL — this
-      //      recovers items falsely deactivated by the prior !row.vFaststart bug,
-      //      which treated NULL (never attempted) the same as false (explicitly
-      //      failed). Those items are playable raw MP4s; they must return to air.
+      // Re-activates items previously deactivated as 'corrupt_upload' once any
+      // playable URL is present AND the source is no longer absent/corrupt.
+      //
+      // Admission criteria mirrors the policy in isPlayableForBroadcast():
+      //   • ANY localVideoUrl OR hlsMasterUrl → source is available and the item
+      //     can be played. This covers all faststart states (null, true, false) and
+      //     all transcodingStatus values — the only gate is source availability.
+      //   • transcodingErrorCode NOT IN (CORRUPT_SOURCE, SOURCE_MISSING) → the
+      //     source is not structurally absent. Without this guard a CORRUPT_SOURCE
+      //     video with a stale localVideoUrl (set before transcoding ran) would be
+      //     re-activated here and immediately re-deactivated by the forward pass,
+      //     creating an oscillation cycle.
+      //
+      // Historical note: the old condition required faststart_applied = true OR
+      // faststart_applied IS NULL — which permanently blocked items deactivated
+      // under the prior policy for faststartApplied=false. The new policy admits
+      // those videos, so the revival condition is correspondingly broadened.
       {
         type RevivedRow = { id: string; title: string };
         let revivedCorruptRows: RevivedRow[] = [];
@@ -870,10 +879,10 @@ class QueueIntegrityValidatorImpl {
             INNER JOIN managed_videos mv ON mv.id = bq.video_id
             WHERE bq.is_active = false
               AND bq.validator_deactivated_reason = 'corrupt_upload'
+              AND (mv.hls_master_url IS NOT NULL OR mv.local_video_url IS NOT NULL)
               AND (
-                mv.hls_master_url IS NOT NULL
-                OR mv.faststart_applied = true
-                OR (mv.faststart_applied IS NULL AND mv.local_video_url IS NOT NULL)
+                mv.transcoding_error_code IS NULL
+                OR mv.transcoding_error_code NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING')
               )
           `);
           revivedCorruptRows = (result.rows as RevivedRow[]) ?? [];
@@ -1006,18 +1015,19 @@ class QueueIntegrityValidatorImpl {
       // Skipped when:
       //   • objectPath is null — upload never completed (re-upload required)
       //   • sourceCleanupStatus = 'deleted' — source blob has been cleaned up
-      //   • vFaststart === false — file explicitly failed faststart (unplayable)
-      //   • Terminal error codes: CORRUPT_SOURCE, SOURCE_MISSING, DISK_FULL
+      //   • Terminal error codes: CORRUPT_SOURCE, SOURCE_MISSING
+      //     (DISK_FULL and faststartApplied=false are NOT terminal — source blob
+      //      is still present; re-transcoding to HLS can produce a playable URL.
+      //      DISK_FULL resolves once disk space is freed; faststart failure just
+      //      means moov is at EOF, which HLS transcoding bypasses entirely.)
       {
         const healableOrphans = orphanedFailedRows.filter((r) => {
           if (!r.videoId2 || !r.vObjectPath) return false;
           if (r.vSourceCleanup === "deleted") return false;
-          if (r.vFaststart === false) return false;
           const isTerminal =
             r.vStatus === "failed" &&
             (r.vErrCode === "CORRUPT_SOURCE" ||
-              r.vErrCode === "SOURCE_MISSING" ||
-              r.vErrCode === "DISK_FULL");
+              r.vErrCode === "SOURCE_MISSING");
           return !isTerminal;
         });
 

@@ -73,34 +73,57 @@ async function repairZeroDurations(): Promise<number> {
 }
 
 /**
- * Re-admit eligible videos that have ONLY inactive queue rows by creating
- * fresh active rows for them.  scanLibraryAndEnqueue already handles the
- * NOT EXISTS (active row) case, but this pass also covers the edge case
- * where the only row was system-deactivated (validatorDeactivatedReason IS NOT NULL)
- * and scanLibraryAndEnqueue's NOT EXISTS already filters to is_active=true.
+ * Re-admit system-deactivated queue items that are now admissible under
+ * the current broadcast-eligibility policy.
  *
- * In practice this is redundant with scanLibraryAndEnqueue's logic, but it
- * serves as a belt-and-suspenders guard against orphaned inactive-only rows.
+ * Uses a JOIN to managed_videos so we only re-enable items that:
+ *   • have at least one playable URL (on the queue row OR the video row)
+ *   • are NOT CORRUPT_SOURCE / SOURCE_MISSING / ASSEMBLY_FAILED
+ *     (those are the only codes that warrant DB-level deactivation; they
+ *     are re-deactivated by the validator on the next cycle and re-enabling
+ *     them here would just create a pointless oscillation).
+ *
+ * Operator-deactivated items (validatorDeactivatedReason IS NULL) are
+ * intentionally left alone — this function only touches rows that the
+ * validator or a prior automated process disabled.
+ *
+ * The validator's own per-reason reverse passes (corrupt_upload,
+ * orphaned_video_ref, missing_video_join, hls_storage_missing) run every
+ * 2 minutes and handle the fine-grained re-activation logic for each
+ * deactivation class. This function is a belt-and-suspenders backstop
+ * that catches any residual items those passes miss — for example, items
+ * deactivated by an older version of the code whose deactivation policy
+ * has since been narrowed.
  */
 async function reactivateSystemDeactivated(): Promise<number> {
   try {
-    // Re-enable system-deactivated items (is_active=false, validatorDeactivatedReason IS NOT NULL).
-    // Operator-deactivated items (validatorDeactivatedReason IS NULL) are intentionally left alone.
-    const result = await db
-      .update(q)
-      .set({ isActive: true, validatorDeactivatedReason: null })
-      .where(
-        and(
-          eq(q.isActive, false),
-          isNotNull(q.validatorDeactivatedReason),
-        ),
-      )
-      .returning({ id: q.id });
-    const count = result.length;
+    const result = await db.execute<{ id: string }>(sql`
+      UPDATE broadcast_queue bq
+      SET
+        is_active                    = true,
+        validator_deactivated_reason = NULL
+      FROM managed_videos mv
+      WHERE bq.is_active = false
+        AND bq.validator_deactivated_reason IS NOT NULL
+        AND bq.video_id = mv.id
+        AND mv.video_source != 'youtube'
+        AND (
+          bq.hls_master_url  IS NOT NULL
+          OR bq.local_video_url IS NOT NULL
+          OR mv.hls_master_url  IS NOT NULL
+          OR mv.local_video_url IS NOT NULL
+        )
+        AND (
+          mv.transcoding_error_code IS NULL
+          OR mv.transcoding_error_code NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING', 'ASSEMBLY_FAILED')
+        )
+      RETURNING bq.id
+    `);
+    const count = (result.rows as unknown[]).length;
     if (count > 0) {
       logger.info(
         { count },
-        "[queue-reconcile] re-enabled system-deactivated queue items",
+        "[queue-reconcile] re-enabled system-deactivated queue items that are now admissible",
       );
     }
     return count;
@@ -165,11 +188,15 @@ class QueueHealthGuardImpl {
     // few reconciliation cycles (worker runs every 10 min).
     //
     // "Eligible" is defined by isPlayableForBroadcast() in auto-enqueue:
-    //   - Has localVideoUrl OR hlsMasterUrl
-    //   - Not CORRUPT_SOURCE / SOURCE_MISSING / ASSEMBLY_FAILED
-    //   - Not (transcodingStatus=failed AND faststartApplied=false AND no HLS)
+    //   - Has localVideoUrl OR hlsMasterUrl (source availability is the only gate)
+    //   - Not CORRUPT_SOURCE / SOURCE_MISSING / ASSEMBLY_FAILED (source truly absent)
     //   - Local videos: s3_mirrored_at IS NOT NULL (blob committed to storage)
     //   - Not YouTube (library-only)
+    //
+    // NOTE: faststart status, transcoding status, and moov position are NOT
+    // eligibility criteria. Videos with faststartApplied=false or transcodingStatus
+    // ='failed' are admitted immediately; the faststart-recovery worker retries
+    // moov relocation in the background and the player watchdog handles failures.
     //
     // This is intentionally unconditional — we always reconcile, not just
     // when below threshold, so every eligible video enters rotation automatically
