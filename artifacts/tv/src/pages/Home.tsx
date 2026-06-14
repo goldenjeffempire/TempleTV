@@ -491,6 +491,12 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
                 // the hero is showing right now, not the cached fetch value.
                 // isLive=true → TV-channel behavior on the resulting Player.
                 onPlay(id, "Temple TV", hlsUrl, computeLiveBroadcastPosition(), true);
+              } else {
+                // Broadcast engine active in override/shuffle-fallback mode —
+                // no legacy queue item in the v1 snapshot.  LiveBroadcastV2
+                // connects directly to broadcast-v2 and is fully self-contained.
+                // Pass sentinel hlsUrl so Player routes to LiveBroadcastHlsPlayer.
+                onPlay("broadcast-v2", "Temple TV", "broadcast-v2", 0, true);
               }
             }}
           />

@@ -1494,6 +1494,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       const finalItemCount = broadcastOrchestrator.getItemCount();
       const totalFixed = fixedLibraryUrls + fixedQueueUrls;
       const totalDeactivated = orphansDeactivated + duplicatesDeactivated + noUrlItemsDeactivated;
+      void totalDeactivated; // returned individually in the response body below
 
       req.log.info(
         {

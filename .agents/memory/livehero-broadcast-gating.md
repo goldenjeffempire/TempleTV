@@ -13,7 +13,8 @@ When the broadcast engine is in YouTube shuffle-fallback override mode (triggere
 
 1. `showLiveBroadcast = hasBroadcast && !broadcastVideoFailed` → `LiveBroadcastV2` never mounts (black hero).
 2. Metadata panel `hasBroadcast ?` branch → shows "OFF AIR · 24/7 ON DEMAND" when engine is running.
-3. `Home.tsx onSelect __live__` has no `else` clause → clicking "Tune In" is a no-op when `broadcastCurrent?.item` is null.
+3. `Home.tsx onSelect __live__` (channel grid) has no `else` clause → clicking "Tune In" is a no-op when `broadcastCurrent?.item` is null.
+4. `Home.tsx` hero `onSelect` prop (LiveHero) has no `else` clause → same no-op for clicking the hero card itself.
 
 ## How to apply
 
@@ -22,7 +23,11 @@ When the broadcast engine is in YouTube shuffle-fallback override mode (triggere
 - Metadata panel ternary: `isLive ? StateYTLive : !isLive ? StateBroadcast : StateOffAir` (the third branch is now dead code — acceptable, since the truly-off-air state is owned by `LiveBroadcastV2`'s own overlay)
 - Remove the derived `hasBroadcast` constant (dead code after the above changes)
 
-**`artifacts/tv/src/pages/Home.tsx`** — `onSelect` for `__live__` row:
+**`artifacts/tv/src/pages/Home.tsx`** — TWO places need the else clause:
+1. `onItemSelect` callback for `__live__` row (channel grid navigation)
+2. `onSelect` prop passed to `<LiveHero>` (clicking the hero card directly)
+
+Both use the same sentinel:
 ```tsx
 } else {
   // Override / shuffle-fallback mode — no queue item in legacy snapshot.
