@@ -104,8 +104,9 @@ The full install procedure is still needed when node_modules/.pnpm is empty (fre
 
 ## Build History
 
-| Version  | versionCode | EAS Build ID                                 | Date       |
+| Version  | versionCode | EAS Build ID / Notes                         | Date       |
 |----------|-------------|----------------------------------------------|------------|
+| v1.0.28  | 76          | BLOCKED — free-tier Android quota exhausted; resets 2026-07-01 | 2026-06-14 |
 | v1.0.26  | 74          | 9f855288-0b9e-4e90-ab7a-e010784bb183         | 2026-06-14 |
 | v1.0.25  | 73          | 11ff9e87-f2c7-4f38-a5f7-9f08e5690296         | 2026-06-14 |
 | v1.0.24  | 71          | b76ea257-20ae-4404-ba33-d60b0a55ce84         | 2026-06-13 |
