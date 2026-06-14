@@ -45,12 +45,40 @@ env:
   # restricted sandbox environments (Replit, some CI runners) without hitting
   # a "could not lock index" error during the project archive upload step.
   GIT_INDEX_FILE: /tmp/eas-build-index
+  # SHA-1 fingerprint of the upload key registered with Google Play.
+  # Update this whenever the upload key is legitimately rotated.
+  # Current key active from: 2026-06-16 (after upload key reset approved)
+  EXPECTED_ANDROID_UPLOAD_KEY_SHA1: "52:2C:16:01:87:CF:98:86:F2:FB:AB:3B:0A:3A:FC:B1:E8:BF:91:69"
 
 jobs:
+  # ── 0. Verify EAS Android keystore fingerprint (Android only) ─────────────
+  verify-keystore:
+    name: Verify Android keystore fingerprint
+    runs-on: ubuntu-latest
+    if: inputs.platform == 'android'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Check EAS keystore SHA-1 fingerprint
+        run: node scripts/check-eas-keystore.mjs
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPECTED_SHA1: ${{ env.EXPECTED_ANDROID_UPLOAD_KEY_SHA1 }}
+
   submit:
     name: Re-submit ${{ inputs.platform }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    needs: [verify-keystore]
+    # Run when keystore check passed (Android) or was skipped (iOS).
+    # A 'failure' result from verify-keystore blocks this job.
+    if: always() && needs.verify-keystore.result != 'failure'
 
     steps:
       - name: Checkout

@@ -49,13 +49,42 @@ env:
   # restricted sandbox environments (Replit, some CI runners) without hitting
   # a "could not lock index" error during the project archive upload step.
   GIT_INDEX_FILE: /tmp/eas-build-index
+  # SHA-1 fingerprint of the upload key registered with Google Play.
+  # Update this value whenever the upload key is legitimately rotated via
+  # a "Request upload key reset" on Play Console → App integrity → App signing.
+  # Current key active from: 2026-06-16 (after upload key reset approved)
+  EXPECTED_ANDROID_UPLOAD_KEY_SHA1: "52:2C:16:01:87:CF:98:86:F2:FB:AB:3B:0A:3A:FC:B1:E8:BF:91:69"
 
 jobs:
+  # ── 0. Verify EAS Android keystore fingerprint ────────────────────────────
+  # This job fails fast if the keystore stored in EAS does not match the
+  # upload key registered with Google Play, preventing a wasted build that
+  # Google Play would reject at submission time.
+  verify-keystore:
+    name: Verify Android keystore fingerprint
+    runs-on: ubuntu-latest
+    if: inputs.platforms == 'all' || inputs.platforms == 'android'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Check EAS keystore SHA-1 fingerprint
+        run: node scripts/check-eas-keystore.mjs
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPECTED_SHA1: ${{ env.EXPECTED_ANDROID_UPLOAD_KEY_SHA1 }}
+
   # ── Android: Build AAB → Play Store internal track ────────────────────────
   android:
     name: Android — Build + Submit
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    needs: [verify-keystore]
     if: inputs.platforms == 'all' || inputs.platforms == 'android'
 
     steps:
@@ -226,7 +255,7 @@ jobs:
   # ── Summary ──────────────────────────────────────────────────────────────
   summary:
     name: Release summary
-    needs: [android, ios]
+    needs: [verify-keystore, android, ios]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -234,10 +263,12 @@ jobs:
         run: |
           echo "## Mobile Release Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Platform | Result |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Android  | ${{ needs.android.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| iOS      | ${{ needs.ios.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Step | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Keystore fingerprint check | ${{ needs.verify-keystore.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Android build + submit | ${{ needs.android.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| iOS build + submit | ${{ needs.ios.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Expected upload key SHA-1:** \`${{ env.EXPECTED_ANDROID_UPLOAD_KEY_SHA1 }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Message:** ${{ inputs.message }}" >> $GITHUB_STEP_SUMMARY
           echo "**Submit:** ${{ inputs.submit }}" >> $GITHUB_STEP_SUMMARY
