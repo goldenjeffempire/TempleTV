@@ -13,7 +13,8 @@
  * z-index via the web adapter. hls.js is injected the same way the TV
  * client does it (native HLS path for WebKit-based browsers).
  *
- * Audio is muted by default — the operator unmutes explicitly to monitor.
+ * Audio is permanently muted — this is a visual-only broadcast monitor.
+ * Operators must use the full Broadcast Player for audio monitoring.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -39,8 +40,6 @@ import {
   Loader2,
   RefreshCw,
   SkipForward,
-  Volume2,
-  VolumeX,
   Wifi,
   WifiOff,
 } from "lucide-react";
@@ -400,7 +399,6 @@ export function BroadcastPreviewV2({ className }: Props) {
     enableStallReport: false,
     getAuthToken: () => tokenStore.getAccess() || null,
   });
-  const [muted, setMuted] = useState(true);
   const aRef = useRef<HTMLVideoElement>(null);
   const bRef = useRef<HTMLVideoElement>(null);
 
@@ -429,11 +427,6 @@ export function BroadcastPreviewV2({ className }: Props) {
     [attach.B],
   );
 
-  // Keep DOM `muted` in sync — the FSM owns play/pause but volume is admin-local.
-  useEffect(() => {
-    if (aRef.current) aRef.current.muted = muted;
-    if (bRef.current) bRef.current.muted = muted;
-  }, [muted]);
 
   const server = snapshot.lastServerSnapshot;
 
@@ -712,7 +705,7 @@ export function BroadcastPreviewV2({ className }: Props) {
         className="absolute inset-0 w-full h-full object-contain"
         playsInline
         autoPlay
-        muted={muted}
+        muted
         style={{ zIndex: 2, display: "block", willChange: "transform", transform: "translateZ(0)" }}
       />
       <video
@@ -720,7 +713,7 @@ export function BroadcastPreviewV2({ className }: Props) {
         className="absolute inset-0 w-full h-full object-contain"
         playsInline
         autoPlay
-        muted={muted}
+        muted
         style={{ zIndex: 1, opacity: 0, display: "block", willChange: "transform", transform: "translateZ(0)" }}
       />
 
@@ -976,16 +969,6 @@ export function BroadcastPreviewV2({ className }: Props) {
               <Wifi size={8} /> LIVE
             </span>
           ) : null}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-5 w-5 text-white/60 hover:text-white hover:bg-white/10 rounded"
-            onClick={() => setMuted((m) => !m)}
-            title={muted ? "Unmute" : "Mute"}
-          >
-            {muted ? <VolumeX size={11} /> : <Volume2 size={11} />}
-          </Button>
-
           {/* Picture-in-Picture — float the preview so admin can navigate
               other panels while monitoring the live broadcast. Only shown
               on browsers that support the native PiP API (Chrome / Edge /
@@ -1000,7 +983,6 @@ export function BroadcastPreviewV2({ className }: Props) {
                 const b = bRef.current;
                 const candidates = [a, b].filter(Boolean) as HTMLVideoElement[];
                 const target =
-                  candidates.find((v) => !v.muted && !v.paused && v.readyState >= 2) ??
                   candidates.find((v) => !v.paused && v.readyState >= 2);
                 if (!target || !("requestPictureInPicture" in target)) return;
                 if (document.pictureInPictureElement) {

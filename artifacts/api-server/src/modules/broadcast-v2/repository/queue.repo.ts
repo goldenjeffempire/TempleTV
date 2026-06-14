@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { and, asc, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { resolveSource } from "../resolver/universal-source-resolver.js";
 import { logger } from "../../../infrastructure/logger.js";
@@ -820,26 +820,30 @@ export const queueRepo = {
               // in-place without a re-queue.
               inArray(v.transcodingStatus, ["none", "queued", "encoding"]),
               // 'processing': faststart.service is running the moov-atom relocation.
-              // Safe to admit ONLY when faststartApplied=true, meaning a previous
-              // successful faststart already placed the moov atom at byte 0. The
-              // file currently at localVideoUrl IS seekable; this new run is a
-              // repeat/upgrade (e.g. operator re-applied faststart after a fix).
               //
-              // When faststartApplied=false (first-ever faststart run), the file
-              // at localVideoUrl has the moov atom at EOF — browsers must download
-              // the entire file before metadata is available. That causes a 20 s
-              // initial-load watchdog timeout and SKIP_PENDING on every player that
-              // tries to bind to it. Block until faststart completes and sets
-              // faststartApplied=true + transcodingStatus='ready'.
+              // Admit when faststartApplied IS NULL or true:
+              //   NULL  = faststart was never attempted before. The file at
+              //           localVideoUrl was already admitted as 'none'/'queued'/
+              //           'encoding' (identical moov-position knowledge: unknown).
+              //           Blocking here creates a needless off-air gap: the same
+              //           blob was playable one tick ago and the multipart reassembly
+              //           is not yet visible (completeMultipartUpload is atomic).
+              //           Give the benefit of the doubt — if the moov really is at
+              //           EOF the 20 s watchdog + auto-skip handles it gracefully.
+              //   true  = previous faststart confirmed moov at byte 0. Safe to serve.
               //
-              // Recovery path: faststart completion fires broadcast-queue-updated →
-              // reloadInner() re-queries → item enters as 'ready' → clearBadUrl()
-              // clears any stall-report blocks from the in-flight window. No
-              // operator action needed; the gap is the faststart duration (seconds
-              // to minutes depending on file size and network throughput).
+              // Block when faststartApplied=false (first run confirmed FAILED):
+              //   false = faststart explicitly ran and failed → moov confirmed at
+              //           EOF. Without HLS the file cannot be range-streamed. Only
+              //           the top-level `isNotNull(v.hlsMasterUrl)` clause above can
+              //           admit this item (which it does when HLS has since been
+              //           transcoded). No additional handling needed here.
               and(
                 eq(v.transcodingStatus, "processing"),
-                eq(v.faststartApplied, true),
+                or(
+                  eq(v.faststartApplied, true),
+                  isNull(v.faststartApplied),
+                ),
               ),
               // 'failed': still require faststart or HLS confirmed safe to stream.
               and(
