@@ -260,14 +260,34 @@ services:
 
       # ── HLS concurrency cap ────────────────────────────────────────────────
       # RSS budget per concurrent HLS stream = 16 MiB (pg BYTEA hex) + 8 MiB
-      # (Node Buffer) = 24 MiB. With 300 MiB baseline:
-      #   5 concurrent → ~420 MiB peak  (fits under 512 MiB free-tier ✓)
-      #  10 concurrent → ~540 MiB peak  (exceeds 512 MiB free-tier → OOM kill ✗)
+      # (Node Buffer) = 24 MiB. With ~310 MiB baseline (see DB_POOL_MAX note):
+      #   5 concurrent → ~435 MiB peak  (fits under 512 MiB free-tier ✓)
+      #  10 concurrent → ~555 MiB peak  (exceeds 512 MiB free-tier → OOM kill ✗)
       # Keep at 5 unless upgrading to a paid plan with ≥1 GiB RAM.
       # If you raise this, also raise MEMORY_RESTART_RSS_MB proportionally:
-      #   MEMORY_RESTART_RSS_MB = 24 × HLS_MAX_CONCURRENT + 300 + 30 (margin)
+      #   MEMORY_RESTART_RSS_MB = 24 × HLS_MAX_CONCURRENT + 310 + 30 (margin)
       - key: HLS_MAX_CONCURRENT
         value: "5"
+
+      # ── DB connection pool ─────────────────────────────────────────────────
+      # Default DB_POOL_MAX is 25. Each open pg connection holds socket buffers
+      # and driver state (~300 KB each on the Node.js side). On the 512 MiB
+      # free-tier 25 open connections use ~30 MB more external memory than 8
+      # connections — enough to push idle RSS above the 400 MiB WARN threshold
+      # before any HLS load arrives. Cap to 8: sufficient for 5 concurrent HLS
+      # streams + background workers + normal API traffic.
+      # Increase to 12–16 if you move to a paid plan with ≥1 GiB RAM.
+      - key: DB_POOL_MAX
+        value: "8"
+
+      # ── HLS segment in-process cache ───────────────────────────────────────
+      # HLS_SEGMENT_CACHE_MB caps the in-process LRU for repeated .ts segment
+      # fetches. Default is 32 MiB. Half that (16 MiB) is sufficient for a
+      # single-channel 24/7 broadcast at 5 HLS_MAX_CONCURRENT — segments for
+      # the current item stay warm and cache-hit on reconnects. Freeing 16 MiB
+      # brings idle RSS below the 400 MiB WARN threshold on the free tier.
+      - key: HLS_SEGMENT_CACHE_MB
+        value: "16"
 
       # ── Memory containment ────────────────────────────────────────────────
       # Layer 1: cap glibc malloc arenas to 2. Default (8× nCPU) causes heap
@@ -278,9 +298,11 @@ services:
 
       # Layer 2: hard V8 heap cap sized for free tier.
       # 256 MiB old-space + ~32 MiB new-space + ~15 MiB code-space = ~303 MiB
-      # V8 committed ceiling. Add ~100 MiB external (pg pool, pino, zlib) +
-      # ~30 MiB stacks/OS overhead = ~433 MiB total RSS, leaving ~79 MiB
-      # margin under the 512 MiB free-tier cgroup ceiling.
+      # V8 committed ceiling. Add ~55 MiB external (pg pool @8 conns, HLS cache
+      # @16 MiB, pino, zlib) + ~30 MiB stacks/OS overhead = ~388 MiB steady-
+      # state RSS, leaving ~124 MiB headroom to the 512 MiB OOM-killer ceiling.
+      # (Previously: ~100 MiB external assumed DB_POOL_MAX=25 + 32 MiB segment
+      #  cache → ~433 MiB baseline, causing spurious WARN alerts at idle.)
       # Bumped from 220 → 256 (May 2026): startup burst commits ~250 MiB to
       # V8 heap (179 MiB live objects + code/large-object overhead) which
       # exceeded the 220 MiB cap making GC ineffective → OOM crash loop.
@@ -294,21 +316,21 @@ services:
       - key: NODE_OPTIONS
         value: "--max-old-space-size=256 --max-http-header-size=16384"
 
-      # Layer 3: observability. WARN at 400 MiB RSS — lead time before the
-      # 420 MiB estimated peak (HLS_MAX_CONCURRENT=5) and the 470 MiB restart
-      # threshold. With 256 MiB V8 heap cap, steady-state RSS is ~350-390 MiB
-      # (heap + glibc arenas + pg pool + pino buffers) so 400 fires only when
-      # RSS is genuinely climbing toward the HLS peak.
+      # Layer 3: observability. WARN at 420 MiB RSS — lead time before the
+      # 435 MiB estimated HLS peak (HLS_MAX_CONCURRENT=5) and the 465 MiB
+      # restart threshold. With corrected baseline ~388 MiB, WARN fires only
+      # when RSS is climbing toward genuine HLS peak load or a memory leak.
+      # (Previously 400 MiB fired spuriously at idle with DB_POOL_MAX=25.)
       - key: MEMORY_WARN_RSS_MB
-        value: "400"
+        value: "420"
 
-      # Layer 4: in-process self-restart at 470 MiB RSS. Graceful drain +
-      # restart safely below the 512 MiB OOM-killer ceiling (~42 MiB margin).
-      # With HLS_MAX_CONCURRENT=5 the estimated peak RSS is ~420 MiB, so 470
-      # only triggers on genuine memory leaks — not on normal HLS load.
-      # Formula: 24 × HLS_MAX_CONCURRENT + 300 + 30 margin = 24×5+300+30=470.
+      # Layer 4: in-process self-restart at 465 MiB RSS. Graceful drain +
+      # restart safely below the 512 MiB OOM-killer ceiling (~47 MiB margin).
+      # With HLS_MAX_CONCURRENT=5 the estimated peak RSS is ~435 MiB, so 465
+      # only triggers on genuine memory leaks — not on normal HLS peak load.
+      # Formula: 24 × HLS_MAX_CONCURRENT + 310 + 35 margin = 24×5+310+35=465.
       - key: MEMORY_RESTART_RSS_MB
-        value: "470"
+        value: "465"
 
       # ── Graceful shutdown timing ───────────────────────────────────────────
       # SIGTERM (rolling deploy / scale-in) starts a two-phase drain:

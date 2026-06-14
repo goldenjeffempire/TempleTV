@@ -149,11 +149,14 @@ const Env = z.object({
   //   8 GiB host:  MEMORY_WARN_RSS_MB=4096  MEMORY_RESTART_RSS_MB=6144
   //
   // Constrained host overrides (free tier / shared instances):
-  //   512 MiB:     MEMORY_WARN_RSS_MB=380   MEMORY_RESTART_RSS_MB=460
+  //   512 MiB:     MEMORY_WARN_RSS_MB=420   MEMORY_RESTART_RSS_MB=465
+  //                (assumes DB_POOL_MAX=8, HLS_SEGMENT_CACHE_MB=16,
+  //                 HLS_MAX_CONCURRENT=5 — baseline ~388 MiB, peak ~435 MiB)
   //   1 GiB:       MEMORY_WARN_RSS_MB=700   MEMORY_RESTART_RSS_MB=900
   //
   // RSS formula for sizing: baseline_mb + (24 × HLS_MAX_CONCURRENT) + transcode_peak_mb
-  //   baseline ≈ 300–400 MB (V8 heap + pg pool + glibc arenas + pino + shared libs)
+  //   baseline ≈ 310–390 MB (V8 heap + pg pool @DB_POOL_MAX + HLS segment cache
+  //                          + glibc arenas + pino + shared libs)
   //   HLS      ≈ 24 MB per concurrent stream (16 MiB pg BYTEA hex + 8 MiB Buffer)
   //   transcode ≈ 200–800 MB per active FFmpeg job (depends on resolution/codec)
   MEMORY_WARN_RSS_MB: z.coerce.number().int().positive().default(1024),
