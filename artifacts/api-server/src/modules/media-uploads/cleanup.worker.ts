@@ -1,18 +1,26 @@
 /**
  * Storage cleanup worker.
  *
- * Runs every 30 minutes and performs three sweeps:
+ * Runs every 30 minutes and performs four sweeps:
  *
  *  (a) Orphaned upload sessions: upload_sessions rows older than 24 h with
- *      no matching managed_videos row — delete storage object, delete session.
+ *      no matching managed_videos row — delete associated upload_chunks
+ *      (including db_fallback BYTEA data), clean up orphaned _parts storage
+ *      blobs, then delete the session row.
  *
- *  (b) Corrupt-upload blobs: managed_videos rows with transcodingStatus = 'failed'
+ *  (b) Orphaned upload chunks: upload_chunks rows for sessions that are
+ *      completed/cancelled (inline assembly cleanup is non-fatal and can be
+ *      skipped by a crash) or whose parent session no longer exists.
+ *      Runs with a 2-hour grace period so it never races an in-progress
+ *      assembly.
+ *
+ *  (c) Corrupt-upload blobs: managed_videos rows with transcodingStatus = 'failed'
  *      AND transcodingErrorCode IN ('CORRUPT_SOURCE', 'SOURCE_MISSING',
  *      'ASSEMBLY_FAILED') AND the quarantine was created more than
  *      CORRUPT_UPLOAD_RETENTION_DAYS days ago — delete storage object,
  *      set objectPath = null.
  *
- *  (c) Stuck transcoding: managed_videos rows with transcodingStatus = 'queued'
+ *  (d) Stuck transcoding: managed_videos rows with transcodingStatus = 'queued'
  *      and importedAt older than 2 h with no active transcoding job — reset to
  *      'failed' with STUCK_TRANSCODE error code.
  *
@@ -30,6 +38,9 @@ const CORRUPT_UPLOAD_RETENTION_DAYS = Number(
 );
 const ORPHAN_SESSION_AGE_H = 24;
 const STUCK_TRANSCODE_AGE_H = 2;
+/** Grace period before sweeping chunks for completed/cancelled sessions.
+ *  Must be long enough that in-flight assembly never races this sweep. */
+const ORPHAN_CHUNK_GRACE_H = 2;
 const SWEEP_INTERVAL_MS = 30 * 60_000;
 
 let _sweepTimer: NodeJS.Timeout | null = null;
@@ -39,6 +50,7 @@ const v = schema.videosTable;
 
 interface SweepStats {
   orphanedSessionsRemoved: number;
+  orphanedChunksRemoved: number;
   corruptBlobsDeleted: number;
   stuckTranscodeReset: number;
   errors: number;
@@ -65,19 +77,51 @@ async function sweepOrphanedSessions(stats: SweepStats): Promise<void> {
     for (const row of rows.rows) {
       if (_stopped) break;
       try {
+        // 1. Delete associated chunk rows first. For db_fallback sessions these
+        //    hold the raw BYTEA video data — skipping this causes an unbounded
+        //    storage_blobs / upload_chunks growth. For db-mode sessions the rows
+        //    are lightweight (etags only) but cleaning them keeps the table tidy.
+        await db.execute(sql`
+          DELETE FROM upload_chunks WHERE session_id = ${row.session_id}
+        `).catch((err: unknown) =>
+          logger.warn(
+            { err, sessionId: row.session_id },
+            "[cleanup-worker] chunk cleanup failed for orphaned session (non-fatal)",
+          ),
+        );
+
+        // 2. Clean up orphaned _parts/{uploadId}/… rows in storage_blobs.
+        //    These are created during the db-mode multipart upload path and
+        //    should be removed by completeMultipartUpload on success, but
+        //    abandoned sessions leave them behind indefinitely.
+        if (row.upload_id) {
+          const partPrefix = `_parts/${row.upload_id}/`;
+          await db.execute(sql`
+            DELETE FROM storage_blobs WHERE starts_with(key, ${partPrefix})
+          `).catch((err: unknown) =>
+            logger.warn(
+              { err, sessionId: row.session_id, uploadId: row.upload_id },
+              "[cleanup-worker] _parts cleanup failed for orphaned session (non-fatal)",
+            ),
+          );
+        }
+
+        // 3. Delete the assembled destination blob if one exists.
         if (row.object_key) {
           const s = storage();
           if (s.enabled) {
             await s.deleteObject(row.object_key).catch(() => {});
           }
         }
+
+        // 4. Finally remove the session row itself.
         await db.execute(sql`
           DELETE FROM upload_sessions WHERE session_id = ${row.session_id}
         `);
         stats.orphanedSessionsRemoved++;
         logger.info(
-          { sessionId: row.session_id, objectKey: row.object_key },
-          "[cleanup-worker] deleted orphaned upload session",
+          { sessionId: row.session_id, objectKey: row.object_key, uploadId: row.upload_id },
+          "[cleanup-worker] deleted orphaned upload session (chunks + parts cleaned up)",
         );
       } catch (err) {
         stats.errors++;
@@ -87,6 +131,82 @@ async function sweepOrphanedSessions(stats: SweepStats): Promise<void> {
   } catch (err) {
     stats.errors++;
     logger.warn({ err }, "[cleanup-worker] orphaned-session sweep failed");
+  }
+}
+
+/**
+ * Belt-and-suspenders sweep for leftover upload_chunks rows.
+ *
+ * Two scenarios require this beyond the inline cleanup inside finalize:
+ *
+ *  1. The process crashed between assembly-commit and the non-fatal
+ *     db.delete(chunks) call — the session shows 'completed' but chunks remain.
+ *  2. The session row was deleted (externally, or by sweepOrphanedSessions on a
+ *     previous cycle that pre-dated this fix) but its chunk rows were not,
+ *     leaving truly orphaned BYTEA data with no parent.
+ *
+ * A 2-hour grace period ensures we never race an in-progress assembly.
+ */
+async function sweepOrphanedChunks(stats: SweepStats): Promise<void> {
+  try {
+    const cutoff = new Date(Date.now() - ORPHAN_CHUNK_GRACE_H * 60 * 60_000);
+
+    // Scenario 1 — completed/cancelled sessions with leftover chunks.
+    const completedResult = await db.execute<{ count: string }>(sql`
+      WITH deleted AS (
+        DELETE FROM upload_chunks uc
+        USING upload_sessions us
+        WHERE uc.session_id = us.session_id
+          AND us.status IN ('completed', 'cancelled')
+          AND us.updated_at < ${cutoff.toISOString()}
+        RETURNING uc.id
+      )
+      SELECT COUNT(*)::text AS count FROM deleted
+    `).catch((err: unknown) => {
+      logger.warn({ err }, "[cleanup-worker] completed-session chunk sweep query failed (non-fatal)");
+      return null;
+    });
+
+    const completedCount = Number(
+      (completedResult?.rows as Array<{ count: string }> | undefined)?.[0]?.count ?? 0,
+    );
+    if (completedCount > 0) {
+      logger.info(
+        { count: completedCount },
+        "[cleanup-worker] swept leftover chunks for completed/cancelled sessions",
+      );
+      stats.orphanedChunksRemoved += completedCount;
+    }
+
+    // Scenario 2 — truly orphaned chunks with no parent session at all.
+    const orphanResult = await db.execute<{ count: string }>(sql`
+      WITH deleted AS (
+        DELETE FROM upload_chunks uc
+        WHERE uc.received_at < ${cutoff.toISOString()}
+          AND NOT EXISTS (
+            SELECT 1 FROM upload_sessions us WHERE us.session_id = uc.session_id
+          )
+        RETURNING uc.id
+      )
+      SELECT COUNT(*)::text AS count FROM deleted
+    `).catch((err: unknown) => {
+      logger.warn({ err }, "[cleanup-worker] orphan-chunk sweep query failed (non-fatal)");
+      return null;
+    });
+
+    const orphanCount = Number(
+      (orphanResult?.rows as Array<{ count: string }> | undefined)?.[0]?.count ?? 0,
+    );
+    if (orphanCount > 0) {
+      logger.info(
+        { count: orphanCount },
+        "[cleanup-worker] swept truly orphaned chunks (no parent session exists)",
+      );
+      stats.orphanedChunksRemoved += orphanCount;
+    }
+  } catch (err) {
+    stats.errors++;
+    logger.warn({ err }, "[cleanup-worker] orphaned-chunks sweep failed");
   }
 }
 
@@ -210,6 +330,7 @@ async function runSweep(): Promise<void> {
   const start = Date.now();
   const stats: SweepStats = {
     orphanedSessionsRemoved: 0,
+    orphanedChunksRemoved: 0,
     corruptBlobsDeleted: 0,
     stuckTranscodeReset: 0,
     errors: 0,
@@ -218,6 +339,7 @@ async function runSweep(): Promise<void> {
   logger.debug("[cleanup-worker] sweep started");
 
   await sweepOrphanedSessions(stats);
+  if (!_stopped) await sweepOrphanedChunks(stats);
   if (!_stopped) await sweepCorruptBlobs(stats);
   if (!_stopped) await sweepStuckTranscodes(stats);
 
@@ -264,11 +386,13 @@ export const cleanupWorker = {
   async sweep(): Promise<SweepStats> {
     const stats: SweepStats = {
       orphanedSessionsRemoved: 0,
+      orphanedChunksRemoved: 0,
       corruptBlobsDeleted: 0,
       stuckTranscodeReset: 0,
       errors: 0,
     };
     await sweepOrphanedSessions(stats);
+    await sweepOrphanedChunks(stats);
     await sweepCorruptBlobs(stats);
     await sweepStuckTranscodes(stats);
     return stats;
