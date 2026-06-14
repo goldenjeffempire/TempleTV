@@ -355,6 +355,20 @@ function startSupervisedWorkers(): void {
     onCircuitOpen: makeCircuitOpenCallback("queue-health-guard"),
   });
 
+  // Storage cleanup worker: sweeps orphaned upload sessions, expired corrupt
+  // blobs, and stuck transcoding jobs. Runs every 30 min with a 5-min initial
+  // delay so the system is fully warmed up before the first sweep.
+  workerSupervisor.spawn({
+    name: "storage-cleanup",
+    fn: async () => {
+      const { cleanupWorker } = await import("../media-uploads/cleanup.worker.js");
+      await cleanupWorker.sweep();
+    },
+    intervalMs: 30 * 60_000,
+    initialDelayMs: 5 * 60_000,
+    backoffMs: [5 * 60_000, 15 * 60_000, 30 * 60_000],
+  });
+
   logger.info("[broadcast-v2] supervised workers registered");
 }
 

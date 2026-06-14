@@ -49,6 +49,7 @@ import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { uploadTelemetry } from "./upload-telemetry.service.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { ServiceUnavailableError } from "../../shared/errors.js";
+import { quarantineVideo } from "../broadcast/quarantine.service.js";
 
 const sessions = schema.uploadSessionsTable;
 const chunks = schema.uploadChunksTable;
@@ -1823,6 +1824,14 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                     .where(eq(videos.id, videoId))
                     .catch(() => {});
                   adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-early-gate" });
+                  void quarantineVideo(videoId, {
+                    errorCode: "CORRUPT_SOURCE",
+                    reason:
+                      containerProbe.error ??
+                      "Upload rejected at early gate: moov atom absent or invalid file type.",
+                    triggeredBy: "finalize-early-gate",
+                    metadata: { objectKey, kind: containerProbe.kind },
+                  });
                 } else {
                   // Container is mildly damaged but moov is not confirmed absent —
                   // faststart's remux strategies (including error-tolerant copy and
@@ -1914,6 +1923,14 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   // Reload the orchestrator immediately so the dead item is evicted
                   // from the active set rather than waiting for an unrelated event.
                   adminEventBus.push("broadcast-queue-updated", { reason: "corrupt-upload-faststart-cleanup", videoId });
+                  void quarantineVideo(videoId, {
+                    errorCode: "CORRUPT_SOURCE",
+                    reason:
+                      "Faststart failed: video container is structurally damaged and unrepairable " +
+                      "(moov atom missing or all remux strategies exhausted). Re-upload required.",
+                    triggeredBy: "faststart-failure",
+                    metadata: { objectKey, sessionId },
+                  });
                 } else {
                   capturedLog.warn({ err, videoId }, "[finalize:bg] faststart failed (non-fatal)");
                 }

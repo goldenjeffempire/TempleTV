@@ -28,6 +28,7 @@
  */
 import { spawn } from "node:child_process";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { quarantineVideo } from "../../broadcast/quarantine.service.js";
 import { sendBroadcastWebhook } from "../webhook/webhook.service.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
@@ -843,6 +844,28 @@ class QueueIntegrityValidatorImpl {
             count: corruptUploadItemIds.length,
             itemIds: corruptUploadItemIds,
           });
+
+          // Quarantine each corrupt video: writes audit log, removes from
+          // playlists, fires ops-alert. quarantineVideo is idempotent so
+          // re-running the validator on already-quarantined videos is safe.
+          const corruptVideoIds = rows
+            .filter((r) => corruptUploadItemIds.includes(r.id) && r.videoId2)
+            .map((r) => r.videoId2 as string);
+          for (const vid of corruptVideoIds) {
+            const vRow = rows.find((r) => r.videoId2 === vid);
+            void quarantineVideo(vid, {
+              errorCode: vRow?.vErrCode ?? "CORRUPT_SOURCE",
+              reason:
+                vRow?.vErrCode === "SOURCE_MISSING"
+                  ? "Source blob deleted from storage. Re-upload the source file to restore."
+                  : "Moov atom absent — file cannot be decoded. Re-upload the source file to restore.",
+              triggeredBy: "queue-integrity-validator",
+              metadata: {
+                queueItemId: vRow?.id,
+                validatorCycle: new Date().toISOString(),
+              },
+            });
+          }
         } catch (fixErr) {
           logger.warn(
             { err: fixErr, count: corruptUploadItemIds.length },

@@ -58,6 +58,7 @@ const YoutubeSync     = lazyPage(() => import("@/pages/youtube-sync"));
 const Library         = lazyPage(() => import("@/pages/library"));
 const LaunchReadiness = lazyPage(() => import("@/pages/launch-readiness"));
 const Purge           = lazyPage(() => import("@/pages/purge"));
+const CorruptMedia    = lazyPage(() => import("@/pages/corrupt-media"));
 const AuditLog        = lazyPage(() => import("@/pages/audit-log"));
 const SystemSettings  = lazyPage(() => import("@/pages/settings"));
 const NotFound        = lazyPage(() => import("@/pages/not-found"));
@@ -457,6 +458,7 @@ function AuthenticatedApp() {
             <Route path="/launch-readiness" component={LaunchReadiness} />
             <Route path="/purge">{() => <AdminRoute component={Purge} />}</Route>
             <Route path="/audit-log">{() => <AdminRoute component={AuditLog} />}</Route>
+            <Route path="/corrupt-media"     component={CorruptMedia} />
             <Route path="/radio"             component={RadioAdmin} />
             <Route path="/settings">{() => <AdminRoute component={SystemSettings} />}</Route>
             <Route path="/security">{() => <AdminRoute component={SecurityPage} />}</Route>

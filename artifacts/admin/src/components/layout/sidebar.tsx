@@ -8,7 +8,7 @@ import {
   Bell, BarChart2, Users, Heart, Settings, Shield,
   Zap, Cpu, Signal, Layers, Tv2, Wifi, WifiOff, Loader, ChevronRight, X, Youtube,
   Image, Gauge, Rss, ClipboardList, Settings2, RefreshCw, Trash2, Headphones, Lock,
-  SignalLow, Moon, ScanSearch, Smartphone,
+  SignalLow, Moon, ScanSearch, Smartphone, ShieldAlert,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
@@ -128,6 +128,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
         { href: "/users", label: "Users", icon: <Users size={16} />, adminOnly: true },
         { href: "/security", label: "Security (MFA)", icon: <Lock size={16} /> },
         { href: "/alerts", label: "Alerts", icon: <Shield size={16} /> },
+        { href: "/corrupt-media", label: "Corrupt Media", icon: <ShieldAlert size={16} /> },
         { href: "/audit-log", label: "Audit Log", icon: <ClipboardList size={16} />, adminOnly: true },
         { href: "/settings", label: "System Settings", icon: <Settings2 size={16} />, adminOnly: true },
         { href: "/launch-readiness", label: "Launch Check", icon: <Settings size={16} /> },

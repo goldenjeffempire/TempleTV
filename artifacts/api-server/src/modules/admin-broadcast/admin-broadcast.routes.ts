@@ -8,10 +8,11 @@ import { broadcastService } from "../broadcast/broadcast.service.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { clearSuspended, clearBadUrl } from "../broadcast-v2/repository/queue.repo.js";
 import { NotFoundError, BadRequestError } from "../../shared/errors.js";
-import { boostTranscodePriority, enqueueTranscode } from "../transcoder/transcoder.queue.js";
+import { boostTranscodePriority, enqueueTranscode, retryJob } from "../transcoder/transcoder.queue.js";
 import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { logger } from "../../infrastructure/logger.js";
+import { getCorruptMediaInventory, getCorruptMediaHealthSummary } from "../broadcast/quarantine.service.js";
 
 /**
  * Admin-side aliases for the broadcast queue.
@@ -1004,6 +1005,143 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
         },
         items,
       };
+    },
+  );
+
+  // ── Corrupt media inventory ──────────────────────────────────────────────
+  //
+  //   GET  /admin/corrupt-media        → paginated quarantine log
+  //   GET  /admin/corrupt-media/stats  → health summary for dashboard widgets
+  //   POST /admin/corrupt-media/:id/retry → re-enqueue a failed video for transcoding
+  //   DELETE /admin/corrupt-media/:id  → hard-delete a quarantined video
+  //
+  // All routes require at least "editor" auth.
+
+  app.withTypeProvider<ZodTypeProvider>().get(
+    "/corrupt-media/stats",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        response: {
+          200: z.object({
+            last24h: z.number(),
+            quarantinedTotal: z.number(),
+            lastDetectedAt: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    async () => {
+      return getCorruptMediaHealthSummary();
+    },
+  );
+
+  app.withTypeProvider<ZodTypeProvider>().get(
+    "/corrupt-media",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        querystring: z.object({
+          page: z.coerce.number().int().min(1).optional(),
+          limit: z.coerce.number().int().min(1).max(100).optional(),
+          errorCode: z.string().optional(),
+        }),
+        response: {
+          200: z.object({
+            items: z.array(
+              z.object({
+                videoId: z.string().nullable(),
+                title: z.string().nullable(),
+                originalFilename: z.string().nullable(),
+                errorCode: z.string().nullable(),
+                errorMessage: z.string().nullable(),
+                transcodingStatus: z.string().nullable(),
+                detectedAt: z.date().nullable(),
+                auditId: z.string(),
+                reason: z.string().nullable(),
+                triggeredBy: z.string(),
+                queueItemsRemoved: z.number(),
+                playlistEntriesRemoved: z.number(),
+              }),
+            ),
+            total: z.number(),
+            page: z.number(),
+            limit: z.number(),
+          }),
+        },
+      },
+    },
+    async (req) => {
+      const { page, limit, errorCode } = req.query;
+      return getCorruptMediaInventory({ page, limit, errorCode });
+    },
+  );
+
+  app.withTypeProvider<ZodTypeProvider>().post(
+    "/corrupt-media/:videoId/retry",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        params: z.object({ videoId: z.string().uuid() }),
+        response: {
+          200: z.object({ queued: z.boolean(), message: z.string() }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const { videoId } = req.params;
+      const row = await db
+        .select({ id: videosTable.id, transcodingErrorCode: videosTable.transcodingErrorCode, objectPath: videosTable.objectPath })
+        .from(videosTable)
+        .where(eq(videosTable.id, videoId))
+        .limit(1)
+        .then((r) => r[0] ?? null);
+      if (!row) {
+        return reply.code(404).send({ error: "Video not found" });
+      }
+      const queued = await retryJob(videoId);
+      if (!queued) {
+        return { queued: false, message: "Video cannot be retried — source is permanently missing or has no objectPath. Re-upload the file to restore." };
+      }
+      adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-media-retry" });
+      return { queued: true, message: "Video re-enqueued for transcoding." };
+    },
+  );
+
+  app.withTypeProvider<ZodTypeProvider>().delete(
+    "/corrupt-media/:videoId",
+    {
+      preHandler: requireAuth("admin"),
+      schema: {
+        params: z.object({ videoId: z.string().uuid() }),
+        response: {
+          200: z.object({ deleted: z.boolean() }),
+          404: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const { videoId } = req.params;
+      const row = await db
+        .select({ id: videosTable.id })
+        .from(videosTable)
+        .where(eq(videosTable.id, videoId))
+        .limit(1)
+        .then((r) => r[0] ?? null);
+      if (!row) {
+        return reply.code(404).send({ error: "Video not found" });
+      }
+      // Remove queue items, playlist entries, and the video row itself.
+      await db.transaction(async (tx) => {
+        await tx.delete(schema.broadcastQueueTable).where(eq(schema.broadcastQueueTable.videoId, videoId));
+        await tx.delete(schema.playlistVideosTable).where(eq(schema.playlistVideosTable.videoId, videoId));
+        await tx.delete(videosTable).where(eq(videosTable.id, videoId));
+      });
+      adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-media-hard-delete" });
+      adminEventBus.push("broadcast-queue-updated", { reason: "corrupt-media-hard-delete", videoId });
+      logger.info({ videoId }, "[corrupt-media] video hard-deleted by admin");
+      return { deleted: true };
     },
   );
 }

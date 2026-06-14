@@ -144,6 +144,9 @@ const KNOWN_EVENTS = [
   // multi-part assembly phase so the upload queue panel can show a
   // "Assembling…" progress bar while the server reassembles chunks.
   "upload-assembly-progress",
+  // Corrupt-media detection — emitted when a video is quarantined due to a
+  // structural upload failure (CORRUPT_SOURCE, SOURCE_MISSING, etc.).
+  "corrupt-media-detected",
 ];
 
 function summarize(event: string, data: unknown): string | null {
@@ -167,6 +170,10 @@ function summarize(event: string, data: unknown): string | null {
       return `Transcoding ${s}`;
     }
     case "videos-library-updated": return "Video library updated";
+    case "corrupt-media-detected": {
+      const code = String(d.errorCode ?? "CORRUPT_SOURCE");
+      return `Corrupt upload detected: ${code} — video quarantined`;
+    }
     case "broadcast-v2-stall": return d.autoSuspended ? `Auto-suspended: ${String(d.itemTitle ?? "item")}` : "Broadcast stall reported";
     case "broadcast-v2-queue-issues": {
       const errors = Number(d.errors ?? 0);

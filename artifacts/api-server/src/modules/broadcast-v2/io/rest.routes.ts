@@ -47,6 +47,7 @@ import {
 } from "../webhook/webhook.service.js";
 import { runFaststart } from "../../transcoder/faststart.service.js";
 import { driftAggregator } from "../engine/drift-aggregator.js";
+import { getCorruptMediaHealthSummary } from "../../broadcast/quarantine.service.js";
 import { ytShuffleFallback } from "../engine/youtube-shuffle-fallback.js";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
@@ -545,6 +546,8 @@ export async function restRoutes(app: FastifyInstance) {
        * are present in the window.
        */
       viewerSync: driftAggregator.getStats(),
+      /** Corrupt-upload quarantine summary (last 24 h + all-time totals). */
+      corruptMedia: await getCorruptMediaHealthSummary(),
     };
   });
 

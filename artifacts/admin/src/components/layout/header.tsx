@@ -29,7 +29,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/sse-bus": "SSE Event Bus", "/youtube-quota": "YouTube Quota",
   "/launch-readiness": "Launch Readiness", "/purge": "Data Purge",
   "/library": "YouTube Library", "/youtube-sync": "YouTube Sync",
-  "/radio": "Radio Station", "/audit-log": "Audit Log",
+  "/radio": "Radio Station", "/audit-log": "Audit Log", "/corrupt-media": "Corrupt Media",
   "/settings": "System Settings", "/security": "Security",
   "/feedback": "Feedback", "/midnight-prayers": "Midnight Prayers",
   "/diagnostics": "System Diagnostics", "/broadcast": "Master Control",
