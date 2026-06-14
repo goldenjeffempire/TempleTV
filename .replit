@@ -1,8 +1,4 @@
-<<<<<<< HEAD
-modules = ["bash", "web", "nodejs-24"]
-=======
-modules = ["nodejs-20", "bash", "web", "postgresql-16"]
->>>>>>> 5119d860d8727569c9961d3d7fe58143caabdaba
+modules = ["nodejs-20", "bash", "web"]
 
 [deployment]
 router = "application"
