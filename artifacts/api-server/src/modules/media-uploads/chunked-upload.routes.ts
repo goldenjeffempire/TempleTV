@@ -196,11 +196,20 @@ async function finalizeFromDbFallback(
     session.objectKey ??
     `uploads/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, "0")}/${String(now.getUTCDate()).padStart(2, "0")}/${session.sessionId}.${safeExt}`;
 
+  // Declared outside the try so the catch block can abort the multipart upload
+  // if any step fails (chunk fetch, uploadPart, completeMultipartUpload).
+  // Without this, a failed assembly leaves orphaned _parts/{uploadId}/... rows
+  // in storage_blobs forever — the stale session cleanup uses sessions.uploadId
+  // (the original db-path upload), NOT the temporary uploadId created here for
+  // reassembly, so it would never clean up these orphaned rows.
+  let assemblyUploadId: string | undefined;
+
   try {
     const { uploadId } = await storage().createMultipartUpload({
       key: objectKey,
       contentType: session.contentType,
     });
+    assemblyUploadId = uploadId;
 
     // Assemble BYTEA chunks into multipart parts ONE AT A TIME.
     //
@@ -299,6 +308,22 @@ async function finalizeFromDbFallback(
       { err, sessionId: session.sessionId },
       "[finalize-fallback] database storage assembly failed — chunks remain in upload_chunks",
     );
+    // Abort the in-progress multipart upload to clean up orphaned
+    // _parts/{assemblyUploadId}/... rows in storage_blobs. Without this call
+    // those rows accumulate permanently — the stale session cleanup uses
+    // sessions.uploadId (the original ingest upload), not this temporary
+    // reassembly upload which is never stored in the sessions table.
+    if (assemblyUploadId) {
+      await storage().abortMultipartUpload({ key: objectKey, uploadId: assemblyUploadId }).catch(
+        (abortErr: unknown) => {
+          log.warn(
+            { abortErr, sessionId: session.sessionId, uploadId: assemblyUploadId, objectKey },
+            "[finalize-fallback] failed to abort orphaned assembly multipart upload (non-fatal) — " +
+              "run the abandoned session cleanup to remove orphaned _parts rows",
+          );
+        },
+      );
+    }
     throw new ServiceUnavailableError(
       "Storage assembly failed. Your video chunks are safely stored in the database. " +
         "Please retry finalizing this session.",
