@@ -54,3 +54,4 @@ credentials/
 upload_certificate.pem
 *.keystore
 android/keystore.properties
+android/upload_certificate.pem
