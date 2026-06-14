@@ -427,11 +427,19 @@ export default function WatchScreen() {
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       {/* App header — logo left, search right */}
       <View style={[styles.searchToolbar, { paddingTop: insets.top, backgroundColor: c.background }]}>
-        <Image
-          source={require("@/assets/images/temple-tv-logo.png")}
-          style={styles.headerLogo}
-          resizeMode="contain"
-        />
+        {/* Brand wordmark: bird icon + "Temple" + ".tv" in red */}
+        <View style={styles.headerLogoContainer} accessibilityRole="image" accessibilityLabel="Temple TV">
+          <Image
+            source={require("@/assets/images/adaptive-icon-foreground.png")}
+            style={[styles.headerBird, { tintColor: c.foreground }]}
+            resizeMode="contain"
+            accessibilityElementsHidden
+          />
+          <View style={styles.headerWordmark}>
+            <Text style={[styles.headerTempleText, { color: c.foreground }]}>Temple</Text>
+            <Text style={styles.headerDotTv}>.tv</Text>
+          </View>
+        </View>
         <Pressable
           onPress={() => router.push("/search")}
           accessibilityLabel="Search"
@@ -554,9 +562,29 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  headerLogo: {
-    width: 110,
-    height: 38,
+  headerLogoContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  headerBird: {
+    width: 32,
+    height: 32,
+  },
+  headerWordmark: {
+    flexDirection: "row",
+    alignItems: "baseline",
+  },
+  headerTempleText: {
+    fontSize: 22,
+    fontWeight: "700",
+    letterSpacing: -0.5,
+  },
+  headerDotTv: {
+    fontSize: 22,
+    fontWeight: "700",
+    letterSpacing: -0.5,
+    color: "#E8002C",
   },
 
   // ── OMEGA emergency banner ───────────────────────────────────────────────────
