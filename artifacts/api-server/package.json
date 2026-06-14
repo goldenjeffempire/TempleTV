@@ -1,6 +1,6 @@
 {
   "name": "@workspace/api-server",
-  "version": "1.0.24",
+  "version": "1.0.28",
   "private": true,
   "type": "module",
   "description": "Temple TV API — production-grade Fastify backend for Web, Mobile, Smart TV, and Admin Dashboard.",
