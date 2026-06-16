@@ -45,6 +45,10 @@ import {
   Webhook,
   Send,
   Wrench,
+  Globe,
+  Monitor,
+  Smartphone,
+  TrendingUp,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
@@ -993,6 +997,145 @@ const SortableQueueItem = memo(function SortableQueueItem({
     </li>
   );
 });
+
+// ─── PlatformBreakdown SSE payload type ──────────────────────────────────────
+interface ViewerPlatformBreakdown {
+  web: number;
+  tv: number;
+  mobile: number;
+  total: number;
+  asOf: number;
+}
+
+/**
+ * Live Viewer Count card — shows total connected clients and a real-time
+ * breakdown by surface (web browser, smart TV, mobile).
+ *
+ * Data comes from two SSE events:
+ *   `viewer-count`            — fires every time the v1 engine updates its count
+ *   `viewer-platform-breakdown` — fires on connect + every 15 s from the DB
+ *
+ * The two sources can drift slightly: the engine count (WS + SSE connections)
+ * is instantaneous, while the DB breakdown lags by up to 15 s and counts
+ * viewer_sessions with a heartbeat in the last 5 min.  Both are displayed
+ * alongside each other so the operator can see both signals at a glance.
+ */
+function LiveViewerCountCard() {
+  const [total, setTotal] = useState<number | null>(null);
+  const [breakdown, setBreakdown] = useState<ViewerPlatformBreakdown | null>(null);
+  const [prevTotal, setPrevTotal] = useState<number | null>(null);
+  const [flash, setFlash] = useState<"up" | "down" | null>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useSSEEvent("viewer-count", useCallback((data: unknown) => {
+    const d = data as { count?: number } | null;
+    const n = typeof d?.count === "number" ? d.count : null;
+    if (n === null) return;
+    setTotal((prev) => {
+      setPrevTotal(prev);
+      if (prev !== null && n !== prev) {
+        if (flashTimer.current) clearTimeout(flashTimer.current);
+        setFlash(n > prev ? "up" : "down");
+        flashTimer.current = setTimeout(() => setFlash(null), 1_200);
+      }
+      return n;
+    });
+  }, []));
+
+  useSSEEvent("viewer-platform-breakdown", useCallback((data: unknown) => {
+    const d = data as ViewerPlatformBreakdown | null;
+    if (d && typeof d.total === "number") setBreakdown(d);
+  }, []));
+
+  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
+
+  const displayTotal = total ?? breakdown?.total ?? 0;
+  const delta = prevTotal !== null && total !== null ? total - prevTotal : null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 pt-4">
+        <div className="flex items-center gap-2">
+          <Users className="h-4 w-4 text-blue-500 shrink-0" />
+          <CardTitle className="text-sm">Live Viewers</CardTitle>
+          <Badge
+            variant={displayTotal > 0 ? "default" : "secondary"}
+            className={[
+              "ml-0.5 tabular-nums transition-colors duration-300",
+              flash === "up" ? "bg-emerald-600 text-white" : "",
+              flash === "down" ? "bg-amber-500 text-white" : "",
+            ].join(" ")}
+          >
+            {displayTotal.toLocaleString()}
+          </Badge>
+          {delta !== null && delta !== 0 && (
+            <span className={[
+              "flex items-center gap-0.5 text-[11px] font-medium tabular-nums transition-opacity duration-500",
+              flash ? "opacity-100" : "opacity-0",
+              delta > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400",
+            ].join(" ")}>
+              <TrendingUp className={`h-3 w-3 ${delta < 0 ? "rotate-180" : ""}`} />
+              {delta > 0 ? "+" : ""}{delta}
+            </span>
+          )}
+          {breakdown && (
+            <span className="ml-auto text-[10px] text-muted-foreground tabular-nums">
+              updated {Math.round((Date.now() - breakdown.asOf) / 1000)}s ago
+            </span>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="pb-4">
+        {breakdown === null && total === null ? (
+          <p className="text-sm text-muted-foreground">Waiting for viewer data…</p>
+        ) : (
+          <div className="grid grid-cols-3 gap-3">
+            {/* Web */}
+            <div className="flex flex-col items-center gap-1.5 rounded-lg border bg-muted/30 px-3 py-2.5">
+              <Globe className="h-4 w-4 text-blue-500" aria-hidden="true" />
+              <span className="text-xl font-bold tabular-nums leading-none">
+                {(breakdown?.web ?? 0).toLocaleString()}
+              </span>
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Web
+              </span>
+            </div>
+            {/* TV */}
+            <div className="flex flex-col items-center gap-1.5 rounded-lg border bg-muted/30 px-3 py-2.5">
+              <Monitor className="h-4 w-4 text-purple-500" aria-hidden="true" />
+              <span className="text-xl font-bold tabular-nums leading-none">
+                {(breakdown?.tv ?? 0).toLocaleString()}
+              </span>
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Smart TV
+              </span>
+            </div>
+            {/* Mobile */}
+            <div className="flex flex-col items-center gap-1.5 rounded-lg border bg-muted/30 px-3 py-2.5">
+              <Smartphone className="h-4 w-4 text-emerald-500" aria-hidden="true" />
+              <span className="text-xl font-bold tabular-nums leading-none">
+                {(breakdown?.mobile ?? 0).toLocaleString()}
+              </span>
+              <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                Mobile
+              </span>
+            </div>
+          </div>
+        )}
+        {breakdown !== null && (
+          <p className="mt-2.5 text-[11px] text-muted-foreground">
+            Surface counts from active viewer sessions (heartbeat ≤ 5 min).
+            {total !== null && breakdown.total !== total && (
+              <span className="ml-1 text-amber-600 dark:text-amber-400">
+                Engine count: {total.toLocaleString()} (includes WS/SSE connections not yet in sessions).
+              </span>
+            )}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 /**
  * Viewer Sync card — shows aggregate drift between viewers' playback
@@ -3433,6 +3576,9 @@ function BroadcastV2PageInner() {
         server={server}
         queueItems={queueItems}
       />
+
+      {/* ── Live Viewer Count ──────────────────────────────────────────── */}
+      <LiveViewerCountCard />
 
       {/* Viewer sync accuracy panel */}
       <ViewerSyncCard health={engineHealth} />

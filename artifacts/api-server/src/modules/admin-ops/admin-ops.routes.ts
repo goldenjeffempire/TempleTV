@@ -3758,6 +3758,43 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       send("snapshot", broadcastEngine.snapshot());
       send("viewer-count", { count: broadcastEngine.getViewerCount() });
 
+      // Helper: query viewer_sessions for active sessions grouped by platform.
+      // "Active" = no ended_at AND last_heartbeat_at within 5 minutes.
+      // Uses a raw sql template so we don't need additional drizzle-orm imports.
+      async function fetchPlatformBreakdown(): Promise<{ web: number; tv: number; mobile: number; total: number }> {
+        const rows = (await db.execute(sql`
+          SELECT platform, COUNT(*)::int AS count
+          FROM viewer_sessions
+          WHERE ended_at IS NULL
+            AND last_heartbeat_at > NOW() - INTERVAL '5 minutes'
+          GROUP BY platform
+        `)).rows as Array<{ platform: string; count: number }>;
+        const out = { web: 0, tv: 0, mobile: 0, total: 0 };
+        for (const r of rows) {
+          const n = Number(r.count) || 0;
+          if (r.platform === "web") out.web = n;
+          else if (r.platform === "tv") out.tv = n;
+          else if (r.platform === "mobile") out.mobile = n;
+          out.total += n;
+        }
+        return out;
+      }
+
+      // Send an initial breakdown immediately so the UI doesn't wait for
+      // the first periodic tick to populate the surface breakdown chart.
+      fetchPlatformBreakdown()
+        .then((bd) => send("viewer-platform-breakdown", { ...bd, asOf: Date.now() }))
+        .catch(() => {/* non-fatal — SSE still works without breakdown */});
+
+      // Re-emit every 15 s so the breakdown stays live without requiring a
+      // polling endpoint.  15 s balances freshness against DB load.
+      const viewerBreakdownInterval = setInterval(() => {
+        fetchPlatformBreakdown()
+          .then((bd) => send("viewer-platform-breakdown", { ...bd, asOf: Date.now() }))
+          .catch(() => {});
+      }, 15_000);
+      viewerBreakdownInterval.unref?.();
+
       const onEvent = (e: { type: string; data: unknown }) => {
         send(e.type, e.data);
       };
@@ -3806,6 +3843,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         openAdminSseCleanups.delete(cleanup);
         clearInterval(heartbeat);
         clearInterval(zombieCheck);
+        clearInterval(viewerBreakdownInterval);
         broadcastEngine.off("event", onEvent);
         adminEventBus.off("admin-event", onAdminEvent);
         sseCounter.dec();

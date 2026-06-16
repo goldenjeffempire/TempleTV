@@ -162,10 +162,13 @@ const KNOWN_EVENTS = [
   // Transcoding progress with per-rendition detail — emitted by the
   // transcoder dispatcher with structured progress data including % complete.
   "transcoding-progress",
+  // Real-time viewer count broken down by surface (web / tv / mobile).
+  // Emitted on SSE connect and every 15 s thereafter by the admin SSE handler.
+  "viewer-platform-breakdown",
 ];
 
 function summarize(event: string, data: unknown): string | null {
-  if (event === "heartbeat" || event === "stream-health" || event === "viewer-count") return null;
+  if (event === "heartbeat" || event === "stream-health" || event === "viewer-count" || event === "viewer-platform-breakdown") return null;
   const d = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
   switch (event) {
     case "snapshot": case "status": {
