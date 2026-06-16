@@ -1263,7 +1263,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
           429: _429err,
         },
       },
-      config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
     },
     async (req, _reply) => {
       const body = req.body as { idempotencyKey?: string } | undefined;
@@ -2145,7 +2145,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       preHandler: requireAuth("admin"),
       bodyLimit: 1048576,
       schema: { response: { 429: _429err } },
-      config: { rateLimit: { max: 10, timeWindow: "10 minutes" } },
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
     },
     async (req, reply) => {
       const { id } = req.params as { id: string };
@@ -2626,11 +2626,36 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   // causing a redundant DB scan + orchestrator reload on every restart.
   if (!_bootScanScheduled) {
     _bootScanScheduled = true;
-    const _bootHlsScanTimer = setTimeout(() => {
-      autoEnqueueMissingHls().catch((err: unknown) => {
-        logger.warn({ err }, "[broadcast-v2] boot-time auto-enqueue HLS scan failed (non-fatal)");
-      });
-    }, 15_000);
+    // Boot HLS scan with retry: attempt up to 3 times with 30 s backoff so a
+    // transient DB connection error at startup does not permanently skip the
+    // scan. Only the first attempt is delayed (15 s startup grace); subsequent
+    // retries follow immediately after the 30 s backoff.
+    const MAX_BOOT_HLS_ATTEMPTS = 3;
+    const BOOT_HLS_RETRY_DELAY_MS = 30_000;
+    const runBootHlsScan = (attempt: number) => {
+      autoEnqueueMissingHls()
+        .then(({ triggered }) => {
+          if (triggered > 0) {
+            logger.info({ triggered, attempt }, "[broadcast-v2] boot-time HLS scan triggered transcoding jobs");
+          }
+        })
+        .catch((err: unknown) => {
+          logger.warn(
+            { err, attempt, maxAttempts: MAX_BOOT_HLS_ATTEMPTS },
+            "[broadcast-v2] boot-time auto-enqueue HLS scan failed (non-fatal)",
+          );
+          if (attempt < MAX_BOOT_HLS_ATTEMPTS) {
+            const retryTimer = setTimeout(() => runBootHlsScan(attempt + 1), BOOT_HLS_RETRY_DELAY_MS);
+            retryTimer.unref?.();
+          } else {
+            logger.error(
+              { maxAttempts: MAX_BOOT_HLS_ATTEMPTS },
+              "[broadcast-v2] boot-time HLS scan exhausted all retry attempts — videos may be missing HLS variants until next repair-queue",
+            );
+          }
+        });
+    };
+    const _bootHlsScanTimer = setTimeout(() => runBootHlsScan(1), 15_000);
     _bootHlsScanTimer.unref?.();
   }
 

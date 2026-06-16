@@ -4,11 +4,11 @@ import path from "node:path";
 import { withHlsToken } from "../../../shared/hls-token.js";
 import { env } from "../../../config/env.js";
 import { logger } from "../../../infrastructure/logger.js";
-import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, broadcastSequenceAdvanceTotal, broadcastSkipTotal, broadcastBadUrlCount, setBroadcastMode, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
+import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, broadcastSequenceAdvanceTotal, broadcastSequenceTotal, broadcastSkipTotal, broadcastFatalTotal, broadcastBadUrlCount, broadcastQueueActiveItems, setBroadcastMode, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
 import { checkpointRepo } from "../repository/checkpoint.repo.js";
-import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, getBadUrlCacheSize, type RawQueueRow } from "../repository/queue.repo.js";
+import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, getBadUrlCacheSize, getBadUrlStats, type RawQueueRow } from "../repository/queue.repo.js";
 import { faststartRecoveryWorker } from "./faststart-recovery.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { ytShuffleFallback } from "./youtube-shuffle-fallback.js";
@@ -433,6 +433,103 @@ class BroadcastOrchestrator extends EventEmitter {
     this.setMaxListeners(1024);
   }
 
+  // ── Internal timer guard ────────────────────────────────────────────────
+  // Per-timer consecutive failure counters. When any timer's callback throws
+  // more than TIMER_OPS_ALERT_THRESHOLD times in a row, an ops-alert SSE
+  // event is emitted so the admin dashboard surfaces it immediately.
+  //
+  // Stored as a plain object (not Map) for fast keyed access inside hot paths.
+  private _timerFailures: Record<string, number> = {};
+  private static readonly TIMER_OPS_ALERT_THRESHOLD = 5;
+  private static readonly TIMER_RESTART_DELAY_MS = 5_000;
+
+  /**
+   * Called from every protected timer callback on error.
+   * Logs at WARN, increments the consecutive-failure counter, and emits an
+   * ops-alert once the threshold is crossed.  Returns the updated count.
+   */
+  private _onTimerError(name: string, err: unknown): number {
+    const count = (this._timerFailures[name] ?? 0) + 1;
+    this._timerFailures[name] = count;
+    logger.warn(
+      { err, timer: name, consecutiveFailures: count },
+      `[broadcast-v2] internal timer "${name}" threw unexpectedly (failure ${count}/${BroadcastOrchestrator.TIMER_OPS_ALERT_THRESHOLD})`,
+    );
+    if (count >= BroadcastOrchestrator.TIMER_OPS_ALERT_THRESHOLD) {
+      this._timerFailures[name] = 0; // reset so the next batch of failures fires a fresh alert
+      logger.error(
+        { timer: name, consecutiveFailures: count },
+        `[broadcast-v2] timer "${name}" has failed ${count} consecutive times — emitting ops-alert and restarting after ${BroadcastOrchestrator.TIMER_RESTART_DELAY_MS} ms`,
+      );
+      try {
+        adminEventBus.push("ops-alert", {
+          level: "critical",
+          title: "Broadcast Engine Timer Degraded",
+          message: `Internal orchestrator timer "${name}" has thrown ${count} consecutive errors. The 24/7 broadcast engine may be partially degraded.`,
+          detail: `Check server logs for '[broadcast-v2] internal timer "${name}"' for root cause. The timer has been paused for 5 s and will self-restart.`,
+          timestamp: new Date().toISOString(),
+          source: "broadcast-orchestrator",
+          timerName: name,
+        });
+      } catch { /* non-fatal — adminEventBus.push must never crash the orchestrator */ }
+    }
+    return count;
+  }
+
+  /**
+   * Reset the consecutive-failure counter for a timer after a successful tick.
+   * Call this at the start of a guarded timer callback when execution succeeds.
+   */
+  private _onTimerSuccess(name: string): void {
+    if (this._timerFailures[name]) this._timerFailures[name] = 0;
+  }
+
+  /**
+   * Create a protected `setInterval` that:
+   *   1. Catches any error thrown by `fn` (synchronous or async).
+   *   2. Calls `_onTimerError` to log + track consecutive failures.
+   *   3. On every failure: clears the current interval and schedules a
+   *      one-shot `setTimeout` to recreate it after TIMER_RESTART_DELAY_MS.
+   *      This prevents a tight error loop from burning CPU and logs.
+   *   4. After TIMER_OPS_ALERT_THRESHOLD consecutive failures:
+   *      `_onTimerError` emits an ops-alert SSE event so operators see it
+   *      on the admin dashboard even if no one is watching the server logs.
+   *
+   * `timerSetter` / `timerGetter` are closures that read and write the
+   * corresponding class field (e.g. `this.tickTimer`) so the restart path
+   * can update the field with the new handle.
+   */
+  private _protectedInterval(
+    name: string,
+    fn: () => void | Promise<void>,
+    intervalMs: number,
+    timerGetter: () => NodeJS.Timeout | null,
+    timerSetter: (handle: NodeJS.Timeout | null) => void,
+  ): NodeJS.Timeout {
+    const guarded = () => {
+      void (async () => {
+        try {
+          await Promise.resolve(fn());
+          this._onTimerSuccess(name);
+        } catch (err) {
+          this._onTimerError(name, err);
+          // Pause and restart: clear the failed interval, then recreate after delay.
+          const h = timerGetter();
+          if (h) clearInterval(h);
+          timerSetter(null);
+          const restartT = setTimeout(() => {
+            if (!this.started) return;
+            timerSetter(this._protectedInterval(name, fn, intervalMs, timerGetter, timerSetter));
+          }, BroadcastOrchestrator.TIMER_RESTART_DELAY_MS);
+          restartT.unref?.();
+        }
+      })();
+    };
+    const handle = setInterval(guarded, intervalMs);
+    handle.unref?.();
+    return handle;
+  }
+
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
   /**
@@ -580,8 +677,13 @@ class BroadcastOrchestrator extends EventEmitter {
     }
 
     // ── Tick loop (purely computational — no async/DB work ever) ──────────
-    this.tickTimer = setInterval(() => this.tick(), TICK_MS);
-    this.tickTimer.unref?.();
+    this.tickTimer = this._protectedInterval(
+      "tick",
+      () => this.tick(),
+      TICK_MS,
+      () => this.tickTimer,
+      (h) => { this.tickTimer = h; },
+    );
 
     // ── Checkpoint persistence (dirty-flag gated) ─────────────────────────
     // persistCheckpoint() is async.  Returning a rejected Promise from a
@@ -615,10 +717,13 @@ class BroadcastOrchestrator extends EventEmitter {
     // The EventEmitter emit is cheap but snapshot() still allocates V2Item
     // objects that become immediate GC garbage with no consumers.  At idle
     // (0 connections) this eliminates 4 spurious snapshot() calls per minute.
-    this.keepAliveTimer = setInterval(() => {
-      if (this.started && this.listenerCount("frame") > 0) this.emitSnapshot();
-    }, 15_000);
-    this.keepAliveTimer.unref?.();
+    this.keepAliveTimer = this._protectedInterval(
+      "keep-alive",
+      () => { if (this.started && this.listenerCount("frame") > 0) this.emitSnapshot(); },
+      15_000,
+      () => this.keepAliveTimer,
+      (h) => { this.keepAliveTimer = h; },
+    );
 
     // ── Self-heal timers (outside tick — no DB work in tickInner()) ───────
     // Empty-queue poll: check DB every 10 s so a freshly-added item is
@@ -632,91 +737,96 @@ class BroadcastOrchestrator extends EventEmitter {
     // BROADCAST_AUTO_ENQUEUE_DISABLE on briefly), this guarantees the
     // broadcast comes back on-air without operator action. The scan is
     // itself a no-op when auto-enqueue is disabled.
-    this.selfHealEmptyTimer = setInterval(() => {
-      if (!this.started) return;
-      if (this.items.length === 0) {
-        // ── YouTube shuffle fallback: advance to next video if override ended ──
-        // When the shuffle fallback is active but the running override has ended
-        // naturally (endsAtMs expired → override = null), advance immediately to
-        // the next catalog video without waiting for the full EMPTY_POLLS_BEFORE_*
-        // threshold.  This ensures continuous playback with no dead-air gap.
-        if (ytShuffleFallback.isActive && !this.override && !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE) {
-          void ytShuffleFallback
-            .advance((opts) => this.startOverride(opts))
-            .catch((err: unknown) =>
-              logger.warn(
-                { err },
-                "[broadcast-v2] YouTube shuffle fallback advance failed (non-fatal)",
-              ),
-            );
-        }
-
-        this.scheduleSelfHealReload("empty-queue-poll");
-        this.consecutiveEmptyPolls += 1;
-
-        // ── Dead-air escalation (fires at 30 s, before library scan at 60 s) ──
-        // After EMPTY_POLLS_BEFORE_ESCALATION consecutive empty polls, check
-        // whether the DB has active items that loadActive() is filtering out
-        // (e.g. faststart_applied=false, still processing). If so, run the
-        // targeted recovery path: re-enable suspended items, clear bad-URL
-        // cache, and trigger an immediate faststart-recovery sweep. This
-        // directly addresses the root cause rather than adding more items.
-        if (this.consecutiveEmptyPolls >= EMPTY_POLLS_BEFORE_ESCALATION) {
-          this.escalateDeadAir();
-        }
-
-        if (this.consecutiveEmptyPolls >= EMPTY_POLLS_BEFORE_LIBRARY_SCAN) {
-          this.consecutiveEmptyPolls = 0;
-          void scanLibraryAndEnqueue({
-            reason: "self-heal-empty",
-            maxToAdd: 100,
-          })
-            .then((res) => {
-              if (res.enqueued > 0) {
-                logger.info(
-                  res,
-                  "[broadcast-v2] self-heal: library scan promoted playable videos into empty queue — reloading",
-                );
-                this.scheduleSelfHealReload("self-heal-library-scan");
-              } else if (
-                !ytShuffleFallback.isActive &&
-                this.mode !== "override" &&
-                !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE &&
-                this.items.length === 0
-                // Race guard: re-check that the queue is still empty before activating.
-                // Between the scan start and this .then() callback, an operator could
-                // have added items (bus bridge fires reloadInner, this.items updates).
-                // Activating over a non-empty queue would evict newly-added content.
-              ) {
-                // Library scan returned 0 playable local items and the queue is
-                // still empty — activate the YouTube catalog shuffle fallback so
-                // viewers see content while local uploads are unavailable.
-                void ytShuffleFallback
-                  .activate((opts) => this.startOverride(opts))
-                  .catch((err: unknown) =>
-                    logger.warn(
-                      { err },
-                      "[broadcast-v2] YouTube shuffle fallback activate failed (non-fatal)",
-                    ),
-                  );
-              }
-            })
-            .catch((err) => {
-              logger.warn(
-                { err },
-                "[broadcast-v2] self-heal: library scan failed (non-fatal)",
+    this.selfHealEmptyTimer = this._protectedInterval(
+      "self-heal-empty",
+      () => {
+        if (!this.started) return;
+        if (this.items.length === 0) {
+          // ── YouTube shuffle fallback: advance to next video if override ended ──
+          // When the shuffle fallback is active but the running override has ended
+          // naturally (endsAtMs expired → override = null), advance immediately to
+          // the next catalog video without waiting for the full EMPTY_POLLS_BEFORE_*
+          // threshold.  This ensures continuous playback with no dead-air gap.
+          if (ytShuffleFallback.isActive && !this.override && !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE) {
+            void ytShuffleFallback
+              .advance((opts) => this.startOverride(opts))
+              .catch((err: unknown) =>
+                logger.warn(
+                  { err },
+                  "[broadcast-v2] YouTube shuffle fallback advance failed (non-fatal)",
+                ),
               );
-            });
+          }
+
+          this.scheduleSelfHealReload("empty-queue-poll");
+          this.consecutiveEmptyPolls += 1;
+
+          // ── Dead-air escalation (fires at 30 s, before library scan at 60 s) ──
+          // After EMPTY_POLLS_BEFORE_ESCALATION consecutive empty polls, check
+          // whether the DB has active items that loadActive() is filtering out
+          // (e.g. faststart_applied=false, still processing). If so, run the
+          // targeted recovery path: re-enable suspended items, clear bad-URL
+          // cache, and trigger an immediate faststart-recovery sweep. This
+          // directly addresses the root cause rather than adding more items.
+          if (this.consecutiveEmptyPolls >= EMPTY_POLLS_BEFORE_ESCALATION) {
+            this.escalateDeadAir();
+          }
+
+          if (this.consecutiveEmptyPolls >= EMPTY_POLLS_BEFORE_LIBRARY_SCAN) {
+            this.consecutiveEmptyPolls = 0;
+            void scanLibraryAndEnqueue({
+              reason: "self-heal-empty",
+              maxToAdd: 100,
+            })
+              .then((res) => {
+                if (res.enqueued > 0) {
+                  logger.info(
+                    res,
+                    "[broadcast-v2] self-heal: library scan promoted playable videos into empty queue — reloading",
+                  );
+                  this.scheduleSelfHealReload("self-heal-library-scan");
+                } else if (
+                  !ytShuffleFallback.isActive &&
+                  this.mode !== "override" &&
+                  !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE &&
+                  this.items.length === 0
+                  // Race guard: re-check that the queue is still empty before activating.
+                  // Between the scan start and this .then() callback, an operator could
+                  // have added items (bus bridge fires reloadInner, this.items updates).
+                  // Activating over a non-empty queue would evict newly-added content.
+                ) {
+                  // Library scan returned 0 playable local items and the queue is
+                  // still empty — activate the YouTube catalog shuffle fallback so
+                  // viewers see content while local uploads are unavailable.
+                  void ytShuffleFallback
+                    .activate((opts) => this.startOverride(opts))
+                    .catch((err: unknown) =>
+                      logger.warn(
+                        { err },
+                        "[broadcast-v2] YouTube shuffle fallback activate failed (non-fatal)",
+                      ),
+                    );
+                }
+              })
+              .catch((err) => {
+                logger.warn(
+                  { err },
+                  "[broadcast-v2] self-heal: library scan failed (non-fatal)",
+                );
+              });
+          }
+        } else {
+          this.consecutiveEmptyPolls = 0;
+          // Reset the escalation cooldown now that items are loaded, so a future
+          // outage gets an immediate escalation rather than waiting for the
+          // remaining cooldown from a previous outage.
+          this.lastDeadAirEscalationMs = 0;
         }
-      } else {
-        this.consecutiveEmptyPolls = 0;
-        // Reset the escalation cooldown now that items are loaded, so a future
-        // outage gets an immediate escalation rather than waiting for the
-        // remaining cooldown from a previous outage.
-        this.lastDeadAirEscalationMs = 0;
-      }
-    }, SELF_HEAL_EMPTY_MS);
-    this.selfHealEmptyTimer.unref?.();
+      },
+      SELF_HEAL_EMPTY_MS,
+      () => this.selfHealEmptyTimer,
+      (h) => { this.selfHealEmptyTimer = h; },
+    );
 
     // Stale-queue drift correction: reload every 30 s while the queue is
     // populated to pick up reorders / additions that arrived without a
@@ -728,102 +838,115 @@ class BroadcastOrchestrator extends EventEmitter {
     // empty even though items.length > 0.  In that case we also trigger a
     // library scan so fresh, un-blacklisted videos can fill the gap —
     // exactly the same guarantee the empty-queue backstop provides.
-    this.selfHealStaleTimer = setInterval(() => {
-      if (!this.started) return;
-      if (this.items.length > 0) {
-        this.scheduleSelfHealReload("drift-poll");
+    this.selfHealStaleTimer = this._protectedInterval(
+      "self-heal-stale",
+      () => {
+        if (!this.started) return;
+        if (this.items.length > 0) {
+          this.scheduleSelfHealReload("drift-poll");
 
-        if (
-          this.allBlockedSinceMs !== null &&
-          Date.now() - this.allBlockedSinceMs >=
-            EMPTY_POLLS_BEFORE_LIBRARY_SCAN * SELF_HEAL_EMPTY_MS
-        ) {
-          const blockedMs = Date.now() - this.allBlockedSinceMs;
-          logger.warn(
-            { allBlockedDurationMs: blockedMs },
-            "[broadcast-v2] self-heal: all queue sources blocked >60 s — clearing bad-URL cache and triggering library scan backstop",
-          );
-          // Clear the bad-URL cache immediately so the existing queue items
-          // can be retried right away, without waiting for their individual
-          // TTLs (90 s – 5 min) to expire.  The library scan runs in parallel
-          // to fill the queue with fresh items if all current sources are
-          // genuinely unrecoverable.
-          clearAllBadUrls();
-          this.scheduleSelfHealReload("all-blocked-cache-clear");
-          void scanLibraryAndEnqueue({ reason: "self-heal-all-blocked", maxToAdd: 100 })
-            .then((res) => {
-              if (res.enqueued > 0) {
-                logger.info(
-                  res,
-                  "[broadcast-v2] self-heal: library scan promoted videos into all-blocked queue — reloading",
-                );
-                this.scheduleSelfHealReload("self-heal-all-blocked-library-scan");
-              } else if (
-                !ytShuffleFallback.isActive &&
-                this.mode !== "override" &&
-                !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE &&
-                this.items.length === 0
-                // Race guard: re-check queue state; items could have appeared
-                // via a concurrent bus-bridge reload between scan start and .then()
-              ) {
-                // All-blocked scan also returned 0 — activate YouTube shuffle fallback
-                // so viewers see content while all local sources remain unreachable.
-                void ytShuffleFallback
-                  .activate((opts) => this.startOverride(opts))
-                  .catch((err: unknown) =>
-                    logger.warn(
-                      { err },
-                      "[broadcast-v2] YouTube shuffle fallback activate (all-blocked) failed (non-fatal)",
-                    ),
+          if (
+            this.allBlockedSinceMs !== null &&
+            Date.now() - this.allBlockedSinceMs >=
+              EMPTY_POLLS_BEFORE_LIBRARY_SCAN * SELF_HEAL_EMPTY_MS
+          ) {
+            const blockedMs = Date.now() - this.allBlockedSinceMs;
+            logger.warn(
+              { allBlockedDurationMs: blockedMs },
+              "[broadcast-v2] self-heal: all queue sources blocked >60 s — clearing bad-URL cache and triggering library scan backstop",
+            );
+            // Clear the bad-URL cache immediately so the existing queue items
+            // can be retried right away, without waiting for their individual
+            // TTLs (90 s – 5 min) to expire.  The library scan runs in parallel
+            // to fill the queue with fresh items if all current sources are
+            // genuinely unrecoverable.
+            clearAllBadUrls();
+            this.scheduleSelfHealReload("all-blocked-cache-clear");
+            void scanLibraryAndEnqueue({ reason: "self-heal-all-blocked", maxToAdd: 100 })
+              .then((res) => {
+                if (res.enqueued > 0) {
+                  logger.info(
+                    res,
+                    "[broadcast-v2] self-heal: library scan promoted videos into all-blocked queue — reloading",
                   );
-              }
-            })
-            .catch((err) => {
-              logger.warn(
-                { err },
-                "[broadcast-v2] self-heal: all-blocked library scan failed (non-fatal)",
-              );
-            });
-        }
+                  this.scheduleSelfHealReload("self-heal-all-blocked-library-scan");
+                } else if (
+                  !ytShuffleFallback.isActive &&
+                  this.mode !== "override" &&
+                  !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE &&
+                  this.items.length === 0
+                  // Race guard: re-check queue state; items could have appeared
+                  // via a concurrent bus-bridge reload between scan start and .then()
+                ) {
+                  // All-blocked scan also returned 0 — activate YouTube shuffle fallback
+                  // so viewers see content while all local sources remain unreachable.
+                  void ytShuffleFallback
+                    .activate((opts) => this.startOverride(opts))
+                    .catch((err: unknown) =>
+                      logger.warn(
+                        { err },
+                        "[broadcast-v2] YouTube shuffle fallback activate (all-blocked) failed (non-fatal)",
+                      ),
+                    );
+                }
+              })
+              .catch((err) => {
+                logger.warn(
+                  { err },
+                  "[broadcast-v2] self-heal: all-blocked library scan failed (non-fatal)",
+                );
+              });
+          }
 
-        // Dead-air external stream fallback: when all queue sources have been
-        // blocked for >BROADCAST_DEADAIR_FALLBACK_AFTER_MS AND a fallback URL
-        // is configured, apply it as a broadcast override so viewers never see
-        // dead air due to a fully-blocked queue. Auto-cleared when the queue
-        // recovers playable content (see reloadInner).
-        if (
-          this.allBlockedSinceMs !== null &&
-          env.BROADCAST_DEADAIR_FALLBACK_URL &&
-          Date.now() - this.allBlockedSinceMs >= env.BROADCAST_DEADAIR_FALLBACK_AFTER_MS &&
-          this.mode !== "override" &&
-          !this.deadAirFallbackActive
-        ) {
-          this.applyDeadAirFallback();
+          // Dead-air external stream fallback: when all queue sources have been
+          // blocked for >BROADCAST_DEADAIR_FALLBACK_AFTER_MS AND a fallback URL
+          // is configured, apply it as a broadcast override so viewers never see
+          // dead air due to a fully-blocked queue. Auto-cleared when the queue
+          // recovers playable content (see reloadInner).
+          if (
+            this.allBlockedSinceMs !== null &&
+            env.BROADCAST_DEADAIR_FALLBACK_URL &&
+            Date.now() - this.allBlockedSinceMs >= env.BROADCAST_DEADAIR_FALLBACK_AFTER_MS &&
+            this.mode !== "override" &&
+            !this.deadAirFallbackActive
+          ) {
+            this.applyDeadAirFallback();
+          }
         }
-      }
-    }, SELF_HEAL_STALE_MS);
-    this.selfHealStaleTimer.unref?.();
+      },
+      SELF_HEAL_STALE_MS,
+      () => this.selfHealStaleTimer,
+      (h) => { this.selfHealStaleTimer = h; },
+    );
 
     // ── Current-item dead-stream probe ────────────────────────────────────
     // Probes the CURRENTLY-PLAYING item's URL every 30 s.  Complements the
     // preload-window probe (which only fires for the NEXT item) by catching
     // CDN URLs that go dead while they are already on air. Auto-skips after
     // 3 consecutive definitive 4xx responses (never on ambiguous / timeouts).
-    this.currentItemProbeTimer = setInterval(() => {
-      this.probeCurrentItem();
-    }, 30_000);
-    this.currentItemProbeTimer.unref?.();
+    this.currentItemProbeTimer = this._protectedInterval(
+      "current-item-probe",
+      () => { this.probeCurrentItem(); },
+      30_000,
+      () => this.currentItemProbeTimer,
+      (h) => { this.currentItemProbeTimer = h; },
+    );
 
     // ── Bad-URL cache periodic persistence ───────────────────────────────
     // Save the bad-URL blacklist and skip counts to the DB every 60 s so
     // that in-flight suspensions survive a crash or graceful restart.
     // A final save also fires in stop() for graceful shutdown paths.
     // Also update the Prometheus gauge so operators can see the live count.
-    this.badUrlCacheTimer = setInterval(() => {
-      broadcastBadUrlCount.set({ channel: this.channelId, ...SERVICE_LABELS }, getBadUrlCacheSize());
-      void persistBadUrlCache(this.channelId);
-    }, 60_000);
-    this.badUrlCacheTimer.unref?.();
+    this.badUrlCacheTimer = this._protectedInterval(
+      "bad-url-cache-persist",
+      () => {
+        broadcastBadUrlCount.set({ channel: this.channelId, ...SERVICE_LABELS }, getBadUrlCacheSize());
+        return persistBadUrlCache(this.channelId);
+      },
+      60_000,
+      () => this.badUrlCacheTimer,
+      (h) => { this.badUrlCacheTimer = h; },
+    );
 
     logger.info(
       { items: this.items.length, sequence: this.sequence,
@@ -2411,6 +2534,7 @@ class BroadcastOrchestrator extends EventEmitter {
       if (this.items.length > 0 && this.cycleDurationMs > 0 && this.autoSkipAttempts < 5) {
         this.autoSkipAttempts += 1;
         this.consecutiveSkips += 1;
+        broadcastSkipTotal.inc({ channel: this.channelId, ...SERVICE_LABELS });
         // Advance the cycle anchor by one item-duration to skip the bad slot.
         const elapsed = ((Date.now() - this.cycleStartedAtMs) % this.cycleDurationMs + this.cycleDurationMs) % this.cycleDurationMs;
         let acc = 0;
@@ -2463,6 +2587,9 @@ class BroadcastOrchestrator extends EventEmitter {
           this.consecutiveSkips = 0;       // clear admin banner immediately
           this.autoSkipAttempts = 0;       // allow fresh skip cycle after reload
           this.allBlockedSinceMs = null;   // prevent duplicate TTL-path recovery
+          // FATAL: every queue item has been tried and failed — increment counter
+          // so dashboards can alert on repeated cycle exhaustion events.
+          broadcastFatalTotal.inc({ channel: this.channelId, ...SERVICE_LABELS });
           logger.warn(
             { channel: this.channelId, itemCount: this.items.length },
             "[broadcast-v2] cycle exhaustion: all queue items unresolvable — clearing bad-URL cache and reloading",
@@ -2957,7 +3084,10 @@ class BroadcastOrchestrator extends EventEmitter {
   private async bump(eventType: V2EventType, payload: unknown): Promise<void> {
     this.sequence += 1;
     this.lastSequenceAdvanceMs = Date.now();
+    // Increment both sequence counters: the v2-prefixed one (main branch) for
+    // backward-compatible dashboard alerts, and the task-added one for new alerts.
     broadcastSequenceAdvanceTotal.inc({ channel: this.channelId, ...SERVICE_LABELS });
+    broadcastSequenceTotal.inc({ channel: this.channelId, ...SERVICE_LABELS });
     const seq = this.sequence;
     // Persist state and event in the background so the tick loop stays cheap.
     void Promise.all([
@@ -3006,6 +3136,14 @@ class BroadcastOrchestrator extends EventEmitter {
     this.checkpointDirty = true;
     broadcastSequence.set({ channel: this.channelId, ...SERVICE_LABELS }, this.sequence);
     setBroadcastMode(this.channelId, this.mode);
+    // Update the live-state gauges on every snapshot so Prometheus scrapes
+    // always see current values without needing a separate polling worker.
+    broadcastQueueActiveItems.set({ channel: this.channelId, ...SERVICE_LABELS }, this.items.length);
+    // Bad-URL count: getBadUrlStats() is a fast in-memory walk — safe to call
+    // on every snapshot (which already runs at the 2 s tick cadence).
+    try {
+      broadcastBadUrlCount.set({ channel: this.channelId, ...SERVICE_LABELS }, getBadUrlStats().blockedCount);
+    } catch { /* non-fatal — gauge will hold last value */ }
     if (!this.suppressLocalEmit) {
       this.emit("frame", { type: "snapshot", sequence: this.sequence, state } satisfies V2ServerFrame);
     }

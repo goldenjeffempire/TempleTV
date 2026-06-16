@@ -169,3 +169,48 @@ export function setBroadcastMode(channel: string, mode: string): void {
     );
   }
 }
+
+// ── Broadcast engine health metrics ──────────────────────────────────────────
+// These 5 metrics give Prometheus dashboards and alerts real-time insight into
+// the broadcast engine's health: is it progressing? skipping? hitting FATAL?
+// how many bad URLs are blocked? how many active items are in the queue?
+
+/**
+ * Total number of sequence advances since process start.
+ * Monotonically increasing — a flat line on a dashboard means the engine
+ * is not progressing (stuck, empty queue, or all-sources-blocked).
+ */
+export const broadcastSequenceTotal = new Counter({
+  name: "broadcast_sequence_total",
+  help: "Total number of broadcast sequence advances (item advances, skips, mode changes) since process start",
+  labelNames: ["channel", "service", "env"] as const,
+  registers: [promRegistry],
+});
+
+// broadcastSkipTotal already defined above (broadcast_v2_skip_total).
+
+/**
+ * Total number of FATAL (all-sources-blocked / cycle-exhaustion) events
+ * since process start. Each increment means the orchestrator cycled through
+ * every queue item without finding a playable source and went off-air.
+ */
+export const broadcastFatalTotal = new Counter({
+  name: "broadcast_fatal_total",
+  help: "Total number of all-sources-blocked / cycle-exhaustion FATAL events since process start",
+  labelNames: ["channel", "service", "env"] as const,
+  registers: [promRegistry],
+});
+
+// broadcastBadUrlCount already defined above (broadcast_v2_bad_url_count).
+
+/**
+ * Number of active items in the broadcast queue (DB rows with is_active=true).
+ * Separate from transcoding_queue_depth. A value of 0 while the channel is
+ * expected on-air indicates a queue management problem.
+ */
+export const broadcastQueueActiveItems = new Gauge({
+  name: "broadcast_queue_active_items",
+  help: "Number of active items currently loaded in the broadcast orchestrator's in-memory queue",
+  labelNames: ["channel", "service", "env"] as const,
+  registers: [promRegistry],
+});
