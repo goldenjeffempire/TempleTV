@@ -134,6 +134,10 @@ const KNOWN_EVENTS = [
   "live-ingest-stream-started", "live-ingest-stream-stopped",
   "broadcast-v2-stall", "broadcast-v2-queue-issues",
   "dead-air-escalation",
+  // Lightweight engine-health tick — emitted by the orchestrator at most
+  // every 5 s on any state change so the admin panel can refresh health
+  // queries without falling back to 60 s HTTP polling.
+  "broadcast-health-update",
   "broadcast-dead-air-fallback", "broadcast-dead-air-recovered",
   "feedback-received", "youtube-quota-warning",
   "youtube-live-status-changed",
@@ -207,6 +211,7 @@ function summarize(event: string, data: unknown): string | null {
       const title = typeof d.videoTitle === "string" ? d.videoTitle : "";
       return title ? `Encoding ${title}: ${pct}%` : `Encoding: ${pct}%`;
     }
+    case "broadcast-health-update": return null; // silent — high-frequency health tick, no activity log entry
     case "broadcast-dead-air-fallback": {
       const title = typeof d.title === "string" ? d.title : null;
       const kind = typeof d.kind === "string" ? d.kind : "fallback";

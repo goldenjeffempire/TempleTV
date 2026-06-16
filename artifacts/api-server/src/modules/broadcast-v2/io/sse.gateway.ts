@@ -259,7 +259,7 @@ export async function sseRoutes(app: FastifyInstance) {
     }
 
     const heartbeat = setInterval(() => {
-      send({ type: "heartbeat", serverTimeMs: Date.now(), sequence: broadcastOrchestrator.getSequence() });
+      send({ type: "heartbeat", serverTimeMs: Date.now(), sequence: broadcastOrchestrator.getSequence(), lastAdvancedAtMs: broadcastOrchestrator.getLastSequenceAdvanceMs() });
     }, 10_000);
     heartbeat.unref?.();
 

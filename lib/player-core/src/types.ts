@@ -98,7 +98,7 @@ export type V2ServerFrame =
   | { type: "preload"; sequence: number; item: V2Item; leadMs: number }
   | { type: "takeover"; sequence: number; override: V2Override }
   | { type: "recover"; fromSequence: number; events: V2ServerFrame[] }
-  | { type: "heartbeat"; serverTimeMs: number; sequence: number }
+  | { type: "heartbeat"; serverTimeMs: number; sequence: number; lastAdvancedAtMs?: number }
   | { type: "error"; code: string; message: string };
 
 // ── Player state machine ─────────────────────────────────────────────────

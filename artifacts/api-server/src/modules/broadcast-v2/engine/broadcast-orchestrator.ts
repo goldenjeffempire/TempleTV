@@ -452,6 +452,15 @@ class BroadcastOrchestrator extends EventEmitter {
   private _timerFailures: Record<string, number> = {};
   private static readonly TIMER_OPS_ALERT_THRESHOLD = 5;
   private static readonly TIMER_RESTART_DELAY_MS = 5_000;
+  /**
+   * Minimum interval between `broadcast-health-update` admin-bus pushes.
+   * emitSnapshot() fires on every 2 s tick so we throttle aggressively to
+   * avoid flooding the admin SSE channel while still delivering near-realtime
+   * health data to the admin panel (replaces 60 s polling).
+   */
+  private static readonly HEALTH_UPDATE_MIN_INTERVAL_MS = 5_000;
+  /** Wall-clock ms of the last `broadcast-health-update` admin-bus push. */
+  private lastHealthUpdatePushMs = 0;
 
   /**
    * Called from every protected timer callback on error.
@@ -3228,6 +3237,23 @@ class BroadcastOrchestrator extends EventEmitter {
     } catch { /* non-fatal — gauge will hold last value */ }
     if (!this.suppressLocalEmit) {
       this.emit("frame", { type: "snapshot", sequence: this.sequence, state } satisfies V2ServerFrame);
+    }
+    // Push a lightweight health-update event to the admin SSE channel.
+    // Throttled to at most once per HEALTH_UPDATE_MIN_INTERVAL_MS (5 s) so the
+    // 2 s tick loop doesn't flood the admin SSE channel — the admin panel uses
+    // this to refresh health queries without falling back to 60 s HTTP polling.
+    const nowMs = Date.now();
+    if (nowMs - this.lastHealthUpdatePushMs >= BroadcastOrchestrator.HEALTH_UPDATE_MIN_INTERVAL_MS) {
+      this.lastHealthUpdatePushMs = nowMs;
+      try {
+        adminEventBus.push("broadcast-health-update", {
+          sequence: this.sequence,
+          mode: this.mode,
+          hasCurrent: state.current !== null,
+          itemCount: this.items.length,
+          uptimeMs: this.startedAtWallMs > 0 ? nowMs - this.startedAtWallMs : 0,
+        });
+      } catch { /* non-fatal — adminEventBus.push must never crash the orchestrator */ }
     }
   }
 

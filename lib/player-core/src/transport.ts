@@ -290,6 +290,17 @@ export class V2Transport {
   private es: EventSource | null = null;
   private backoffMs = INITIAL_BACKOFF_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Pending deferred REST /state fetch timer.
+   *
+   * Set on WS/SSE connect and cancelled the instant a `snapshot` frame
+   * arrives via the socket.  The WS gateway pushes hello + snapshot within
+   * ~100 ms of onopen, so the timer is almost always cancelled before it
+   * fires — eliminating a redundant HTTP round-trip on every clean connect.
+   * The 1.5 s grace window is a safety net for slow proxy chains or
+   * cases where the initial snapshot frame is delayed or dropped.
+   */
+  private requestSnapshotTimer: ReturnType<typeof setTimeout> | null = null;
   private lastSequence = 0;
   private stopped = false;
 
@@ -456,6 +467,8 @@ export class V2Transport {
     this.stopDriftReporter();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    if (this.requestSnapshotTimer) clearTimeout(this.requestSnapshotTimer);
+    this.requestSnapshotTimer = null;
     if (this.onlineHandler && typeof window !== "undefined") {
       window.removeEventListener("online", this.onlineHandler);
       this.onlineHandler = null;
@@ -886,10 +899,18 @@ export class V2Transport {
           /* socket may have died between open and send */
         }
       } else {
-        // First connect (no prior sequence) — proactively fetch the current
-        // snapshot via REST so the FSM exits BOOTSTRAP immediately even if
-        // the server's initial WS snapshot frame is delayed or dropped.
-        this.requestSnapshot();
+        // First connect (no prior sequence) — schedule a deferred REST snapshot
+        // fetch.  The WS gateway pushes hello + snapshot within ~100 ms of
+        // onopen so the timer is almost always cancelled by handleFrame() before
+        // it fires, eliminating a redundant HTTP round-trip on clean connects.
+        // The 1.5 s grace period is a safety net for slow proxy chains or
+        // cases where the initial snapshot frame is buffered / dropped.
+        if (this.requestSnapshotTimer) clearTimeout(this.requestSnapshotTimer);
+        this.requestSnapshotTimer = setTimeout(() => {
+          this.requestSnapshotTimer = null;
+          if (!this.stopped && !this.snapshotInflight) this.requestSnapshot();
+        }, 1_500);
+        (this.requestSnapshotTimer as unknown as { unref?: () => void }).unref?.();
       }
     };
     ws.onmessage = (e) => {
@@ -1005,11 +1026,17 @@ export class V2Transport {
     // Mirrors what WS onopen does (line ~297 above).
     this.backoffMs = INITIAL_BACKOFF_MS;
     this.cfg.onConnectionChange?.(true);
-    // Fetch an initial snapshot via REST immediately on SSE connect.
-    // The SSE gateway sends a snapshot frame shortly after connection, but
-    // race conditions (proxy buffering, slow first-chunk) can delay it.
-    // The REST fetch guarantees the FSM exits BOOTSTRAP promptly.
-    this.requestSnapshot();
+    // Deferred REST snapshot fetch on SSE connect — same pattern as WS onopen.
+    // The SSE gateway sends a snapshot frame shortly after connection; cancelling
+    // the timer when it arrives avoids the redundant HTTP round-trip on clean
+    // connects while still fetching via REST if the frame is late (proxy
+    // buffering, slow first-chunk).  1.5 s is generous enough for SSE proxies.
+    if (this.requestSnapshotTimer) clearTimeout(this.requestSnapshotTimer);
+    this.requestSnapshotTimer = setTimeout(() => {
+      this.requestSnapshotTimer = null;
+      if (!this.stopped && !this.snapshotInflight) this.requestSnapshot();
+    }, 1_500);
+    (this.requestSnapshotTimer as unknown as { unref?: () => void }).unref?.();
   }
 
   private handleFrame(frame: V2ServerFrame): void {
@@ -1025,6 +1052,12 @@ export class V2Transport {
     }
     switch (frame.type) {
       case "snapshot":
+        // Cancel any pending deferred-snapshot REST timer — the socket delivered
+        // the snapshot itself so the HTTP round-trip is no longer needed.
+        if (this.requestSnapshotTimer) {
+          clearTimeout(this.requestSnapshotTimer);
+          this.requestSnapshotTimer = null;
+        }
         // Calibrate clock offset from every snapshot frame. Measured before
         // any async work so we capture the tightest possible RTT estimate.
         // EMA smoothing in updateClockOffset() filters jitter without

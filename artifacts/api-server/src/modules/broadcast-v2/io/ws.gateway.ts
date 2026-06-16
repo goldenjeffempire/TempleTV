@@ -155,7 +155,7 @@ export async function wsRoutes(app: FastifyInstance) {
     let socketClosed = false;
 
     const heartbeat = setInterval(() => {
-      send({ type: "heartbeat", serverTimeMs: Date.now(), sequence: broadcastOrchestrator.getSequence() });
+      send({ type: "heartbeat", serverTimeMs: Date.now(), sequence: broadcastOrchestrator.getSequence(), lastAdvancedAtMs: broadcastOrchestrator.getLastSequenceAdvanceMs() });
 
       // Native WS-level ping frame. This serves two purposes:
       //   1. Load balancers (AWS ALB, Nginx, Cloudflare) keep the upstream

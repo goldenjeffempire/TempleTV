@@ -279,6 +279,15 @@ declare class BroadcastOrchestrator extends EventEmitter {
     private static readonly TIMER_OPS_ALERT_THRESHOLD;
     private static readonly TIMER_RESTART_DELAY_MS;
     /**
+     * Minimum interval between `broadcast-health-update` admin-bus pushes.
+     * emitSnapshot() fires on every 2 s tick so we throttle aggressively to
+     * avoid flooding the admin SSE channel while still delivering near-realtime
+     * health data to the admin panel (replaces 60 s polling).
+     */
+    private static readonly HEALTH_UPDATE_MIN_INTERVAL_MS;
+    /** Wall-clock ms of the last `broadcast-health-update` admin-bus push. */
+    private lastHealthUpdatePushMs;
+    /**
      * Called from every protected timer callback on error.
      * Logs at WARN, increments the consecutive-failure counter, and emits an
      * ops-alert once the threshold is crossed.  Returns the updated count.

@@ -1407,6 +1407,7 @@ function BroadcastV2PageInner() {
     code: string;
     severity: "error" | "warn";
     message: string;
+    sourceQuality?: string | null;
   };
   type RemediationReportData = {
     generatedAtMs: number;
@@ -2040,6 +2041,15 @@ function BroadcastV2PageInner() {
   useSSEEvent("source-upgraded", () => {
     void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+  });
+
+  // Engine health push — the orchestrator emits this at most every 5 s on any
+  // state change so the admin panel gets live accuracy without polling at 60 s.
+  // Invalidates both the engine health card and the system health panel so
+  // operators always see the current on-air/off-air/stuck state in real time.
+  useSSEEvent("broadcast-health-update", () => {
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-system-health"] });
   });
 
   // Real-time stall counter — incremented the instant a stall report fires a

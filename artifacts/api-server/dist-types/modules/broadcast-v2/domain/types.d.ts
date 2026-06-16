@@ -116,6 +116,7 @@ export type V2ServerFrame = {
     type: "heartbeat";
     serverTimeMs: number;
     sequence: number;
+    lastAdvancedAtMs?: number;
 } | {
     type: "error";
     code: string;
