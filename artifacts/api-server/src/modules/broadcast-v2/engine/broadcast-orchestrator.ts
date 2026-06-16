@@ -161,6 +161,14 @@ interface CachedQueueItem {
   primaryUrl: string | null;
   source: V2Source;
   failoverSource: { kind: "hls" | "mp4"; url: string } | null;
+  /**
+   * Quality tier of the primary source, computed once at queue-load time in
+   * reloadInner() so projectItem() and snapshot() incur zero extra DB I/O.
+   *   "hls"           — HLS master playlist available (best quality)
+   *   "mp4_faststart" — faststart applied: moov at byte-0, fully seekable
+   *   "mp4_raw"       — raw upload, moov may be at EOF (range-stream only)
+   */
+  sourceQuality: "hls" | "mp4_faststart" | "mp4_raw";
 }
 
 /**
@@ -1438,6 +1446,15 @@ class BroadcastOrchestrator extends EventEmitter {
         primaryUrl: v2.source.url,
         source: v2.source,
         failoverSource: v2.failoverSource,
+        // Derive quality tier once at load time so snapshot() is O(1) with no DB.
+        // "hls" when an HLS master playlist is the resolved source (best quality).
+        // "mp4_faststart" when the source is an MP4 with moov atom at byte-0
+        //   (faststartApplied=true) — fully seekable, safe for all players.
+        // "mp4_raw" for uploads where faststart hasn't run yet — moov may be at
+        //   EOF, requiring range-streaming; may cause player timeouts on slow links.
+        sourceQuality: v2.source.kind === "hls"
+          ? "hls"
+          : (row.faststartApplied ? "mp4_faststart" : "mp4_raw"),
       });
     }
     // Auto-clear bad-URL cache for items that survived resolution.
@@ -1958,6 +1975,12 @@ class BroadcastOrchestrator extends EventEmitter {
           failoverSource: null, // already on the fallback path; no further failover
           startsAtMs,
           endsAtMs: startsAtMs + item.durationSecs * 1000,
+          // When the primary (e.g. HLS) is bad-URL-blocked and we're falling
+          // back to the MP4 failover source, derive quality from the failover
+          // kind and faststartApplied rather than the blocked primary source.
+          sourceQuality: fo.kind === "hls"
+            ? "hls"
+            : (item.sourceQuality === "mp4_faststart" ? "mp4_faststart" : "mp4_raw"),
         };
       }
       // Primary is bad AND no usable failoverSource → skip this slot.
@@ -1973,6 +1996,7 @@ class BroadcastOrchestrator extends EventEmitter {
       failoverSource: item.failoverSource,
       startsAtMs,
       endsAtMs: startsAtMs + item.durationSecs * 1000,
+      sourceQuality: item.sourceQuality,
     };
   }
 

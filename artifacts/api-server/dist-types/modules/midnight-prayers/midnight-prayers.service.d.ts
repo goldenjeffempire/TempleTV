@@ -15,7 +15,7 @@
  *   reloads it on PATCH; clients poll /config once per session.
  */
 export interface MPV2Source {
-    kind: "hls" | "mp4";
+    kind: "hls" | "mp4" | "youtube";
     url: string;
     expiresAtMs: number | null;
 }
@@ -75,6 +75,7 @@ interface MPVideo {
     durationSecs: number;
     localVideoUrl: string | null;
     hlsMasterUrl: string | null;
+    youtubeId: string | null;
 }
 export interface MidnightPrayersConfigData {
     enabled: boolean;

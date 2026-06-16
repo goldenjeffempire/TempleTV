@@ -14,7 +14,6 @@ declare class QueueHealthGuardImpl {
     private totalRebuilds;
     private lastRebuildAdded;
     private belowThreshold;
-    /** Wall-clock ms of the last ops-alert emission. Zero = never. */
     private lastOpsAlertAtMs;
     getStatus(): QueueHealthGuardStatus;
     scan(): Promise<void>;

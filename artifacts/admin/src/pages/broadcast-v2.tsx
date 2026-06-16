@@ -875,9 +875,19 @@ const SortableQueueItem = memo(function SortableQueueItem({
               <Badge
                 variant="outline"
                 className="gap-1 shrink-0 text-[10px] text-amber-600 border-amber-300 dark:border-amber-700"
-                title="MP4 only — no HLS. Use 'Prepare HLS' for adaptive-bitrate streaming."
+                title="MP4 only — faststart applied (moov at byte-0). Seekable and safe for all players. Use 'Prepare HLS' for adaptive-bitrate streaming."
               >
                 MP4 only
+              </Badge>
+            );
+          if (!item.transcodingStatus || item.transcodingStatus === "none")
+            return (
+              <Badge
+                variant="outline"
+                className="gap-1 shrink-0 text-[10px] text-slate-500 border-slate-300 dark:border-slate-600"
+                title="Raw MP4 — faststart not yet applied. Moov atom may be at end-of-file; slow connections may experience buffering. Faststart will run automatically."
+              >
+                Raw MP4
               </Badge>
             );
           return null;

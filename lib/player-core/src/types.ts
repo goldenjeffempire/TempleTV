@@ -27,6 +27,15 @@ export interface V2Item {
   failoverSource: { kind: "hls" | "mp4"; url: string } | null;
   startsAtMs: number;
   endsAtMs: number;
+  /**
+   * Quality tier of the on-air source, derived at queue-load time and
+   * re-computed on every orchestrator reload:
+   *   "hls"           — adaptive-bitrate HLS master playlist (best)
+   *   "mp4_faststart" — moov-at-byte-0 progressive MP4 (seekable)
+   *   "mp4_raw"       — raw upload, moov may be at EOF (range-stream only)
+   * Optional for wire-protocol back-compat with older server versions.
+   */
+  sourceQuality?: "hls" | "mp4_faststart" | "mp4_raw";
 }
 
 export interface V2Override {
@@ -50,6 +59,11 @@ export interface V2Snapshot {
   override: V2Override | null;
   checkpoint: { itemId: string; positionMs: number } | null;
   failover: { active: boolean; reason: string | null };
+  /**
+   * Why the broadcast is off-air when `current` is null and mode is "queue".
+   * Optional for back-compat with older server versions.
+   */
+  offAirReason?: "empty" | "all_blocked" | null;
 }
 
 export type V2EventType =
@@ -60,7 +74,10 @@ export type V2EventType =
   | "override.ended"
   | "failover.engaged"
   | "failover.cleared"
-  | "checkpoint.updated";
+  | "checkpoint.updated"
+  | "dead_air.detected"
+  | "all_sources_blocked"
+  | "source.upgraded";
 
 export type V2ServerFrame =
   | { type: "hello"; serverTimeMs: number; sequence: number }

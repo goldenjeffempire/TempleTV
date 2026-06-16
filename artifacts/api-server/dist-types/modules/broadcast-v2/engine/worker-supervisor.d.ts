@@ -6,6 +6,19 @@ export interface WorkerConfig {
     maxConsecutiveFailures?: number;
     initialDelayMs?: number;
     /**
+     * Maximum wall-clock milliseconds a single worker invocation may run before
+     * it is considered hung and aborted with a timeout error.
+     *
+     * Default: 2× intervalMs (clamped 60 s – 5 min). For one-shot workers with
+     * no intervalMs the default is 5 min. Set explicitly when the fn is known to
+     * have a well-bounded runtime (e.g. a 30-second scanner → set 45_000).
+     *
+     * When the timeout fires the Promise.race() rejects with
+     * "[deadman] worker timed out after Nms" — this counts as a normal failure
+     * and flows through the existing backoff / circuit-breaker path.
+     */
+    timeoutMs?: number;
+    /**
      * Called once, synchronously, the moment the circuit breaker opens.
      * Use this to fire SSE ops-alerts or out-of-band email from the caller
      * without creating an import cycle between worker-supervisor and the

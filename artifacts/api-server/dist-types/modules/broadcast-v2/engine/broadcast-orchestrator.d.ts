@@ -275,6 +275,36 @@ declare class BroadcastOrchestrator extends EventEmitter {
     private pendingAnchorFixItemId;
     private pendingAnchorFixFirstSeenMs;
     constructor();
+    private _timerFailures;
+    private static readonly TIMER_OPS_ALERT_THRESHOLD;
+    private static readonly TIMER_RESTART_DELAY_MS;
+    /**
+     * Called from every protected timer callback on error.
+     * Logs at WARN, increments the consecutive-failure counter, and emits an
+     * ops-alert once the threshold is crossed.  Returns the updated count.
+     */
+    private _onTimerError;
+    /**
+     * Reset the consecutive-failure counter for a timer after a successful tick.
+     * Call this at the start of a guarded timer callback when execution succeeds.
+     */
+    private _onTimerSuccess;
+    /**
+     * Create a protected `setInterval` that:
+     *   1. Catches any error thrown by `fn` (synchronous or async).
+     *   2. Calls `_onTimerError` to log + track consecutive failures.
+     *   3. On every failure: clears the current interval and schedules a
+     *      one-shot `setTimeout` to recreate it after TIMER_RESTART_DELAY_MS.
+     *      This prevents a tight error loop from burning CPU and logs.
+     *   4. After TIMER_OPS_ALERT_THRESHOLD consecutive failures:
+     *      `_onTimerError` emits an ops-alert SSE event so operators see it
+     *      on the admin dashboard even if no one is watching the server logs.
+     *
+     * `timerSetter` / `timerGetter` are closures that read and write the
+     * corresponding class field (e.g. `this.tickTimer`) so the restart path
+     * can update the field with the new handle.
+     */
+    private _protectedInterval;
     /**
      * Boot the orchestrator. NEVER throws — any failure falls back to a safe
      * default state and the system boots in OFF_AIR mode with the self-heal

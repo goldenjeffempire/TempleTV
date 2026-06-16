@@ -589,6 +589,15 @@ export async function runFaststart(
     // The reload clears the bad-URL cache so items that entered SKIP_PENDING
     // while the file was being re-uploaded are unblocked immediately.
     adminEventBus.push("broadcast-queue-updated", { reason: "faststart-complete", videoId });
+    // Notify admin UI that the source quality for this video has upgraded
+    // from raw MP4 (moov at EOF) to a faststart-optimised seekable MP4.
+    // The admin broadcast-v2 page uses this to refresh sourceKind badges
+    // immediately rather than waiting for the next poll interval.
+    adminEventBus.push("source-upgraded", {
+      videoId,
+      newKind: "mp4_faststart",
+      oldKind: "mp4_raw",
+    });
 
     // Boost transcoding priority for videos now in the broadcast queue.
     // The video is either just-enqueued or was already queued before faststart

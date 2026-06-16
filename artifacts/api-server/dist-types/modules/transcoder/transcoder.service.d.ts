@@ -146,6 +146,27 @@ export declare function remuxForFaststart(inputPath: string, outputPath: string,
  *   (v2, v3 only when source height ≥ 720 / 1080)
  */
 export declare function runTranscode(req: TranscodeRequest): Promise<TranscodeResult>;
+export interface VideoMetadata {
+    durationSecs: number | null;
+    videoCodec: string | null;
+    audioCodec: string | null;
+    /** Bitrate in kbps (format-level, rounded). */
+    videoBitrate: number | null;
+    videoWidth: number | null;
+    videoHeight: number | null;
+}
+/**
+ * Single ffprobe pass that extracts all technical metadata — duration, codec
+ * names, bitrate, and resolution — from an uploaded source file.
+ *
+ * Downloads the source blob to a temp file, invokes ffprobe once with full
+ * format+stream info, and returns a `VideoMetadata` object. All fields that
+ * cannot be determined are returned as null.
+ *
+ * Non-fatal: returns an all-null `VideoMetadata` on any infrastructure error
+ * so callers can merge results into a DB patch without gating on success.
+ */
+export declare function probeVideoMetadata(sourceObjectKey: string): Promise<VideoMetadata>;
 /**
  * Probes the duration of a newly-uploaded source file via ffprobe.
  * Downloads the object to a temp file, runs ffprobe (exits as soon as the

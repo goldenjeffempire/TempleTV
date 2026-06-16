@@ -30,6 +30,16 @@ export interface V2Item {
   startsAtMs: number;
   /** Wall-clock epoch-ms when this item ends. */
   endsAtMs: number;
+  /**
+   * Quality tier of the on-air source, derived at queue-load time and
+   * re-computed on every orchestrator reload so clients always receive
+   * the highest available quality for the on-air item:
+   *   "hls"           — adaptive-bitrate HLS master playlist (best)
+   *   "mp4_faststart" — moov-at-byte-0 progressive MP4 (seekable, good)
+   *   "mp4_raw"       — raw upload, moov may be at EOF (range-stream only)
+   * Optional for wire-protocol back-compat with pre-v2.3 server versions.
+   */
+  sourceQuality?: "hls" | "mp4_faststart" | "mp4_raw";
 }
 
 export interface V2Override {

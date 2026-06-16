@@ -29,6 +29,16 @@ export interface V2Item {
     startsAtMs: number;
     /** Wall-clock epoch-ms when this item ends. */
     endsAtMs: number;
+    /**
+     * Quality tier of the on-air source, derived at queue-load time and
+     * re-computed on every orchestrator reload so clients always receive
+     * the highest available quality for the on-air item:
+     *   "hls"           — adaptive-bitrate HLS master playlist (best)
+     *   "mp4_faststart" — moov-at-byte-0 progressive MP4 (seekable, good)
+     *   "mp4_raw"       — raw upload, moov may be at EOF (range-stream only)
+     * Optional for wire-protocol back-compat with pre-v2.3 server versions.
+     */
+    sourceQuality?: "hls" | "mp4_faststart" | "mp4_raw";
 }
 export interface V2Override {
     id: string;
@@ -117,4 +127,14 @@ export type V2ClientFrame = {
 } | {
     type: "pong";
 };
-export type V2EventType = "queue.changed" | "item.advanced" | "item.skipped" | "override.started" | "override.ended" | "failover.engaged" | "failover.cleared" | "checkpoint.updated" | "dead_air.detected" | "all_sources_blocked";
+export type V2EventType = "queue.changed" | "item.advanced" | "item.skipped" | "override.started" | "override.ended" | "failover.engaged" | "failover.cleared" | "checkpoint.updated" | "dead_air.detected" | "all_sources_blocked"
+/**
+ * Emitted by the orchestrator when the currently-playing item's source URL
+ * upgrades (e.g. MP4 → HLS after transcoding completes) without an item
+ * boundary crossing. Clients should switch to the new source at the next
+ * segment boundary for HLS (gapless) or immediately if the current
+ * playback position can be preserved.
+ *
+ * Payload: { itemId: string; newSource: V2Source; oldKind: V2SourceKind }
+ */
+ | "source.upgraded";

@@ -16,6 +16,8 @@ export declare const BAD_URL_TTL_MS = 90000;
  * action required, preventing permanent Off Air states from transient failures.
  */
 export declare const SUSPENSION_TTL_MS: number;
+/** Returns the current number of URLs in the bad-URL blacklist cache. */
+export declare function getBadUrlCacheSize(): number;
 /** Mark a source URL as recently confirmed unreachable.
  *
  * Uses exponential backoff: each successive call for the same URL doubles
@@ -29,15 +31,16 @@ export declare function markBadUrl(url: string): void;
 /**
  * Mark a source URL as temporarily unavailable with a custom TTL.
  *
- * Used by autoEnqueueMissingHls to suppress items whose HLS is absent and
- * are being re-transcoded — those items should not air as raw MP4 (which
- * often fails too) while the transcoding job is in progress. A 10-minute
- * TTL covers worst-case transcoding time on a lightly-loaded server and
- * prevents the RECOVERING → SKIP_PENDING → FATAL cycle for every player.
+ * The bad-URL cache prevents the orchestrator from repeatedly retrying a
+ * source that just failed resolution. The TTL is caller-chosen so probes
+ * can use short windows (20 s first-failure) or long windows (for known
+ * in-progress work). Items auto-recover once the TTL expires regardless of
+ * any external trigger — the orchestrator will attempt the URL again on the
+ * next snapshot cycle.
  *
- * The item auto-recovers once the TTL expires regardless of transcoding
- * completion — the orchestrator will then serve it again. If HLS is still
- * absent at that point, the next autoEnqueueMissingHls call re-suppresses it.
+ * Note: autoEnqueueMissingHls no longer suppresses MP4 localVideoUrl while
+ * HLS transcoding is in progress. Items with missing HLS now broadcast via
+ * their MP4 falloverSource until the HLS job completes (broadcast-first).
  */
 export declare function markBadUrlWithTtl(url: string, ttlMs: number): void;
 /** Clear a URL from the bad cache (e.g. after a queue reload with new sources).
