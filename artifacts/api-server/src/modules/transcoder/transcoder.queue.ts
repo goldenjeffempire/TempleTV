@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
+import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 
 const jobs = schema.transcodingJobsTable;
 const videos = schema.videosTable;
@@ -333,6 +334,17 @@ export async function retryAllFailed(): Promise<number> {
           .where(inArray(videos.id, videoIds));
       }
       logger.info({ count: out.length }, "transcoder: batch-retried all failed jobs");
+
+      // Emit per-job SSE events so the admin panel reflects the new "queued"
+      // state immediately without waiting for the next poll cycle.
+      for (const r of out) {
+        adminEventBus.push("transcoding-update", {
+          videoId: r.videoId,
+          jobId: r.id,
+          status: "queued",
+          progress: 0,
+        });
+      }
     }
     return out.length;
   });
@@ -373,12 +385,17 @@ export async function retryJob(id: string): Promise<boolean> {
     const out = await tx.update(jobs)
       .set({
         status: "queued",
+        stage: "pending",
+        stageProgress: 0,
         attempts: 0,
         progress: 0,
         errorMessage: null,
         nextRetryAt: null,
         startedAt: null,
         completedAt: null,
+        leaseExpiresAt: null,
+        leasedBy: null,
+        checkpoint: null,
       })
       .where(eq(jobs.id, id))
       .returning({ id: jobs.id, videoId: jobs.videoId });
@@ -536,6 +553,18 @@ export async function moveToDlq(args: {
     { jobId: args.jobId, videoId: args.videoId, attempts: args.attempts, errorCode: args.errorCode },
     "transcoder: job routed to dead-letter queue",
   );
+
+  // Emit an immediate ops-alert so operators learn about the DLQ entry via
+  // the admin dashboard without waiting for the periodic metric sweep.
+  adminEventBus.push("ops-alert", {
+    level: "warn",
+    title: "Transcoding Job Dead-Lettered",
+    message: `Job ${args.jobId}${args.videoId ? ` (video ${args.videoId})` : ""} exhausted its retry budget after ${args.attempts} attempt(s) and requires operator review. Error: ${args.errorCode}.`,
+    metric: "transcoder_dlq_depth",
+    jobId: args.jobId,
+    videoId: args.videoId ?? null,
+    errorCode: args.errorCode,
+  });
 }
 
 /**
@@ -557,6 +586,7 @@ export async function requeueFromDlq(dlqId: string): Promise<{ jobId: string }> 
     .set({
       status: "queued",
       stage: "pending",
+      stageProgress: 0,
       attempts: 0,
       progress: 0,
       errorMessage: null,
@@ -565,6 +595,7 @@ export async function requeueFromDlq(dlqId: string): Promise<{ jobId: string }> 
       completedAt: null,
       leaseExpiresAt: null,
       leasedBy: null,
+      checkpoint: null,
     })
     .where(eq(jobs.id, entry.jobId));
 

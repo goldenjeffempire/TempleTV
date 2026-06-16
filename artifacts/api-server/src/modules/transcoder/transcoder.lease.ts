@@ -55,7 +55,7 @@ export class JobLeaseManager {
             lt(jobs.nextRetryAt, now),
           ),
         ))
-        .orderBy(jobs.priority, jobs.createdAt)
+        .orderBy(desc(jobs.priority), jobs.createdAt)
         .limit(5);
 
       if (candidates.length === 0) return null;
@@ -201,6 +201,37 @@ export class JobLeaseManager {
               exceeded,
             },
           }).catch(() => { /* non-fatal */ });
+
+          // Sync managed_videos to match the reclaimed job's new status so the
+          // video never gets stuck at "encoding" after a dead-worker permanent
+          // failure. The hls_ready guard prevents a race where HLS completed
+          // just before this watchdog ran — we must never downgrade a done video.
+          if (expired.videoId) {
+            const videosTable = schema.videosTable;
+            if (exceeded) {
+              await db.update(videosTable)
+                .set({
+                  transcodingStatus: "failed",
+                  transcodingErrorCode: "STUCK_JOB",
+                  transcodingErrorMessage:
+                    `Job permanently failed: lease expired ${newAttempts} time(s) — worker died mid-encode. ` +
+                    `Operator review required.`,
+                })
+                .where(and(
+                  eq(videosTable.id, expired.videoId),
+                  ne(videosTable.transcodingStatus, "hls_ready"),
+                ))
+                .catch(() => { /* non-fatal */ });
+            } else {
+              await db.update(videosTable)
+                .set({ transcodingStatus: "queued" })
+                .where(and(
+                  eq(videosTable.id, expired.videoId),
+                  ne(videosTable.transcodingStatus, "hls_ready"),
+                ))
+                .catch(() => { /* non-fatal */ });
+            }
+          }
 
           adminEventBus.push("transcoding-update", {
             videoId: expired.videoId,

@@ -692,6 +692,10 @@ class TranscoderDispatcher {
         progress: 0,
       });
     }
+
+    // Wake the dispatcher immediately so re-queued jobs start within
+    // milliseconds rather than waiting up to TRANSCODER_POLL_MS.
+    this.nudge();
   }
 
   getHeartbeat(): {
@@ -1674,6 +1678,20 @@ class TranscoderDispatcher {
           nextRetryAt: exceeded ? null : nextRetry.toISOString(),
           videoTitle,
         });
+
+        // Emit an immediate ops-alert when a job is routed to the dead-letter
+        // queue so operators learn about it via the admin dashboard without
+        // waiting for the periodic DLQ metric sweep (every ~150 s).
+        if (terminalStatus === "dead_letter") {
+          adminEventBus.push("ops-alert", {
+            level: "warn",
+            title: "Transcoding Job Dead-Lettered",
+            message: `Video "${videoTitle ?? job.videoId}" exhausted its retry budget after ${attempts} attempt(s) and was moved to the dead-letter queue. Error: ${truncatedMessage.slice(0, 200)}`,
+            metric: "transcoder_dlq_depth",
+            jobId: job.id,
+            videoId: job.videoId,
+          });
+        }
 
         // When a job permanently fails, push broadcast-queue-updated so the
         // orchestrator immediately reloads (250 ms debounce) and the queue
