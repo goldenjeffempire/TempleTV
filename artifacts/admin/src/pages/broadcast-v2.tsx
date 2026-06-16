@@ -1945,6 +1945,15 @@ function BroadcastV2PageInner() {
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
   });
 
+  // Source-upgrade events fire when the orchestrator detects the currently-
+  // playing item's source has been upgraded from MP4 to HLS after transcoding
+  // completes. Refresh the queue immediately so sourceKind badges update
+  // without waiting for the next poll interval or a manual page reload.
+  useSSEEvent("source-upgraded", () => {
+    void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+  });
+
   // Real-time stall counter — incremented the instant a stall report fires a
   // skip, without waiting for the next diagnostics poll (up to 15 s lag).
   // Used to augment the StreamQualityPanel's analytics.eventCounts["stall"]

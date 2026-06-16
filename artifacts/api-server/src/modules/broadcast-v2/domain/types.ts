@@ -93,4 +93,14 @@ export type V2EventType =
   | "failover.cleared"
   | "checkpoint.updated"
   | "dead_air.detected"
-  | "all_sources_blocked";
+  | "all_sources_blocked"
+  /**
+   * Emitted by the orchestrator when the currently-playing item's source URL
+   * upgrades (e.g. MP4 → HLS after transcoding completes) without an item
+   * boundary crossing. Clients should switch to the new source at the next
+   * segment boundary for HLS (gapless) or immediately if the current
+   * playback position can be preserved.
+   *
+   * Payload: { itemId: string; newSource: V2Source; oldKind: V2SourceKind }
+   */
+  | "source.upgraded";

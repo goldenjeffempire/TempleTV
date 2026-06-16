@@ -1512,6 +1512,12 @@ class BroadcastOrchestrator extends EventEmitter {
     // Date.now(), the two snapshots can differ by enough to trigger the FSM's
     // drift-correction seek, causing visible video skips.
     const prevItemIds = this.items.map((i) => i.id).join(",");
+    // Also capture the source URL of the currently-playing item so we can
+    // detect MP4→HLS source upgrades after the new items are loaded.
+    const prevCurrentSnap = this.snapshot();
+    const prevCurrentItemId = prevCurrentSnap?.current?.id ?? null;
+    const prevCurrentSourceKind = prevCurrentSnap?.current?.source?.kind ?? null;
+    const prevCurrentSourceUrl = prevCurrentSnap?.current?.source?.url ?? null;
 
     this.items = resolved;
     this.lastReloadAtMs = Date.now();
@@ -1839,6 +1845,41 @@ class BroadcastOrchestrator extends EventEmitter {
           break;
         }
         acc += span;
+      }
+    }
+
+    // ── Source-upgrade detection (MP4 → HLS) ────────────────────────────────
+    // When the currently-playing item's source URL or kind changes WITHOUT the
+    // item ID changing, the queue content hash above will catch it only if the
+    // primaryUrl changed (which it will when HLS becomes available). We also
+    // emit a dedicated "source-upgraded" admin bus event so the admin console
+    // can refresh sourceKind badges immediately — independently of whether the
+    // main queue.changed path fires.
+    if (prevCurrentItemId !== null && prevCurrentSourceKind !== null) {
+      const newCurrentSnap = this.snapshot();
+      const newCurrentSourceKind = newCurrentSnap?.current?.source?.kind ?? null;
+      const newCurrentSourceUrl = newCurrentSnap?.current?.source?.url ?? null;
+      const newCurrentItemId = newCurrentSnap?.current?.id ?? null;
+      if (
+        newCurrentItemId === prevCurrentItemId &&
+        newCurrentSourceUrl !== prevCurrentSourceUrl &&
+        newCurrentSourceKind !== prevCurrentSourceKind
+      ) {
+        logger.info(
+          {
+            itemId: prevCurrentItemId,
+            oldKind: prevCurrentSourceKind,
+            newKind: newCurrentSourceKind,
+          },
+          "[broadcast-v2] source upgraded for currently-playing item (gapless switch)",
+        );
+        adminEventBus.push("source-upgraded", {
+          itemId: prevCurrentItemId,
+          itemTitle: newCurrentSnap?.current?.title ?? null,
+          oldKind: prevCurrentSourceKind,
+          newKind: newCurrentSourceKind,
+          newUrl: newCurrentSourceUrl,
+        });
       }
     }
 

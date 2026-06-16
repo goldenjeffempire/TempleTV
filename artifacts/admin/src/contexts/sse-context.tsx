@@ -147,6 +147,13 @@ const KNOWN_EVENTS = [
   // Corrupt-media detection — emitted when a video is quarantined due to a
   // structural upload failure (CORRUPT_SOURCE, SOURCE_MISSING, etc.).
   "corrupt-media-detected",
+  // Source upgrade — emitted when the orchestrator detects that a currently-
+  // playing item's source has been upgraded from MP4 to HLS after transcoding.
+  // Admin UI uses this to refresh queue badges without a full page reload.
+  "source-upgraded",
+  // Transcoding progress with per-rendition detail — emitted by the
+  // transcoder dispatcher with structured progress data including % complete.
+  "transcoding-progress",
 ];
 
 function summarize(event: string, data: unknown): string | null {
@@ -189,6 +196,16 @@ function summarize(event: string, data: unknown): string | null {
     case "dead-air-escalation": {
       const cycles = Number(d.allBlockedRecoveryCycles ?? 1);
       return `Dead air — all sources blocked (recovery cycle ${cycles})`;
+    }
+    case "source-upgraded": {
+      const kind = String(d.newKind ?? "HLS");
+      const title = typeof d.itemTitle === "string" ? d.itemTitle : "current item";
+      return `Source upgraded to ${kind}: ${title}`;
+    }
+    case "transcoding-progress": {
+      const pct = Number(d.progress ?? 0);
+      const title = typeof d.videoTitle === "string" ? d.videoTitle : "";
+      return title ? `Encoding ${title}: ${pct}%` : `Encoding: ${pct}%`;
     }
     case "broadcast-dead-air-fallback": {
       const title = typeof d.title === "string" ? d.title : null;

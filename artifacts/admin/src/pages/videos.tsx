@@ -78,6 +78,12 @@ interface AdminVideo {
    */
   transcodingErrorMessage: string | null;
   youtubeLiveStatus: "live" | "rebroadcast" | null;
+  videoCodec: string | null;
+  audioCodec: string | null;
+  videoBitrate: number | null;
+  videoWidth: number | null;
+  videoHeight: number | null;
+  transcodingProgress: number | null;
 }
 
 interface VideoListResponse {
@@ -1687,6 +1693,15 @@ export default function VideosPage() {
                       {editVideo.duration && <><span className="opacity-50">·</span><span>{formatDuration(editVideo.duration)}</span></>}
                       {editVideo.viewCount > 0 && <><span className="opacity-50">·</span><span className="flex items-center gap-1"><Eye size={10} /> {editVideo.viewCount.toLocaleString()}</span></>}
                       {editVideo.sizeBytes != null && <><span className="opacity-50">·</span><span>{formatBytes(editVideo.sizeBytes)}</span></>}
+                      {editVideo.videoWidth && editVideo.videoHeight && (
+                        <><span className="opacity-50">·</span><span>{editVideo.videoWidth}×{editVideo.videoHeight}</span></>
+                      )}
+                      {editVideo.videoCodec && (
+                        <><span className="opacity-50">·</span><span className="uppercase">{editVideo.videoCodec}{editVideo.audioCodec ? `+${editVideo.audioCodec}` : ""}</span></>
+                      )}
+                      {editVideo.videoBitrate && (
+                        <><span className="opacity-50">·</span><span>{editVideo.videoBitrate.toLocaleString()} kbps</span></>
+                      )}
                       {editVideo.originalFilename && (
                         <>
                           <span className="opacity-50">·</span>

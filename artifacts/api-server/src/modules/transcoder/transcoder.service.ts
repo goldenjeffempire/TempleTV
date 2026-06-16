@@ -2464,6 +2464,125 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
   }
 }
 
+export interface VideoMetadata {
+  durationSecs: number | null;
+  videoCodec: string | null;
+  audioCodec: string | null;
+  /** Bitrate in kbps (format-level, rounded). */
+  videoBitrate: number | null;
+  videoWidth: number | null;
+  videoHeight: number | null;
+}
+
+/**
+ * Single ffprobe pass that extracts all technical metadata — duration, codec
+ * names, bitrate, and resolution — from an uploaded source file.
+ *
+ * Downloads the source blob to a temp file, invokes ffprobe once with full
+ * format+stream info, and returns a `VideoMetadata` object. All fields that
+ * cannot be determined are returned as null.
+ *
+ * Non-fatal: returns an all-null `VideoMetadata` on any infrastructure error
+ * so callers can merge results into a DB patch without gating on success.
+ */
+export async function probeVideoMetadata(sourceObjectKey: string): Promise<VideoMetadata> {
+  const empty: VideoMetadata = {
+    durationSecs: null,
+    videoCodec: null,
+    audioCodec: null,
+    videoBitrate: null,
+    videoWidth: null,
+    videoHeight: null,
+  };
+  const s = storage();
+  if (!s.enabled) return empty;
+  const tmpDir = path.join(os.tmpdir(), `meta-probe-${randomUUID()}`);
+  try {
+    await mkdir(tmpDir, { recursive: true });
+    const ext = path.extname(sourceObjectKey) || ".mp4";
+    const tmpPath = path.join(tmpDir, `source${ext}`);
+    await downloadSourceToTempFile(sourceObjectKey, tmpPath);
+
+    const result = await new Promise<VideoMetadata>((resolve) => {
+      const proc = spawn("ffprobe", [
+        "-v", "error",
+        "-show_entries",
+        "format=duration,bit_rate:stream=codec_type,codec_name,width,height,duration",
+        "-of", "json",
+        tmpPath,
+      ], { stdio: ["ignore", "pipe", "pipe"] });
+      proc.unref();
+
+      let stdout = "";
+      const timer = setTimeout(() => {
+        try { proc.kill("SIGKILL"); } catch { /* noop */ }
+        logger.warn({ sourceObjectKey }, "probe-metadata: ffprobe timed out");
+        resolve(empty);
+      }, PROBE_TIMEOUT_MS);
+      timer.unref();
+
+      proc.stdout.on("data", (b: Buffer) => { stdout += b.toString(); });
+      proc.on("error", () => { clearTimeout(timer); resolve(empty); });
+      proc.on("close", () => {
+        clearTimeout(timer);
+        try {
+          const parsed = JSON.parse(stdout) as {
+            format?: { duration?: string; bit_rate?: string };
+            streams?: Array<{
+              codec_type?: string;
+              codec_name?: string;
+              width?: number;
+              height?: number;
+              duration?: string;
+            }>;
+          };
+          const fmt = parsed.format ?? {};
+          const streams = parsed.streams ?? [];
+
+          // Duration: prefer format-level, fall back to max stream duration.
+          const fmtDur = parseFloat(fmt.duration ?? "");
+          let durationSecs: number | null = Number.isFinite(fmtDur) && fmtDur > 0 ? fmtDur : null;
+          if (durationSecs === null) {
+            const streamDurs = streams
+              .map((s) => parseFloat(s.duration ?? ""))
+              .filter((d) => Number.isFinite(d) && d > 0);
+            if (streamDurs.length > 0) durationSecs = Math.max(...streamDurs);
+          }
+
+          const fmtBr = parseInt(fmt.bit_rate ?? "", 10);
+          const videoBitrate = Number.isFinite(fmtBr) && fmtBr > 0
+            ? Math.round(fmtBr / 1000) : null;
+
+          const videoStream = streams.find((s) => s.codec_type === "video");
+          const audioStream = streams.find((s) => s.codec_type === "audio");
+
+          resolve({
+            durationSecs,
+            videoCodec: videoStream?.codec_name ?? null,
+            audioCodec: audioStream?.codec_name ?? null,
+            videoBitrate,
+            videoWidth: videoStream?.width ?? null,
+            videoHeight: videoStream?.height ?? null,
+          });
+        } catch {
+          resolve(empty);
+        }
+      });
+    });
+
+    logger.info(
+      { sourceObjectKey, ...result },
+      "probe-metadata: ok",
+    );
+    return result;
+  } catch (err) {
+    logger.warn({ err, sourceObjectKey }, "probe-metadata: failed (non-fatal)");
+    return empty;
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 /**
  * Probes the duration of a newly-uploaded source file via ffprobe.
  * Downloads the object to a temp file, runs ffprobe (exits as soon as the

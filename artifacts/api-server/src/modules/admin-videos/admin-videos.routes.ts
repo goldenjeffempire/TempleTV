@@ -80,6 +80,20 @@ const VideoRowSchema = z.object({
    *   null           — not applicable (non-YouTube) or never went live.
    */
   youtubeLiveStatus: z.enum(["live", "rebroadcast"]).nullable(),
+  // ── Technical metadata (populated by ffprobe after upload assembly) ───────
+  // Available as soon as the upload is confirmed assembled — no transcoding needed.
+  videoCodec: z.string().nullable(),
+  audioCodec: z.string().nullable(),
+  /** Bitrate in kbps from format.bit_rate, or null if not yet probed. */
+  videoBitrate: z.number().int().nullable(),
+  videoWidth: z.number().int().nullable(),
+  videoHeight: z.number().int().nullable(),
+  /**
+   * Real-time transcoding progress percentage (0–100) for the active job.
+   * null when no transcoding job is currently in progress.
+   * Sourced from the most recent transcoding_jobs row for this video.
+   */
+  transcodingProgress: z.number().int().nullable(),
 });
 
 const ListQuerySchema = z.object({
@@ -197,6 +211,12 @@ function toDto(row: typeof videos.$inferSelect): z.infer<typeof VideoRowSchema> 
     youtubeLiveStatus: (row.youtubeLiveStatus === "live" || row.youtubeLiveStatus === "rebroadcast")
       ? row.youtubeLiveStatus as "live" | "rebroadcast"
       : null,
+    videoCodec: row.videoCodec ?? null,
+    audioCodec: row.audioCodec ?? null,
+    videoBitrate: row.videoBitrate ?? null,
+    videoWidth: row.videoWidth ?? null,
+    videoHeight: row.videoHeight ?? null,
+    transcodingProgress: null,
   };
 }
 

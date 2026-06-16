@@ -41,7 +41,7 @@ import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
 import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
-import { generateQuickThumbnail, normalizeThumbnailBuffer, probeUploadedContainerValidity, probeUploadedDuration } from "../transcoder/transcoder.service.js";
+import { generateQuickThumbnail, normalizeThumbnailBuffer, probeUploadedContainerValidity, probeUploadedDuration, probeVideoMetadata } from "../transcoder/transcoder.service.js";
 import { runFaststart } from "../transcoder/faststart.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
@@ -2317,16 +2317,27 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               const probedSecs =
                 (clientDuration > 0 && clientDuration !== 1800) ? null
                   : await probeUploadedDuration(objectKey);
+              // Single ffprobe pass for all technical metadata (codec, bitrate, resolution).
+              // Runs concurrently with the duration probe when the client already supplied
+              // a valid duration, otherwise runs after duration probe completes.
+              const mediaMeta = await probeVideoMetadata(objectKey);
               const patch: Partial<typeof videos.$inferInsert> = {};
               if (effectiveThumbUrl) patch.thumbnailUrl = effectiveThumbUrl;
-              if (probedSecs != null) patch.duration = String(Math.round(probedSecs));
+              const effectiveDurSecs = probedSecs ?? mediaMeta.durationSecs;
+              if (effectiveDurSecs != null) patch.duration = String(Math.round(effectiveDurSecs));
+              if (mediaMeta.videoCodec != null) patch.videoCodec = mediaMeta.videoCodec;
+              if (mediaMeta.audioCodec != null) patch.audioCodec = mediaMeta.audioCodec;
+              if (mediaMeta.videoBitrate != null) patch.videoBitrate = mediaMeta.videoBitrate;
+              if (mediaMeta.videoWidth != null) patch.videoWidth = mediaMeta.videoWidth;
+              if (mediaMeta.videoHeight != null) patch.videoHeight = mediaMeta.videoHeight;
               if (Object.keys(patch).length > 0) {
                 await db.update(videos).set(patch).where(eq(videos.id, videoId));
                 void invalidateVideosCatalogCache();
                 adminEventBus.push("videos-library-updated", { videoId, reason: "thumbnail-generated" });
               }
-              if (probedSecs != null && probedSecs > 10) {
-                const roundedSecs = Math.round(probedSecs);
+              const durSecs = probedSecs ?? mediaMeta.durationSecs;
+              if (durSecs != null && durSecs > 10) {
+                const roundedSecs = Math.round(durSecs);
                 await db
                   .update(schema.broadcastQueueTable)
                   .set({ durationSecs: roundedSecs })
@@ -2842,18 +2853,27 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             const probedSecsB = (clientDurationB > 0 && clientDurationB !== 1800)
               ? null
               : await probeUploadedDuration(result.objectKey);
+            // Single ffprobe pass for all technical metadata (codec, bitrate, resolution).
+            const mediaMetaB = await probeVideoMetadata(result.objectKey);
             const patchB: Partial<typeof videos.$inferInsert> = {};
             if (thumbUrlB) patchB.thumbnailUrl = thumbUrlB;
-            if (probedSecsB != null) patchB.duration = String(Math.round(probedSecsB));
+            const effectiveDurSecsB = probedSecsB ?? mediaMetaB.durationSecs;
+            if (effectiveDurSecsB != null) patchB.duration = String(Math.round(effectiveDurSecsB));
+            if (mediaMetaB.videoCodec != null) patchB.videoCodec = mediaMetaB.videoCodec;
+            if (mediaMetaB.audioCodec != null) patchB.audioCodec = mediaMetaB.audioCodec;
+            if (mediaMetaB.videoBitrate != null) patchB.videoBitrate = mediaMetaB.videoBitrate;
+            if (mediaMetaB.videoWidth != null) patchB.videoWidth = mediaMetaB.videoWidth;
+            if (mediaMetaB.videoHeight != null) patchB.videoHeight = mediaMetaB.videoHeight;
             if (Object.keys(patchB).length > 0) {
               await db.update(videos).set(patchB).where(eq(videos.id, videoIdB));
               void invalidateVideosCatalogCache();
               adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "thumbnail-generated" });
             }
-            if (probedSecsB != null && probedSecsB > 10) {
+            const durSecsB = probedSecsB ?? mediaMetaB.durationSecs;
+            if (durSecsB != null && durSecsB > 10) {
               await db
                 .update(schema.broadcastQueueTable)
-                .set({ durationSecs: Math.round(probedSecsB) })
+                .set({ durationSecs: Math.round(durSecsB) })
                 .where(eq(schema.broadcastQueueTable.videoId, videoIdB))
                 .catch(() => {});
             }

@@ -109,6 +109,17 @@ export const videosTable = pgTable("managed_videos", {
   // UTC timestamp when youtube_live_status was last updated.
   // Enables the background sweep to detect stale 'live' rows and heal them.
   youtubeLiveStatusUpdatedAt: timestamp("youtube_live_status_updated_at", { withTimezone: true }),
+  // ── Media technical metadata (populated by ffprobe after upload assembly) ──
+  // Extracted in a single ffprobe pass right after the upload blob is confirmed
+  // assembled in storage. Available immediately — no transcoding required.
+  // codec names follow ffprobe codec_name convention (e.g. "h264", "hevc", "aac", "opus").
+  videoCodec: text("video_codec"),
+  audioCodec: text("audio_codec"),
+  // Bitrate in kilobits per second (kbps) from format.bit_rate.
+  videoBitrate: integer("video_bitrate"),
+  // Frame dimensions in pixels from the first video stream.
+  videoWidth: integer("video_width"),
+  videoHeight: integer("video_height"),
 }, (table) => [
   index("idx_managed_videos_imported_at").on(table.importedAt),
   index("idx_managed_videos_category").on(table.category),
