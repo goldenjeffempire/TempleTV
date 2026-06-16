@@ -211,7 +211,13 @@ function startJanitor(): void {
 }
 
 function getOrCreateSession(baseUrl: string): NativeSession {
-  const existing = sessions.get(baseUrl);
+  // Normalize: strip trailing slashes so that `http://api/broadcast-v2` and
+  // `http://api/broadcast-v2/` (a common React-side variation) always resolve
+  // to the same session entry. Without this, each distinct trailing-slash
+  // variant creates a separate machine + WebSocket + FSM instance, causing
+  // duplicate live connections, split broadcast state, and battery drain.
+  const key = baseUrl.replace(/\/+$/, "");
+  const existing = sessions.get(key);
   if (existing) {
     existing.lastIdleAtMs = null;
     return existing.session;
@@ -402,7 +408,7 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     // they are garbage-collected with the closure. No explicit clear needed.
   };
 
-  sessions.set(baseUrl, { session, lastIdleAtMs: null });
+  sessions.set(key, { session, lastIdleAtMs: null });
   // Register session-level listeners AFTER the session Map entry exists so
   // a synchronous machine snapshot (theoretically possible) finds the entry.
   session.snapshotListeners.add(stallListener);

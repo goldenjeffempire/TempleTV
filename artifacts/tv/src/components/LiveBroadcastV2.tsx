@@ -490,6 +490,42 @@ export function LiveBroadcastV2({
     );
   }, [connected]);
 
+  // ── TV visibility-change reconnect ─────────────────────────────────────────
+  // Smart TVs (Tizen, webOS, FireTV) put the browser into a background state
+  // when the user navigates to the TV's home screen, switches inputs, or lets
+  // the set enter standby. During that window the underlying TCP connection can
+  // silently drop without the WebSocket receiving a close frame. When the user
+  // returns, the transport still thinks it's connected but no heartbeat arrives
+  // → up to DEAD_SOCKET_THRESHOLD_MS (≈22 s) of black screen before the
+  // watchdog fires. Detecting visibilitychange and calling forceRebind() when
+  // the tab has been hidden for >30 s skips the watchdog delay entirely —
+  // the stream resumes within one round-trip.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    let hiddenAtMs: number | null = null;
+    const HIDDEN_RECONNECT_THRESHOLD_MS = 30_000;
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenAtMs = Date.now();
+      } else {
+        // Tab became visible again.
+        const wasHiddenMs = hiddenAtMs !== null ? Date.now() - hiddenAtMs : 0;
+        hiddenAtMs = null;
+        if (wasHiddenMs >= HIDDEN_RECONNECT_THRESHOLD_MS) {
+          // Long absence: force a full rebind (transport reconnect + video
+          // buffer restart) so the viewer sees live content immediately on
+          // returning to the TV app rather than waiting for the dead-socket
+          // watchdog to fire.
+          forceRebind();
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [forceRebind]);
+
   // PiP buffer-swap re-entry: when the broadcast advances to the next queue
   // item the player-core performs an A/B buffer handoff — the previously
   // inactive buffer becomes active.  If a PiP window is open it stays pinned

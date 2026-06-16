@@ -871,6 +871,14 @@ class TranscoderDispatcher {
               `Job permanently timed out after ${timeoutMinutes} min on every attempt. ` +
               `Retry the job once disk space / memory conditions have been confirmed — ` +
               `the source file is still available for re-transcoding.`,
+            // Machine-readable error code so the queue integrity validator can
+            // classify and auto-fix broadcast_queue rows whose backing video is stuck
+            // at "failed" with no recoverable path. Without a code, the validator's
+            // UNPLAYABLE_CORRUPT_UPLOAD check is the only guard, and it only fires
+            // for CORRUPT_SOURCE/SOURCE_MISSING. STUCK_JOB is a separate signal that
+            // the operator needs to investigate (OOM, disk stall, FFmpeg hang) rather
+            // than that the source file itself is bad.
+            transcodingErrorCode: "STUCK_JOB",
           })
           .where(and(
             inArray(videos.id, failedVideoIds),
