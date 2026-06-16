@@ -991,7 +991,7 @@ export class V2Transport {
     // keep the transport instance reachable from the EventSource object
     // after es.close() is called (preventing GC of both).
     const sseHandlers: Array<[string, (e: Event) => void]> = [];
-    for (const t of ["hello", "snapshot", "event", "preload", "takeover", "heartbeat"] as const) {
+    for (const t of ["hello", "snapshot", "event", "preload", "takeover", "heartbeat", "reconnect"] as const) {
       const handler = (msg: Event) => {
         try {
           wrap(JSON.parse((msg as MessageEvent).data));
@@ -1149,6 +1149,30 @@ export class V2Transport {
           }
         }
         break;
+      case "reconnect": {
+        // Graceful-restart hint from the server.  The server is shutting down
+        // but connections are still live (SHUTDOWN_PRECLOSE_DELAY_MS window).
+        // Schedule a single reconnect attempt after `retryAfterMs`, resetting
+        // backoff so the first post-restart attempt is fast rather than at the
+        // last accumulated backoff value.  The existing timer guard in
+        // scheduleReconnect() (if (this.reconnectTimer) return) means that if
+        // the server then closes the socket before our timer fires, the socket
+        // close → scheduleReconnect() call is a no-op — our hint timer drives
+        // the reconnect. This prevents the 22 s dead-socket watchdog delay and
+        // avoids a thundering-herd storm during the drain window.
+        const delayMs = Math.max(1_000, frame.retryAfterMs);
+        this.backoffMs = INITIAL_BACKOFF_MS;
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          if (!this.stopped) this.connectWs();
+        }, delayMs);
+        (this.reconnectTimer as unknown as { unref?: () => void }).unref?.();
+        break;
+      }
       case "error":
       default:
         break;

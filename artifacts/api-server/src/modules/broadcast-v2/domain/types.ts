@@ -93,7 +93,23 @@ export type V2ServerFrame =
   | { type: "takeover"; sequence: number; override: V2Override }
   | { type: "recover"; fromSequence: number; events: V2ServerFrame[] }
   | { type: "heartbeat"; serverTimeMs: number; sequence: number; lastAdvancedAtMs?: number }
-  | { type: "error"; code: string; message: string };
+  | { type: "error"; code: string; message: string }
+  /**
+   * Graceful-restart hint.  Sent by the server immediately after receiving
+   * SIGTERM, while connections are still live (before the preclose drain).
+   * `retryAfterMs` is the recommended minimum delay before the client makes
+   * its first reconnect attempt — approximately the server's preclose drain
+   * window plus a small restart-boot buffer.
+   *
+   * Clients should:
+   *   1. Cancel any existing backoff timer.
+   *   2. Schedule a single reconnect attempt after `retryAfterMs`.
+   *   3. After that attempt, use normal exponential backoff if the server
+   *      is not yet up.
+   * This prevents a reconnect storm during the SHUTDOWN_PRECLOSE_DELAY_MS
+   * window and gives the new process time to boot before the first attempt.
+   */
+  | { type: "reconnect"; retryAfterMs: number };
 
 /** Client → server WebSocket frames. */
 export type V2ClientFrame =

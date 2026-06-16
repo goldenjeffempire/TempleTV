@@ -36,6 +36,13 @@ const _sseSweep = setInterval(() => {
 // drain loop sees sseCounter reach 0 before app.close() is called.
 const openSseCleanups = new Set<() => void>();
 
+// Parallel registry of per-connection send() functions.  Used by
+// broadcastReconnectHint() to push the graceful-restart hint frame to every
+// connected SSE client without closing the connection.  The send function
+// is added when the connection is fully established and removed inside
+// its own cleanup() so the two registries stay in sync.
+const openSseSenders = new Set<(frame: V2ServerFrame) => void>();
+
 /**
  * Force-close all open broadcast-v2 SSE connections.
  * Called during graceful shutdown before app.close() so the main.ts drain
@@ -46,6 +53,23 @@ export function closeAllSseSessions(): void {
     try { cleanup(); } catch { /* noop */ }
   }
   openSseCleanups.clear();
+}
+
+/**
+ * Broadcast a graceful-restart hint to all currently-connected SSE clients
+ * WITHOUT closing the connections.  Called by main.ts immediately after
+ * SIGTERM while the SHUTDOWN_PRECLOSE_DELAY_MS window is still open.
+ *
+ * Clients that receive this frame can schedule a reconnect timer for
+ * `retryAfterMs` ms — cutting effective reconnect latency from the
+ * 22 s dead-socket watchdog to a user-configured hint delay (typically
+ * 5–15 s on production).
+ */
+export function broadcastReconnectHint(retryAfterMs: number): void {
+  const frame: V2ServerFrame = { type: "reconnect", retryAfterMs };
+  for (const send of openSseSenders) {
+    try { send(frame); } catch { /* client already gone */ }
+  }
 }
 
 function getSseLimit(): number {
@@ -271,6 +295,7 @@ export async function sseRoutes(app: FastifyInstance) {
       if (closed) return;
       closed = true;
       openSseCleanups.delete(cleanup);
+      openSseSenders.delete(send);
       clearInterval(heartbeat);
       broadcastOrchestrator.off("frame", onFrame);
       // releaseCounter is idempotent — safe even if the early handler
@@ -290,6 +315,7 @@ export async function sseRoutes(app: FastifyInstance) {
     cleanupRef = cleanup;
 
     openSseCleanups.add(cleanup);
+    openSseSenders.add(send);
     req.raw.on("close", cleanup);
 
     // Narrow-race guard: `markAborted` was removed from req.raw at line 189,

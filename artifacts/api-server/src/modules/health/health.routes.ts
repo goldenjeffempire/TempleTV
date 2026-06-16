@@ -132,6 +132,31 @@ export async function healthRoutes(app: FastifyInstance) {
       },
     },
     async (_req, reply) => {
+      // Startup gate: return 503 while the API is still booting.
+      // Without this a load balancer could route traffic to a half-initialised
+      // replica (DB pool not warm, workers not started, orchestrator not
+      // hydrated), causing request failures immediately after a deploy.
+      // This check is intentionally cheap — it reads a module-level boolean
+      // set by main.ts at the very end of the boot sequence.
+      {
+        const { isStartupComplete } = await import("../../infrastructure/shutdown-flag.js");
+        if (!isStartupComplete()) {
+          reply.code(503);
+          return {
+            status: "down" as const,
+            uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+            version: env.APP_VERSION ?? "unknown",
+            dependencies: {
+              database: "down" as const,
+              cache: "down" as const,
+              storage: "disabled" as const,
+              broadcastV2: "down" as const,
+            },
+            broadcast: { channelId: "main", viewerCount: 0, hasCurrent: false },
+            broadcastEngine: { ok: false, mode: "starting_up", sequence: 0, uptimeMs: 0, itemCount: 0 },
+          };
+        }
+      }
       let dbOk = true;
       try {
         await db.execute(sql`select 1`);

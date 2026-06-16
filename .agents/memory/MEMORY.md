@@ -1,3 +1,5 @@
+- [Graceful-restart reconnect hint pattern](graceful-restart-reconnect-hint.md) — V2ServerFrame "reconnect" type; SSE/WS gateways broadcast hint on SIGTERM; transport handles it by scheduling forceReconnect after retryAfterMs, blocking scheduleReconnect guard.
+- [/readyz startup gate via shutdown-flag](readyz-startup-gate.md) — isStartupComplete() in shutdown-flag.ts; markStartupComplete() called at end of main.ts boot; /readyz returns 503 status:"down" until fully booted.
 - [SSE KNOWN_EVENTS gap audit pattern](sse-known-events-gap-pattern.md) — broadcast-source-upgraded was silently dropped (not in KNOWN_EVENTS); corrupt-media page had no handlers; includes audit shell command to catch future gaps.
 - [Transcoder tick constants adaptive to poll interval](transcoder-tick-constants-adaptive.md) — static TICKS constants calibrated for 10s/tick ran 2× too often at default 5s poll; always use getter computed from env.TRANSCODER_POLL_MS.
 - [BROADCAST_PRELOAD_LEAD_MS default 120s](preload-lead-ms-120s.md) — env.ts default was 90_000 but orchestrator comment says 120_000; any future value change must update both comment and env default in lockstep.

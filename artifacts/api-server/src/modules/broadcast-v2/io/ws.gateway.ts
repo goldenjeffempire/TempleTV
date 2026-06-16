@@ -56,6 +56,27 @@ export function closeAllBroadcastV2WsSessions(): void {
   _activeSockets.clear();
 }
 
+/**
+ * Broadcast a graceful-restart hint to all currently-connected WebSocket
+ * clients WITHOUT closing the connections.  Called by main.ts immediately
+ * after SIGTERM while the SHUTDOWN_PRECLOSE_DELAY_MS window is still open.
+ *
+ * Clients that receive this frame schedule a reconnect timer for
+ * `retryAfterMs` ms, avoiding a thundering-herd reconnect storm during the
+ * drain window and giving the new process time to boot.
+ */
+export function broadcastReconnectHintToWs(retryAfterMs: number): void {
+  const payload = JSON.stringify({ type: "reconnect", retryAfterMs });
+  for (const s of _activeSockets) {
+    try {
+      const sock = s as unknown as { send?(data: string): void; readyState?: number };
+      if (sock.readyState === 1) {
+        sock.send?.(payload);
+      }
+    } catch { /* client already gone */ }
+  }
+}
+
 export async function wsRoutes(app: FastifyInstance) {
   app.get("/ws", { websocket: true }, (socket, req) => {
     const ip = (req.ip ?? req.socket?.remoteAddress ?? "unknown") as string;

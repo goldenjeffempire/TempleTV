@@ -99,7 +99,9 @@ export type V2ServerFrame =
   | { type: "takeover"; sequence: number; override: V2Override }
   | { type: "recover"; fromSequence: number; events: V2ServerFrame[] }
   | { type: "heartbeat"; serverTimeMs: number; sequence: number; lastAdvancedAtMs?: number }
-  | { type: "error"; code: string; message: string };
+  | { type: "error"; code: string; message: string }
+  /** Graceful-restart hint — server is shutting down; reconnect after retryAfterMs. */
+  | { type: "reconnect"; retryAfterMs: number };
 
 // ── Player state machine ─────────────────────────────────────────────────
 
