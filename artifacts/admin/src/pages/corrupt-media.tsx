@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, RefreshCcw, Trash2, Search, ChevronLeft, ChevronRight, ShieldAlert } from "lucide-react";
+import { useSSEEvent } from "@/contexts/sse-context";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -74,6 +75,19 @@ export default function CorruptMediaPage() {
   const [errorCodeFilter, setErrorCodeFilter] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<CorruptItem | null>(null);
   const LIMIT = 20;
+
+  // Real-time updates — invalidate list + stats when a new corrupt video is
+  // detected by quarantineVideo() (upload pipeline or queue integrity validator).
+  // Without this, the page stays stale until the 60 s polling interval fires.
+  useSSEEvent("corrupt-media-detected", () => {
+    void qc.invalidateQueries({ queryKey: ["corrupt-media"] });
+  });
+
+  // Also refresh when a retry succeeds or fails (videos-library-updated) so
+  // the "Retry" badge and status reflect the latest state.
+  useSSEEvent("videos-library-updated", () => {
+    void qc.invalidateQueries({ queryKey: ["corrupt-media"] });
+  });
 
   const { data: stats } = useQuery<StatsResponse>({
     queryKey: ["corrupt-media", "stats"],

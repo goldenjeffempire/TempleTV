@@ -272,7 +272,11 @@ class TranscoderDispatcher {
   // was lost to a crash) is healed within minutes in a long-running 24/7 process
   // instead of only on the next restart.
   private partialRecoveryCounter = 0;
-  private static readonly PARTIAL_RECOVERY_TICKS = 18; // ~3 min at 10 s/tick
+  // Target cadence: ~3 min. Computed from the actual poll interval so this
+  // fires on schedule regardless of whether TRANSCODER_POLL_MS was tuned.
+  private get partialRecoveryTicks(): number {
+    return Math.max(1, Math.round(3 * 60_000 / env.TRANSCODER_POLL_MS));
+  }
 
   // Auto-retry recoverable failed jobs counter.  Runs every AUTO_RETRY_TICKS
   // ticks (default ~30 min). Re-queues status='failed' jobs where the error
@@ -281,20 +285,27 @@ class TranscoderDispatcher {
   // without operator action. Controlled by TRANSCODER_AUTO_RETRY_FAILED env var.
   private autoRetryCounter = 0;
 
-  // Stuck-job watchdog counter — runs every STUCK_JOBS_TICKS ticks (~2 min).
+  // Stuck-job watchdog counter — runs every stuckJobsTicks ticks (~2 min).
   // With the early-stuck (30 min no-progress) and stale-progress (15 min stall)
   // detectors active, a 2-minute poll cadence keeps the detection window tight
   // while still batching dozens of ticks into a single DB query.
   private stuckJobsCounter = 0;
-  private static readonly STUCK_JOBS_TICKS = 12; // ~2 min at 10 s/tick
+  // Target cadence: ~2 min. Computed from the actual poll interval so the
+  // watchdog fires on schedule regardless of TRANSCODER_POLL_MS tuning.
+  private get stuckJobsTicks(): number {
+    return Math.max(1, Math.round(2 * 60_000 / env.TRANSCODER_POLL_MS));
+  }
 
   // Faststart-orphan watchdog: sweeps managed_videos for rows stuck in
   // transcodingStatus='processing'/'queued' with no backing transcoding_jobs
-  // row and updated_at older than FASTSTART_ORPHAN_TICKS × poll interval
+  // row and updated_at older than faststartOrphanTicks × poll interval
   // (~45 min). This catches faststart crashes that leave the video status
   // permanently stuck while the job row was already cleaned up.
   private faststartOrphanCounter = 0;
-  private static readonly FASTSTART_ORPHAN_TICKS = 270; // 45 min at 10 s/tick
+  // Target cadence: ~45 min. Computed from poll interval.
+  private get faststartOrphanTicks(): number {
+    return Math.max(1, Math.round(45 * 60_000 / env.TRANSCODER_POLL_MS));
+  }
 
   // Early-stuck detector thresholds (not configurable via env — hardcoded for
   // simplicity; operators who need different values can fork the dispatcher).
@@ -310,10 +321,12 @@ class TranscoderDispatcher {
   private static readonly PROGRESS_STALE_MS = 15 * 60_000; // 15 min
   private static readonly JOB_START_GRACE_MS = 5 * 60_000; // 5 min
 
-  // Scratch dir GC sweep counter — runs every SCRATCH_GC_TICKS ticks
-  // (roughly every 30 minutes at the default 10-second poll cadence).
+  // Scratch dir GC sweep counter — runs every scratchGcTicks ticks
+  // (target: ~30 min). Computed from poll interval.
   private scratchGcCounter = 0;
-  private static readonly SCRATCH_GC_TICKS = 180; // ~30 min at 10 s/tick
+  private get scratchGcTicks(): number {
+    return Math.max(1, Math.round(30 * 60_000 / env.TRANSCODER_POLL_MS));
+  }
 
   // ── In-process heartbeat ────────────────────────────────────────────────────
   // Written on every dispatch tick so the diagnostics panel can surface
@@ -1038,16 +1051,16 @@ class TranscoderDispatcher {
       // (default 2 h) + 5 min grace, so firing every 10 s runs ~1 800
       // unnecessary DB round-trips per timeout window.  Every ~5 min is plenty.
       this.stuckJobsCounter++;
-      if (this.stuckJobsCounter >= TranscoderDispatcher.STUCK_JOBS_TICKS) {
+      if (this.stuckJobsCounter >= this.stuckJobsTicks) {
         this.stuckJobsCounter = 0;
         await this.resetStuckJobs();
       }
 
-      // Periodic scratch directory GC (~every 30 min at 10 s/tick) so stale
-      // dirs from SIGKILL-orphaned processes don't accumulate between restarts
-      // in long-running production deployments.
+      // Periodic scratch directory GC (~every 30 min) so stale dirs from
+      // SIGKILL-orphaned processes don't accumulate between restarts in
+      // long-running production deployments.
       this.scratchGcCounter++;
-      if (this.scratchGcCounter >= TranscoderDispatcher.SCRATCH_GC_TICKS) {
+      if (this.scratchGcCounter >= this.scratchGcTicks) {
         this.scratchGcCounter = 0;
         void this.purgeOrphanedScratchDirs();
       }
@@ -1056,7 +1069,7 @@ class TranscoderDispatcher {
       // whose hls_ready write was lost to a crash is recovered within minutes
       // in a long-running 24/7 process instead of waiting for the next restart.
       this.partialRecoveryCounter++;
-      if (this.partialRecoveryCounter >= TranscoderDispatcher.PARTIAL_RECOVERY_TICKS) {
+      if (this.partialRecoveryCounter >= this.partialRecoveryTicks) {
         this.partialRecoveryCounter = 0;
         await this.recoverPartialSuccessVideos().catch((err) => {
           logger.warn({ err }, "transcoder: periodic partial-success recovery error (non-fatal)");
@@ -1080,7 +1093,7 @@ class TranscoderDispatcher {
       // Resets managed_videos rows stuck in processing/queued with no active
       // transcoding_jobs row — caused by crashes mid-faststart.
       this.faststartOrphanCounter++;
-      if (this.faststartOrphanCounter >= TranscoderDispatcher.FASTSTART_ORPHAN_TICKS) {
+      if (this.faststartOrphanCounter >= this.faststartOrphanTicks) {
         this.faststartOrphanCounter = 0;
         await this.resetFaststartOrphans().catch((err) => {
           logger.warn({ err }, "[transcoder] faststart-orphan watchdog error (non-fatal)");

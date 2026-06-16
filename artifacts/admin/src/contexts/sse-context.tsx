@@ -151,10 +151,14 @@ const KNOWN_EVENTS = [
   // Corrupt-media detection — emitted when a video is quarantined due to a
   // structural upload failure (CORRUPT_SOURCE, SOURCE_MISSING, etc.).
   "corrupt-media-detected",
-  // Source upgrade — emitted when the orchestrator detects that a currently-
-  // playing item's source has been upgraded from MP4 to HLS after transcoding.
-  // Admin UI uses this to refresh queue badges without a full page reload.
-  "source-upgraded",
+  // Source upgrade events — two variants:
+  //   "source-upgraded"          — emitted by the orchestrator when a currently-
+  //                                playing item's source is live-promoted to HLS.
+  //   "broadcast-source-upgraded"— emitted by faststart.service and the transcoder
+  //                                dispatcher when a video's source quality is
+  //                                upgraded to mp4_faststart or hls after processing.
+  // Both must be registered here or they are silently dropped by the SSE router.
+  "source-upgraded", "broadcast-source-upgraded",
   // Transcoding progress with per-rendition detail — emitted by the
   // transcoder dispatcher with structured progress data including % complete.
   "transcoding-progress",
@@ -205,6 +209,12 @@ function summarize(event: string, data: unknown): string | null {
       const kind = String(d.newKind ?? "HLS");
       const title = typeof d.itemTitle === "string" ? d.itemTitle : "current item";
       return `Source upgraded to ${kind}: ${title}`;
+    }
+    case "broadcast-source-upgraded": {
+      const quality = String(d.quality ?? "hls");
+      const label = quality === "mp4_faststart" ? "MP4 (faststart)" : "HLS";
+      const videoId = typeof d.videoId === "string" ? ` (${d.videoId.slice(0, 8)})` : "";
+      return `Source upgraded to ${label}${videoId}`;
     }
     case "transcoding-progress": {
       const pct = Number(d.progress ?? 0);

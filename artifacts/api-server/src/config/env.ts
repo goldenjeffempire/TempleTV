@@ -92,7 +92,7 @@ const Env = z.object({
 
   REDIS_URL: z.string().optional(),
 
-  BROADCAST_PRELOAD_LEAD_MS: z.coerce.number().int().nonnegative().default(90_000),
+  BROADCAST_PRELOAD_LEAD_MS: z.coerce.number().int().nonnegative().default(120_000),
 
   RATE_LIMIT_DEFAULT_PER_MINUTE: z.coerce.number().int().positive().default(120),
   RATE_LIMIT_AUTH_PER_MINUTE: z.coerce.number().int().positive().default(20),

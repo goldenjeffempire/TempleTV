@@ -2043,6 +2043,18 @@ function BroadcastV2PageInner() {
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
   });
 
+  // broadcast-source-upgraded — emitted by faststart.service and the transcoder
+  // dispatcher when a video's source quality is upgraded (mp4_faststart or hls).
+  // Unlike "source-upgraded" (which only fires for currently-playing items), this
+  // event fires for ANY video that finishes processing, so the queue badges and
+  // the transcoding panel both need to be refreshed to reflect the new source kind.
+  useSSEEvent("broadcast-source-upgraded", () => {
+    void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+  });
+
   // Engine health push — the orchestrator emits this at most every 5 s on any
   // state change so the admin panel gets live accuracy without polling at 60 s.
   // Invalidates both the engine health card and the system health panel so
