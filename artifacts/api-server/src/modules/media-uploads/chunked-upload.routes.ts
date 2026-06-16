@@ -378,16 +378,74 @@ async function spawnAssemblyRetry(
         return;
       }
 
+      // ── Step 5a: ffprobe — accurate duration + technical metadata ─────────
+      // The video row was reset to transcodingStatus="none" in step 4 and may
+      // carry the 1800-second upload-time placeholder duration. Run ffprobe now
+      // to get the real duration and codec info BEFORE enqueueing for broadcast.
+      // A wrong duration causes dead-air at end-of-slot or premature auto-skip.
       try {
-        const enqResult = await enqueueIfMissing({ videoId, reason: "assembly-retry" });
-        if (enqResult.enqueued) {
-          adminEventBus.push("broadcast-queue-updated", { reason: "assembly-retry-enqueue", videoId });
+        const mediaMeta = await probeVideoMetadata(vRow.objectPath);
+        const metaPatch: Partial<typeof videos.$inferInsert> = {};
+        if (mediaMeta.durationSecs != null) metaPatch.duration = String(Math.round(mediaMeta.durationSecs));
+        if (mediaMeta.videoCodec != null) metaPatch.videoCodec = mediaMeta.videoCodec;
+        if (mediaMeta.audioCodec != null) metaPatch.audioCodec = mediaMeta.audioCodec;
+        if (mediaMeta.videoBitrate != null) metaPatch.videoBitrate = mediaMeta.videoBitrate;
+        if (mediaMeta.videoWidth != null) metaPatch.videoWidth = mediaMeta.videoWidth;
+        if (mediaMeta.videoHeight != null) metaPatch.videoHeight = mediaMeta.videoHeight;
+        if (Object.keys(metaPatch).length > 0) {
+          await db.update(videos).set(metaPatch).where(eq(videos.id, videoId)).catch(() => {});
+          void invalidateVideosCatalogCache();
         }
-      } catch (err) {
-        log.warn({ err, videoId }, "[assembly-retry] enqueueIfMissing failed (non-fatal)");
+      } catch (probeErr) {
+        log.warn({ err: probeErr, videoId }, "[assembly-retry] ffprobe failed (non-fatal) — using existing duration");
       }
 
-      if (!vRow.faststartApplied) {
+      // ── Step 5b: container validity gate ─────────────────────────────────
+      // Detect unrecoverable containers early so we don't burn broadcast queue
+      // slots and transcoder retry cycles on a permanently broken file.
+      let skipEnqueue = false;
+      try {
+        const containerProbe = await probeUploadedContainerValidity(vRow.objectPath);
+        if (!containerProbe.valid && containerProbe.unrecoverable === true) {
+          log.error(
+            { videoId, objectKey: vRow.objectPath, kind: containerProbe.kind },
+            "[assembly-retry] CORRUPT GATE — unrecoverable container detected; " +
+            "marking failed and skipping broadcast queue admission",
+          );
+          skipEnqueue = true;
+          await db
+            .update(videos)
+            .set({
+              transcodingStatus: "failed",
+              transcodingErrorCode: "CORRUPT_SOURCE",
+              transcodingErrorMessage:
+                containerProbe.error ??
+                "Video container is unrecoverable (moov atom absent or invalid file type). " +
+                "Please re-upload from the original source file.",
+            })
+            .where(eq(videos.id, videoId))
+            .catch(() => {});
+          adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-assembly-retry" });
+        }
+      } catch (gateErr) {
+        log.warn(
+          { err: gateErr, videoId },
+          "[assembly-retry] container gate probe failed (non-fatal) — proceeding to enqueue",
+        );
+      }
+
+      if (!skipEnqueue) {
+        try {
+          const enqResult = await enqueueIfMissing({ videoId, reason: "assembly-retry" });
+          if (enqResult.enqueued) {
+            adminEventBus.push("broadcast-queue-updated", { reason: "assembly-retry-enqueue", videoId });
+          }
+        } catch (err) {
+          log.warn({ err, videoId }, "[assembly-retry] enqueueIfMissing failed (non-fatal)");
+        }
+      }
+
+      if (!skipEnqueue && !vRow.faststartApplied) {
         try {
           await runFaststart(videoId, vRow.objectPath, { skipStatusUpdate: false });
           log.info({ videoId }, "[assembly-retry] faststart applied");
@@ -396,7 +454,7 @@ async function spawnAssemblyRetry(
         }
       }
 
-      if (!vRow.hlsMasterUrl) {
+      if (!skipEnqueue && !vRow.hlsMasterUrl) {
         try {
           await enqueueTranscode({ videoId, videoPath: vRow.objectPath });
           if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
@@ -940,18 +998,8 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           for (const videoId of recoveredVideoIds) {
             void (async () => {
               try {
-                // Step 1: Broadcast queue slot.
-                const enqResult = await enqueueIfMissing({ videoId, reason: "upload-recovery-on-restart" });
-                if (enqResult.enqueued) {
-                  app.log.info(
-                    { videoId, queueItemId: enqResult.queueItemId },
-                    "[upload] recovery: auto-queued recovered video for broadcast",
-                  );
-                  adminEventBus.push("broadcast-queue-updated", { reason: "upload-recovery-enqueue", videoId });
-                }
-
-                // Step 2: Query current video state to decide what further
-                // processing is still outstanding.
+                // Step 1: Query current video state first — needed for ffprobe
+                // objectPath and to decide which post-processing is outstanding.
                 const [vRow] = await db
                   .select({
                     objectPath: videos.objectPath,
@@ -965,7 +1013,78 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
 
                 if (!vRow?.objectPath) return;
 
-                // Step 3: Faststart — moves the moov atom to the front of the
+                // Step 2: ffprobe — accurate duration + technical metadata.
+                // On server restart, recovered videos may carry the 1800-second
+                // upload-time placeholder duration if the original finalize task
+                // was interrupted before the probes completed. Run now to
+                // guarantee accurate duration in the broadcast queue slot.
+                try {
+                  const mediaMeta = await probeVideoMetadata(vRow.objectPath);
+                  const metaPatch: Partial<typeof videos.$inferInsert> = {};
+                  if (mediaMeta.durationSecs != null) metaPatch.duration = String(Math.round(mediaMeta.durationSecs));
+                  if (mediaMeta.videoCodec != null) metaPatch.videoCodec = mediaMeta.videoCodec;
+                  if (mediaMeta.audioCodec != null) metaPatch.audioCodec = mediaMeta.audioCodec;
+                  if (mediaMeta.videoBitrate != null) metaPatch.videoBitrate = mediaMeta.videoBitrate;
+                  if (mediaMeta.videoWidth != null) metaPatch.videoWidth = mediaMeta.videoWidth;
+                  if (mediaMeta.videoHeight != null) metaPatch.videoHeight = mediaMeta.videoHeight;
+                  if (Object.keys(metaPatch).length > 0) {
+                    await db.update(videos).set(metaPatch).where(eq(videos.id, videoId)).catch(() => {});
+                    void invalidateVideosCatalogCache();
+                  }
+                } catch (probeErr) {
+                  app.log.warn(
+                    { err: probeErr, videoId },
+                    "[upload] recovery: ffprobe failed (non-fatal) — using existing duration",
+                  );
+                }
+
+                // Step 3: Container validity gate.
+                // Skip the broadcast queue + faststart + transcode for truly
+                // unrecoverable containers rather than burning retry budget.
+                let skipRecoveryEnqueue = false;
+                try {
+                  const containerProbe = await probeUploadedContainerValidity(vRow.objectPath);
+                  if (!containerProbe.valid && containerProbe.unrecoverable === true) {
+                    app.log.error(
+                      { videoId, objectKey: vRow.objectPath, kind: containerProbe.kind },
+                      "[upload] recovery: CORRUPT GATE — unrecoverable container; " +
+                      "marking failed and skipping broadcast queue admission",
+                    );
+                    skipRecoveryEnqueue = true;
+                    await db
+                      .update(videos)
+                      .set({
+                        transcodingStatus: "failed",
+                        transcodingErrorCode: "CORRUPT_SOURCE",
+                        transcodingErrorMessage:
+                          containerProbe.error ??
+                          "Video container is unrecoverable (moov atom absent or invalid file type). " +
+                          "Please re-upload from the original source file.",
+                      })
+                      .where(eq(videos.id, videoId))
+                      .catch(() => {});
+                    adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-recovery" });
+                  }
+                } catch (gateErr) {
+                  app.log.warn(
+                    { err: gateErr, videoId },
+                    "[upload] recovery: container gate probe failed (non-fatal) — proceeding to enqueue",
+                  );
+                }
+
+                if (skipRecoveryEnqueue) return;
+
+                // Step 4: Broadcast queue slot.
+                const enqResult = await enqueueIfMissing({ videoId, reason: "upload-recovery-on-restart" });
+                if (enqResult.enqueued) {
+                  app.log.info(
+                    { videoId, queueItemId: enqResult.queueItemId },
+                    "[upload] recovery: auto-queued recovered video for broadcast",
+                  );
+                  adminEventBus.push("broadcast-queue-updated", { reason: "upload-recovery-enqueue", videoId });
+                }
+
+                // Step 5: Faststart — moves the moov atom to the front of the
                 // MP4 so the file is streamable via HTTP range requests.
                 // Also required for midnight-prayers videos to enter rotation
                 // (midnight-prayers service gates on faststartApplied=true for
@@ -982,8 +1101,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   }
                 }
 
-                // Step 4: HLS transcoding — re-read faststartApplied after the
-                // step above so we use the freshest state.
+                // Step 6: HLS transcoding.
                 if (!vRow.hlsMasterUrl) {
                   try {
                     await enqueueTranscode({ videoId, videoPath: vRow.objectPath });
@@ -2282,6 +2400,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             // occupies /tmp at a time — parallel downloads would double the
             // peak disk usage (2× source size) on Replit's constrained /tmp.
             const clientDuration = Number(row.duration ?? "0");
+            // Hoisted so the accurate ffprobe duration is available to update
+            // broadcast_queue.duration_secs AFTER enqueueIfMissing() creates
+            // the queue row (updating before enqueue would match 0 rows).
+            let ffprobeDurSecs: number | null = null;
             try {
               const thumbUrl = await generateQuickThumbnail(objectKey, videoId);
 
@@ -2335,15 +2457,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 void invalidateVideosCatalogCache();
                 adminEventBus.push("videos-library-updated", { videoId, reason: "thumbnail-generated" });
               }
+              // Capture for the post-enqueue broadcast_queue update below.
               const durSecs = probedSecs ?? mediaMeta.durationSecs;
-              if (durSecs != null && durSecs > 10) {
-                const roundedSecs = Math.round(durSecs);
-                await db
-                  .update(schema.broadcastQueueTable)
-                  .set({ durationSecs: roundedSecs })
-                  .where(eq(schema.broadcastQueueTable.videoId, videoId))
-                  .catch(() => {});
-              }
+              if (durSecs != null && durSecs > 10) ffprobeDurSecs = durSecs;
             } catch (err) {
               capturedLog.warn({ err, videoId }, "[finalize:bg] post-upload probes failed (non-fatal)");
             }
@@ -2439,6 +2555,19 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                     { videoId, queueItemId: enqueueResult.queueItemId },
                     "[finalize:bg] video already in broadcast queue — skipping duplicate insert",
                   );
+                }
+                // Update the queue slot's duration_secs with the real ffprobe
+                // result now that the row exists. enqueueIfMissing reads the
+                // managed_videos.duration column (already updated by the probe
+                // above) so this is a best-effort secondary sync — it ensures
+                // the queue row reflects the true file length even if
+                // enqueueIfMissing used a cached/stale managed_videos snapshot.
+                if (ffprobeDurSecs !== null) {
+                  await db
+                    .update(schema.broadcastQueueTable)
+                    .set({ durationSecs: Math.round(ffprobeDurSecs) })
+                    .where(eq(schema.broadcastQueueTable.videoId, videoId))
+                    .catch(() => {});
                 }
                 // Always emit broadcast-queue-updated so the admin UI refreshes —
                 // whether the video was freshly enqueued or was already present.
@@ -2845,6 +2974,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           // usage on constrained environments. This mirrors Path A's explicit
           // sequential design documented at the same step above.
           const clientDurationB = Number(rowB.duration ?? "0");
+          // Hoisted so the accurate ffprobe duration is available to update
+          // broadcast_queue.duration_secs AFTER enqueueIfMissing() creates
+          // the queue row (updating before enqueue would match 0 rows).
+          let ffprobeDurSecsB: number | null = null;
           try {
             const thumbUrlB = await generateQuickThumbnail(result.objectKey, videoIdB);
             // Mirror Path A: probe even when clientDurationB > 0 if it equals
@@ -2869,14 +3002,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               void invalidateVideosCatalogCache();
               adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "thumbnail-generated" });
             }
+            // Capture for the post-enqueue broadcast_queue update below.
             const durSecsB = probedSecsB ?? mediaMetaB.durationSecs;
-            if (durSecsB != null && durSecsB > 10) {
-              await db
-                .update(schema.broadcastQueueTable)
-                .set({ durationSecs: Math.round(durSecsB) })
-                .where(eq(schema.broadcastQueueTable.videoId, videoIdB))
-                .catch(() => {});
-            }
+            if (durSecsB != null && durSecsB > 10) ffprobeDurSecsB = durSecsB;
           } catch (err) {
             capturedLogB.warn({ err, videoId: videoIdB }, "[finalize:db_fallback:bg] post-upload probes failed (non-fatal)");
           }
@@ -2951,6 +3079,15 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   { videoId: videoIdB, queueItemId: enqueueResultB.queueItemId },
                   "[finalize:db_fallback:bg] video already in broadcast queue — skipping duplicate insert",
                 );
+              }
+              // Update the queue slot's duration_secs with the real ffprobe
+              // result now that the row exists (mirrors Path A behaviour).
+              if (ffprobeDurSecsB !== null) {
+                await db
+                  .update(schema.broadcastQueueTable)
+                  .set({ durationSecs: Math.round(ffprobeDurSecsB) })
+                  .where(eq(schema.broadcastQueueTable.videoId, videoIdB))
+                  .catch(() => {});
               }
               // Always emit regardless of enqueued boolean — the admin UI needs
               // to refresh whether the video was freshly queued or already present.
