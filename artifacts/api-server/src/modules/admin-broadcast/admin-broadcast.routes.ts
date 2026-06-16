@@ -66,6 +66,8 @@ const QueueRowSchema = z.object({
   addedAt: z.string(),
   /** Transcoding pipeline status ('queued' | 'encoding' | 'hls_ready' | 'failed' | null). */
   transcodingStatus: z.string().nullable(),
+  /** Live 0–100 progress percentage from the active transcoding job. Null when not encoding. */
+  transcodingProgress: z.number().int().nullable(),
   /** True when the video has a complete HLS master playlist ready to stream. */
   hasHls: z.boolean(),
   /** Error message from the last failed transcoding job, or null when not failed. */
@@ -97,6 +99,7 @@ const QueueRowSchema = z.object({
 /** Queue row optionally enriched with HLS + job error fields. */
 type EnrichedQueueRow = typeof queueTable.$inferSelect & {
   transcodingStatus?: string | null | undefined;
+  transcodingProgress?: number | null | undefined;
   hlsMasterUrl?: string | null | undefined;
   transcodingError?: string | null | undefined;
   transcodingErrorCode?: string | null | undefined;
@@ -119,6 +122,7 @@ function toDto(row: EnrichedQueueRow): z.infer<typeof QueueRowSchema> {
     sortOrder: row.sortOrder,
     addedAt: row.addedAt.toISOString(),
     transcodingStatus: row.transcodingStatus ?? null,
+    transcodingProgress: row.transcodingProgress ?? null,
     hasHls: !!(row.hlsMasterUrl),
     transcodingError: row.transcodingError ?? null,
     transcodingErrorCode: row.transcodingErrorCode ?? null,
@@ -248,6 +252,29 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
           }
         }
       }
+
+      // Batch-fetch live transcoding progress for any encoding/processing queue items.
+      // One IN query shared across all queue rows avoids N+1 lookups.
+      const progressMap = new Map<string, number>();
+      const encodingVideoIds = rows
+        .filter((r) => r.videoId && (hlsMap.get(r.videoId!)?.transcodingStatus === "encoding" || hlsMap.get(r.videoId!)?.transcodingStatus === "processing"))
+        .map((r) => r.videoId!);
+      if (encodingVideoIds.length > 0) {
+        try {
+          const jobsTable = schema.transcodingJobsTable;
+          const progressJobs = await db
+            .select({ videoId: jobsTable.videoId, progress: jobsTable.progress })
+            .from(jobsTable)
+            .where(and(
+              inArray(jobsTable.videoId, encodingVideoIds),
+              inArray(jobsTable.status, ["encoding", "processing"]),
+            ));
+          for (const j of progressJobs) {
+            if (j.videoId && j.progress !== null) progressMap.set(j.videoId, j.progress);
+          }
+        } catch { /* non-fatal */ }
+      }
+
       return {
         items: rows.map((row) => {
           // Merge: video-level HLS data from managed_videos (set by the transcoder)
@@ -260,6 +287,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
           const coalesced = {
             ...row,
             ...videoMeta,
+            transcodingProgress: row.videoId ? (progressMap.get(row.videoId) ?? null) : null,
             hlsMasterUrl: (videoMeta as { hlsMasterUrl?: string | null }).hlsMasterUrl
               ?? row.hlsMasterUrl
               ?? null,

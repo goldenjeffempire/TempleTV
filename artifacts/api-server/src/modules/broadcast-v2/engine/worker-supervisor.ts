@@ -201,7 +201,7 @@ class SupervisedWorker {
       if (isDeadman) {
         logger.error(
           { worker: this.cfg.name, timeoutMs },
-          "[worker-supervisor] deadman switch fired — worker was hung and forcibly killed",
+          "[worker-supervisor] deadman switch fired — worker timed out; supervision moved to the failure path (underlying async task may still be running until its next await point)",
         );
         try {
           adminEventBus.push("ops-alert", {

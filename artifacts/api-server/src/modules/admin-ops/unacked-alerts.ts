@@ -33,6 +33,15 @@ export interface UnackedAlert {
   message: string;
   receivedAtMs: number;
   emailedAtMs: number | null;
+  /**
+   * True when at least one admin SSE client was connected at the moment the
+   * alert was pushed (i.e. the alert appeared on a live dashboard in real
+   * time).  Delivered alerts are still kept in the store for manual review,
+   * but the sweeper will NOT escalate them to email — the operator already
+   * saw it.  Only undelivered alerts (no SSE client was connected) are
+   * escalated, because those could have been silently missed.
+   */
+  delivered: boolean;
 }
 
 const store = new Map<string, UnackedAlert>();
@@ -49,14 +58,24 @@ function handleEvent(payload: unknown): void {
   const level   = String(d.level   ?? "warn");
   const message = String(d.message ?? "System alert");
   if (!store.has(id)) {
-    store.set(id, { id, level, message, receivedAtMs: Date.now(), emailedAtMs: null });
+    // listenerCount("admin-event") includes this handleEvent listener (= 1).
+    // Any additional listener is an open admin SSE connection that just
+    // received the event in real time.
+    const sseClients = adminEventBus.listenerCount("admin-event") - 1;
+    const delivered = sseClients > 0;
+    store.set(id, { id, level, message, receivedAtMs: Date.now(), emailedAtMs: null, delivered });
+    if (delivered) {
+      logger.debug({ id, sseClients }, "[unacked-alerts] alert marked delivered (SSE clients connected)");
+    }
   }
 }
 
 async function sweep(): Promise<void> {
   const now = Date.now();
+  // Only escalate alerts that were NOT delivered to any live SSE client —
+  // those are the ones an operator could have silently missed.
   const pending = Array.from(store.values()).filter(
-    (a) => a.emailedAtMs === null && now - a.receivedAtMs >= ESCALATION_DELAY_MS,
+    (a) => !a.delivered && a.emailedAtMs === null && now - a.receivedAtMs >= ESCALATION_DELAY_MS,
   );
   if (pending.length === 0) return;
   if (now < emailCooldownUntilMs) {

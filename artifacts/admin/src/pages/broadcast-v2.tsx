@@ -127,6 +127,8 @@ interface BroadcastQueueRow {
   sortOrder: number;
   /** 'queued' | 'encoding' | 'hls_ready' | 'failed' | 'ready' | null */
   transcodingStatus: string | null;
+  /** Live 0–100 progress from the active transcoding job. Null when not encoding. */
+  transcodingProgress: number | null;
   /** True when a complete HLS master playlist exists for this item. */
   hasHls: boolean;
   /** Error message from the last failed transcoding job, or null when not failed. */
@@ -747,14 +749,24 @@ const SortableQueueItem = memo(function SortableQueueItem({
             );
           if (item.transcodingStatus === "encoding")
             return (
-              <Badge
-                variant="secondary"
-                className="gap-1 shrink-0 text-[10px]"
-                title="HLS transcoding active — will broadcast as MP4 until encoding finishes."
-              >
-                <RotateCw className="h-2.5 w-2.5 animate-spin" />
-                Encoding…
-              </Badge>
+              <div className="flex flex-col gap-0.5 shrink-0">
+                <Badge
+                  variant="secondary"
+                  className="gap-1 text-[10px]"
+                  title="HLS transcoding active — will broadcast as MP4 until encoding finishes."
+                >
+                  <RotateCw className="h-2.5 w-2.5 animate-spin" />
+                  {item.transcodingProgress !== null ? `Encoding ${item.transcodingProgress}%` : "Encoding…"}
+                </Badge>
+                {item.transcodingProgress !== null && (
+                  <div className="w-full h-0.5 bg-muted rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-blue-500 transition-all duration-500 rounded-full"
+                      style={{ width: `${item.transcodingProgress}%` }}
+                    />
+                  </div>
+                )}
+              </div>
             );
           if (item.transcodingStatus === "queued")
             return (
