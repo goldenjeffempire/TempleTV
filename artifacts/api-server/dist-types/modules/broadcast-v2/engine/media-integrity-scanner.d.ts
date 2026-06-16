@@ -23,6 +23,9 @@ declare class MediaIntegrityScannerImpl {
     private scanInterval;
     private scanning;
     private readonly failureCounts;
+    /** Returns the current size of the failure-count map.
+     *  Used by the memory diagnostics named-store registry. */
+    failureCountsSize(): number;
     private report;
     start(intervalMs?: number): void;
     stop(): void;

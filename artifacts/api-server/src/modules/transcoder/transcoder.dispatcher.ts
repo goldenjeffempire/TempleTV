@@ -1,20 +1,23 @@
-import { and, eq, inArray, lt, lte, ne, or, sql, isNull, count } from "drizzle-orm";
+import { and, eq, inArray, lt, ne, or, sql, isNull, count } from "drizzle-orm";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { randomUUID } from "node:crypto";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
 import {
   transcodingQueueDepth,
   transcoderActiveJobCount,
+  transcoderConcurrentJobs,
+  transcoderStageDurationMs,
   transcoderDlqDepth,
   transcoderStageTransitionTotal,
   transcoderJobDurationSeconds,
   SERVICE_LABELS,
 } from "../../infrastructure/metrics.js";
 import { runTranscode, checkFfmpegAvailable } from "./transcoder.service.js";
-import { enqueueTranscode, moveToDlq } from "./transcoder.queue.js";
+import { enqueueTranscode } from "./transcoder.queue.js";
 import { scheduleSourceCleanup } from "./cleanup.service.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
@@ -699,6 +702,8 @@ class TranscoderDispatcher {
     lastCompletedJobId: string | null;
     lastCompletedStatus: "done" | "failed" | null;
     isRunning: boolean;
+    activeJobCount: number;
+    maxConcurrent: number;
     ffmpegAvailable: boolean;
     stopped: boolean;
     storageCircuitOpenUntil: number;
@@ -1185,7 +1190,9 @@ class TranscoderDispatcher {
     // Slot acquired — track in activeJobs so the semaphore and metrics are accurate.
     this.activeJobs.add(job.id);
     transcoderActiveJobCount.set(SERVICE_LABELS, this.activeJobs.size);
+    transcoderConcurrentJobs.set(SERVICE_LABELS, this.activeJobs.size);
     const jobStartMs = Date.now();
+    let stageStartMs = jobStartMs;
 
     try {
       // Guard: videoId is null when the parent managed_videos row was deleted
@@ -1202,6 +1209,8 @@ class TranscoderDispatcher {
 
       // ── Stage: pending → validating ──────────────────────────────────────
       await this.transitionStage(job.id, "validating", workerRegistry.id);
+      transcoderStageDurationMs.observe({ stage: "pending", status: "ok", ...SERVICE_LABELS }, Date.now() - stageStartMs);
+      stageStartMs = Date.now();
 
       // Look up the video title for SSE event payloads. Non-critical: null on failure.
       const videoTitle = await db
@@ -1214,6 +1223,8 @@ class TranscoderDispatcher {
 
       // ── Stage: validating → processing ───────────────────────────────────
       await this.transitionStage(job.id, "processing", workerRegistry.id);
+      transcoderStageDurationMs.observe({ stage: "validating", status: "ok", ...SERVICE_LABELS }, Date.now() - stageStartMs);
+      stageStartMs = Date.now();
 
       await db.update(videos)
         .set({ transcodingStatus: "encoding" })
@@ -1257,10 +1268,15 @@ class TranscoderDispatcher {
       let lastProgressUpdate = Date.now();
 
       try {
+        // Read checkpoint to support rendition-level resume.
+        const checkpoint = (job.checkpoint as { completedRenditions?: string[]; encodeDone?: boolean } | null) ?? null;
+        const skipRenditions: string[] = checkpoint?.completedRenditions ?? [];
+
         const result = await runTranscode({
           jobId: job.id,
           videoId: job.videoId,
           sourceObjectKey: job.videoPath,
+          skipRenditions,
           onProgress: async (pct) => {
             const now = Date.now();
             if (now - lastProgressUpdate < 5000 && pct < 100) return;
@@ -1279,10 +1295,36 @@ class TranscoderDispatcher {
               videoTitle,
             });
           },
+          onFfmpegComplete: async () => {
+            // Persist "encode done" checkpoint so a retry after an upload-phase
+            // interruption knows the ffmpeg step already succeeded.
+            await db.update(jobs)
+              .set({ checkpoint: { ...(checkpoint ?? {}), encodeDone: true } as object })
+              .where(eq(jobs.id, job.id))
+              .catch((err) => { logger.warn({ err, jobId: job.id }, "transcoder: onFfmpegComplete checkpoint save failed (non-fatal)"); });
+          },
+          onRenditionUploaded: async (renditionName) => {
+            // Atomically append this rendition to checkpoint.completedRenditions
+            // so a retry resumes from where it left off without re-uploading.
+            const current = await db
+              .select({ checkpoint: jobs.checkpoint })
+              .from(jobs)
+              .where(eq(jobs.id, job.id))
+              .limit(1)
+              .then((r) => r[0]?.checkpoint as { completedRenditions?: string[]; encodeDone?: boolean } | null)
+              .catch(() => null);
+            const completed = [...new Set([...(current?.completedRenditions ?? []), renditionName])];
+            await db.update(jobs)
+              .set({ checkpoint: { ...(current ?? {}), completedRenditions: completed } as object })
+              .where(eq(jobs.id, job.id))
+              .catch((err) => { logger.warn({ err, jobId: job.id, renditionName }, "transcoder: onRenditionUploaded checkpoint save failed (non-fatal)"); });
+          },
         });
 
         // ── Stage: processing → finalizing ───────────────────────────────────
         await this.transitionStage(job.id, "finalizing", workerRegistry.id);
+        transcoderStageDurationMs.observe({ stage: "processing", status: "ok", ...SERVICE_LABELS }, Date.now() - stageStartMs);
+        stageStartMs = Date.now();
 
         // ── HLS output integrity check ────────────────────────────────────────
         // Verify the master playlist actually landed in storage before committing
@@ -1438,6 +1480,7 @@ class TranscoderDispatcher {
 
         // ── Stage: finalizing → completed ────────────────────────────────────
         await this.transitionStage(job.id, "completed", workerRegistry.id);
+        transcoderStageDurationMs.observe({ stage: "finalizing", status: "ok", ...SERVICE_LABELS }, Date.now() - stageStartMs);
 
         // ── Storage circuit breaker: reset streak on success ───────────────
         this.storageErrorStreak = 0;
@@ -1562,15 +1605,21 @@ class TranscoderDispatcher {
         // stderr dumps. The full error is always in application logs.
         const truncatedMessage = message.slice(0, 2000);
 
-        // Both tables must update atomically. A process crash between the two
-        // writes would leave the job as "failed" while the video stays in
-        // "encoding" state (or vice versa), causing the UI to show
-        // contradictory status badges and blocking the auto-enqueue from
-        // picking up the video on the next cycle.
+        // Determine terminal job status:
+        //   "failed"      — permanent, unrecoverable errors (CORRUPT_SOURCE / SOURCE_MISSING)
+        //                   OR non-exceeded failures that will be re-queued automatically
+        //   "dead_letter" — retry budget exhausted for *transient* errors (disk full,
+        //                   timeout, storage outage). A DLQ row is inserted atomically
+        //                   in the same transaction so DLQ presence is always in lockstep
+        //                   with job status — no partial-state from fire-and-forget.
+        const terminalStatus: "failed" | "dead_letter" | "queued" = exceeded
+          ? (isCorruptSource || isSourceMissing ? "failed" : "dead_letter")
+          : "queued";
+
         await db.transaction(async (tx) => {
           await tx.update(jobs)
             .set({
-              status: exceeded ? "failed" : "queued",
+              status: terminalStatus,
               attempts,
               progress: 0,
               errorMessage: message,
@@ -1594,6 +1643,25 @@ class TranscoderDispatcher {
               } : {}),
             })
             .where(eq(videos.id, job.videoId!));
+
+          // Atomically insert the DLQ row when routing to dead_letter.
+          // Doing this inside the transaction guarantees the DLQ entry is
+          // always created and the job status is always "dead_letter" in
+          // lockstep — a crash between separate writes would cause phantom
+          // "failed" jobs with no DLQ entry (invisible to operators) or
+          // DLQ entries pointing at jobs that were never marked dead_letter.
+          if (terminalStatus === "dead_letter") {
+            const dlqTable = schema.transcodingDeadLetterTable;
+            await tx.insert(dlqTable).values({
+              id: randomUUID(),
+              jobId: job.id,
+              videoId: job.videoId ?? undefined,
+              videoPath: job.videoPath ?? undefined,
+              attempts,
+              lastError: truncatedMessage,
+              errorCode: isDiskFull ? "DISK_FULL" : "MAX_ATTEMPTS_EXCEEDED",
+            }).onConflictDoNothing();
+          }
         });
 
         adminEventBus.push("transcoding-update", {
@@ -1660,26 +1728,6 @@ class TranscoderDispatcher {
           transcoderJobDurationSeconds.observe({ status: "failed", ...SERVICE_LABELS }, (Date.now() - jobStartMs) / 1000);
           workerRegistry.recordJobFailed();
 
-          // ── Dead-Letter Queue routing ──────────────────────────────────────
-          // Route to DLQ only for "exhausted retry budget" failures — NOT for
-          // CORRUPT_SOURCE/SOURCE_MISSING which are permanently unrecoverable
-          // terminal errors that the operator already handles in the video detail
-          // page. DLQ is specifically for jobs that hit maxAttempts on transient
-          // errors (disk-full, timeout, storage outage) so operators get a clear
-          // review queue separate from the normal failed-jobs list.
-          if (!isCorruptSource && !isSourceMissing) {
-            void moveToDlq({
-              jobId: job.id,
-              videoId: job.videoId ?? undefined,
-              videoPath: job.videoPath ?? undefined,
-              attempts,
-              lastError: truncatedMessage,
-              errorCode: isDiskFull ? "DISK_FULL" : "MAX_ATTEMPTS_EXCEEDED",
-            }).catch((dlqErr) => {
-              logger.warn({ dlqErr, jobId: job.id }, "transcoder: DLQ routing failed (non-fatal)");
-            });
-          }
-
           void emitJobEvent({
             jobId: job.id,
             workerId: workerRegistry.id,
@@ -1738,6 +1786,7 @@ class TranscoderDispatcher {
       // Release semaphore slot regardless of outcome.
       this.activeJobs.delete(job.id);
       transcoderActiveJobCount.set(SERVICE_LABELS, this.activeJobs.size);
+      transcoderConcurrentJobs.set(SERVICE_LABELS, this.activeJobs.size);
       // Release DB lease so another worker can pick up if this slot errored unexpectedly.
       void jobLeaseManager.releaseLease(job.id, workerRegistry.id).catch(() => { /* non-fatal */ });
       // Clear current-job tracking if this was the only active slot.

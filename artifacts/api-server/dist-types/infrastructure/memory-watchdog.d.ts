@@ -53,6 +53,7 @@ export interface WatchdogState {
         rssAlertActive: boolean;
         slopeAlertActive: boolean;
         heapUsedAlertActive: boolean;
+        arrayBuffersAlertActive: boolean;
         eventLoopLagAlertActive: boolean;
     };
 }
@@ -65,6 +66,7 @@ export declare function getMemoryHistory(): Array<{
     ts: number;
     heapUsedMb: number;
     externalMb: number;
+    arrayBuffersMb: number;
 }>;
 export declare function startMemoryWatchdog(): void;
 export declare function stopMemoryWatchdog(): void;

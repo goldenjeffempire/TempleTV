@@ -34,6 +34,26 @@ export interface TranscodeRequest {
   videoId: string;
   sourceObjectKey: string;
   onProgress?: (percent: number) => void | Promise<void>;
+  /**
+   * Rendition names (e.g. "360p", "720p") to skip because they were already
+   * fully uploaded in a previous interrupted run. Populated from the job's
+   * checkpoint.completedRenditions field by the dispatcher.
+   */
+  skipRenditions?: readonly string[];
+  /**
+   * Called once after FFmpeg exits, the master.m3u8 has been CODECS-enhanced
+   * and written to disk, and all output is ready for upload. The dispatcher
+   * uses this to persist an "encode_done" checkpoint so a retry can skip the
+   * FFmpeg step entirely (not yet wired — rendition-level checkpointing covers
+   * most real-world interruptions).
+   */
+  onFfmpegComplete?: () => Promise<void>;
+  /**
+   * Called after each rendition directory is fully uploaded to object storage.
+   * The dispatcher saves the rendition name to the job checkpoint so a retry
+   * can skip already-uploaded renditions.
+   */
+  onRenditionUploaded?: (renditionName: string, renditionIndex: number) => Promise<void>;
 }
 
 export interface TranscodeResult {
@@ -310,8 +330,13 @@ function buildFfmpegArgs(
     });
   }
 
+  // Use named dirs (e.g. "360p/seg_%05d.ts") rather than positional indices
+  // ("v0/seg_%05d.ts") so that checkpoint-resume runs can skip already-uploaded
+  // renditions without positional index conflicts. FFmpeg supports named streams
+  // via `name:<label>` in var_stream_map; %v in the output path expands to
+  // the stream name.
   const varStreamMap = renditions
-    .map((_, i) => (hasAudio ? `v:${i},a:${i}` : `v:${i}`))
+    .map((r, i) => (hasAudio ? `v:${i},a:${i},name:${r.name}` : `v:${i},name:${r.name}`))
     .join(" ");
 
   args.push(
@@ -336,10 +361,11 @@ function buildFfmpegArgs(
     //   when the source framerate is not an integer divisor of the segment length.
     "-hls_flags", "independent_segments+split_by_time",
     "-hls_list_size", "0",
-    "-hls_segment_filename", path.join(outDir, "v%v", "seg_%05d.ts"),
+    // %v expands to the stream name from var_stream_map (e.g. "360p", "720p").
+    "-hls_segment_filename", path.join(outDir, "%v", "seg_%05d.ts"),
     "-master_pl_name", "master.m3u8",
     "-var_stream_map", varStreamMap,
-    path.join(outDir, "v%v", "playlist.m3u8"),
+    path.join(outDir, "%v", "playlist.m3u8"),
   );
 
   return args;
@@ -1745,12 +1771,12 @@ async function uploadDirRecursive(
 async function progressiveSegmentUpload(
   scratchDir: string,
   keyPrefix: string,
-  renditionCount: number,
+  renditionNames: readonly string[],
   uploadedKeys: Set<string>,
 ): Promise<void> {
   const s = storage();
-  for (let i = 0; i < renditionCount; i++) {
-    const dir = path.join(scratchDir, `v${i}`);
+  for (const rName of renditionNames) {
+    const dir = path.join(scratchDir, rName);
     let files: string[];
     try {
       const all = await readdir(dir);
@@ -1767,7 +1793,7 @@ async function progressiveSegmentUpload(
     // iterations from uploading the same segment twice.
     const pending: Array<{ fullPath: string; key: string }> = [];
     for (const f of safeFiles) {
-      const key = `${keyPrefix}/v${i}/${f}`;
+      const key = `${keyPrefix}/${rName}/${f}`;
       if (!uploadedKeys.has(key)) {
         uploadedKeys.add(key);
         pending.push({ fullPath: path.join(dir, f), key });
@@ -2024,9 +2050,29 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       );
     }
 
-    // Create per-rendition scratch subdirectories (v0, v1, …).
-    for (let i = 0; i < renditionsToUse.length; i++) {
-      await mkdir(path.join(scratchDir, `v${i}`), { recursive: true });
+    // Checkpoint resume: if the dispatcher recorded completed renditions in a
+    // previous interrupted run (from job.checkpoint.completedRenditions), skip
+    // them so we only encode and upload the remaining renditions. The skipped
+    // renditions are merged back into master.m3u8 after the active encode finishes.
+    const skipRenditionSet = new Set(req.skipRenditions ?? []);
+    // Keep the full intended list for master playlist merging and renditionsOut.
+    const allIntendedRenditions = [...renditionsToUse];
+    if (skipRenditionSet.size > 0) {
+      const active = renditionsToUse.filter((r) => !skipRenditionSet.has(r.name));
+      // If all renditions are already done we still need one encode pass to
+      // regenerate master.m3u8 (e.g. checkpoint was saved but job not marked done).
+      renditionsToUse = active.length > 0 ? active : renditionsToUse;
+      logger.info(
+        { videoId: req.videoId, jobId: req.jobId, skipping: [...skipRenditionSet], encoding: renditionsToUse.map(r => r.name) },
+        "transcoder: checkpoint resume — skipping already-uploaded renditions",
+      );
+    }
+
+    // Create per-rendition scratch subdirectories using stable NAMED dirs (e.g.
+    // "360p/") rather than positional indices ("v0/") so that checkpoint-resume
+    // runs map each rendition to the same path regardless of which others are skipped.
+    for (const r of renditionsToUse) {
+      await mkdir(path.join(scratchDir, r.name), { recursive: true });
     }
 
     // Pre-flight disk space check: ensure sufficient scratch space before
@@ -2172,7 +2218,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         await new Promise<void>((r) => setTimeout(r, PROGRESSIVE_POLL_MS));
         if (!progressiveActive) break;
         try {
-          await progressiveSegmentUpload(scratchDir, keyPrefix, renditionsToUse.length, uploadedSegmentKeys);
+          await progressiveSegmentUpload(scratchDir, keyPrefix, renditionsToUse.map(r => r.name), uploadedSegmentKeys);
         } catch (progressiveErr) {
           // progressiveSegmentUpload handles per-file errors internally with logger.warn.
           // This outer catch covers unexpected structural failures (e.g. a bug in the
@@ -2232,20 +2278,20 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
           await Promise.resolve(req.onProgress(0)).catch(() => { /* non-fatal */ });
         }
 
-        const prevRenditionCount = renditionsToUse.length;
+        const prevRenditions = [...renditionsToUse]; // capture before reassigning
         renditionsToUse = [ALL_RENDITIONS[0]!];
 
-        // Remove only the rendition output subdirs (v0..vN-1); preserve the
+        // Remove only the rendition output subdirs (named dirs); preserve the
         // source file (activeSourcePath lives inside scratchDir).
-        for (let i = 0; i < prevRenditionCount; i++) {
-          await rm(path.join(scratchDir, `v${i}`), { recursive: true, force: true }).catch(() => undefined);
+        for (const r of prevRenditions) {
+          await rm(path.join(scratchDir, r.name), { recursive: true, force: true }).catch(() => undefined);
         }
         // Remove stale thumbnail (will be regenerated after fallback succeeds).
         await rm(path.join(scratchDir, "thumbnail.jpg"), { force: true }).catch(() => undefined);
         thumbLocalPath = null;
 
-        // Recreate the single-rendition output directory.
-        await mkdir(path.join(scratchDir, "v0"), { recursive: true });
+        // Recreate the single-rendition output directory using the named dir.
+        await mkdir(path.join(scratchDir, renditionsToUse[0]!.name), { recursive: true });
 
         // Re-start the progressive uploader for the 360p fallback run.
         // Build FFmpeg args BEFORE starting the loop: if buildFfmpegArgs
@@ -2259,7 +2305,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
             await new Promise<void>((r) => setTimeout(r, PROGRESSIVE_POLL_MS));
             if (!progressiveActive) break;
             try {
-              await progressiveSegmentUpload(scratchDir, keyPrefix, renditionsToUse.length, uploadedSegmentKeys);
+              await progressiveSegmentUpload(scratchDir, keyPrefix, renditionsToUse.map(r => r.name), uploadedSegmentKeys);
             } catch (progressiveErr) {
               logger.warn(
                 { videoId: req.videoId, jobId: req.jobId, err: String(progressiveErr) },
@@ -2344,11 +2390,27 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
     // select the right hardware decoder without ambiguity.
     const masterLocalPath = path.join(scratchDir, "master.m3u8");
     try {
-      const masterRaw = await readFile(masterLocalPath, "utf-8");
-      const masterEnhanced = injectCodecsIntoMaster(masterRaw, renditionsToUse, hasAudio);
+      let masterRaw = await readFile(masterLocalPath, "utf-8");
+
+      // Checkpoint resume: the active encode only produced entries for non-skipped
+      // renditions. Append EXT-X-STREAM-INF entries for each skipped rendition so
+      // the merged master playlist references the full intended quality ladder.
+      // The skipped renditions' segments are already in storage from a previous run.
+      if (skipRenditionSet.size > 0) {
+        for (const r of allIntendedRenditions) {
+          if (skipRenditionSet.has(r.name)) {
+            const totalBitrateK = r.videoBitrateK + (hasAudio ? r.audioBitrateK : 0);
+            masterRaw += `#EXT-X-STREAM-INF:BANDWIDTH=${totalBitrateK * 1000},RESOLUTION=${r.width}x${r.height}\n${r.name}/playlist.m3u8\n`;
+          }
+        }
+      }
+
+      // Inject CODECS using allIntendedRenditions so skipped renditions also get
+      // the correct CODECS attribute in the merged master playlist.
+      const masterEnhanced = injectCodecsIntoMaster(masterRaw, allIntendedRenditions, hasAudio);
       await writeFile(masterLocalPath, masterEnhanced, "utf-8");
       logger.debug(
-        { videoId: req.videoId, renditions: renditionsToUse.map((r) => `${r.name}@${r.level}`) },
+        { videoId: req.videoId, renditions: allIntendedRenditions.map((r) => `${r.name}@${r.level}`) },
         "transcoder: CODECS attribute injected into master.m3u8",
       );
     } catch (codecsErr) {
@@ -2371,6 +2433,17 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       );
     }
 
+    // ── onFfmpegComplete checkpoint ──────────────────────────────────────────
+    // Signal to the dispatcher that all output files are on disk and the master
+    // playlist is finalized. The dispatcher can now save an "encode_done"
+    // checkpoint so a future retry knows the ffmpeg step succeeded and only the
+    // upload phase needs to be rerun.
+    if (req.onFfmpegComplete) {
+      await req.onFfmpegComplete().catch((err) => {
+        logger.warn({ err, videoId: req.videoId }, "transcoder: onFfmpegComplete callback failed (non-fatal)");
+      });
+    }
+
     // ── Final upload pass ────────────────────────────────────────────────────
     // Most .ts segments were already uploaded by the progressive uploader.
     // This pass handles: the last segment per rendition, all playlist files,
@@ -2379,68 +2452,86 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
     // Progress is mapped to 90–100 %: the progressive uploader ran during
     // the 0–90 % encode window, so the final pass moves the indicator from
     // 90 % up to 100 % based on bytes persisted in this pass.
+    //
+    // Upload each ACTIVE rendition directory separately so onRenditionUploaded
+    // can checkpoint per-rendition completion. Root files (master.m3u8,
+    // thumbnail.jpg) are uploaded after all renditions are done.
     let uploadProgressPct = 90;
-    // Estimate total bytes remaining for this final pass: start with
-    // a rough heuristic (segment size ≈ 300 KB, remaining ≈ 1 per rendition
-    // + playlists) and update dynamically as files are actually read.
     let estimatedRemainingBytes = 0;
     let actualUploadedBytes = 0;
-    // We don't know the exact remaining byte count ahead of time, so use a
-    // simple incremental approach: each file uploaded nudges the bar by a
-    // proportional amount toward 100 % based on bytes seen so far.
-    const upload = await uploadDirRecursive(
-      scratchDir,
-      keyPrefix,
-      uploadedSegmentKeys,
-      (bytes) => {
-        if (!req.onProgress) return;
-        estimatedRemainingBytes += bytes;
-        actualUploadedBytes += bytes;
-        // Use incremental square-root smoothing so early small files don't
-        // spike the bar and long uploads stay readable. Cap at 99 so the
-        // dispatcher's final onProgress(100) call is always visible.
-        const uploadFraction = Math.min(1, actualUploadedBytes / Math.max(estimatedRemainingBytes, 1));
-        const pct = Math.min(99, Math.round(90 + uploadFraction * 9));
-        if (pct > uploadProgressPct) {
-          uploadProgressPct = pct;
-          void req.onProgress(pct);
-        }
-      },
-    );
+    let totalUploadedBytes = 0;
 
-    const masterKey = `${keyPrefix}/master.m3u8`;
-    const masterUrl = `/api/hls/${req.videoId}/master.m3u8`;
-
-    // Compute the true per-rendition segment counts by reading the playlist
-    // files from disk. This is necessary because the progressive uploader has
-    // already persisted most segments to storage (they appear in
-    // uploadedSegmentKeys) while upload.segmentsByRendition only reflects the
-    // small number of segments uploaded in this final pass.
-    const diskSegmentCounts: Record<string, number> = {};
-    for (let i = 0; i < renditionsToUse.length; i++) {
-      const vDir = path.join(scratchDir, `v${i}`);
-      try {
-        const entries = await readdir(vDir);
-        diskSegmentCounts[`v${i}`] = entries.filter((f) => f.endsWith(".ts")).length;
-      } catch {
-        // Fall back to final-pass count if the directory is unavailable.
-        diskSegmentCounts[`v${i}`] = upload.segmentsByRendition[`v${i}`] ?? 0;
+    function onFileUploaded(bytes: number): void {
+      if (!req.onProgress) return;
+      estimatedRemainingBytes += bytes;
+      actualUploadedBytes += bytes;
+      const uploadFraction = Math.min(1, actualUploadedBytes / Math.max(estimatedRemainingBytes, 1));
+      const pct = Math.min(99, Math.round(90 + uploadFraction * 9));
+      if (pct > uploadProgressPct) {
+        uploadProgressPct = pct;
+        void req.onProgress(pct);
       }
     }
 
-    const renditionsOut = renditionsToUse.map((r, i) => ({
-      name: r.name,
-      bitrateKbps: r.videoBitrateK,
-      width: r.width,
-      height: r.height,
-      segmentCount: diskSegmentCounts[`v${i}`] ?? 0,
-    }));
+    const diskSegmentCounts: Record<string, number> = {};
 
-    if (req.onProgress) await req.onProgress(100);
+    for (let ri = 0; ri < renditionsToUse.length; ri++) {
+      const rSpec = renditionsToUse[ri]!;
+      const rDir = path.join(scratchDir, rSpec.name);
+      const rKeyPrefix = `${keyPrefix}/${rSpec.name}`;
+      // uploadedSegmentKeys already contains the correctly-prefixed keys for
+      // this rendition (e.g. "transcoded/<id>/360p/seg_00000.ts"), so passing
+      // the full set as skipKeys is correct — keys from other renditions won't
+      // appear in this rendition's directory walk.
+      const rUpload = await uploadDirRecursive(rDir, rKeyPrefix, uploadedSegmentKeys, onFileUploaded);
+      totalUploadedBytes += rUpload.uploadedBytes;
+      diskSegmentCounts[rSpec.name] = Object.values(rUpload.segmentsByRendition)
+        .reduce((a, b) => a + b, 0);
+
+      // Checkpoint: signal that this rendition is fully in storage. The
+      // dispatcher writes the rendition name to job.checkpoint so a retry
+      // can skip it entirely and only encode/upload the remaining renditions.
+      if (req.onRenditionUploaded) {
+        await req.onRenditionUploaded(rSpec.name, ri).catch((err) => {
+          logger.warn({ err, rendition: rSpec.name, videoId: req.videoId }, "transcoder: onRenditionUploaded callback failed (non-fatal)");
+        });
+      }
+    }
+
+    // Skipped renditions (checkpoint-resume from a previous run) have no local
+    // segments to count — set their count to 0 in the result.
+    for (const r of allIntendedRenditions) {
+      if (!(r.name in diskSegmentCounts)) diskSegmentCounts[r.name] = 0;
+    }
+
+    // Upload root files (master.m3u8, thumbnail.jpg) directly after all
+    // rendition directories are done.
+    const masterKey = `${keyPrefix}/master.m3u8`;
+    const masterUrl = `/api/hls/${req.videoId}/master.m3u8`;
+
+    const masterBody = await readFile(masterLocalPath);
+    await storage().putObject({ key: masterKey, body: masterBody, contentType: "application/vnd.apple.mpegurl" });
+    totalUploadedBytes += masterBody.byteLength;
 
     const thumbnailUrl: string | undefined = thumbLocalPath
       ? `/api/hls/${req.videoId}/thumbnail.jpg`
       : undefined;
+
+    if (thumbLocalPath) {
+      const thumbBody = await readFile(thumbLocalPath);
+      await storage().putObject({ key: `${keyPrefix}/thumbnail.jpg`, body: thumbBody, contentType: "image/jpeg" });
+      totalUploadedBytes += thumbBody.byteLength;
+    }
+
+    const renditionsOut = allIntendedRenditions.map((r) => ({
+      name: r.name,
+      bitrateKbps: r.videoBitrateK,
+      width: r.width,
+      height: r.height,
+      segmentCount: diskSegmentCounts[r.name] ?? 0,
+    }));
+
+    if (req.onProgress) await req.onProgress(100);
 
     if (thumbnailUrl) {
       logger.info({ videoId: req.videoId, thumbnailUrl }, "transcoder: thumbnail generated");
@@ -2453,7 +2544,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       masterPlaylistUrl: masterUrl,
       renditions: renditionsOut,
       durationSecs,
-      totalBytes: upload.uploadedBytes,
+      totalBytes: totalUploadedBytes,
       elapsedMs: Date.now() - startedAt,
       thumbnailUrl,
     };

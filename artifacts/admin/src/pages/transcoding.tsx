@@ -18,9 +18,13 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import {
+  Dialog, DialogContent, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
   Clapperboard, RefreshCw, CheckCircle2, XCircle, Loader2, Clock,
   AlertCircle, RotateCcw, Zap, Ban, Trash2, Server, History,
-  AlertTriangle, Activity, ArrowRight,
+  AlertTriangle, Activity, ArrowRight, Skull, ListOrdered,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
@@ -28,7 +32,7 @@ interface TranscodingJob {
   id: string;
   videoId: string;
   videoTitle?: string | null;
-  status: "queued" | "encoding" | "processing" | "ready" | "hls_ready" | "failed" | "cancelled";
+  status: "queued" | "encoding" | "processing" | "ready" | "hls_ready" | "failed" | "cancelled" | "dead_letter";
   stage?: string | null;
   progress?: number;
   createdAt: string;
@@ -69,13 +73,14 @@ interface DlqEntry {
 }
 
 const STATUS_CONFIG = {
-  queued:     { label: "Queued",      color: "outline",     icon: <Clock size={13} className="text-muted-foreground" /> },
-  encoding:   { label: "Encoding",    color: "secondary",   icon: <Loader2 size={13} className="animate-spin text-amber-500" /> },
-  processing: { label: "Processing",  color: "secondary",   icon: <Loader2 size={13} className="animate-spin text-blue-500" /> },
-  ready:      { label: "Ready",       color: "default",     icon: <CheckCircle2 size={13} className="text-green-500" /> },
-  hls_ready:  { label: "HLS Ready",   color: "default",     icon: <CheckCircle2 size={13} className="text-green-500" /> },
-  failed:     { label: "Failed",      color: "destructive", icon: <XCircle size={13} className="text-red-500" /> },
-  cancelled:  { label: "Cancelled",   color: "outline",     icon: <AlertCircle size={13} className="text-muted-foreground" /> },
+  queued:      { label: "Queued",       color: "outline",     icon: <Clock size={13} className="text-muted-foreground" /> },
+  encoding:    { label: "Encoding",     color: "secondary",   icon: <Loader2 size={13} className="animate-spin text-amber-500" /> },
+  processing:  { label: "Processing",   color: "secondary",   icon: <Loader2 size={13} className="animate-spin text-blue-500" /> },
+  ready:       { label: "Ready",        color: "default",     icon: <CheckCircle2 size={13} className="text-green-500" /> },
+  hls_ready:   { label: "HLS Ready",    color: "default",     icon: <CheckCircle2 size={13} className="text-green-500" /> },
+  failed:      { label: "Failed",       color: "destructive", icon: <XCircle size={13} className="text-red-500" /> },
+  cancelled:   { label: "Cancelled",    color: "outline",     icon: <AlertCircle size={13} className="text-muted-foreground" /> },
+  dead_letter: { label: "Dead Letter",  color: "destructive", icon: <Skull size={13} className="text-red-600" /> },
 } as const;
 
 const STAGE_LABELS: Record<string, string> = {
@@ -206,14 +211,112 @@ export default function TranscodingPage() {
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Purge failed"),
   });
 
+  const dlqBulkPurgeMutation = useMutation({
+    mutationFn: () => api.delete<{ ok: boolean; purged: number }>("/admin/transcoding/dlq"),
+    onSuccess: (res) => {
+      toast.success(res.purged > 0 ? `Purged ${res.purged} DLQ entr${res.purged !== 1 ? "ies" : "y"}` : "DLQ already empty");
+      void qc.invalidateQueries({ queryKey: ["transcoding-dlq"] });
+    },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Bulk purge failed"),
+  });
+
+  // ── Timeline drawer ──────────────────────────────────────────────────────
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+
+  interface JobEvent {
+    id: string;
+    eventType: string;
+    stage: string | null;
+    workerId: string | null;
+    payload: Record<string, unknown> | null;
+    createdAt: string;
+  }
+
+  const { data: eventsData, isLoading: eventsLoading } = useQuery({
+    queryKey: ["transcoding-job-events", selectedJobId],
+    queryFn: () => api.get<{ events: JobEvent[] }>(`/admin/transcoding/jobs/${selectedJobId}/events`),
+    enabled: !!selectedJobId,
+    staleTime: 30_000,
+  });
+
   const jobs = data?.jobs ?? [];
   const active = jobs.filter(j => ["queued", "encoding", "processing"].includes(j.status));
-  const done = jobs.filter(j => ["ready", "hls_ready", "failed", "cancelled"].includes(j.status));
+  const done = jobs.filter(j => ["ready", "hls_ready", "failed", "cancelled", "dead_letter"].includes(j.status));
   const failedJobs = jobs.filter(j => j.status === "failed");
   const workers = workersData?.workers ?? [];
   const dlqEntries = dlqData?.entries ?? [];
 
+  const EVENT_TYPE_COLORS: Record<string, string> = {
+    completed: "text-green-600 dark:text-green-400",
+    dead_lettered: "text-red-600 dark:text-red-400",
+    error: "text-red-500 dark:text-red-400",
+    retried: "text-blue-600 dark:text-blue-400",
+    started: "text-amber-600 dark:text-amber-400",
+    stage_transition: "text-muted-foreground",
+  };
+
   return (
+    <>
+    {/* ── Timeline Drawer ─────────────────────────────────────────────────── */}
+    <Dialog open={!!selectedJobId} onOpenChange={(open) => { if (!open) setSelectedJobId(null); }}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-sm">
+            <ListOrdered size={15} />
+            Job Timeline
+          </DialogTitle>
+        </DialogHeader>
+        {eventsLoading ? (
+          <div className="space-y-2 py-2">
+            {[1, 2, 3, 4].map(i => <Skeleton key={i} className="h-10 w-full" />)}
+          </div>
+        ) : !eventsData?.events?.length ? (
+          <p className="text-sm text-muted-foreground text-center py-6">No events recorded for this job.</p>
+        ) : (
+          <ScrollArea className="max-h-[420px] pr-1">
+            <div className="space-y-0">
+              {eventsData.events.map((ev, idx) => (
+                <div key={ev.id} className="flex gap-3">
+                  {/* Vertical timeline spine */}
+                  <div className="flex flex-col items-center">
+                    <div className={`w-2 h-2 rounded-full mt-3 shrink-0 ${
+                      ev.eventType === "completed" ? "bg-green-500" :
+                      ev.eventType === "dead_lettered" || ev.eventType === "error" ? "bg-red-500" :
+                      ev.eventType === "retried" ? "bg-blue-500" :
+                      ev.eventType === "started" ? "bg-amber-500" :
+                      "bg-border"
+                    }`} />
+                    {idx < eventsData.events.length - 1 && (
+                      <div className="w-px flex-1 bg-border mt-1 mb-1" />
+                    )}
+                  </div>
+                  <div className="pb-3 min-w-0">
+                    <div className="flex items-baseline gap-2">
+                      <span className={`text-xs font-medium capitalize ${EVENT_TYPE_COLORS[ev.eventType] ?? "text-foreground"}`}>
+                        {ev.eventType.replace(/_/g, " ")}
+                      </span>
+                      {ev.stage && ev.eventType === "stage_transition" && (
+                        <span className="text-[10px] text-muted-foreground">→ {STAGE_LABELS[ev.stage] ?? ev.stage}</span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-muted-foreground">
+                      {formatDistanceToNow(new Date(ev.createdAt), { addSuffix: true })}
+                      {ev.workerId && ` · worker ${ev.workerId.slice(0, 8)}…`}
+                    </p>
+                    {ev.payload && Object.keys(ev.payload).length > 0 && (
+                      <p className="text-[10px] text-muted-foreground font-mono break-all mt-0.5 line-clamp-2">
+                        {Object.entries(ev.payload).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join(" · ")}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </ScrollArea>
+        )}
+      </DialogContent>
+    </Dialog>
+
     <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-6">
       <PageHeader
         title="Transcoding Pipeline"
@@ -396,12 +499,18 @@ export default function TranscodingPage() {
                                 </p>
                               )}
                             </div>
-                            {job.status === "queued" && (
-                              <Button size="sm" variant="ghost" className="h-6 text-[11px] gap-1 text-muted-foreground hover:text-destructive"
-                                onClick={() => cancelMutation.mutate(job.id)} disabled={cancelMutation.isPending} title="Cancel this queued job">
-                                <Ban size={11} /> Cancel
+                            <div className="flex items-center gap-1">
+                              <Button size="sm" variant="ghost" className="h-6 text-[11px] gap-1 text-muted-foreground hover:text-foreground"
+                                onClick={() => setSelectedJobId(job.id)} title="View job event timeline">
+                                <ListOrdered size={11} /> Timeline
                               </Button>
-                            )}
+                              {job.status === "queued" && (
+                                <Button size="sm" variant="ghost" className="h-6 text-[11px] gap-1 text-muted-foreground hover:text-destructive"
+                                  onClick={() => cancelMutation.mutate(job.id)} disabled={cancelMutation.isPending} title="Cancel this queued job">
+                                  <Ban size={11} /> Cancel
+                                </Button>
+                              )}
+                            </div>
                           </div>
                         </div>
                       );
@@ -529,10 +638,36 @@ export default function TranscodingPage() {
         <TabsContent value="dlq" className="space-y-4 mt-4">
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-sm flex items-center gap-2">
-                <AlertTriangle size={15} className={dlqEntries.length > 0 ? "text-orange-500" : "text-muted-foreground"} />
-                Dead-Letter Queue ({dlqEntries.length} entries)
-              </CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <AlertTriangle size={15} className={dlqEntries.length > 0 ? "text-orange-500" : "text-muted-foreground"} />
+                  Dead-Letter Queue ({dlqEntries.length} entries)
+                </CardTitle>
+                {isAdmin && dlqEntries.length > 0 && (
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button size="sm" variant="ghost" className="h-7 text-xs gap-1 text-destructive hover:text-destructive" disabled={dlqBulkPurgeMutation.isPending}>
+                        {dlqBulkPurgeMutation.isPending ? <><Loader2 size={11} className="animate-spin" /> Purging…</> : <><Trash2 size={11} /> Purge All</>}
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Purge all {dlqEntries.length} DLQ entries?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          Permanently removes all dead-letter entries that haven't been requeued. The underlying job records are not deleted. This cannot be undone.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          onClick={() => dlqBulkPurgeMutation.mutate()}>
+                          Purge All
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                )}
+              </div>
             </CardHeader>
             <CardContent>
               {dlqLoading ? (
@@ -640,6 +775,11 @@ export default function TranscodingPage() {
                           </p>
                         </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
+                          <Button size="sm" variant="ghost"
+                            className="h-6 text-[11px] gap-1 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
+                            onClick={() => setSelectedJobId(job.id)} title="View job event timeline">
+                            <ListOrdered size={11} /> Timeline
+                          </Button>
                           {job.status === "failed" && (
                             <Button size="sm" variant="outline"
                               className="h-6 text-xs gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -662,5 +802,6 @@ export default function TranscodingPage() {
         </TabsContent>
       </Tabs>
     </div>
+    </>
   );
 }

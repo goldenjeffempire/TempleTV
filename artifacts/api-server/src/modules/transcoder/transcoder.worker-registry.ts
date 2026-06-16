@@ -15,7 +15,6 @@ import os from "node:os";
 import { eq, lt } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger as rootLogger } from "../../infrastructure/logger.js";
-import { env } from "../../config/env.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { transcoderWorkerCount, SERVICE_LABELS } from "../../infrastructure/metrics.js";
 

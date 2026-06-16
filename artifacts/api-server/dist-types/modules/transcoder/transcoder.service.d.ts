@@ -3,6 +3,26 @@ export interface TranscodeRequest {
     videoId: string;
     sourceObjectKey: string;
     onProgress?: (percent: number) => void | Promise<void>;
+    /**
+     * Rendition names (e.g. "360p", "720p") to skip because they were already
+     * fully uploaded in a previous interrupted run. Populated from the job's
+     * checkpoint.completedRenditions field by the dispatcher.
+     */
+    skipRenditions?: readonly string[];
+    /**
+     * Called once after FFmpeg exits, the master.m3u8 has been CODECS-enhanced
+     * and written to disk, and all output is ready for upload. The dispatcher
+     * uses this to persist an "encode_done" checkpoint so a retry can skip the
+     * FFmpeg step entirely (not yet wired — rendition-level checkpointing covers
+     * most real-world interruptions).
+     */
+    onFfmpegComplete?: () => Promise<void>;
+    /**
+     * Called after each rendition directory is fully uploaded to object storage.
+     * The dispatcher saves the rendition name to the job checkpoint so a retry
+     * can skip already-uploaded renditions.
+     */
+    onRenditionUploaded?: (renditionName: string, renditionIndex: number) => Promise<void>;
 }
 export interface TranscodeResult {
     masterPlaylistKey: string;

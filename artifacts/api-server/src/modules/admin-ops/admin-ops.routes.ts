@@ -60,6 +60,7 @@ import {
   queueStats,
   requeueFromDlq,
   purgeDlqEntry,
+  purgeDlqAll,
   retryJob,
 } from "../transcoder/transcoder.queue.js";
 import { workerRegistry } from "../transcoder/transcoder.worker-registry.js";
@@ -534,6 +535,14 @@ const TranscodingJobSchema = z.object({
   videoId: z.string(),
   videoPath: z.string(),
   status: z.string(),
+  // Distributed-pipeline stage machine state: pending→validating→processing→finalizing→completed
+  stage: z.string().nullable(),
+  // 0–100 progress within the current stage (populated by dispatcher callbacks)
+  stageProgress: z.number(),
+  // Worker ID that currently holds the distributed lease on this job
+  leasedBy: z.string().nullable(),
+  // ISO timestamp when the current lease expires; null when not leased
+  leaseExpiresAt: z.string().nullable(),
   priority: z.number(),
   progress: z.number(),
   attempts: z.number(),
@@ -580,6 +589,10 @@ function projectTranscodingJob(j: {
   videoId: string | null;
   videoPath: string;
   status: string;
+  stage?: string | null;
+  stageProgress?: number | null;
+  leasedBy?: string | null;
+  leaseExpiresAt?: Date | null;
   priority: number;
   progress: number;
   attempts: number;
@@ -600,6 +613,10 @@ function projectTranscodingJob(j: {
     videoId: j.videoId ?? "",
     videoPath: j.videoPath,
     status: j.status,
+    stage: j.stage ?? null,
+    stageProgress: j.stageProgress ?? 0,
+    leasedBy: j.leasedBy ?? null,
+    leaseExpiresAt: j.leaseExpiresAt ? j.leaseExpiresAt.toISOString() : null,
     priority: j.priority,
     progress: j.progress,
     attempts: j.attempts,
@@ -2252,7 +2269,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   r.post(
     "/transcoding/dlq/:id/requeue",
     {
-      preHandler: requireAuth("editor"),
+      preHandler: requireAuth("admin"),
       config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["admin-ops"],
@@ -2298,6 +2315,28 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     async (req) => {
       await purgeDlqEntry(req.params.id);
       return { ok: true as const };
+    },
+  );
+
+  // ── DLQ bulk purge ───────────────────────────────────────────────────────
+  r.delete(
+    "/transcoding/dlq",
+    {
+      preHandler: requireAuth("admin"),
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Bulk-purge ALL non-requeued dead-letter entries (admin only)",
+        response: {
+          200: z.object({ ok: z.literal(true), purged: z.number() }),
+          429: z.object({ error: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => {
+      const purged = await purgeDlqAll();
+      return { ok: true as const, purged };
     },
   );
 

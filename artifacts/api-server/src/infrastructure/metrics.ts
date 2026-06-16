@@ -78,6 +78,21 @@ export const transcodingQueueDepth = new Gauge({
   registers: [promRegistry],
 });
 
+export const transcoderStageDurationMs = new Histogram({
+  name: "transcoder_stage_duration_ms",
+  help: "Duration of each transcoding job stage in milliseconds, labeled by stage name and terminal status",
+  labelNames: ["stage", "status", "service", "env"] as const,
+  buckets: [100, 500, 1_000, 5_000, 10_000, 30_000, 60_000, 120_000, 300_000, 600_000],
+  registers: [promRegistry],
+});
+
+export const transcoderConcurrentJobs = new Gauge({
+  name: "transcoder_concurrent_jobs",
+  help: "Number of transcoding jobs actively running on this worker right now (bounded by HLS_MAX_CONCURRENT)",
+  labelNames: ["service", "env"] as const,
+  registers: [promRegistry],
+});
+
 export const broadcastQueueDepth = new Gauge({
   name: "broadcast_queue_depth",
   help: "Number of playable items currently in the broadcast queue (after pre-resolution)",

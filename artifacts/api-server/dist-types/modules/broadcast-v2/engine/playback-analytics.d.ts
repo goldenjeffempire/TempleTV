@@ -56,6 +56,9 @@ declare class PlaybackAnalyticsStore {
     record(ev: AnalyticsEvent): void;
     getReport(windowMs?: number): AnalyticsReport;
     getActiveSessions(): number;
+    /** Current fill count of the ring buffer (0 – RING_SIZE).
+     *  Exposed for the memory-diagnostics named-store registry. */
+    filledCount(): number;
 }
 export declare const playbackAnalytics: PlaybackAnalyticsStore;
 export {};

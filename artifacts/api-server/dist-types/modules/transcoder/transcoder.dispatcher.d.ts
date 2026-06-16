@@ -20,7 +20,14 @@
  */
 declare class TranscoderDispatcher {
     private timer;
-    private running;
+    private leaseReclaimTimer;
+    private eventLogPurgeTimer;
+    /**
+     * Active job IDs currently being processed in concurrent slots.
+     * Replaces the old single `running: boolean` flag.
+     * Size is bounded by TRANSCODER_MAX_CONCURRENT_JOBS (default 2).
+     */
+    private activeJobs;
     private stopped;
     /**
      * Set to true only by start(). Guards nudge() so that an explicit
@@ -31,6 +38,8 @@ declare class TranscoderDispatcher {
      * dispatcher was intentionally never started.
      */
     private started;
+    /** Max concurrent jobs = TRANSCODER_MAX_CONCURRENT_JOBS (validated 1–4). */
+    private get maxConcurrent();
     /**
      * FFmpeg circuit breaker.
      *
@@ -83,17 +92,18 @@ declare class TranscoderDispatcher {
      */
     private scanAndKillOrphanedFfmpegProcesses;
     private partialRecoveryCounter;
-    private static readonly PARTIAL_RECOVERY_TICKS;
+    private get partialRecoveryTicks();
     private autoRetryCounter;
     private stuckJobsCounter;
-    private static readonly STUCK_JOBS_TICKS;
+    private get stuckJobsTicks();
+    private dlqCheckCounter;
     private faststartOrphanCounter;
-    private static readonly FASTSTART_ORPHAN_TICKS;
+    private get faststartOrphanTicks();
     private static readonly EARLY_STUCK_MS;
     private static readonly PROGRESS_STALE_MS;
     private static readonly JOB_START_GRACE_MS;
     private scratchGcCounter;
-    private static readonly SCRATCH_GC_TICKS;
+    private get scratchGcTicks();
     private lastHeartbeatAt;
     private currentJobId;
     private currentJobVideoId;
@@ -139,6 +149,8 @@ declare class TranscoderDispatcher {
         lastCompletedJobId: string | null;
         lastCompletedStatus: "done" | "failed" | null;
         isRunning: boolean;
+        activeJobCount: number;
+        maxConcurrent: number;
         ffmpegAvailable: boolean;
         stopped: boolean;
         storageCircuitOpenUntil: number;
@@ -148,10 +160,21 @@ declare class TranscoderDispatcher {
     };
     stop(): void;
     /**
-     * Shared tick used by start() and nudge(). Runs one dispatch cycle then
+     * Shared tick used by start() and nudge(). Runs periodic maintenance
+     * tasks and launches up to maxConcurrent job slots concurrently, then
      * re-arms the timer at the normal TRANSCODER_POLL_MS cadence.
+     *
+     * The timer is re-armed immediately (not in .finally) so concurrent jobs
+     * don't block future ticks — we want the poll loop to keep running even
+     * while multiple jobs are executing in parallel.
      */
     private tick;
+    /**
+     * Periodic maintenance tasks, called once per tick regardless of active
+     * job count. Moved out of runOnce() so they run even when all slots are
+     * occupied by concurrent jobs.
+     */
+    private runPeriodicTasks;
     /**
      * Immediately trigger a dispatch cycle without waiting for the next poll
      * timer. Safe to call from any context — if a job is already running the
@@ -196,6 +219,10 @@ declare class TranscoderDispatcher {
     runOnce(): Promise<{
         ran: boolean;
     }>;
+    /** Transition a job to a new stage, recording the event and updating the metric. */
+    private transitionStage;
+    /** Update the DLQ depth Prometheus metric. */
+    private updateDlqMetric;
 }
 export declare const transcoderDispatcher: TranscoderDispatcher;
 export {};

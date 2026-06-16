@@ -31,7 +31,7 @@ export declare function deleteJob(id: string): Promise<boolean>;
  * that were skipped are logged so operators know they must wait for the
  * current job to finish before the table is fully clear.
  */
-export declare function clearJobsByStatus(status: "done" | "failed" | "cancelled" | "all"): Promise<number>;
+export declare function clearJobsByStatus(status: "done" | "failed" | "dead_letter" | "cancelled" | "all"): Promise<number>;
 /**
  * Re-arm ALL failed transcoding jobs whose source blob is still available.
  * Returns the number of jobs reset to "queued".
@@ -64,4 +64,51 @@ export declare function queueStats(): Promise<{
  * Returns true when the update was applied, false when no eligible job exists.
  * Safe to call fire-and-forget; errors are surfaced as the resolved boolean.
  */
+/**
+ * Route a permanently-failed transcoding job to the Dead-Letter Queue.
+ *
+ * Inserts a row in `transcoding_dead_letter` and emits an ops-alert SSE
+ * event so operators are notified via the admin dashboard.  Idempotent —
+ * if the job is already in the DLQ the row is silently left unchanged.
+ *
+ * The DLQ is specifically for jobs that exhausted their retry budget on
+ * transient errors (disk-full, timeout, network outage).  Jobs that fail
+ * permanently with CORRUPT_SOURCE or SOURCE_MISSING are tracked only in
+ * `managed_videos.transcodingErrorCode` and excluded from the DLQ so
+ * operators get a clear signal: DLQ = "fixable, needs intervention".
+ */
+export declare function moveToDlq(args: {
+    jobId: string;
+    videoId?: string;
+    videoPath?: string;
+    attempts: number;
+    lastError: string;
+    errorCode: string;
+}): Promise<void>;
+/**
+ * Re-queue a dead-letter entry so the dispatcher picks it up again.
+ *
+ * Resets the matching transcoding_jobs row to status='queued' (clearing
+ * attempts so a fresh retry budget is applied), stamps requeued_at on the
+ * DLQ row, and fires a broadcast-queue-updated notification so any in-flight
+ * orchestrator state refreshes immediately.
+ */
+export declare function requeueFromDlq(dlqId: string): Promise<{
+    jobId: string;
+}>;
+/**
+ * Purge a dead-letter entry permanently (no re-queue).
+ *
+ * Atomically deletes the DLQ row and — if the corresponding transcoding job
+ * still carries status="dead_letter" — resets it to status="failed" so it
+ * appears in the normal failed-jobs list rather than disappearing silently.
+ * Wrapped in a transaction so the two writes are always consistent.
+ */
+export declare function purgeDlqEntry(dlqId: string): Promise<void>;
+/**
+ * Bulk-purge all non-requeued dead-letter entries.
+ * Atomically resets all matching jobs from dead_letter → failed.
+ * Returns the number of DLQ rows deleted.
+ */
+export declare function purgeDlqAll(): Promise<number>;
 export declare function boostTranscodePriority(videoId: string, priority: number): Promise<boolean>;

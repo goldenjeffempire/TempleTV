@@ -6,7 +6,9 @@ import { logger } from "../../infrastructure/logger.js";
 const jobs = schema.transcodingJobsTable;
 const videos = schema.videosTable;
 
-// F24: extended job row with denormalized video metadata from LEFT JOIN
+// F24: extended job row with denormalized video metadata from LEFT JOIN.
+// Includes the new distributed-pipeline fields (stage, stageProgress, leasedBy,
+// leaseExpiresAt) so the admin API can surface them without a second JOIN.
 export type TranscodingJobWithVideo = (typeof schema.transcodingJobsTable.$inferSelect) & {
   videoTitle: string | null;
   videoThumbnail: string | null;
@@ -58,31 +60,36 @@ export async function enqueueTranscode(args: {
   const videoPath = normaliseVideoPath(args.videoPath);
 
   // Look for an existing live job. We treat queued/processing as live
-  // and failed as re-armable.
+  // and failed/dead_letter as re-armable.
   const existing = await db
     .select()
     .from(jobs)
     .where(and(
       eq(jobs.videoId, args.videoId),
-      inArray(jobs.status, ["queued", "processing", "failed"]),
+      inArray(jobs.status, ["queued", "processing", "failed", "dead_letter"]),
     ))
     .limit(1);
 
   if (existing[0]) {
     const row = existing[0];
-    if (row.status === "failed") {
+    if (row.status === "failed" || row.status === "dead_letter") {
       // Atomically reset the job and flip the video status so a DB failure
       // between the two writes cannot leave them in inconsistent states.
       await db.transaction(async (tx) => {
         await tx.update(jobs)
           .set({
             status: "queued",
+            stage: "pending",
             attempts: 0,
             progress: 0,
+            stageProgress: 0,
             errorMessage: null,
             nextRetryAt: null,
             startedAt: null,
             completedAt: null,
+            leaseExpiresAt: null,
+            leasedBy: null,
+            checkpoint: null,
             videoPath,
             priority,
           })
@@ -93,7 +100,7 @@ export async function enqueueTranscode(args: {
           .set({ transcodingStatus: "queued", transcodingErrorMessage: null, transcodingErrorCode: null })
           .where(eq(videos.id, args.videoId));
       });
-      logger.info({ jobId: row.id, videoId: args.videoId }, "transcoder: re-armed failed job");
+      logger.info({ jobId: row.id, videoId: args.videoId, wasStatus: row.status }, "transcoder: re-armed job");
       return { id: row.id, reused: true };
     }
     // queued or processing — leave as-is.
@@ -137,6 +144,10 @@ export async function listJobs(opts: { limit?: number; status?: string } = {}): 
       videoId: jobs.videoId,
       videoPath: jobs.videoPath,
       status: jobs.status,
+      stage: jobs.stage,
+      stageProgress: jobs.stageProgress,
+      leasedBy: jobs.leasedBy,
+      leaseExpiresAt: jobs.leaseExpiresAt,
       priority: jobs.priority,
       progress: jobs.progress,
       errorMessage: jobs.errorMessage,
@@ -173,6 +184,10 @@ export async function getJob(id: string): Promise<TranscodingJobWithVideo | null
       videoId: jobs.videoId,
       videoPath: jobs.videoPath,
       status: jobs.status,
+      stage: jobs.stage,
+      stageProgress: jobs.stageProgress,
+      leasedBy: jobs.leasedBy,
+      leaseExpiresAt: jobs.leaseExpiresAt,
       priority: jobs.priority,
       progress: jobs.progress,
       errorMessage: jobs.errorMessage,
@@ -183,6 +198,7 @@ export async function getJob(id: string): Promise<TranscodingJobWithVideo | null
       completedAt: jobs.completedAt,
       createdAt: jobs.createdAt,
       lastProgressAt: jobs.lastProgressAt,
+      checkpoint: jobs.checkpoint,
       videoTitle: videos.title,
       videoThumbnail: videos.thumbnailUrl,
       transcodingErrorCode: videos.transcodingErrorCode,
@@ -234,9 +250,9 @@ const ACTIVE_JOB_STATUSES = ["queued", "processing"] as const;
  * that were skipped are logged so operators know they must wait for the
  * current job to finish before the table is fully clear.
  */
-export async function clearJobsByStatus(status: "done" | "failed" | "cancelled" | "all"): Promise<number> {
+export async function clearJobsByStatus(status: "done" | "failed" | "dead_letter" | "cancelled" | "all"): Promise<number> {
   if (status === "all") {
-    // Delete every non-active row (done, failed, cancelled).
+    // Delete every non-active row (done, failed, dead_letter, cancelled).
     // Active (queued + processing) rows are explicitly preserved.
     const out = await db
       .delete(jobs)
@@ -277,18 +293,26 @@ export async function retryAllFailed(): Promise<number> {
     // (no moov at all) will simply fail again and keep their CORRUPT_SOURCE code.
     //
     // DISK_FULL jobs ARE re-queued so they run after the operator frees storage.
+    // Include both "failed" and "dead_letter" jobs — dead_letter status is used
+    // for max-attempts-exceeded transient failures that deserve another chance
+    // after operator review. CORRUPT_SOURCE/SOURCE_MISSING exclusions still apply.
     const out = await tx.update(jobs)
       .set({
         status: "queued",
+        stage: "pending",
         attempts: 0,
         progress: 0,
+        stageProgress: 0,
         errorMessage: null,
         nextRetryAt: null,
         startedAt: null,
         completedAt: null,
+        leaseExpiresAt: null,
+        leasedBy: null,
+        checkpoint: null,
       })
       .where(and(
-        eq(jobs.status, "failed"),
+        inArray(jobs.status, ["failed", "dead_letter"]),
         sql`NOT EXISTS (
           SELECT 1 FROM managed_videos mv
           WHERE mv.id = ${jobs.videoId}
@@ -563,11 +587,55 @@ export async function requeueFromDlq(dlqId: string): Promise<{ jobId: string }> 
 
 /**
  * Purge a dead-letter entry permanently (no re-queue).
+ *
+ * Atomically deletes the DLQ row and — if the corresponding transcoding job
+ * still carries status="dead_letter" — resets it to status="failed" so it
+ * appears in the normal failed-jobs list rather than disappearing silently.
+ * Wrapped in a transaction so the two writes are always consistent.
  */
 export async function purgeDlqEntry(dlqId: string): Promise<void> {
   const dlq = schema.transcodingDeadLetterTable;
-  await db.delete(dlq).where(eq(dlq.id, dlqId));
+
+  await db.transaction(async (tx) => {
+    const [entry] = await tx.select({ jobId: dlq.jobId }).from(dlq).where(eq(dlq.id, dlqId)).limit(1);
+    await tx.delete(dlq).where(eq(dlq.id, dlqId));
+    if (entry?.jobId) {
+      // Only reset to "failed" if still in dead_letter state — do not disturb
+      // re-queued or already-done jobs.
+      await tx.update(jobs)
+        .set({ status: "failed" })
+        .where(and(eq(jobs.id, entry.jobId), eq(jobs.status, "dead_letter")));
+    }
+  });
   logger.info({ dlqId }, "transcoder: DLQ entry purged");
+}
+
+/**
+ * Bulk-purge all non-requeued dead-letter entries.
+ * Atomically resets all matching jobs from dead_letter → failed.
+ * Returns the number of DLQ rows deleted.
+ */
+export async function purgeDlqAll(): Promise<number> {
+  const dlq = schema.transcodingDeadLetterTable;
+  return db.transaction(async (tx) => {
+    const entries = await tx
+      .select({ id: dlq.id, jobId: dlq.jobId })
+      .from(dlq)
+      .where(isNull(dlq.requeuedAt));
+    if (entries.length === 0) return 0;
+
+    const dlqIds = entries.map((e) => e.id);
+    const jobIds = entries.map((e) => e.jobId).filter(Boolean) as string[];
+
+    await tx.delete(dlq).where(inArray(dlq.id, dlqIds));
+    if (jobIds.length > 0) {
+      await tx.update(jobs)
+        .set({ status: "failed" })
+        .where(and(inArray(jobs.id, jobIds), eq(jobs.status, "dead_letter")));
+    }
+    logger.info({ purged: entries.length }, "transcoder: bulk DLQ purge complete");
+    return entries.length;
+  });
 }
 
 export async function boostTranscodePriority(

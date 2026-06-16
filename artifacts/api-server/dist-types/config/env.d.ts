@@ -71,6 +71,11 @@ declare const Env: z.ZodObject<{
     TRANSCODER_CRF: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_KEEP_SCRATCH: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     TRANSCODER_JOB_TIMEOUT_MS: z.ZodDefault<z.ZodNumber>;
+    TRANSCODER_MAX_CONCURRENT_JOBS: z.ZodDefault<z.ZodNumber>;
+    TRANSCODER_LEASE_TTL_MS: z.ZodDefault<z.ZodNumber>;
+    TRANSCODER_LEASE_RENEW_MS: z.ZodDefault<z.ZodNumber>;
+    TRANSCODER_LEASE_RECLAIM_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
+    TRANSCODER_DLQ_ALERT_THRESHOLD: z.ZodDefault<z.ZodNumber>;
     ASSEMBLY_WATCHDOG_MS: z.ZodDefault<z.ZodNumber>;
     SMTP_HOST: z.ZodOptional<z.ZodString>;
     SMTP_PORT: z.ZodDefault<z.ZodNumber>;
@@ -176,6 +181,11 @@ declare const Env: z.ZodObject<{
     TRANSCODER_CRF: number;
     TRANSCODER_KEEP_SCRATCH: boolean;
     TRANSCODER_JOB_TIMEOUT_MS: number;
+    TRANSCODER_MAX_CONCURRENT_JOBS: number;
+    TRANSCODER_LEASE_TTL_MS: number;
+    TRANSCODER_LEASE_RENEW_MS: number;
+    TRANSCODER_LEASE_RECLAIM_INTERVAL_MS: number;
+    TRANSCODER_DLQ_ALERT_THRESHOLD: number;
     ASSEMBLY_WATCHDOG_MS: number;
     SMTP_PORT: number;
     SMTP_FROM_NAME: string;
@@ -303,6 +313,11 @@ declare const Env: z.ZodObject<{
     TRANSCODER_CRF?: number | undefined;
     TRANSCODER_KEEP_SCRATCH?: string | boolean | undefined;
     TRANSCODER_JOB_TIMEOUT_MS?: number | undefined;
+    TRANSCODER_MAX_CONCURRENT_JOBS?: number | undefined;
+    TRANSCODER_LEASE_TTL_MS?: number | undefined;
+    TRANSCODER_LEASE_RENEW_MS?: number | undefined;
+    TRANSCODER_LEASE_RECLAIM_INTERVAL_MS?: number | undefined;
+    TRANSCODER_DLQ_ALERT_THRESHOLD?: number | undefined;
     ASSEMBLY_WATCHDOG_MS?: number | undefined;
     SMTP_HOST?: string | undefined;
     SMTP_PORT?: number | undefined;
