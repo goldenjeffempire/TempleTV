@@ -881,7 +881,9 @@ async function main() {
             } catch { /* non-fatal */ }
           }, 30_000).unref?.();
         };
-        if (aeb.listenerCount("admin-event") > 0) {
+        // startUnackedAlertSweeper() registers exactly one "admin-event" listener.
+        // Any count above 1 means at least one admin SSE client is also connected.
+        if (aeb.listenerCount("admin-event") > 1) {
           // SSE client already connected (unlikely at startup but possible in tests).
           pushAlert();
         } else {

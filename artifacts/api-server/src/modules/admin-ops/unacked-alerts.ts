@@ -72,10 +72,15 @@ function handleEvent(payload: unknown): void {
 
 async function sweep(): Promise<void> {
   const now = Date.now();
-  // Only escalate alerts that were NOT delivered to any live SSE client —
-  // those are the ones an operator could have silently missed.
+  // Escalate ALL alerts that have not been explicitly acknowledged (via DELETE
+  // /ops-alerts/unacked/:id) and have been pending for longer than
+  // ESCALATION_DELAY_MS.  The `delivered` flag is surfaced in the GET endpoint
+  // for informational display (shows whether a live dashboard was connected when
+  // the alert fired) but does NOT gate email escalation — an operator who sees
+  // an alert on screen but closes the tab without acting must still receive an
+  // email follow-up if the condition persists beyond 10 min.
   const pending = Array.from(store.values()).filter(
-    (a) => !a.delivered && a.emailedAtMs === null && now - a.receivedAtMs >= ESCALATION_DELAY_MS,
+    (a) => a.emailedAtMs === null && now - a.receivedAtMs >= ESCALATION_DELAY_MS,
   );
   if (pending.length === 0) return;
   if (now < emailCooldownUntilMs) {

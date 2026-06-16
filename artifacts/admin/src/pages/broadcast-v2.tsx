@@ -388,6 +388,13 @@ function TranscodingProgressPanel() {
     }),
   });
 
+  useSSEEvent("transcoding-progress", () => {
+    // Live 0–100 progress ticks — invalidate broadcast-queue so the per-row
+    // progress bar in SortableQueueItem updates in real time without waiting
+    // for the next poll tick (which is suppressed to 60 s while SSE connected).
+    void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
+  });
   useSSEEvent("transcoding-update", () => {
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
     // A completed transcode (hls_ready) resolves "Missing HLS" warnings in the
