@@ -31,10 +31,24 @@
  */
 
 import { db, schema } from "../../../infrastructure/db.js";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
+
+/**
+ * Stable advisory lock key for content rotation.
+ * Uses a fixed 32-bit BigInt derived from a simple string hash so that any
+ * process (or any rapid re-trigger of contentRotationScan) that tries to run
+ * a concurrent shuffle is immediately skipped rather than double-shuffling.
+ *
+ * pg_try_advisory_xact_lock:
+ *   • Transaction-scoped — releases automatically when the transaction commits
+ *     or rolls back.  No manual unlock needed.
+ *   • Non-blocking — returns false immediately if another session holds the lock;
+ *     our caller skips this cycle rather than waiting, preventing pile-ups.
+ */
+const ROTATION_ADVISORY_LOCK_KEY = 1_234_567_891; // stable; collisions are benign
 
 const q = schema.broadcastQueueTable;
 
@@ -98,8 +112,20 @@ export async function contentRotationScan(): Promise<void> {
     const originalOrders = rows.map((r) => r.sortOrder);
     const shuffledOrders = fisherYatesShuffle(originalOrders);
 
-    // Apply the shuffled orders in a single transaction.
+    // Apply the shuffled orders in a single transaction, protected by a
+    // PostgreSQL advisory lock so that two concurrent invocations (e.g. a
+    // rapid double-trigger via the event bus) cannot both commit a shuffle
+    // in the same interval window.  pg_try_advisory_xact_lock returns FALSE
+    // immediately when another session holds the lock — we roll back and skip
+    // this cycle cleanly rather than blocking or double-shuffling.
+    let lockAcquired = false;
     await db.transaction(async (tx) => {
+      const [lockRow] = await tx.execute(
+        sql`SELECT pg_try_advisory_xact_lock(${ROTATION_ADVISORY_LOCK_KEY}) AS acquired`,
+      );
+      lockAcquired = Boolean((lockRow as { acquired?: boolean } | undefined)?.acquired);
+      if (!lockAcquired) return; // Another process is shuffling — skip quietly.
+
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i]!;
         const newOrder = shuffledOrders[i]!;
@@ -111,6 +137,13 @@ export async function contentRotationScan(): Promise<void> {
         }
       }
     });
+
+    if (!lockAcquired) {
+      logger.debug(
+        "[content-rotation] advisory lock held by another session — skipping this cycle",
+      );
+      return;
+    }
 
     lastShuffleAtMs = now;
     shuffleCount++;

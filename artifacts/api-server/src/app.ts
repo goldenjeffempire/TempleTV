@@ -468,6 +468,15 @@ export async function buildApp(): Promise<FastifyInstance> {
       reply.raw.removeHeader("content-security-policy");
     }
 
+    // Propagate the per-request UUID (set by genReqId at server creation) as
+    // X-Request-ID so clients and log aggregators can correlate a single
+    // user-visible error to the exact server-side log line.  The header is
+    // emitted on every response — non-HTML JSON/SSE/media alike — so that
+    // API clients, the admin SPA, and monitoring tools can always retrieve it.
+    if (req.id) {
+      reply.raw.setHeader("X-Request-ID", String(req.id));
+    }
+
     // Override CORP for media delivery routes. @fastify/helmet sets
     // `Cross-Origin-Resource-Policy: same-origin` globally, which prevents
     // browsers from loading video/audio bytes when the player page and the

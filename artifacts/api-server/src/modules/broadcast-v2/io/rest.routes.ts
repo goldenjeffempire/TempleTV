@@ -1112,6 +1112,13 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     // that the cache is empty — without this the orchestrator's next drift-
     // poll would be up to 10 s away and the operator would see no change.
     await broadcastOrchestrator.reload();
+    // Audit log — write asynchronously; never block the response.
+    void db.insert(schema.mediaAuditLogTable).values({
+      id: randomUUID(),
+      action: "broadcast_clear_bad_urls",
+      triggeredBy: req.principal?.email ?? req.principal?.id ?? "operator",
+      metadata: { sequence: broadcastOrchestrator.getSequence() },
+    }).catch((err: unknown) => logger.debug({ err }, "[audit] clear-bad-urls log failed (non-fatal)"));
     return { ok: true, sequence: broadcastOrchestrator.getSequence() };
   });
 
@@ -1184,6 +1191,14 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         { reEnabledItems, sequence: broadcastOrchestrator.getSequence() },
         "[broadcast-v2] revalidate-sources: full recovery cycle complete",
       );
+
+      // Audit log — write asynchronously; never block the response.
+      void db.insert(schema.mediaAuditLogTable).values({
+        id: randomUUID(),
+        action: "broadcast_force_full_recovery",
+        triggeredBy: req.principal?.email ?? req.principal?.id ?? "operator",
+        metadata: { reEnabledItems, sequence: broadcastOrchestrator.getSequence() },
+      }).catch((err: unknown) => logger.debug({ err }, "[audit] revalidate-sources log failed (non-fatal)"));
 
       return { ok: true, sequence: broadcastOrchestrator.getSequence(), reEnabledItems };
     },

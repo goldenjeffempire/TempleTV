@@ -1203,6 +1203,13 @@ function BroadcastV2PageInner() {
   // Dismissible consecutive-skips banner. Auto-reset when consecutiveSkips
   // drops back to 0 (a successful item play).
   const [consecutiveSkipsDismissed, setConsecutiveSkipsDismissed] = useState(false);
+  // Stream-health degraded/recovered — shows a persistent amber banner when
+  // the viewer-slope monitor detects a sustained viewer count drop.
+  // Auto-clears when stream-health-recovered arrives.
+  const [streamHealthDegraded, setStreamHealthDegraded] = useState<{
+    message: string;
+    dropPercent: number;
+  } | null>(null);
   // Launch Checklist modal.
   const [showChecklist, setShowChecklist] = useState(false);
   // Live Preview panel — collapsed by default so no WS/HLS resources are
@@ -2105,6 +2112,28 @@ function BroadcastV2PageInner() {
       );
     }
     // No toast when issues clear — diagnostics refresh is sufficient.
+  });
+
+  // Stream health: viewer-slope monitor fires these when sustained viewer-count
+  // drops are detected (degraded) or recover (recovered).
+  useSSEEvent("stream-health-degraded", (data: unknown) => {
+    const d = data as { dropPercent?: number; slopePct?: number; message?: string } | null;
+    const drop = Math.round(Number(d?.dropPercent ?? d?.slopePct ?? 0));
+    const message = typeof d?.message === "string" && d.message
+      ? d.message
+      : `Viewer count dropped ${drop > 0 ? `${drop}%` : "significantly"} — stream health may be degraded.`;
+    setStreamHealthDegraded({ message, dropPercent: drop });
+    toast.warning(message, { duration: 8_000 });
+  });
+
+  useSSEEvent("stream-health-recovered", (data: unknown) => {
+    const d = data as { count?: number } | null;
+    setStreamHealthDegraded(null);
+    const cnt = Number(d?.count ?? 0);
+    toast.success(
+      cnt > 0 ? `Stream health recovered — ${cnt} viewers online.` : "Stream health recovered.",
+      { duration: 4_000 },
+    );
   });
 
   const server = v2LiveState?.state ?? null;
@@ -3099,6 +3128,43 @@ function BroadcastV2PageInner() {
         </div>
       )}
 
+
+      {/* Stream-health degraded banner — SSE-driven, auto-clears on recovery.
+          Fires when the viewer-slope monitor detects a sustained viewer drop.
+          Unlike most other banners this one is NOT manually dismissible —
+          it disappears automatically when stream-health-recovered arrives,
+          ensuring operators don't accidentally dismiss an active degradation. */}
+      {streamHealthDegraded !== null && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-md border border-yellow-300/60 bg-yellow-50 px-4 py-3 text-sm text-yellow-900 dark:border-yellow-700/60 dark:bg-yellow-950/30 dark:text-yellow-200"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
+          <div className="flex-1">
+            <strong>Stream health degraded.</strong>{" "}
+            {streamHealthDegraded.message}{" "}
+            Use <strong>Force Full Recovery</strong> below to clear bad-URL blocks and
+            re-enable suspended sources, or check the{" "}
+            <a
+              href={`${apiOrigin}/broadcast-v2/health`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-2 hover:opacity-80"
+            >
+              health endpoint
+            </a>{" "}
+            for details. This banner clears automatically when health recovers.
+          </div>
+          <button
+            type="button"
+            aria-label="Dismiss stream-health degraded alert"
+            onClick={() => setStreamHealthDegraded(null)}
+            className="shrink-0 rounded p-0.5 hover:bg-yellow-200/60 dark:hover:bg-yellow-800/40"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {/* Consecutive-skips early warning — dismissible amber banner.
           Fires when ≥2 items have been skipped back-to-back without a
