@@ -12,6 +12,8 @@ export interface V2Source {
   expiresAtMs: number | null;
 }
 
+export type V2SourceQuality = "hls" | "mp4_faststart" | "mp4_raw";
+
 export interface V2Item {
   id: string;
   /**
@@ -28,14 +30,13 @@ export interface V2Item {
   startsAtMs: number;
   endsAtMs: number;
   /**
-   * Quality tier of the on-air source, derived at queue-load time and
-   * re-computed on every orchestrator reload:
-   *   "hls"           — adaptive-bitrate HLS master playlist (best)
-   *   "mp4_faststart" — moov-at-byte-0 progressive MP4 (seekable)
-   *   "mp4_raw"       — raw upload, moov may be at EOF (range-stream only)
-   * Optional for wire-protocol back-compat with older server versions.
+   * Source quality classification populated by the orchestrator.
+   * 'hls'           — adaptive HLS stream (preferred)
+   * 'mp4_faststart' — moov-at-byte-0 range-seekable MP4
+   * 'mp4_raw'       — sequential-only MP4 (may buffer slowly on seek)
+   * Optional for backward compatibility with older server versions.
    */
-  sourceQuality?: "hls" | "mp4_faststart" | "mp4_raw";
+  sourceQuality?: V2SourceQuality;
 }
 
 export interface V2Override {
@@ -64,6 +65,17 @@ export interface V2Snapshot {
    * Optional for back-compat with older server versions.
    */
   offAirReason?: "empty" | "all_blocked" | null;
+  /**
+   * Top-level source quality for the current broadcast state.
+   * 'hls'           — adaptive HLS stream (preferred)
+   * 'mp4_faststart' — moov-at-byte-0 range-seekable MP4
+   * 'mp4_raw'       — sequential-only MP4 (may buffer slowly)
+   * 'live_override' — operator HLS/RTMP live override
+   * 'youtube'       — YouTube live override
+   * null            — off-air or quality unknown
+   * Optional for backward compatibility with older server versions.
+   */
+  sourceQuality?: "hls" | "mp4_faststart" | "mp4_raw" | "live_override" | "youtube" | null;
 }
 
 export type V2EventType =

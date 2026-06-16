@@ -96,6 +96,25 @@ function installBusBridge(): void {
   let pending: NodeJS.Timeout | null = null;
   let validatorPending: NodeJS.Timeout | null = null;
   adminEventBus.on("admin-event", (event: { type: string; data?: unknown }) => {
+    // Targeted source-quality upgrade — no full reload needed.
+    // faststart.service.ts and transcoder.dispatcher.ts emit this event after
+    // a source upgrade completes (MP4→MP4-faststart, MP4→HLS). The orchestrator
+    // updates only the matching item's sourceQuality in-place and emits a
+    // source.upgraded frame so connected clients see the badge update immediately.
+    // The companion broadcast-queue-updated event (emitted at the same time) handles
+    // the full reload with the new URL; upgradeItemSource handles the optimistic update.
+    if (event.type === "broadcast-source-upgraded") {
+      const payload = event.data as { videoId?: string; quality?: string; hlsMasterUrl?: string } | undefined;
+      if (payload?.videoId && payload.quality) {
+        const quality = payload.quality as "hls" | "mp4_faststart" | "mp4_raw";
+        const upgraded = broadcastOrchestrator.upgradeItemSource({ videoId: payload.videoId, quality });
+        logger.debug(
+          { videoId: payload.videoId, quality, upgraded },
+          "[broadcast-v2] bus: broadcast-source-upgraded processed",
+        );
+      }
+      return;
+    }
     if (event.type !== "broadcast-queue-updated") return;
     // Debounce orchestrator reload — coalesces drag-reorder bursts.
     if (pending) clearTimeout(pending);

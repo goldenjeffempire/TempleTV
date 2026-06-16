@@ -14,6 +14,7 @@ export interface V2Source {
     /** Epoch-ms when a signed URL stops working; null if not signed. */
     expiresAtMs: number | null;
 }
+export type V2SourceQuality = "hls" | "mp4_faststart" | "mp4_raw";
 export interface V2Item {
     id: string;
     title: string;
@@ -30,15 +31,12 @@ export interface V2Item {
     /** Wall-clock epoch-ms when this item ends. */
     endsAtMs: number;
     /**
-     * Quality tier of the on-air source, derived at queue-load time and
-     * re-computed on every orchestrator reload so clients always receive
-     * the highest available quality for the on-air item:
-     *   "hls"           — adaptive-bitrate HLS master playlist (best)
-     *   "mp4_faststart" — moov-at-byte-0 progressive MP4 (seekable, good)
-     *   "mp4_raw"       — raw upload, moov may be at EOF (range-stream only)
-     * Optional for wire-protocol back-compat with pre-v2.3 server versions.
+     * Source quality classification populated by the orchestrator.
+     * 'hls'           — adaptive HLS stream (preferred)
+     * 'mp4_faststart' — moov-at-byte-0 range-seekable MP4
+     * 'mp4_raw'       — sequential-only MP4 (may buffer slowly on seek)
      */
-    sourceQuality?: "hls" | "mp4_faststart" | "mp4_raw";
+    sourceQuality?: V2SourceQuality;
 }
 export interface V2Override {
     id: string;
@@ -76,6 +74,16 @@ export interface V2Snapshot {
      * - null          — not off-air (item is playing or mode is override)
      */
     offAirReason: "empty" | "all_blocked" | null;
+    /**
+     * Source quality of the currently-playing item.
+     * 'hls'           — adaptive HLS stream (preferred)
+     * 'mp4_faststart' — moov-at-byte-0 range-seekable MP4
+     * 'mp4_raw'       — sequential-only MP4 (may buffer slowly)
+     * 'live_override' — operator HLS/RTMP live override
+     * 'youtube'       — YouTube live override
+     * null            — off-air
+     */
+    sourceQuality: V2SourceQuality | "live_override" | "youtube" | null;
 }
 /** Server → client WebSocket / SSE frames. */
 export type V2ServerFrame = {

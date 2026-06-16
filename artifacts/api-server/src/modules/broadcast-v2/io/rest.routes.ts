@@ -1967,7 +1967,8 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
             durationSecs: 0,
             localVideoUrl: i.localVideoUrl ?? null,
             hlsMasterUrl: i.hlsMasterUrl ?? null,
-            faststartApplied: false,
+            faststartApplied: i.faststartApplied,
+            sourceQuality: i.sourceQuality,
             videoDuration: null,
           })));
         }
@@ -2743,6 +2744,8 @@ interface RemediationIssue {
   code: string;
   severity: "error" | "warn";
   message: string;
+  /** Source quality for FAILED_IN_QUEUE issues: null = no playable source. */
+  sourceQuality?: "hls" | "mp4_faststart" | "mp4_raw" | null;
 }
 
 interface RemediationReportData {
@@ -2788,8 +2791,13 @@ async function buildRemediationReport(): Promise<RemediationReportData> {
       q.title,
       q.video_id,
       q.duration_secs,
+      q.local_video_url,
       v.transcoding_status,
-      v.transcoding_error_code AS error_code
+      v.transcoding_error_code AS error_code,
+      v.local_video_url AS v_local_video_url,
+      v.hls_master_url,
+      v.faststart_applied,
+      v.object_path
     FROM broadcast_queue q
     LEFT JOIN managed_videos v ON q.video_id = v.id
     WHERE q.is_active = true
@@ -2802,21 +2810,43 @@ async function buildRemediationReport(): Promise<RemediationReportData> {
     title: string | null;
     video_id: string | null;
     duration_secs: number;
+    local_video_url: string | null;
     transcoding_status: string | null;
     error_code: string | null;
+    v_local_video_url: string | null;
+    hls_master_url: string | null;
+    faststart_applied: boolean | null;
+    object_path: string | null;
   }>;
 
   // 2. Detect failed transcoding and HLS-placeholder duration in active queue.
   for (const row of queueRows) {
     if (row.transcoding_status === "failed") {
       failedInQueue++;
+      // Determine effective source quality so the issue can reflect whether
+      // the item is broadcasting via MP4 fallback or is truly unresolvable.
+      const effectiveHls = row.hls_master_url;
+      const effectiveLocalUrl = row.local_video_url ?? row.v_local_video_url;
+      const hasAnySource = !!(effectiveHls ?? effectiveLocalUrl ?? row.object_path);
+      const itemSourceQuality: "hls" | "mp4_faststart" | "mp4_raw" | null = hasAnySource
+        ? effectiveHls
+          ? "hls"
+          : row.faststart_applied === true
+            ? "mp4_faststart"
+            : "mp4_raw"
+        : null;
+      // Items with a valid URL (sourceQuality present) broadcast fine via MP4 fallback;
+      // only flag as error when there is truly no playable source at all.
+      const failSeverity: "error" | "warn" = hasAnySource ? "warn" : "error";
+      const qSuffix = itemSourceQuality ? ` (broadcasting via ${itemSourceQuality})` : " (no playable source)";
       issues.push({
         videoId: row.video_id,
         title: row.title,
         code: "FAILED_IN_QUEUE",
-        severity: "error",
+        severity: failSeverity,
+        sourceQuality: itemSourceQuality,
         message:
-          `Active queue item '${row.title ?? row.id}' has transcodingStatus='failed'` +
+          `Active queue item '${row.title ?? row.id}' has transcodingStatus='failed'${qSuffix}` +
           (row.error_code ? ` (errorCode: ${row.error_code})` : ""),
       });
     }

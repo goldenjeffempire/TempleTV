@@ -169,6 +169,8 @@ interface CachedQueueItem {
    *   "mp4_raw"       — raw upload, moov may be at EOF (range-stream only)
    */
   sourceQuality: "hls" | "mp4_faststart" | "mp4_raw";
+  /** Whether faststart was applied — used to derive quality when HLS is blocked. */
+  faststartApplied: boolean;
 }
 
 /**
@@ -1446,15 +1448,8 @@ class BroadcastOrchestrator extends EventEmitter {
         primaryUrl: v2.source.url,
         source: v2.source,
         failoverSource: v2.failoverSource,
-        // Derive quality tier once at load time so snapshot() is O(1) with no DB.
-        // "hls" when an HLS master playlist is the resolved source (best quality).
-        // "mp4_faststart" when the source is an MP4 with moov atom at byte-0
-        //   (faststartApplied=true) — fully seekable, safe for all players.
-        // "mp4_raw" for uploads where faststart hasn't run yet — moov may be at
-        //   EOF, requiring range-streaming; may cause player timeouts on slow links.
-        sourceQuality: v2.source.kind === "hls"
-          ? "hls"
-          : (row.faststartApplied ? "mp4_faststart" : "mp4_raw"),
+        sourceQuality: row.sourceQuality,
+        faststartApplied: row.faststartApplied,
       });
     }
     // Auto-clear bad-URL cache for items that survived resolution.
@@ -1966,6 +1961,10 @@ class BroadcastOrchestrator extends EventEmitter {
           { itemId: item.id, blockedUrl: item.primaryUrl, failoverKind: fo.kind },
           "[broadcast-v2] projectItem: primary URL blocked — serving via failoverSource (MP4)",
         );
+        // When HLS was the primary source but is blocked, we're now serving the
+        // MP4 fallback. The actual quality depends on whether faststart was applied.
+        const fallbackQuality: "mp4_faststart" | "mp4_raw" =
+          item.faststartApplied ? "mp4_faststart" : "mp4_raw";
         return {
           id: item.id,
           title: item.title,
@@ -1975,12 +1974,7 @@ class BroadcastOrchestrator extends EventEmitter {
           failoverSource: null, // already on the fallback path; no further failover
           startsAtMs,
           endsAtMs: startsAtMs + item.durationSecs * 1000,
-          // When the primary (e.g. HLS) is bad-URL-blocked and we're falling
-          // back to the MP4 failover source, derive quality from the failover
-          // kind and faststartApplied rather than the blocked primary source.
-          sourceQuality: fo.kind === "hls"
-            ? "hls"
-            : (item.sourceQuality === "mp4_faststart" ? "mp4_faststart" : "mp4_raw"),
+          sourceQuality: fallbackQuality,
         };
       }
       // Primary is bad AND no usable failoverSource → skip this slot.
@@ -2130,6 +2124,18 @@ class BroadcastOrchestrator extends EventEmitter {
       }
     }
 
+    // sourceQuality: top-level convenience field so UI overlays and monitoring
+    // scripts don't need to drill into current.sourceQuality.
+    // Extract before the ternary to avoid TypeScript narrowing `current` in the
+    // else-branch when the condition discriminates on this.mode and this.override.
+    // Cast required: TypeScript loses narrowing of `current` after the `findSlot`
+    // closure assigns it — the declared type `V2Item | null` is correct.
+    const currentSQ = (current as V2Item | null)?.sourceQuality;
+    const sourceQuality: V2Snapshot["sourceQuality"] =
+      this.mode === "override" && this.override
+        ? this.override.kind === "youtube" ? "youtube" : "live_override"
+        : currentSQ ?? null;
+
     return {
       channelId: this.channelId,
       sequence: this.sequence,
@@ -2142,6 +2148,7 @@ class BroadcastOrchestrator extends EventEmitter {
       checkpoint: this.queueCheckpoint,
       failover: { ...this.failover },
       offAirReason,
+      sourceQuality,
     };
   }
 
@@ -3845,11 +3852,13 @@ class BroadcastOrchestrator extends EventEmitter {
    * Used by the play-now endpoint to build the new ordered list without
    * an extra DB round-trip — the items array is always in sync after reload.
    */
-  getItems(): { id: string; localVideoUrl: string | null; hlsMasterUrl: string | null }[] {
+  getItems(): { id: string; localVideoUrl: string | null; hlsMasterUrl: string | null; faststartApplied: boolean; sourceQuality: "hls" | "mp4_faststart" | "mp4_raw" }[] {
     return this.items.map((i) => ({
       id: i.id,
       localVideoUrl: i.source.kind === "mp4" || i.source.kind === "youtube" ? i.source.url : null, // youtube watch URLs stored here
       hlsMasterUrl: i.source.kind === "hls" || i.source.kind === "dash" ? i.source.url : null,
+      faststartApplied: i.faststartApplied,
+      sourceQuality: i.sourceQuality,
     }));
   }
 
@@ -4066,18 +4075,62 @@ class BroadcastOrchestrator extends EventEmitter {
   }
 
   /**
-   * Nuclear recovery: stop all timers, wipe the in-memory bad-URL blacklist,
-   * re-enable every DB-suspended queue item, then restart from scratch.
+   * Performs an optimistic in-place source quality upgrade for a queue item.
    *
-   * Intended for use by the broadcast health monitor when normal self-heal
-   * mechanisms (self-heal reload, dead-air escalation) have failed to unstick
-   * the orchestrator.  Unlike a simple reload(), this tears down and rebuilds
-   * the entire runtime state — equivalent to a soft process restart for the
-   * broadcast subsystem.
+   * Called when the bus bridge receives `broadcast-source-upgraded` (fired by
+   * faststart.service.ts or transcoder.dispatcher.ts after a source upgrade
+   * completes). Updates `sourceQuality` on the matching CachedQueueItem
+   * immediately so the next snapshot includes the correct quality metadata
+   * without waiting for the full queue reload triggered by the companion
+   * `broadcast-queue-updated` event.
    *
-   * NEVER throws.  All errors are logged and the restart is attempted regardless.
-   * Caller should schedule a follow-up health check to verify recovery succeeded.
+   * Emits a `source.upgraded` event frame so connected TV/mobile/web clients
+   * see the quality badge update immediately.
+   *
+   * Returns true when a matching item was found and updated, false when the
+   * videoId is not currently in the cached queue (the subsequent full reload
+   * triggered by `broadcast-queue-updated` will handle the URL update).
+   *
+   * Never throws — errors are logged and the method returns false.
    */
+  upgradeItemSource(opts: {
+    videoId: string;
+    quality: "hls" | "mp4_faststart" | "mp4_raw";
+  }): boolean {
+    try {
+      const idx = this.items.findIndex((it) => it.videoId === opts.videoId);
+      if (idx === -1) return false;
+      const item = this.items[idx]!;
+      const oldQuality = item.sourceQuality;
+      if (oldQuality === opts.quality) return false; // no-op — already at target quality
+      item.sourceQuality = opts.quality;
+      if (opts.quality === "mp4_faststart") item.faststartApplied = true;
+      logger.info(
+        { videoId: opts.videoId, itemId: item.id, oldQuality, newQuality: opts.quality },
+        "[broadcast-v2] in-place source quality upgrade applied",
+      );
+      // Emit source.upgraded event frame (lightweight — no sequence bump, no DB write).
+      this.emitFrame({
+        type: "event",
+        sequence: this.sequence,
+        eventType: "source.upgraded",
+        payload: {
+          itemId: item.id,
+          videoId: opts.videoId,
+          oldQuality,
+          newQuality: opts.quality,
+        },
+      });
+      // Force an immediate snapshot so clients receive the updated sourceQuality
+      // without waiting for the next tick or keep-alive interval.
+      this.emitSnapshot();
+      return true;
+    } catch (err) {
+      logger.warn({ err, videoId: opts.videoId }, "[broadcast-v2] upgradeItemSource failed (non-fatal)");
+      return false;
+    }
+  }
+
   async initiateFullRecovery(reason: string): Promise<void> {
     logger.warn(
       { channelId: this.channelId, reason },

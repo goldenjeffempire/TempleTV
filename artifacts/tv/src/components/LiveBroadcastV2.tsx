@@ -1027,6 +1027,28 @@ export function LiveBroadcastV2({
         >
           On Air
         </span>
+        {/* Source quality badge — subtle, informational only.
+            'hls' → "HD" (adaptive bitrate HLS stream, best quality)
+            other → "SD" (MP4 fallback — faststart or raw)
+            Hidden during overrides (live_override / youtube) since those are
+            external sources whose quality the server can't classify. */}
+        {server?.sourceQuality && server.sourceQuality !== "live_override" && server.sourceQuality !== "youtube" && (
+          <span
+            style={{
+              fontSize: "clamp(7px, 0.65vw, 9px)",
+              fontWeight: 700,
+              letterSpacing: "0.1em",
+              textTransform: "uppercase" as const,
+              background: "rgba(255,255,255,0.15)",
+              border: "1px solid rgba(255,255,255,0.25)",
+              borderRadius: 4,
+              padding: "1px 5px",
+              marginLeft: "clamp(2px, 0.3vw, 4px)",
+            }}
+          >
+            {server.sourceQuality === "hls" ? "HD" : "SD"}
+          </span>
+        )}
       </div>
 
       {/* Centred overlay — offline / standby / tuning in / off air / fatal */}

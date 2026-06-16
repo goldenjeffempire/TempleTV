@@ -39,10 +39,10 @@
  *   • Quick-finish retry corrected: live HLS retries via playAsync() (not
  *     playFromPositionAsync(0)), which was seeking to the oldest DVR segment
  *     and trailing further behind the live edge on every spurious retry.
- *   • Drift-correction seek guard: small anchor recalibrations (< 30 s drift)
+ *   • Drift-correction seek guard: small anchor recalibrations (< 8 s drift)
  *     are suppressed when the playhead is already near the target, preventing
  *     AVPlayer/ExoPlayer from dropping its download buffer on every keepalive.
- *     Only genuine drifts (server restart, timezone mis-sync, > 30 s gap) seek.
+ *     Only genuine drifts (server restart, timezone mis-sync, > 8 s gap) seek.
  *   • Quick-finish guard: if didJustFinish fires within HLS_QUICK_FINISH_THRESHOLD_MS
  *     of playback start, it's a spurious finish (bad seek). Retried up to
  *     HLS_MAX_QUICK_FINISH_RETRIES times before escalating to buffer-ended.
@@ -205,11 +205,11 @@ const HLS_MAX_QUICK_FINISH_RETRIES = 2;
  *   2. Re-request the segment containing the new position
  *   3. Stall visibly for 0.5–2 s while the new segment downloads
  *
- * Suppressing re-seeks when the playhead is already within 30 s of the target
+ * Suppressing re-seeks when the playhead is already within 8 s of the target
  * preserves smooth playback for small anchor recalibrations while still
- * correcting large drifts (server restart, timezone mis-sync, > 30 s gap).
+ * correcting large drifts (server restart, timezone mis-sync, > 8 s gap).
  */
-const HLS_SMALL_DRIFT_SKIP_MS = 30_000;
+const HLS_SMALL_DRIFT_SKIP_MS = 8_000;
 
 /**
  * How often (ms) to call `playAsync()` on an active+playing HLS buffer.
@@ -1999,6 +1999,22 @@ export function V2PlayerContainer({
           <ActivityIndicator color="rgba(255,255,255,0.85)" size="large" />
         </View>
       )}
+
+      {/* Source quality badge — shown during active playback only.
+          'hls' → "HD"  (adaptive HLS, best quality)
+          'mp4_faststart' / 'mp4_raw' → "SD"  (MP4 fallback)
+          Hidden during overlays (tuning/off-air) and in minimal/hero mode.
+          Hidden during overrides (youtube / live_override) since those are
+          external sources whose quality the server can't classify. */}
+      {videoReady && !overlayContent && !minimal && (() => {
+        const sq = server?.sourceQuality;
+        if (!sq || sq === "live_override" || sq === "youtube") return null;
+        return (
+          <View style={styles.qualityBadge} pointerEvents="none">
+            <Text style={styles.qualityBadgeText}>{sq === "hls" ? "HD" : "SD"}</Text>
+          </View>
+        );
+      })()}
     </View>
   );
 }
@@ -2154,5 +2170,23 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     letterSpacing: 0.3,
+  },
+  qualityBadge: {
+    position: "absolute",
+    bottom: 10,
+    right: 10,
+    zIndex: 15,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    backgroundColor: "rgba(0,0,0,0.50)",
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.20)",
+  },
+  qualityBadgeText: {
+    color: "rgba(255,255,255,0.80)",
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 0.8,
   },
 });

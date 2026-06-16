@@ -694,6 +694,13 @@ export interface RawQueueRow {
    * ffprobe has run) from causing the server to hold a slot 3× too long.
    */
   videoDuration: string | null;
+  /**
+   * Computed source quality for this queue item.
+   * 'hls'           — hlsMasterUrl is set (adaptive HLS, preferred)
+   * 'mp4_faststart' — hlsMasterUrl absent but faststart_applied=true
+   * 'mp4_raw'       — hlsMasterUrl absent and faststart not applied
+   */
+  sourceQuality: "hls" | "mp4_faststart" | "mp4_raw";
 }
 
 /**
@@ -769,6 +776,21 @@ export const queueRepo = {
           // row (written by the transcoder when HLS encoding completes).
           hlsMasterUrl: sql<string | null>`COALESCE(${q.hlsMasterUrl}, ${v.hlsMasterUrl})`,
           faststartApplied: faststartExpr as ReturnType<typeof sql<boolean>>,
+          // Source quality classification derived from available URL data:
+          //   'hls'           — HLS master playlist is present (best quality)
+          //   'mp4_faststart' — HLS absent but faststart was applied (seekable MP4)
+          //   'mp4_raw'       — HLS absent and faststart not yet applied
+          // Mirrors the V2SourceQuality type and feeds CachedQueueItem.sourceQuality
+          // so every snapshot includes quality metadata without an extra query.
+          sourceQuality: sql<"hls" | "mp4_faststart" | "mp4_raw">`
+            CASE
+              WHEN COALESCE(${q.hlsMasterUrl}, ${v.hlsMasterUrl}) IS NOT NULL
+                THEN 'hls'
+              WHEN ${faststartExpr} = true
+                THEN 'mp4_faststart'
+              ELSE 'mp4_raw'
+            END
+          `,
         })
         .from(q)
         .leftJoin(v, eq(q.videoId, v.id))

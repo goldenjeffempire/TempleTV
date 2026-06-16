@@ -524,6 +524,7 @@ export async function deactivateUnresolvableQueueRows(): Promise<void> {
             AND  (
                    (mv.hls_master_url  IS NOT NULL AND mv.hls_master_url  != '')
                 OR (mv.local_video_url IS NOT NULL AND mv.local_video_url != '')
+                OR (mv.object_path     IS NOT NULL AND mv.object_path     != '')
                 OR  mv.video_source = 'youtube'
                  )
         )

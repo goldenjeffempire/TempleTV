@@ -4005,9 +4005,16 @@ function BroadcastV2PageInner() {
                 [
                   { label: "HLS Missing", count: remediationReport.summary.hlsStorageMissing, danger: true },
                   { label: "Stuck Encoding", count: remediationReport.summary.stuckEncoding, danger: true },
-                  { label: "Failed in Queue", count: remediationReport.summary.failedInQueue, danger: false },
+                  {
+                    label: "Failed in Queue",
+                    count: remediationReport.summary.failedInQueue,
+                    // Only show red if any of those failures have no playable source at all.
+                    danger: remediationReport.issues.some(
+                      (i) => i.code === "FAILED_IN_QUEUE" && i.severity === "error",
+                    ),
+                  },
                   { label: "Bad Duration", count: remediationReport.summary.placeholderDuration, danger: false },
-                ] as const
+                ]
               ).map(({ label, count, danger }) => (
                 <div key={label} className="rounded-md border bg-muted/30 p-2 text-center">
                   <div
@@ -4047,6 +4054,24 @@ function BroadcastV2PageInner() {
                         <Badge variant="outline" className="h-3.5 shrink-0 px-1 text-[9px]">
                           {issue.code}
                         </Badge>
+                        {issue.code === "FAILED_IN_QUEUE" && issue.sourceQuality && (
+                          <Badge
+                            variant="secondary"
+                            className="h-3.5 shrink-0 px-1 text-[9px]"
+                            title={`Broadcasting via ${issue.sourceQuality}`}
+                          >
+                            {issue.sourceQuality === "hls" ? "HLS" : issue.sourceQuality === "mp4_faststart" ? "MP4" : "MP4 raw"}
+                          </Badge>
+                        )}
+                        {issue.code === "FAILED_IN_QUEUE" && !issue.sourceQuality && (
+                          <Badge
+                            variant="destructive"
+                            className="h-3.5 shrink-0 px-1 text-[9px]"
+                            title="No playable source — item cannot broadcast"
+                          >
+                            No source
+                          </Badge>
+                        )}
                       </div>
                       <p className="mt-0.5 line-clamp-2 text-[10px] text-muted-foreground">
                         {issue.message}

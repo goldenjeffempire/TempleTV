@@ -157,6 +157,13 @@ export interface RawQueueRow {
      * ffprobe has run) from causing the server to hold a slot 3× too long.
      */
     videoDuration: string | null;
+    /**
+     * Computed source quality for this queue item.
+     * 'hls'           — hlsMasterUrl is set (adaptive HLS, preferred)
+     * 'mp4_faststart' — hlsMasterUrl absent but faststart_applied=true
+     * 'mp4_raw'       — hlsMasterUrl absent and faststart not applied
+     */
+    sourceQuality: "hls" | "mp4_faststart" | "mp4_raw";
 }
 /**
  * Count broadcast_queue rows that are `is_active = true`, regardless of

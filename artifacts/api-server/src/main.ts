@@ -608,12 +608,6 @@ async function main() {
     await ensureBroadcastV2Tables().catch((err) =>
       logger.error({ err }, "db: ensureBroadcastV2Tables failed (non-fatal)"),
     );
-    // Deactivate queue rows whose video has no playable source so the
-    // orchestrator's pre-resolution step never rejects them silently.
-    // Non-destructive (is_active=false, not DELETE) and non-blocking.
-    deactivateUnresolvableQueueRows().catch((err) =>
-      logger.warn({ err }, "db: deactivateUnresolvableQueueRows failed (non-fatal)"),
-    );
     // Reset videos stuck in transcodingStatus='processing' from a prior
     // mid-faststart server crash. loadActive() blocks 'processing' items, so
     // without this reset those queue slots would be silently held forever.
@@ -644,6 +638,15 @@ async function main() {
     } catch (err) {
       logger.error({ err }, "[broadcast-v2] orchestrator failed to start (non-fatal)");
     }
+    // Deactivate queue rows whose video has truly no blob at all (objectPath IS
+    // NULL AND no hls_master_url AND no local_video_url). Runs AFTER the
+    // orchestrator has hydrated its cycle anchor so we never deactivate the
+    // currently-on-air item before the anchor is restored.
+    // Mid-transcoding items (objectPath present but no URL yet) are preserved.
+    // Non-destructive (is_active=false, not DELETE) and non-blocking.
+    deactivateUnresolvableQueueRows().catch((err) =>
+      logger.warn({ err }, "db: deactivateUnresolvableQueueRows failed (non-fatal)"),
+    );
     // HLS self-heal: on every boot, clear any bad-URL marks and accumulated
     // media-scanner failure counts that were built up during a prior run where
     // REQUIRE_HLS_TOKEN was enabled but internal probes were getting 401 (before

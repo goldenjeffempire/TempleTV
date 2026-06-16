@@ -1278,14 +1278,11 @@ class TranscoderDispatcher {
         // so it immediately picks up hlsMasterUrl and serves adaptive HLS to every
         // connected client without waiting for a manual queue mutation.
         adminEventBus.push("broadcast-queue-updated", { reason: "hls-ready", videoId: job.videoId });
-        // Notify admin UI that this video's source quality has upgraded to
-        // full adaptive-bitrate HLS. This lets the broadcast-v2 page refresh
-        // sourceKind badges immediately and the orchestrator's source-upgrade
-        // detection path emit a source.upgraded V2ServerFrame to live clients.
-        adminEventBus.push("source-upgraded", {
+        // Targeted source-upgrade event: lets the orchestrator update only
+        // this item's source URL in-place (MP4 → HLS) without a full reload.
+        adminEventBus.push("broadcast-source-upgraded", {
           videoId: job.videoId,
-          newKind: "hls",
-          oldKind: "mp4_faststart",
+          quality: "hls",
           hlsMasterUrl: result.masterPlaylistUrl,
         });
 

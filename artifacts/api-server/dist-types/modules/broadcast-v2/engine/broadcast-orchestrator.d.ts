@@ -802,6 +802,8 @@ declare class BroadcastOrchestrator extends EventEmitter {
         id: string;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
+        faststartApplied: boolean;
+        sourceQuality: "hls" | "mp4_faststart" | "mp4_raw";
     }[];
     /** Reload diagnostics for /health. */
     getReloadStats(): {
@@ -925,18 +927,28 @@ declare class BroadcastOrchestrator extends EventEmitter {
     getStartedAtMs(): number;
     isStarted(): boolean;
     /**
-     * Nuclear recovery: stop all timers, wipe the in-memory bad-URL blacklist,
-     * re-enable every DB-suspended queue item, then restart from scratch.
+     * Performs an optimistic in-place source quality upgrade for a queue item.
      *
-     * Intended for use by the broadcast health monitor when normal self-heal
-     * mechanisms (self-heal reload, dead-air escalation) have failed to unstick
-     * the orchestrator.  Unlike a simple reload(), this tears down and rebuilds
-     * the entire runtime state — equivalent to a soft process restart for the
-     * broadcast subsystem.
+     * Called when the bus bridge receives `broadcast-source-upgraded` (fired by
+     * faststart.service.ts or transcoder.dispatcher.ts after a source upgrade
+     * completes). Updates `sourceQuality` on the matching CachedQueueItem
+     * immediately so the next snapshot includes the correct quality metadata
+     * without waiting for the full queue reload triggered by the companion
+     * `broadcast-queue-updated` event.
      *
-     * NEVER throws.  All errors are logged and the restart is attempted regardless.
-     * Caller should schedule a follow-up health check to verify recovery succeeded.
+     * Emits a `source.upgraded` event frame so connected TV/mobile/web clients
+     * see the quality badge update immediately.
+     *
+     * Returns true when a matching item was found and updated, false when the
+     * videoId is not currently in the cached queue (the subsequent full reload
+     * triggered by `broadcast-queue-updated` will handle the URL update).
+     *
+     * Never throws — errors are logged and the method returns false.
      */
+    upgradeItemSource(opts: {
+        videoId: string;
+        quality: "hls" | "mp4_faststart" | "mp4_raw";
+    }): boolean;
     initiateFullRecovery(reason: string): Promise<void>;
 }
 export declare const broadcastOrchestrator: BroadcastOrchestrator;
