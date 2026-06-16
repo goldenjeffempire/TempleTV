@@ -499,6 +499,52 @@ function TranscodingProgressPanel() {
 // Extracted so useSortable() is called at the top level of a real component
 // (not inside a .map() callback — that would violate Rules of Hooks).
 
+// ── SourceKindBadge ────────────────────────────────────────────────────────────
+// Small pill that indicates whether a queue item will broadcast via YouTube
+// embed, HLS adaptive stream, or raw MP4. Derived from existing BroadcastQueueRow
+// fields — no additional API fields required.
+
+function deriveSourceKind(item: Pick<BroadcastQueueRow, "youtubeId" | "hasHls" | "videoSource">): "youtube" | "hls" | "mp4" {
+  if (item.youtubeId) return "youtube";
+  if (item.hasHls) return "hls";
+  return "mp4";
+}
+
+function SourceKindBadge({ item }: { item: Pick<BroadcastQueueRow, "youtubeId" | "hasHls" | "videoSource"> }) {
+  const kind = deriveSourceKind(item);
+  if (kind === "youtube") {
+    return (
+      <Badge
+        variant="outline"
+        className="h-4 text-[10px] gap-0.5 shrink-0 border-rose-300 text-rose-600 dark:border-rose-700 dark:text-rose-400"
+        title="Will air via YouTube embed — requires YouTube Live or a public YouTube video URL."
+      >
+        YT
+      </Badge>
+    );
+  }
+  if (kind === "hls") {
+    return (
+      <Badge
+        variant="outline"
+        className="h-4 text-[10px] gap-0.5 shrink-0 border-sky-300 text-sky-600 dark:border-sky-700 dark:text-sky-400"
+        title="Will air via HLS adaptive-bitrate stream — best quality for viewers."
+      >
+        HLS
+      </Badge>
+    );
+  }
+  return (
+    <Badge
+      variant="outline"
+      className="h-4 text-[10px] gap-0.5 shrink-0 border-amber-300 text-amber-600 dark:border-amber-700 dark:text-amber-400"
+      title="Will air as raw MP4 — HLS transcoding is pending or unavailable. Start transcoding to upgrade to HLS."
+    >
+      MP4
+    </Badge>
+  );
+}
+
 interface SortableItemProps {
   item: BroadcastQueueRow;
   index: number;
@@ -622,6 +668,7 @@ const SortableQueueItem = memo(function SortableQueueItem({
         </div>
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span>{fmtDuration(Math.round(item.durationSecs))}</span>
+          <SourceKindBadge item={item} />
           {secondsUntilAir !== null && !isCurrent && item.isActive && (
             <span className="opacity-60 tabular-nums" title="Estimated time until this item airs">
               airs in{" "}

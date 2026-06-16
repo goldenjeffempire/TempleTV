@@ -4278,4 +4278,85 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     },
   });
 
+  // ── GET /ops-alerts/unacked ─────────────────────────────────────────────────
+  // Returns all ops-alert events that have been received by this process but
+  // not yet acknowledged (cleared) by an admin.  Alerts stay in the store
+  // until DELETE /ops-alerts/unacked/:id (or the sweeper escalates them to
+  // email after 10 min and marks them emailed).
+  r.get(
+    "/ops-alerts/unacked",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "List unacknowledged ops-alert events (for the ops dashboard)",
+        response: {
+          200: z.object({
+            alerts: z.array(
+              z.object({
+                id: z.string(),
+                level: z.string(),
+                message: z.string(),
+                receivedAtMs: z.number(),
+                emailedAtMs: z.number().nullable(),
+                pendingMs: z.number(),
+              }),
+            ),
+            total: z.number(),
+          }),
+          429: z.object({ error: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => {
+      const { getUnackedAlerts } = await import("./unacked-alerts.js");
+      const now = Date.now();
+      const raw = getUnackedAlerts();
+      return {
+        alerts: raw.map((a) => ({
+          id: a.id,
+          level: a.level,
+          message: a.message,
+          receivedAtMs: a.receivedAtMs,
+          emailedAtMs: a.emailedAtMs,
+          pendingMs: now - a.receivedAtMs,
+        })),
+        total: raw.length,
+      };
+    },
+  );
+
+  // ── DELETE /ops-alerts/unacked/:id ──────────────────────────────────────────
+  // Acknowledge (remove) a single unacked alert by id, or acknowledge all
+  // when id is the special token "all".
+  r.delete(
+    "/ops-alerts/unacked/:id",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Acknowledge (remove) one or all unacknowledged ops-alerts",
+        params: z.object({ id: z.string().min(1).max(256) }),
+        response: {
+          200: z.object({ acknowledged: z.boolean(), remaining: z.number() }),
+          429: z.object({ error: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => {
+      const { acknowledgeAlert, acknowledgeAll, getUnackedAlerts } = await import("./unacked-alerts.js");
+      const { id } = req.params;
+      if (id === "all") {
+        acknowledgeAll();
+      } else {
+        acknowledgeAlert(id);
+      }
+      return { acknowledged: true, remaining: getUnackedAlerts().length };
+    },
+  );
+
 }

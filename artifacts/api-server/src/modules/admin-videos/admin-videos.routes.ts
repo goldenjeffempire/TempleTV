@@ -163,7 +163,7 @@ function decodeAdminCursor(raw: string): AdminCursor | null {
   }
 }
 
-function toDto(row: typeof videos.$inferSelect): z.infer<typeof VideoRowSchema> {
+function toDto(row: typeof videos.$inferSelect, progress: number | null = null): z.infer<typeof VideoRowSchema> {
   const yt = row.youtubeId?.startsWith("local-") ? null : row.youtubeId;
 
   // Determine whether the source video file is still in storage without
@@ -216,7 +216,7 @@ function toDto(row: typeof videos.$inferSelect): z.infer<typeof VideoRowSchema> 
     videoBitrate: row.videoBitrate ?? null,
     videoWidth: row.videoWidth ?? null,
     videoHeight: row.videoHeight ?? null,
-    transcodingProgress: null,
+    transcodingProgress: progress,
   };
 }
 
@@ -444,8 +444,37 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         void cache().set(adminPageCursorKey(q.page + 1), nextCursor, 300).catch(() => {});
       }
 
+      // Batch-query live transcoding progress for any 'encoding' or 'processing'
+      // videos in this page.  A single IN query is far cheaper than N sub-selects;
+      // non-fatal so a DB blip never prevents the list from rendering.
+      const encodingIds = rows
+        .filter((r) => r.transcodingStatus === "encoding" || r.transcodingStatus === "processing")
+        .map((r) => r.id);
+      const progressMap = new Map<string, number>();
+      if (encodingIds.length > 0) {
+        try {
+          const jobs = await db
+            .select({
+              videoId: schema.transcodingJobsTable.videoId,
+              progress: schema.transcodingJobsTable.progress,
+            })
+            .from(schema.transcodingJobsTable)
+            .where(
+              and(
+                inArray(schema.transcodingJobsTable.videoId, encodingIds),
+                eq(schema.transcodingJobsTable.status, "encoding"),
+              ),
+            );
+          for (const j of jobs) {
+            if (j.videoId) progressMap.set(j.videoId, j.progress);
+          }
+        } catch (err) {
+          req.log.warn({ err }, "[admin-videos] transcodingProgress batch query failed (non-fatal)");
+        }
+      }
+
       return {
-        videos: rows.map(toDto),
+        videos: rows.map((r) => toDto(r, progressMap.get(r.id) ?? null)),
         total,
         totalPages,
         page: q.page,

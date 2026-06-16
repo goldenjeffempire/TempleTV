@@ -785,12 +785,21 @@ async function main() {
     channelRegistry.boot().catch((err) =>
       logger.warn({ err }, "channel registry boot error (non-fatal)"),
     );
-    // OMEGA Broadcast Automation: cron-style scheduler that auto-expires
-    // overrides, auto-starts scheduled broadcasts, and keeps the engine healthy.
-    broadcastScheduler.start();
+    // OMEGA Broadcast Automation (V1 scheduler retired — v2 orchestrator handles
+    // all scheduling autonomously via the queue-health-guard and content-rotation
+    // workers; the v1 scheduler is kept importable for the stop() call on shutdown
+    // but no longer started on boot).
     // Non-blocking SMTP health-check — logs warning if misconfigured but
     // never prevents the server from accepting HTTP requests.
     verifyMailer().catch((err) => logger.warn({ err }, "mailer verify error"));
+    // Start the unacknowledged-alert email escalation sweeper.  Listens for
+    // ops-alert SSE events and escalates to email after 10 min unacknowledged.
+    try {
+      const { startUnackedAlertSweeper } = await import("./modules/admin-ops/unacked-alerts.js");
+      startUnackedAlertSweeper();
+    } catch (err) {
+      logger.warn({ err }, "[unacked-alerts] sweeper failed to start (non-fatal)");
+    }
     await app.listen({ port: env.PORT, host: "0.0.0.0" });
     // Explicit keepAlive + headersTimeout tuning for sustained connection reuse
     // under concurrent SSE + HLS load. Node's default keepAliveTimeout=5s
@@ -840,6 +849,27 @@ async function main() {
 
   if (mode === "worker" || mode === "all") {
     await startWorkers();
+  } else if (mode === "api") {
+    // RUN_MODE=api skips all background workers (transcoder, YouTube sync,
+    // content rotation, queue-health-guard, etc.). This is intentional when
+    // running separate worker replicas, but easy to misconfigure in single-
+    // instance deploys. Emit a persistent WARN + ops-alert so operators notice.
+    logger.warn(
+      { runMode: mode },
+      "[startup] RUN_MODE=api — background workers are NOT running in this process. " +
+        "Transcoding, YouTube sync, broadcast health-monitoring, and queue maintenance " +
+        "require a separate worker process (RUN_MODE=worker) or a combined process (RUN_MODE=all).",
+    );
+    try {
+      const { adminEventBus: aeb } = await import("./modules/admin-ops/admin-event-bus.js");
+      aeb.push("ops-alert", {
+        level: "warn",
+        message:
+          "RUN_MODE=api — background workers are disabled in this process. " +
+          "Start a worker replica (RUN_MODE=worker) or switch to RUN_MODE=all.",
+        source: "startup",
+      });
+    } catch { /* non-fatal */ }
   }
 
   if (mode === "worker") {
@@ -899,6 +929,11 @@ async function main() {
       // the connection pool from draining cleanly.
       channelRegistry.shutdown();
       broadcastScheduler.stop();
+      // Stop unacknowledged-alert sweeper (60-second setInterval).
+      try {
+        const { stopUnackedAlertSweeper } = await import("./modules/admin-ops/unacked-alerts.js");
+        stopUnackedAlertSweeper();
+      } catch { /* non-fatal */ }
       stopKeepAlive();
       stopMemoryWatchdog();
       stopEventLoopLagMonitor();

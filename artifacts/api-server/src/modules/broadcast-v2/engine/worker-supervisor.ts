@@ -24,6 +24,19 @@ export interface WorkerConfig {
   maxConsecutiveFailures?: number;
   initialDelayMs?: number;
   /**
+   * Maximum wall-clock milliseconds a single worker invocation may run before
+   * it is considered hung and aborted with a timeout error.
+   *
+   * Default: 2× intervalMs (clamped 60 s – 5 min). For one-shot workers with
+   * no intervalMs the default is 5 min. Set explicitly when the fn is known to
+   * have a well-bounded runtime (e.g. a 30-second scanner → set 45_000).
+   *
+   * When the timeout fires the Promise.race() rejects with
+   * "[deadman] worker timed out after Nms" — this counts as a normal failure
+   * and flows through the existing backoff / circuit-breaker path.
+   */
+  timeoutMs?: number;
+  /**
    * Called once, synchronously, the moment the circuit breaker opens.
    * Use this to fire SSE ops-alerts or out-of-band email from the caller
    * without creating an import cycle between worker-supervisor and the
@@ -152,12 +165,33 @@ class SupervisedWorker {
     if (!this.running || this.circuitOpen) return;
     this.lastRunAtMs = Date.now();
     this.totalRuns += 1;
+
+    // Deadman switch: race the worker fn against a hard timeout so a stuck
+    // fn (DB hang, infinite loop) cannot block the entire interval slot.
+    // Default: 2× intervalMs, clamped to [60 s, 5 min].  Override via cfg.timeoutMs.
+    const timeoutMs =
+      this.cfg.timeoutMs ??
+      (this.cfg.intervalMs
+        ? Math.min(Math.max(this.cfg.intervalMs * 2, 60_000), 300_000)
+        : 300_000);
+
+    let deadmanTimer: NodeJS.Timeout | null = null;
+    const deadman = new Promise<never>((_, reject) => {
+      deadmanTimer = setTimeout(
+        () => reject(new Error(`[deadman] worker "${this.cfg.name}" timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+      deadmanTimer.unref?.();
+    });
+
     try {
-      await this.cfg.fn();
+      await Promise.race([this.cfg.fn(), deadman]);
+      if (deadmanTimer) { clearTimeout(deadmanTimer); deadmanTimer = null; }
       this.consecutiveFailures = 0;
       this.lastSuccessAtMs = Date.now();
       if (this.cfg.intervalMs) this.schedule(this.cfg.intervalMs);
     } catch (err) {
+      if (deadmanTimer) { clearTimeout(deadmanTimer); deadmanTimer = null; }
       this.consecutiveFailures += 1;
       this.totalErrors += 1;
       this.lastErrorAtMs = Date.now();
