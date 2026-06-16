@@ -1,8 +1,7 @@
 #!/bin/bash
 set -e
 
-# Install dependencies for all workspaces except mobile.
-#
+# ── Dependency install ────────────────────────────────────────────────────────
 # Mobile (@workspace/mobile) is excluded because Replit's package firewall
 # blocks shell-quote@1.8.3 (transitive: react-native → react-devtools-core).
 # The mobile workspace cannot be previewed in the browser anyway and EAS builds
@@ -11,7 +10,38 @@ set -e
 #
 # On Render the build runs render-install.sh directly from render.yaml (not
 # from this post-merge script), so skipping mobile here has no production impact.
-pnpm install --ignore-scripts --filter !@workspace/mobile
+#
+# OOM guard: pnpm resolution uses ~500 MB even with --max-old-space-size caps,
+# crashing the container. We skip the install entirely when the lockfile has not
+# changed since the last successful install — detected by comparing a SHA-256
+# hash of pnpm-lock.yaml against a sentinel stored in node_modules/.post-merge-hash.
+# This is safe because task merges that add/change dependencies ALWAYS update the
+# lockfile, and the COREPACK frozen-lockfile flag ensures resolution cannot run
+# against a stale lock anyway.
+LOCKFILE="pnpm-lock.yaml"
+SENTINEL="node_modules/.post-merge-hash"
+
+if [ -f "$LOCKFILE" ]; then
+  CURRENT_HASH=$(sha256sum "$LOCKFILE" | awk '{print $1}')
+else
+  CURRENT_HASH="missing"
+fi
+
+STORED_HASH=""
+if [ -f "$SENTINEL" ]; then
+  STORED_HASH=$(cat "$SENTINEL")
+fi
+
+if [ "$CURRENT_HASH" = "$STORED_HASH" ] && [ -d "node_modules/.pnpm" ]; then
+  echo "[post-merge] pnpm-lock.yaml unchanged and node_modules present — skipping install."
+else
+  echo "[post-merge] pnpm-lock.yaml changed or node_modules missing — running install..."
+  COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 \
+    NODE_OPTIONS='--max-old-space-size=768' \
+    pnpm install --ignore-scripts --frozen-lockfile --filter '!@workspace/mobile'
+  echo "$CURRENT_HASH" > "$SENTINEL"
+  echo "[post-merge] install complete — sentinel updated."
+fi
 
 pnpm --filter db push
 pnpm --filter @workspace/scripts run backfill-legacy-video-urls
@@ -32,9 +62,8 @@ git config core.hooksPath scripts/git-hooks 2>/dev/null || true
 #
 # Typecheck (tsc --build) is skipped on Replit post-merge: tsc --build across
 # the full monorepo is memory-intensive (~2 GiB peak) and is already enforced
-# in CI (GitHub Actions). All other
-# guardrails (codegen drift, catalog sync, react-types-singleton, etc.) still
-# run. Typecheck runs in CI (GitHub Actions, which has a full 7 GB heap).
+# in CI (GitHub Actions). All other guardrails (codegen drift, catalog sync,
+# react-types-singleton, etc.) still run.
 if [ "${RENDER:-false}" = "true" ]; then
   pnpm run verify
 else
