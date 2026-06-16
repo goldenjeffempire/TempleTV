@@ -213,23 +213,28 @@ interface LocalVideo {
 // uploadQueue singleton keeps uploading bytes after the user leaves /broadcast,
 // and we still want completed items to auto-append to the broadcast queue.
 //
-// autoQueuePending is also mirrored to sessionStorage so it survives a hard
-// page refresh while an upload is still in progress. Without this, a user who
-// starts an upload, marks it for auto-queue, and then hits F5 would see the
-// upload complete successfully but never land in the broadcast queue.
+// autoQueuePending is mirrored to localStorage so it survives both hard page
+// refreshes AND browser close/reopen while an upload is still in progress.
+// sessionStorage is intentionally NOT used because it is cleared when the tab
+// closes; localStorage persists until the upload subscriber fires on the next
+// session and drains it (or the entry is explicitly removed after success).
 const _AQPENDING_KEY = "broadcast:autoQueuePending";
 
 function _loadAutoQueuePending(): Set<string> {
   try {
-    const raw = sessionStorage.getItem(_AQPENDING_KEY);
+    const raw = localStorage.getItem(_AQPENDING_KEY);
     if (raw) return new Set(JSON.parse(raw) as string[]);
-  } catch { /* sessionStorage may be unavailable in some privacy modes */ }
+  } catch { /* localStorage may be unavailable in some privacy/iframe modes */ }
   return new Set<string>();
 }
 
 function _saveAutoQueuePending(set: Set<string>): void {
   try {
-    sessionStorage.setItem(_AQPENDING_KEY, JSON.stringify([...set]));
+    if (set.size === 0) {
+      localStorage.removeItem(_AQPENDING_KEY);
+    } else {
+      localStorage.setItem(_AQPENDING_KEY, JSON.stringify([...set]));
+    }
   } catch { /* non-fatal */ }
 }
 

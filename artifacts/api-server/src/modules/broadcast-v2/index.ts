@@ -17,6 +17,7 @@ import { reEnableAllSuspended } from "./repository/queue.repo.js";
 import { broadcastHealthMonitorScan, getBroadcastHealthMonitorStatus } from "./engine/broadcast-health-monitor.js";
 import { contentRotationScan, getContentRotationStatus } from "./engine/content-rotation.js";
 import { queueHealthGuard, getQueueHealthGuardStatus } from "./engine/queue-health-guard.js";
+import { scheduleBridgeScan } from "./engine/schedule-bridge.js";
 import { env } from "../../config/env.js";
 import { sendAdminAlert } from "../mail/mail.service.js";
 
@@ -367,6 +368,20 @@ function startSupervisedWorkers(): void {
     intervalMs: 30 * 60_000,
     initialDelayMs: 5 * 60_000,
     backoffMs: [5 * 60_000, 15 * 60_000, 30 * 60_000],
+  });
+
+  // Schedule-to-Air Bridge: reads schedule_entries once per minute and fires
+  // broadcast actions (override start, video enqueue, library scan) for entries
+  // whose startTime matches the current wall-clock minute. Provides a direct
+  // bridge between the programming calendar and the live broadcast engine.
+  // Initial delay of 65 s aligns the first check with the next minute boundary
+  // after a restart so the first check is never a false-negative mid-minute.
+  workerSupervisor.spawn({
+    name: "schedule-bridge",
+    fn: () => scheduleBridgeScan(),
+    intervalMs: 60_000,
+    initialDelayMs: 65_000,
+    backoffMs: [15_000, 30_000, 60_000],
   });
 
   logger.info("[broadcast-v2] supervised workers registered");

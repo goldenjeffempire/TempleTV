@@ -74,8 +74,9 @@ export async function healthRoutes(app: FastifyInstance) {
       503: z.object({ status: z.literal("shutting_down") }),
     },
   };
-  r.get("/healthz", { schema: livenessSchema }, liveness);
-  r.get("/health", { schema: livenessSchema }, liveness);
+  const livenessRateLimit = { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } };
+  r.get("/healthz", { ...livenessRateLimit, schema: livenessSchema }, liveness);
+  r.get("/health", { ...livenessRateLimit, schema: livenessSchema }, liveness);
 
   // Cheap diagnostic snapshot — version, uptime, runtime memory, run-mode,
   // process pid, node version. No I/O, safe to poll from uptime monitors

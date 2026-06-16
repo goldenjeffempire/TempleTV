@@ -1400,7 +1400,7 @@ function BroadcastV2PageInner() {
   // Deactivate (remove) a queue item without navigating away.
   const deactivateMutation = useMutation({
     mutationFn: (itemId: string) =>
-      api.patch(`/admin/broadcast/${itemId}`, { isActive: false }),
+      api.patch(`/admin/broadcast/${itemId}`, { isActive: false, idempotencyKey: safeRandomUUID() }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
@@ -1425,7 +1425,7 @@ function BroadcastV2PageInner() {
     mutationFn: (videoId: string) =>
       api.post<{ jobId: string; reused: boolean }>(
         `/admin/videos/${videoId}/transcode`,
-        {},
+        { idempotencyKey: safeRandomUUID() },
       ),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
