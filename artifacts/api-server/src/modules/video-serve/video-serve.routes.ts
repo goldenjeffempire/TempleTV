@@ -113,6 +113,26 @@ class HlsSegmentLru {
 
   get size() { return this.map.size; }
   get bytesMb() { return this.totalBytes / (1024 * 1024); }
+
+  /**
+   * Evict LRU entries until `totalBytes ≤ targetMb × 1 MiB`.
+   * Called by the memory watchdog under RSS / heap pressure to reclaim
+   * Buffer memory (which shows up in `process.memoryUsage().arrayBuffers`
+   * and `external`).  Returns the number of bytes freed.
+   */
+  trim(targetMb: number): number {
+    const targetBytes = Math.max(0, targetMb * 1024 * 1024);
+    let freed = 0;
+    while (this.totalBytes > targetBytes && this.map.size > 0) {
+      const lruKey = this.map.keys().next().value;
+      if (lruKey === undefined) break;
+      const lru = this.map.get(lruKey)!;
+      this.map.delete(lruKey);
+      freed += lru.data.length;
+      this.totalBytes = Math.max(0, this.totalBytes - lru.data.length);
+    }
+    return freed;
+  }
 }
 
 // Lazy-initialised after env is parsed (module top-level runs before env.ts
@@ -130,6 +150,17 @@ function hlsSegments(): HlsSegmentLru {
     }
   }
   return _hlsSegments;
+}
+
+/**
+ * Trim the HLS segment in-process LRU cache to at most `targetMb` MB of
+ * Buffer memory.  Returns bytes freed.  Safe to call from the memory watchdog
+ * even if the cache has not yet been initialised (returns 0 in that case).
+ * The freed Buffers become eligible for GC on the next collection cycle.
+ */
+export function trimHlsSegmentCache(targetMb: number): number {
+  if (!_hlsSegments) return 0;
+  return _hlsSegments.trim(targetMb);
 }
 
 // ── A3: HMAC token helpers ────────────────────────────────────────────────────

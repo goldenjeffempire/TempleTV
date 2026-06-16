@@ -15,6 +15,7 @@
  */
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
+import { registerNamedStore } from "../../../infrastructure/cache.js";
 import {
   queueRepo,
   normalizeQueueUrl,
@@ -430,6 +431,10 @@ class MediaIntegrityScannerImpl {
   private scanInterval: NodeJS.Timeout | null = null;
   private scanning = false;
   private readonly failureCounts = new Map<string, { count: number; lastFailedAtMs: number | null }>();
+
+  /** Returns the current size of the failure-count map.
+   *  Used by the memory diagnostics named-store registry. */
+  failureCountsSize(): number { return this.failureCounts.size; }
   private report: MediaScanReport = {
     lastScanAtMs: null,
     scanDurationMs: null,
@@ -740,3 +745,9 @@ class MediaIntegrityScannerImpl {
 }
 
 export const mediaIntegrityScanner = new MediaIntegrityScannerImpl();
+
+// Register the failure-count Map with the memory diagnostics registry so it
+// appears in GET /admin/diagnostics/memory and is tracked by peak-sampling.
+// The Map is properly pruned on every scan cycle (items removed from the
+// queue are evicted), so this is purely for observability, not eviction.
+registerNamedStore("media-scanner-failure-counts", () => mediaIntegrityScanner.failureCountsSize());

@@ -60,10 +60,26 @@ const EXTERNAL_GROWTH_RECOVERY_MB_PER_MIN = 10;
 const HEAP_USED_GROWTH_ALERT_MB_PER_MIN = 30;
 /** Recovery threshold (MB / min) — heapUsed slope must fall below this to clear alert. */
 const HEAP_USED_GROWTH_RECOVERY_MB_PER_MIN = 5;
+/**
+ * Alert when ArrayBuffers are growing faster than this (MB / min).
+ * ArrayBuffers are a subset of `external` (they ARE counted in `external`)
+ * but tracking them separately lets the watchdog surface HLS segment-cache /
+ * Buffer-pool pressure distinctly from native C++ object growth.
+ * Threshold is tighter than the `external` alert (50 MB/min) because normal
+ * ArrayBuffer churn during steady-state HLS serving is < 5 MB/min.
+ */
+const ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN = 20;
+/** Recovery threshold (MB / min) for the arrayBuffers slope alert. */
+const ARRAY_BUFFERS_GROWTH_RECOVERY_MB_PER_MIN = 5;
 /** How many consecutive over-slope samples before a slope alert fires. */
 const CONSECUTIVE_SLOPE_FOR_ALERT = 3;
 
 let criticalExitInFlight = false;
+
+/** Separate slope-alert state for the ArrayBuffers metric. */
+let arrayBuffersAlertActive = false;
+let lastArrayBuffersMbPerMin: number | null = null;
+let consecutiveArrayBuffersOver = 0;
 
 export interface WatchdogState {
   enabled: boolean;
@@ -94,12 +110,15 @@ export interface WatchdogState {
     rssAlertActive: boolean;
     slopeAlertActive: boolean;
     heapUsedAlertActive: boolean;
+    arrayBuffersAlertActive: boolean;
     eventLoopLagAlertActive: boolean;
   };
 }
 
 let interval: NodeJS.Timeout | null = null;
 let consecutiveRssOver = 0;
+// NOTE: consecutiveArrayBuffersOver, arrayBuffersAlertActive, lastArrayBuffersMbPerMin
+// are declared above (before the WatchdogState interface) as module-level state.
 /** Separate counter that only increments when RSS ≥ MEMORY_RESTART_RSS_MB.
  *  This decouples the "warn" alert from the "critical exit" trigger so the
  *  operator can set MEMORY_WARN_RSS_MB low for early visibility without the
@@ -114,8 +133,8 @@ let lastRssMb = 0;
 let lastExternalGrowthMbPerMin: number | null = null;
 let lastHeapUsedGrowthMbPerMin: number | null = null;
 
-/** Rolling window of { external bytes, heapUsed bytes, timestamp ms } pairs. */
-const memWindow: Array<{ external: number; heapUsed: number; ts: number }> = [];
+/** Rolling window of { external bytes, heapUsed bytes, arrayBuffers bytes, timestamp ms } pairs. */
+const memWindow: Array<{ external: number; heapUsed: number; arrayBuffers: number; ts: number }> = [];
 
 type BroadcastEngineEvent = { type: string; data: unknown };
 let _emit: ((e: BroadcastEngineEvent) => void) | null = null;
@@ -146,6 +165,24 @@ function calcHeapUsedGrowthMbPerMin(): number | null {
   const dtMs = newest.ts - oldest.ts;
   if (dtMs < 1_000) return null;
   const deltaBytes = newest.heapUsed - oldest.heapUsed;
+  const dtMin = dtMs / 60_000;
+  return (deltaBytes / (1024 * 1024)) / dtMin;
+}
+
+/**
+ * Calculate ArrayBuffers growth rate (MB/min) from the rolling window.
+ * ArrayBuffers track Buffer/TypedArray allocations — the dominant source is
+ * the HLS segment in-process cache.  A sustained positive slope here
+ * indicates the segment cache is being filled faster than it is evicted,
+ * or that Buffers created during upload/transcode are not being released.
+ */
+function calcArrayBuffersGrowthMbPerMin(): number | null {
+  if (memWindow.length < 2) return null;
+  const oldest = memWindow[0];
+  const newest = memWindow[memWindow.length - 1];
+  const dtMs = newest.ts - oldest.ts;
+  if (dtMs < 1_000) return null;
+  const deltaBytes = newest.arrayBuffers - oldest.arrayBuffers;
   const dtMin = dtMs / 60_000;
   return (deltaBytes / (1024 * 1024)) / dtMin;
 }
@@ -247,7 +284,7 @@ function sample() {
   sampleNamedStorePeaks();
 
   // ── Slope tracking (shared rolling window) ────────────────────────────────
-  memWindow.push({ external: mem.external, heapUsed: mem.heapUsed, ts: Date.now() });
+  memWindow.push({ external: mem.external, heapUsed: mem.heapUsed, arrayBuffers: mem.arrayBuffers, ts: Date.now() });
   if (memWindow.length > SLOPE_WINDOW_SAMPLES) memWindow.shift();
 
   // ── External memory slope alert ───────────────────────────────────────────
@@ -346,6 +383,69 @@ function sample() {
     });
   } else if (!heapUsedAlertActive) {
     consecutiveHeapOver = 0;
+  }
+
+  // ── ArrayBuffers slope alert + HLS segment cache trim ────────────────────
+  // A sustained positive slope in `arrayBuffers` means Buffer memory is not
+  // being released — most likely the HLS segment LRU is filling faster than
+  // it evicts.  On first alert we attempt a proactive trim of the cache to
+  // its configured half-limit before emitting the ops-alert, giving the
+  // process a chance to recover without operator intervention.
+  const abGrowthRate = calcArrayBuffersGrowthMbPerMin();
+  lastArrayBuffersMbPerMin = abGrowthRate !== null ? Math.round(abGrowthRate * 10) / 10 : null;
+
+  if (abGrowthRate !== null && abGrowthRate > ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN) {
+    consecutiveArrayBuffersOver++;
+    if (consecutiveArrayBuffersOver >= CONSECUTIVE_SLOPE_FOR_ALERT && !arrayBuffersAlertActive) {
+      arrayBuffersAlertActive = true;
+      // Proactively trim the HLS segment cache to half its configured limit
+      // before alerting, so a transient burst of segment requests doesn't
+      // trigger unnecessary ops noise if the cache self-corrects.
+      void import("../modules/video-serve/video-serve.routes.js")
+        .then(({ trimHlsSegmentCache }) => {
+          const hlsCacheMb = Number(process.env.HLS_SEGMENT_CACHE_MB ?? 64);
+          const freed = trimHlsSegmentCache(hlsCacheMb / 2);
+          if (freed > 0) {
+            logger.info(
+              { freedBytes: freed, targetMb: hlsCacheMb / 2 },
+              "[memory-watchdog] trimmed HLS segment cache under ArrayBuffers pressure",
+            );
+          }
+        })
+        .catch(() => {/* non-fatal — video-serve may not be initialised yet */});
+      logger.warn(
+        { growthMbPerMin: Math.round(abGrowthRate * 10) / 10, threshold: ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN },
+        "[memory-watchdog] ArrayBuffers growth rate exceeded threshold — possible HLS segment cache pressure",
+      );
+      _emit?.({
+        type: "ops-alert",
+        data: {
+          level: "warn",
+          code: "memory-arraybuffers-growth",
+          message: `ArrayBuffers growing at ${Math.round(abGrowthRate * 10) / 10} MB/min (threshold: ${ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN} MB/min) — HLS cache auto-trimmed; check segment cache or upload pipeline`,
+          growthMbPerMin: Math.round(abGrowthRate * 10) / 10,
+          threshold: ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN,
+        },
+      });
+    }
+  } else if (arrayBuffersAlertActive && (abGrowthRate === null || abGrowthRate < ARRAY_BUFFERS_GROWTH_RECOVERY_MB_PER_MIN)) {
+    arrayBuffersAlertActive = false;
+    consecutiveArrayBuffersOver = 0;
+    logger.info(
+      { growthMbPerMin: lastArrayBuffersMbPerMin },
+      "[memory-watchdog] ArrayBuffers growth rate recovered",
+    );
+    _emit?.({
+      type: "ops-alert",
+      data: {
+        level: "info",
+        code: "memory-arraybuffers-recovered",
+        message: `ArrayBuffers growth rate recovered (${lastArrayBuffersMbPerMin ?? 0} MB/min)`,
+        growthMbPerMin: lastArrayBuffersMbPerMin ?? 0,
+      },
+    });
+  } else if (!arrayBuffersAlertActive) {
+    consecutiveArrayBuffersOver = 0;
   }
 
   // ── Proactive GC nudge ───────────────────────────────────────────────────
@@ -465,12 +565,13 @@ function sample() {
  * rendering.  The window holds up to SLOPE_WINDOW_SAMPLES entries at
  * SAMPLE_INTERVAL_MS cadence (default: 6 × 30 s = last 3 minutes).
  */
-export function getMemoryHistory(): Array<{ ts: number; heapUsedMb: number; externalMb: number }> {
+export function getMemoryHistory(): Array<{ ts: number; heapUsedMb: number; externalMb: number; arrayBuffersMb: number }> {
   const MiB = 1024 * 1024;
-  return memWindow.map(({ ts, heapUsed, external }) => ({
+  return memWindow.map(({ ts, heapUsed, external, arrayBuffers }) => ({
     ts,
     heapUsedMb: Math.round((heapUsed / MiB) * 10) / 10,
     externalMb: Math.round((external / MiB) * 10) / 10,
+    arrayBuffersMb: Math.round((arrayBuffers / MiB) * 10) / 10,
   }));
 }
 
@@ -512,7 +613,7 @@ function logMemorySummary(): void {
       arrayBuffersMb: mb(m.arrayBuffers),
       externalGrowthMbPerMin: lastExternalGrowthMbPerMin,
       heapUsedGrowthMbPerMin: lastHeapUsedGrowthMbPerMin,
-      alerts: { rssAlertActive, slopeAlertActive, heapUsedAlertActive },
+      alerts: { rssAlertActive, slopeAlertActive, heapUsedAlertActive, arrayBuffersAlertActive },
       stores,
     },
     "[memory-watchdog] hourly memory summary",
@@ -640,6 +741,7 @@ export function getWatchdogState(): WatchdogState {
       rssAlertActive,
       slopeAlertActive,
       heapUsedAlertActive,
+      arrayBuffersAlertActive,
       eventLoopLagAlertActive: isEventLoopLagAlertActive(),
     },
   };

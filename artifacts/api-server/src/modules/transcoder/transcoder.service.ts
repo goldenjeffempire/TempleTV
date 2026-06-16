@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { storage } from "../../infrastructure/storage.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
+import { registerNamedStore } from "../../infrastructure/cache.js";
 
 // ── Download pipeline reliability constants ───────────────────────────────
 /** Maximum per-download attempts before propagating the error. */
@@ -25,6 +26,8 @@ const DOWNLOAD_RETRY_BASE_MS = 2_000;
  * before deciding to download themselves.
  */
 const _downloadInProgress = new Map<string, Promise<void>>();
+// Register with memory diagnostics so concurrent download dedup Map is visible.
+registerNamedStore("transcoder-downloads-in-progress", () => _downloadInProgress.size);
 
 export interface TranscodeRequest {
   jobId: string;

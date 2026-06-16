@@ -43,6 +43,7 @@ import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { storage } from "../../../infrastructure/storage.js";
 import { logger as rootLogger } from "../../../infrastructure/logger.js";
+import { registerNamedStore } from "../../../infrastructure/cache.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { runFaststart } from "../../transcoder/faststart.service.js";
 import { probeUploadedDuration } from "../../transcoder/transcoder.service.js";
@@ -77,6 +78,24 @@ const INFLIGHT_TTL_MS = 30 * 60_000; // 30 minutes — > faststart internal time
  * retried automatically on the next deploy.
  */
 const probeSkipObjectPaths = new Set<string>();
+
+// ── Bounds caps ──────────────────────────────────────────────────────────────
+// Both sets are designed to grow per-process-lifetime, but on a 24/7 server
+// with many historically-failed uploads they can accumulate thousands of
+// entries.  Each set is capped; when the cap is hit the entire set is cleared
+// so candidates are re-evaluated within MAX_ATTEMPTS extra sweeps.
+/** Max entries in `givenUpIds` before a full clear. */
+const MAX_GIVEN_UP = 5_000;
+/** Max entries in `probeSkipObjectPaths` before a full clear. */
+const MAX_PROBE_SKIP = 5_000;
+
+// ── Diagnostics registration ─────────────────────────────────────────────────
+// Register all module-level collections so they appear in the
+// GET /admin/diagnostics/memory → caches[] response and are tracked
+// by the memory watchdog peak-sampling tick.
+registerNamedStore("faststart-recovery-given-up",   () => givenUpIds.size);
+registerNamedStore("faststart-recovery-in-flight",  () => inFlight.size);
+registerNamedStore("faststart-recovery-probe-skip", () => probeSkipObjectPaths.size);
 
 /**
  * Set to true by stop() when shutdown begins.  Checked at every DB-call
@@ -251,6 +270,13 @@ async function dispatchOne(c: Candidate): Promise<boolean> {
     // never for the potentially large population of permanently-failed ones.
     stats.totalGivenUp += 1;
     attemptCounts.delete(c.videoId);
+    // Cap the set so it never grows unboundedly on a 24/7 server with many
+    // historically-failed uploads.  A full clear lets them be re-evaluated;
+    // at most MAX_ATTEMPTS extra ffmpeg probes are wasted before they give up again.
+    if (givenUpIds.size >= MAX_GIVEN_UP) {
+      logger.warn({ cap: MAX_GIVEN_UP }, "faststart-recovery: givenUpIds cap reached — clearing set; candidates will be re-evaluated");
+      givenUpIds.clear();
+    }
     givenUpIds.add(c.videoId);
     logger.error(
       { videoId: c.videoId, title: c.title, attempts: prev },
@@ -452,6 +478,12 @@ async function backfillPlaceholderDurations(): Promise<void> {
         if (s.enabled) {
           const head = await s.headObject(row.objectPath!).catch(() => null);
           if (head === null) {
+            // Cap the probe-skip set to prevent unbounded growth on long-running
+            // servers with many permanently-missing source blobs.
+            if (probeSkipObjectPaths.size >= MAX_PROBE_SKIP) {
+              logger.warn({ cap: MAX_PROBE_SKIP }, "faststart-recovery: probeSkipObjectPaths cap reached — clearing set");
+              probeSkipObjectPaths.clear();
+            }
             probeSkipObjectPaths.add(row.objectPath!);
             logger.warn(
               { videoId: row.videoId, objectPath: row.objectPath, title: row.title },

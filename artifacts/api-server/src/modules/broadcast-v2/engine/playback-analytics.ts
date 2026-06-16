@@ -1,3 +1,5 @@
+import { registerNamedStore } from "../../../infrastructure/cache.js";
+
 /**
  * In-memory ring-buffer analytics store for broadcast playback events.
  *
@@ -160,6 +162,16 @@ class PlaybackAnalyticsStore {
   getActiveSessions(): number {
     return this.activeSessions;
   }
+
+  /** Current fill count of the ring buffer (0 – RING_SIZE).
+   *  Exposed for the memory-diagnostics named-store registry. */
+  filledCount(): number { return this.filled; }
 }
 
 export const playbackAnalytics = new PlaybackAnalyticsStore();
+
+// Register the ring-buffer fill level with the memory diagnostics registry.
+// RING_SIZE (8 000) is the hard capacity; this reports how many events are
+// currently buffered.  Each AnalyticsEvent is ~100–200 B, so a full ring
+// occupies roughly 800 KB–1.6 MB — small but worth tracking for leak detection.
+registerNamedStore("broadcast-analytics-ring", () => playbackAnalytics.filledCount());
