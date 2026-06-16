@@ -34,7 +34,7 @@ import { randomUUID, createHash } from "node:crypto";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { eq, asc, and, inArray, lt, sql } from "drizzle-orm";
+import { eq, asc, and, inArray, lt, gt, isNull, isNotNull, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { env } from "../../config/env.js";
 import { storage } from "../../infrastructure/storage.js";
@@ -88,6 +88,31 @@ function releaseChunkDbSlot(): void {
     _activeChunkDbOps--;
   }
 }
+
+// ─── Assembly retry policy ────────────────────────────────────────────────────
+//
+// Maximum number of automatic re-assembly attempts before the session is
+// permanently marked ASSEMBLY_FAILED and the operator must intervene manually.
+// Kept at 5 so a genuinely unrecoverable session (corrupt chunks, missing
+// parts) does not retry forever, while giving enough headroom to survive
+// transient DB / storage hiccups across multiple server restarts.
+const MAX_AUTO_ASSEMBLY_ATTEMPTS = 5;
+//
+// Per-attempt backoff delays (indexed by the attempt count AFTER the attempt
+// that just failed).  ASSEMBLY_BACKOFF_MS[n] = "wait n before attempting n+1".
+//
+//   Attempt 1 fires immediately (from onReady or reconciliation).
+//   Attempt 1 failed  (assemblyAttempts now = 1) → wait 30 s.
+//   Attempt 2 failed  (assemblyAttempts now = 2) → wait 5 min.
+//   Attempt 3 failed  (assemblyAttempts now = 3) → wait 15 min.
+//   Attempt 4 failed  (assemblyAttempts now = 4) → wait 30 min.
+//   Attempt 5 failed  (assemblyAttempts now = 5 = MAX)  → ASSEMBLY_FAILED permanently.
+const ASSEMBLY_BACKOFF_MS: readonly number[] = [0, 30_000, 5 * 60_000, 15 * 60_000, 30 * 60_000];
+
+// ─── Assembly reconciliation interval ────────────────────────────────────────
+// How often the in-process reconciliation timer scans for sessions whose
+// automatic re-assembly failed transiently and whose backoff window has elapsed.
+const ASSEMBLY_RECONCILIATION_INTERVAL_MS = 5 * 60_000; // 5 minutes
 
 // Minimum part size used when reassembling db_fallback chunks into a multipart
 // upload. Mirrors S3's 5 MiB floor so sessions can be migrated without changes.
@@ -166,15 +191,23 @@ function getMissingChunks(received: number[], total: number): number[] {
 //
 // Spawns a fire-and-forget re-assembly task for an interrupted upload session.
 // Called from:
-//   • Startup recovery — when all chunks are still present but the assembled
-//     blob is missing (server restarted mid-assembly).
-//   • Admin retry endpoint — when an operator clicks "Retry Assembly" on a
-//     video that was left in ASSEMBLY_FAILED state.
+//   • Startup recovery (onReady) — when all chunks are still present but the
+//     assembled blob is missing (server restarted mid-assembly).
+//   • Assembly reconciliation timer — periodic scan that retries sessions
+//     whose last attempt failed transiently and whose backoff has elapsed.
+//   • Admin retry endpoint — when an operator clicks "Retry Assembly".
 //
-// On success:  session → "completed"; video row restored (objectPath, s3MirroredAt,
-//              transcodingStatus cleared); faststart + HLS transcoding queued.
-// On failure:  video → ASSEMBLY_FAILED again; session → "uploading"; completedVideoId
-//              nulled so the belt-and-suspenders guard in /finalize does not re-fire.
+// Retry policy (crash-safe via DB state):
+//   • assemblyAttempts is incremented BEFORE each attempt so the count is
+//     durable across server restarts even if the attempt crashes the process.
+//   • On transient failure (attempt < MAX_AUTO_ASSEMBLY_ATTEMPTS): session
+//     is reset to "uploading" with completedVideoId PRESERVED so the
+//     reconciliation timer can find and re-trigger it after the backoff.
+//   • On terminal failure (attempt >= MAX_AUTO_ASSEMBLY_ATTEMPTS): session
+//     is reset to "uploading" with completedVideoId CLEARED and the video
+//     row is marked ASSEMBLY_FAILED for manual intervention.
+//
+// On success: session → "completed"; video row restored; post-processing queued.
 //
 async function spawnAssemblyRetry(
   sessionId: string,
@@ -183,7 +216,19 @@ async function spawnAssemblyRetry(
 ): Promise<void> {
   void (async () => {
     try {
-      // Re-load the full session row — needed for finalizeFromDbFallback.
+      // ── Step 0: Increment attempt counter BEFORE assembly ─────────────────
+      // Incrementing first makes the count crash-safe: if the server dies
+      // mid-assembly the DB reflects the correct attempt count so the next
+      // restart (or reconciliation scan) applies the right backoff.
+      await db
+        .update(sessions)
+        .set({ assemblyAttempts: sql`assembly_attempts + 1`, updatedAt: new Date() })
+        .where(eq(sessions.sessionId, sessionId))
+        .catch((err: unknown) =>
+          log.warn({ err, sessionId }, "[assembly-retry] assemblyAttempts increment failed (non-fatal)"),
+        );
+
+      // ── Step 1: Re-load the full session row ──────────────────────────────
       const [session] = await db
         .select()
         .from(sessions)
@@ -191,39 +236,51 @@ async function spawnAssemblyRetry(
         .limit(1);
 
       if (!session) {
-        log.warn({ sessionId, videoId }, "[assembly-retry] session not found — aborting retry");
+        log.warn({ sessionId, videoId }, "[assembly-retry] session not found — aborting");
         return;
       }
 
+      const currentAttempts = session.assemblyAttempts ?? 1;
       const objectKey = session.objectKey;
+
+      // No object key → no storage path → unrecoverable regardless of retry count.
       if (!objectKey) {
-        log.warn({ sessionId, videoId }, "[assembly-retry] session has no objectKey — aborting retry");
-        await db
-          .update(videos)
-          .set({
-            transcodingStatus: "failed",
-            transcodingErrorCode: "ASSEMBLY_FAILED",
-            transcodingErrorMessage:
-              "Retry failed: upload session has no storage key. Delete this video and re-upload to recover.",
-          })
-          .where(eq(videos.id, videoId))
-          .catch(() => {});
-        await db
-          .update(sessions)
-          .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
-          .where(eq(sessions.sessionId, sessionId))
-          .catch(() => {});
-        adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-retry-no-key" });
+        log.warn({ sessionId, videoId, currentAttempts }, "[assembly-retry] session has no objectKey — marking permanently failed");
+        await _markAssemblyPermanentlyFailed(
+          videoId, sessionId,
+          "Upload session has no storage key. Delete this video and re-upload to recover.",
+          log, currentAttempts,
+        );
         return;
       }
 
       log.info(
-        { sessionId, videoId, storageBackend: session.storageBackend, objectKey },
+        { sessionId, videoId, attempt: currentAttempts, maxAttempts: MAX_AUTO_ASSEMBLY_ATTEMPTS, storageBackend: session.storageBackend, objectKey },
         "[assembly-retry] starting background re-assembly",
       );
 
+      // ── Step 2: Run the assembly ──────────────────────────────────────────
       if (session.storageBackend === "db_fallback") {
-        // BYTEA chunks in upload_chunks.fallback_data — fully idempotent.
+        // BYTEA chunks in upload_chunks.fallback_data.
+        // Abort any stale assemblyUploadId left over from a previous crashed
+        // attempt to prevent orphaned _parts/{staleId}/... rows accumulating.
+        if (session.assemblyUploadId) {
+          log.info(
+            { sessionId, staleUploadId: session.assemblyUploadId },
+            "[assembly-retry] aborting stale assemblyUploadId before fresh attempt",
+          );
+          await storage()
+            .abortMultipartUpload({ key: objectKey, uploadId: session.assemblyUploadId })
+            .catch((abortErr: unknown) =>
+              log.warn({ abortErr, sessionId }, "[assembly-retry] stale assemblyUploadId abort failed (non-fatal)"),
+            );
+          // Clear the stale ID — a new one will be written by finalizeFromDbFallback.
+          await db
+            .update(sessions)
+            .set({ assemblyUploadId: null, updatedAt: new Date() })
+            .where(eq(sessions.sessionId, sessionId))
+            .catch(() => {});
+        }
         await finalizeFromDbFallback(session, session.totalChunks, log);
       } else {
         // DB-multipart path: assemble from existing part ETags.
@@ -244,9 +301,12 @@ async function spawnAssemblyRetry(
         const missingEtags = allChunks.filter((c) => !c.s3Etag);
         if (missingEtags.length > 0) {
           throw new Error(
-            `${missingEtags.length} chunk(s) are missing storage ETags — parts may have been partially consumed`,
+            `${missingEtags.length} chunk(s) are missing storage ETags — parts may have been cleaned up`,
           );
         }
+        // completeMultipartUpload is idempotent: the INSERT ... ON CONFLICT DO UPDATE
+        // reseeds the destination row from the first part even if a partial blob
+        // exists from a previous interrupted attempt, then appends remaining parts.
         await storage().completeMultipartUpload({
           key: objectKey,
           uploadId: session.uploadId,
@@ -257,7 +317,7 @@ async function spawnAssemblyRetry(
         });
       }
 
-      // Verify assembled blob size.
+      // ── Step 3: Verify assembled blob integrity ───────────────────────────
       const head = await storage().headObject(objectKey);
       if (!head.exists || (session.sizeBytes > 0 && head.contentLength !== session.sizeBytes)) {
         throw new Error(
@@ -267,11 +327,17 @@ async function spawnAssemblyRetry(
 
       const localVideoUrl = storage().publicUrl(objectKey);
 
-      // Mark session completed + restore video row in parallel.
+      // ── Step 4: Commit success state ──────────────────────────────────────
       await Promise.all([
         db
           .update(sessions)
-          .set({ status: "completed", storageBackend: "db", updatedAt: new Date() })
+          .set({
+            status: "completed",
+            storageBackend: "db",
+            assemblyUploadId: null,
+            lastAssemblyError: null,
+            updatedAt: new Date(),
+          })
           .where(eq(sessions.sessionId, sessionId))
           .catch((err: unknown) =>
             log.warn({ err, sessionId }, "[assembly-retry] session completed update failed (non-fatal)"),
@@ -294,10 +360,9 @@ async function spawnAssemblyRetry(
 
       adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-retry-succeeded" });
       void invalidateVideosCatalogCache();
-      log.info({ sessionId, videoId }, "[assembly-retry] assembly succeeded — running post-processing");
+      log.info({ sessionId, videoId, attempt: currentAttempts }, "[assembly-retry] assembly succeeded — running post-processing");
 
-      // Re-read video row for post-processing (faststart writes objectPath so it
-      // must be current; re-reading is cheaper than trusting our own update).
+      // ── Step 5: Post-assembly processing (same as normal finalize path) ───
       const [vRow] = await db
         .select({
           objectPath: videos.objectPath,
@@ -313,7 +378,6 @@ async function spawnAssemblyRetry(
         return;
       }
 
-      // Broadcast queue slot.
       try {
         const enqResult = await enqueueIfMissing({ videoId, reason: "assembly-retry" });
         if (enqResult.enqueued) {
@@ -323,7 +387,6 @@ async function spawnAssemblyRetry(
         log.warn({ err, videoId }, "[assembly-retry] enqueueIfMissing failed (non-fatal)");
       }
 
-      // Faststart (move moov atom to front of MP4).
       if (!vRow.faststartApplied) {
         try {
           await runFaststart(videoId, vRow.objectPath, { skipStatusUpdate: false });
@@ -333,7 +396,6 @@ async function spawnAssemblyRetry(
         }
       }
 
-      // HLS transcoding.
       if (!vRow.hlsMasterUrl) {
         try {
           await enqueueTranscode({ videoId, videoPath: vRow.objectPath });
@@ -344,29 +406,95 @@ async function spawnAssemblyRetry(
         }
       }
 
-      log.info({ sessionId, videoId }, "[assembly-retry] complete ✓");
+      log.info({ sessionId, videoId, attempt: currentAttempts }, "[assembly-retry] complete ✓");
 
     } catch (err) {
-      log.error({ err, sessionId, videoId }, "[assembly-retry] failed — marking video ASSEMBLY_FAILED");
-      await Promise.allSettled([
-        db
-          .update(videos)
-          .set({
-            transcodingStatus: "failed",
-            transcodingErrorCode: "ASSEMBLY_FAILED",
-            transcodingErrorMessage:
-              "Automatic re-assembly failed after server restart. " +
-              "Click 'Retry Assembly' to try again, or delete this video and re-upload.",
-          })
-          .where(eq(videos.id, videoId)),
-        db
-          .update(sessions)
-          .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
-          .where(eq(sessions.sessionId, sessionId)),
-      ]);
-      adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-retry-failed" });
+      // ── Failure handling: backoff retry OR permanent failure ──────────────
+      const errMsg = err instanceof Error ? err.message : String(err);
+
+      // Re-read the attempt counter — it was incremented at step 0, even if
+      // the DB increment itself threw (in which case we default to 1).
+      const [sessionAfterFail] = await db
+        .select({ assemblyAttempts: sessions.assemblyAttempts })
+        .from(sessions)
+        .where(eq(sessions.sessionId, sessionId))
+        .limit(1)
+        .catch(() => [] as Array<{ assemblyAttempts: number | null }>);
+      const attempts = sessionAfterFail?.assemblyAttempts ?? 1;
+
+      if (attempts >= MAX_AUTO_ASSEMBLY_ATTEMPTS) {
+        // All auto-retry budget exhausted — mark permanently failed so the
+        // operator sees a clear "Retry Assembly" / re-upload call to action.
+        log.error(
+          { err, sessionId, videoId, attempts, max: MAX_AUTO_ASSEMBLY_ATTEMPTS },
+          "[assembly-retry] max auto-retry attempts exhausted — marking ASSEMBLY_FAILED permanently",
+        );
+        await _markAssemblyPermanentlyFailed(videoId, sessionId, errMsg, log, attempts);
+      } else {
+        // Transient failure — preserve completedVideoId so the reconciliation
+        // timer can find and retry this session after the backoff window.
+        const backoffMs = ASSEMBLY_BACKOFF_MS[attempts] ?? 30 * 60_000;
+        log.warn(
+          { err, sessionId, videoId, attempts, backoffMs },
+          `[assembly-retry] attempt ${attempts} failed — will retry after ${Math.round(backoffMs / 1000)}s via reconciliation`,
+        );
+        await Promise.allSettled([
+          // Keep transcodingStatus as "none" so the video does not appear
+          // broken in the admin panel while retries are pending.
+          db.update(videos)
+            .set({ transcodingStatus: "none", transcodingErrorCode: null, transcodingErrorMessage: null })
+            .where(eq(videos.id, videoId)),
+          // Reset session to "uploading" WITH completedVideoId intact.
+          // The reconciliation timer queries (status="uploading" AND
+          // completedVideoId IS NOT NULL AND assemblyAttempts > 0) to find
+          // exactly these sessions and trigger the next attempt.
+          db.update(sessions)
+            .set({ status: "uploading", lastAssemblyError: errMsg.slice(0, 2048), updatedAt: new Date() })
+            .where(eq(sessions.sessionId, sessionId)),
+        ]);
+        adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-retry-pending" });
+      }
     }
   })();
+}
+
+// ─── Permanent assembly failure helper ────────────────────────────────────────
+//
+// Marks a video ASSEMBLY_FAILED and resets its session so the operator sees
+// a clear call-to-action in the admin panel. Shared between the no-objectKey
+// fast-path and the max-attempts-exhausted path in spawnAssemblyRetry.
+async function _markAssemblyPermanentlyFailed(
+  videoId: string,
+  sessionId: string,
+  lastError: string,
+  log: FastifyInstance["log"],
+  attempts?: number,
+): Promise<void> {
+  const attemptNote = attempts != null ? ` after ${attempts} auto-retry attempt(s)` : "";
+  await Promise.allSettled([
+    db.update(videos)
+      .set({
+        transcodingStatus: "failed",
+        transcodingErrorCode: "ASSEMBLY_FAILED",
+        transcodingErrorMessage:
+          `Automatic re-assembly failed${attemptNote}. ` +
+          `Last error: ${lastError.slice(0, 500)}. ` +
+          "Click 'Retry Assembly' to try again manually, or delete this video and re-upload.",
+      })
+      .where(eq(videos.id, videoId)),
+    // Clear completedVideoId so stale-session cleanup can eventually reclaim
+    // the session row, and so the reconciliation timer does not keep retrying.
+    db.update(sessions)
+      .set({
+        status: "uploading",
+        completedVideoId: null,
+        lastAssemblyError: lastError.slice(0, 2048),
+        updatedAt: new Date(),
+      })
+      .where(eq(sessions.sessionId, sessionId)),
+  ]);
+  adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-retry-exhausted" });
+  log.error({ videoId, sessionId, attempts }, "[assembly-retry] permanently marked ASSEMBLY_FAILED");
 }
 
 // ─── DB-fallback finalization ──────────────────────────────────────────────────
@@ -418,6 +546,18 @@ async function finalizeFromDbFallback(
       contentType: session.contentType,
     });
     assemblyUploadId = uploadId;
+
+    // Persist the assemblyUploadId immediately after creation so that
+    // if the server crashes between here and completeMultipartUpload,
+    // the next restart can abort the orphaned _parts/{uploadId}/... rows
+    // before starting a fresh attempt instead of letting them accumulate.
+    await db
+      .update(sessions)
+      .set({ assemblyUploadId: uploadId, updatedAt: new Date() })
+      .where(eq(sessions.sessionId, session.sessionId))
+      .catch((err: unknown) =>
+        log.warn({ err, sessionId: session.sessionId }, "[finalize-fallback] failed to persist assemblyUploadId (non-fatal)"),
+      );
 
     // Assemble BYTEA chunks into multipart parts ONE AT A TIME.
     //
@@ -506,6 +646,14 @@ async function finalizeFromDbFallback(
     await storage().completeMultipartUpload({ key: objectKey, uploadId, parts });
     const localVideoUrl = storage().publicUrl(objectKey);
 
+    // Assembly succeeded — clear the persisted assemblyUploadId so that
+    // future crash-recovery does not try to abort a completed upload.
+    await db
+      .update(sessions)
+      .set({ assemblyUploadId: null, updatedAt: new Date() })
+      .where(eq(sessions.sessionId, session.sessionId))
+      .catch(() => {}); // non-fatal: assemblyUploadId will simply be a no-op on next abort attempt
+
     log.info(
       { sessionId: session.sessionId, objectKey, parts: parts.length },
       "[finalize-fallback] successfully assembled DB chunks into database storage",
@@ -578,6 +726,8 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           sizeBytes: sessions.sizeBytes,
           totalChunks: sessions.totalChunks,
           storageBackend: sessions.storageBackend,
+          assemblyAttempts: sessions.assemblyAttempts,
+          assemblyUploadId: sessions.assemblyUploadId,
         })
         .from(sessions)
         .where(inArray(sessions.status, ["assembling"]));
@@ -734,9 +884,20 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             { count: retriableSessionIds.length, videoIds: retriableVideoIds },
             "[upload] recovery: scheduling background re-assembly for interrupted sessions with intact chunks",
           );
-          // Fire all background retries (fire-and-forget — each handles its own error).
+          // Fire all background retries with a small stagger to avoid a
+          // thundering-herd of concurrent DB assembly operations on boot.
+          // Each retry is offset by 3 s so a 5-session boot recovery
+          // spreads its DB load over 12 s instead of hitting all at once.
           for (let i = 0; i < retriableSessionIds.length; i++) {
-            void spawnAssemblyRetry(retriableSessionIds[i], retriableVideoIds[i], app.log);
+            const delayMs = i * 3_000;
+            if (delayMs === 0) {
+              void spawnAssemblyRetry(retriableSessionIds[i]!, retriableVideoIds[i]!, app.log);
+            } else {
+              const timer = setTimeout(() => {
+                void spawnAssemblyRetry(retriableSessionIds[i]!, retriableVideoIds[i]!, app.log);
+              }, delayMs);
+              timer.unref();
+            }
           }
         }
 
@@ -925,7 +1086,17 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         const abandoned = await db
           .select({ sessionId: sessions.sessionId, uploadId: sessions.uploadId })
           .from(sessions)
-          .where(and(eq(sessions.status, "uploading"), lt(sessions.updatedAt, cutoff)));
+          .where(
+            and(
+              eq(sessions.status, "uploading"),
+              lt(sessions.updatedAt, cutoff),
+              // CRITICAL: never clean up sessions that have a pending assembly
+              // retry (completedVideoId IS NOT NULL means the video row exists
+              // and the reconciliation timer may still retry this session).
+              // Only clean up truly abandoned uploads that were never pre-committed.
+              isNull(sessions.completedVideoId),
+            ),
+          );
 
         if (abandoned.length > 0) {
           const ids = abandoned.map((r) => r.sessionId);
@@ -962,10 +1133,100 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     // Run immediately on boot (catches sessions from a previous server process
     // that died without processing them), then on the repeating interval.
     void runSessionCleanup();
-    const cleanupTimer = setInterval(() => { void runSessionCleanup(); }, CLEANUP_INTERVAL_MS).unref();
-    // Ensure the timer does not prevent the Node.js event loop from exiting
-    // when the server shuts down gracefully.
-    cleanupTimer.unref();
+    setInterval(() => { void runSessionCleanup(); }, CLEANUP_INTERVAL_MS).unref();
+
+    // ── Assembly reconciliation timer ─────────────────────────────────────
+    // Periodically scans for upload sessions that:
+    //   • Were in "assembling" status during a previous server lifecycle,
+    //   • Had spawnAssemblyRetry fail transiently (session reset to "uploading"
+    //     with completedVideoId PRESERVED and assemblyAttempts incremented),
+    //   • And whose exponential back-off window has now elapsed.
+    //
+    // This timer is the backbone of fault-tolerant auto-recovery: it decouples
+    // retry scheduling from the process lifecycle so a transient DB hiccup
+    // during one startup does not permanently strand the upload.
+    //
+    // Design properties:
+    //   • Crash-safe: all state (assemblyAttempts, updatedAt, status) lives in
+    //     the DB, not in-process memory. A server restart picks up exactly where
+    //     the last attempt left off.
+    //   • Idempotent CAS: status flip (uploading → assembling) is guarded by a
+    //     WHERE status='uploading' predicate, so two concurrent reconciliation
+    //     ticks cannot double-spawn for the same session.
+    //   • Backoff: uses ASSEMBLY_BACKOFF_MS[attempts] based on attempt count so
+    //     repeated transient failures space out rather than hammer the DB.
+    //   • Self-limiting: once assemblyAttempts reaches MAX_AUTO_ASSEMBLY_ATTEMPTS,
+    //     spawnAssemblyRetry marks the session ASSEMBLY_FAILED and clears
+    //     completedVideoId, removing it from the reconciliation query forever.
+    const runAssemblyReconciliation = async () => {
+      try {
+        const pendingRetries = await db
+          .select({
+            sessionId: sessions.sessionId,
+            completedVideoId: sessions.completedVideoId,
+            assemblyAttempts: sessions.assemblyAttempts,
+            updatedAt: sessions.updatedAt,
+          })
+          .from(sessions)
+          .where(
+            and(
+              eq(sessions.status, "uploading"),
+              isNotNull(sessions.completedVideoId),
+              gt(sessions.assemblyAttempts, 0),
+              lt(sessions.assemblyAttempts, MAX_AUTO_ASSEMBLY_ATTEMPTS),
+            ),
+          )
+          .limit(20); // safety cap per tick
+
+        if (pendingRetries.length === 0) return;
+
+        const now = Date.now();
+        for (const candidate of pendingRetries) {
+          if (!candidate.completedVideoId) continue;
+          const attempts = candidate.assemblyAttempts ?? 0;
+          const backoffMs = ASSEMBLY_BACKOFF_MS[attempts] ?? 30 * 60_000;
+          const lastMs = candidate.updatedAt ? new Date(candidate.updatedAt).getTime() : 0;
+          if (now - lastMs < backoffMs) continue; // still inside backoff window
+
+          // CAS: atomically flip status to "assembling" only if still "uploading".
+          // If another reconciliation tick or a manual retry already grabbed it,
+          // `acquired` will be empty and we safely skip to the next candidate.
+          const acquired = await db
+            .update(sessions)
+            .set({ status: "assembling", updatedAt: new Date() })
+            .where(
+              and(
+                eq(sessions.sessionId, candidate.sessionId),
+                eq(sessions.status, "uploading"),
+              ),
+            )
+            .returning({ sessionId: sessions.sessionId })
+            .catch(() => [] as Array<{ sessionId: string }>);
+
+          if (acquired.length === 0) continue;
+
+          app.log.info(
+            {
+              sessionId: candidate.sessionId,
+              videoId: candidate.completedVideoId,
+              attempts,
+              backoffMs,
+            },
+            "[assembly-reconciliation] backoff elapsed — scheduling retry",
+          );
+          void spawnAssemblyRetry(candidate.sessionId, candidate.completedVideoId, app.log);
+        }
+      } catch (err) {
+        app.log.warn({ err }, "[assembly-reconciliation] scan failed (non-fatal)");
+      }
+    };
+
+    // First tick fires after one full interval (not immediately) — the onReady
+    // hook already handles sessions that are currently in "assembling" status.
+    // "uploading" sessions with assemblyAttempts > 0 (from a prior restart)
+    // are picked up on the first tick ~5 minutes after boot, which is fine
+    // because they are already waiting out a backoff window anyway.
+    setInterval(() => { void runAssemblyReconciliation(); }, ASSEMBLY_RECONCILIATION_INTERVAL_MS).unref();
   });
 
   // ── POST /videos/upload/init ───────────────────────────────────────────────
@@ -2988,9 +3249,19 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
 
       // Keep session in (or move back to) "assembling" so the finalize-status
       // poller sees the right state during the retry.
+      // Reset assemblyAttempts to 0 so the operator-initiated retry gets a
+      // fresh budget of MAX_AUTO_ASSEMBLY_ATTEMPTS automatic re-tries —
+      // the prior budget was exhausted or the operator is explicitly starting
+      // fresh regardless of how many automatic attempts were already made.
       await db
         .update(sessions)
-        .set({ status: "assembling", completedVideoId: videoId, updatedAt: new Date() })
+        .set({
+          status: "assembling",
+          completedVideoId: videoId,
+          assemblyAttempts: 0,
+          lastAssemblyError: null,
+          updatedAt: new Date(),
+        })
         .where(eq(sessions.sessionId, session.sessionId));
 
       adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-retry-requested" });

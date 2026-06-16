@@ -49,6 +49,27 @@ export const uploadSessionsTable = pgTable(
     storageBackend: text("storage_backend").notNull().default("db"),
     status: text("status").notNull().default("uploading"),
     completedVideoId: text("completed_video_id"),
+    /**
+     * How many automatic re-assembly attempts have been made for this session.
+     * Starts at 0 (never attempted). Incremented at the START of each
+     * spawnAssemblyRetry call so the count reflects attempts in progress.
+     * When this reaches MAX_AUTO_ASSEMBLY_ATTEMPTS the session is permanently
+     * marked ASSEMBLY_FAILED and no further auto-retries are scheduled.
+     */
+    assemblyAttempts: integer("assembly_attempts").notNull().default(0),
+    /**
+     * Error message from the last failed auto-assembly attempt.
+     * Used for diagnostics and surfaced in admin panel "Re-upload required" badge.
+     */
+    lastAssemblyError: text("last_assembly_error"),
+    /**
+     * Persisted assemblyUploadId for db_fallback re-assembly.
+     * Written immediately after createMultipartUpload() succeeds inside
+     * finalizeFromDbFallback so that if the server crashes mid-assembly the
+     * onReady hook can abort the orphaned _parts/{assemblyUploadId}/... rows
+     * before starting a fresh attempt.  Cleared after successful assembly.
+     */
+    assemblyUploadId: text("assembly_upload_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     // $onUpdateFn ensures the column is refreshed on every Drizzle-driven UPDATE,
     // not just on INSERT (defaultNow() only fires at INSERT time).
