@@ -26,6 +26,7 @@ import { getApiBase } from "@/lib/apiBase";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
 import type { Sermon } from "@/types";
 import { usePageSeo } from "@/hooks/usePageSeo";
+import { AppHeader } from "@/components/AppHeader";
 
 interface Episode {
   id: string;
@@ -177,11 +178,7 @@ export default function SeriesDetailScreen() {
   if (loading) {
     return (
       <View style={[styles.container, styles.center, { backgroundColor: c.background }]}>
-        <View style={[styles.header, { paddingTop: insets.top + 8, backgroundColor: c.background }]}>
-          <Pressable onPress={goBack} style={styles.backBtn} hitSlop={8} accessibilityLabel="Go back" accessibilityRole="button">
-            <Feather name="arrow-left" size={22} color={c.foreground} />
-          </Pressable>
-        </View>
+        <AppHeader title="Series" onBack={goBack} />
         <ActivityIndicator size="large" color={c.primary} style={{ marginTop: 40 }} />
         <Text style={[styles.loadingText, { color: c.mutedForeground }]}>Loading series…</Text>
       </View>
@@ -191,11 +188,7 @@ export default function SeriesDetailScreen() {
   if (error || !data) {
     return (
       <View style={[styles.container, styles.center, { backgroundColor: c.background }]}>
-        <View style={[styles.header, { paddingTop: insets.top + 8, backgroundColor: c.background }]}>
-          <Pressable onPress={goBack} style={styles.backBtn} hitSlop={8} accessibilityLabel="Go back" accessibilityRole="button">
-            <Feather name="arrow-left" size={22} color={c.foreground} />
-          </Pressable>
-        </View>
+        <AppHeader title="Series" onBack={goBack} />
         <Feather name="alert-circle" size={48} color={c.mutedForeground} style={{ marginTop: 40 }} />
         <Text style={[styles.errorTitle, { color: c.foreground }]}>Could not load series</Text>
         <Text style={[styles.errorDesc, { color: c.mutedForeground }]}>{error}</Text>

@@ -22,6 +22,7 @@ import { router, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { usePlaylists, type PlaylistItem } from "@/hooks/usePlaylists";
+import { AppHeader } from "@/components/AppHeader";
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
 
@@ -96,28 +97,16 @@ export default function PlaylistsScreen() {
     <View style={[styles.root, { backgroundColor: c.background }]}>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
-
-      {/* Header */}
-      <View
-        style={[
-          styles.header,
-          {
-            paddingTop: insets.top + 8,
-            backgroundColor: c.background,
-            borderBottomColor: c.border,
-          },
-        ]}
-      >
-        <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
-          <Feather name="arrow-left" size={22} color={c.foreground} />
-        </Pressable>
-        <Text style={[styles.headerTitle, { color: c.foreground }]}>Playlists</Text>
-        {!loading && playlists.length > 0 && (
-          <View style={[styles.countPill, { backgroundColor: c.card }]}>
-            <Text style={[styles.countPillText, { color: c.mutedForeground }]}>{playlists.length}</Text>
-          </View>
-        )}
-      </View>
+      <AppHeader
+        title="Playlists"
+        rightElement={
+          !loading && playlists.length > 0 ? (
+            <View style={[styles.countPill, { backgroundColor: c.card }]}>
+              <Text style={[styles.countPillText, { color: c.mutedForeground }]}>{playlists.length}</Text>
+            </View>
+          ) : null
+        }
+      />
 
       {/* Body */}
       {loading && playlists.length === 0 ? (

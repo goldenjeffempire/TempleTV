@@ -20,6 +20,7 @@ import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
+import { AppHeader } from "@/components/AppHeader";
 import { usePageSeo } from "@/hooks/usePageSeo";
 
 type FeatherName = React.ComponentProps<typeof Feather>["name"];
@@ -184,25 +185,7 @@ export default function ContactScreen() {
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
-      {/* ── Header ── */}
-      <View
-        style={[
-          styles.header,
-          { paddingTop: insets.top + 8, borderBottomColor: c.border },
-        ]}
-      >
-        <Pressable
-          onPress={() => router.back()}
-          style={styles.backBtn}
-          hitSlop={12}
-        >
-          <Feather name="arrow-left" size={22} color={c.foreground} />
-        </Pressable>
-        <Text style={[styles.headerTitle, { color: c.foreground }]}>
-          Contact & Location
-        </Text>
-        <View style={styles.headerSpacer} />
-      </View>
+      <AppHeader title="Contact & Location" />
 
       <ScrollView
         contentContainerStyle={[

@@ -12,6 +12,7 @@ import { router, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { SermonCard } from "@/components/SermonCard";
+import { AppHeader } from "@/components/AppHeader";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
 import type { HistoryEntry } from "@/hooks/useWatchHistory";
 import type { Sermon } from "@/types";
@@ -87,22 +88,15 @@ export default function HistoryScreen() {
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
-      <View
-        style={[
-          styles.header,
-          { paddingTop: insets.top + 8, backgroundColor: c.background, borderBottomColor: c.border },
-        ]}
-      >
-        <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8} accessibilityRole="button" accessibilityLabel="Go back">
-          <Feather name="arrow-left" size={22} color={c.foreground} />
-        </Pressable>
-        <Text style={[styles.headerTitle, { color: c.foreground }]}>Watch History</Text>
-        {history.length > 0 && (
-          <Pressable onPress={handleClearAll} hitSlop={8} accessibilityRole="button" accessibilityLabel="Clear watch history">
-            <Text style={styles.clearAll}>Clear All</Text>
-          </Pressable>
-        )}
-      </View>
+      <AppHeader
+        title="Watch History"
+        rightLabel={history.length > 0 ? {
+          text: "Clear All",
+          onPress: handleClearAll,
+          accessibilityLabel: "Clear watch history",
+          color: "#ef4444",
+        } : undefined}
+      />
 
       {history.length === 0 ? (
         <View style={styles.empty}>

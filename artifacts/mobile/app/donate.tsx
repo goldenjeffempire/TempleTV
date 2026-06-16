@@ -21,6 +21,7 @@ import * as Haptics from "expo-haptics";
 import * as Clipboard from "expo-clipboard";
 import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
+import { AppHeader } from "@/components/AppHeader";
 import { usePageSeo } from "@/hooks/usePageSeo";
 
 interface BankAccount {
@@ -129,13 +130,7 @@ export default function DonateScreen() {
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
-      <View style={[styles.header, { paddingTop: insets.top + 8, borderBottomColor: c.border }]}>
-        <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={8} accessibilityRole="button" accessibilityLabel="Go back">
-          <Feather name="arrow-left" size={22} color={c.foreground} />
-        </Pressable>
-        <Text style={[styles.headerTitle, { color: c.foreground }]}>Give / Donate</Text>
-        <View style={styles.backBtn} />
-      </View>
+      <AppHeader title="Give / Donate" />
 
       <ScrollView
         contentContainerStyle={[styles.scroll, { paddingBottom: insets.bottom + 40 }]}

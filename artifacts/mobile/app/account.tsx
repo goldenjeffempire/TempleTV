@@ -34,6 +34,7 @@ import { useColors } from "@/hooks/useColors";
 import { useAuth } from "@/context/AuthContext";
 import { updateProfile } from "@/services/api";
 import { apiDeleteAccount } from "@/services/authApi";
+import { AppHeader } from "@/components/AppHeader";
 
 function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
@@ -167,12 +168,7 @@ export default function AccountScreen() {
       <View style={[styles.root, { backgroundColor: c.background }]}>
         <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
         <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
-        <View style={[styles.header, { paddingTop: insets.top + 8, borderBottomColor: c.border }]}>
-          <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
-            <Feather name="arrow-left" size={22} color={c.foreground} />
-          </Pressable>
-          <Text style={[styles.headerTitle, { color: c.foreground }]}>Account</Text>
-        </View>
+        <AppHeader title="Account" />
         <View style={styles.centered}>
           <Feather name="user" size={52} color={c.mutedForeground} />
           <Text style={[styles.guestTitle, { color: c.foreground }]}>Not Signed In</Text>
@@ -203,23 +199,15 @@ export default function AccountScreen() {
     >
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
-
-      {/* ── Header ────────────────────────────────────────────────────── */}
-      <View
-        style={[
-          styles.header,
-          { paddingTop: insets.top + 8, borderBottomColor: c.border, backgroundColor: c.background },
-        ]}
-      >
-        <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={12} accessibilityLabel="Go back">
-          <Feather name="arrow-left" size={22} color={c.foreground} />
-        </Pressable>
-        <Text style={[styles.headerTitle, { color: c.foreground }]}>Edit Profile</Text>
-        {dirty && (
+      <AppHeader
+        title="Edit Profile"
+        rightElement={dirty ? (
           <Pressable
             onPress={handleSave}
             style={[styles.saveBtn, { backgroundColor: c.primary }]}
             disabled={saving}
+            accessibilityRole="button"
+            accessibilityLabel={saving ? "Saving profile" : "Save profile changes"}
           >
             {saving ? (
               <ActivityIndicator size="small" color="#fff" />
@@ -227,8 +215,8 @@ export default function AccountScreen() {
               <Text style={styles.saveBtnText}>Save</Text>
             )}
           </Pressable>
-        )}
-      </View>
+        ) : null}
+      />
 
       <ScrollView
         contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 40 }]}
