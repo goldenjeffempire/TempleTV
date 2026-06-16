@@ -24,7 +24,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Clapperboard, RefreshCw, CheckCircle2, XCircle, Loader2, Clock,
   AlertCircle, RotateCcw, Zap, Ban, Trash2, Server, History,
-  AlertTriangle, Activity, ArrowRight, Skull, ListOrdered,
+  AlertTriangle, Activity, ArrowRight, Skull, ListOrdered, ShieldCheck,
+  TimerReset,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
@@ -70,6 +71,9 @@ interface DlqEntry {
   deadLetteredAt: string;
   requeuedAt: string | null;
   notes: string | null;
+  requeueCount: number;
+  nextDlqRetryAt: string | null;
+  permanentFailure: boolean;
 }
 
 const STATUS_CONFIG = {
@@ -636,6 +640,19 @@ export default function TranscodingPage() {
 
         {/* ── Dead Letter Queue Tab ─────────────────────────────────────────── */}
         <TabsContent value="dlq" className="space-y-4 mt-4">
+          {/* Autonomous recovery banner */}
+          <div className="flex items-start gap-2.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-900/10 px-3 py-2.5">
+            <ShieldCheck size={15} className="mt-0.5 text-blue-600 dark:text-blue-400 shrink-0" />
+            <div className="text-xs text-blue-700 dark:text-blue-300 space-y-0.5">
+              <p className="font-medium">Autonomous recovery is active</p>
+              <p className="text-blue-600/80 dark:text-blue-400/80">
+                Failed jobs are automatically requeued on a 4 h → 12 h → 24 h schedule.
+                After 3 auto-retries a permanent-failure alert is raised.
+                Jobs with corrupt or missing source files require a re-upload and are never auto-requeued.
+              </p>
+            </div>
+          </div>
+
           <Card>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
@@ -654,7 +671,7 @@ export default function TranscodingPage() {
                       <AlertDialogHeader>
                         <AlertDialogTitle>Purge all {dlqEntries.length} DLQ entries?</AlertDialogTitle>
                         <AlertDialogDescription>
-                          Permanently removes all dead-letter entries that haven't been requeued. The underlying job records are not deleted. This cannot be undone.
+                          Permanently removes all dead-letter entries. Auto-recovery will stop for purged entries. The underlying job records are not deleted. This cannot be undone.
                         </AlertDialogDescription>
                       </AlertDialogHeader>
                       <AlertDialogFooter>
@@ -676,68 +693,106 @@ export default function TranscodingPage() {
                 <div className="flex flex-col items-center gap-2 py-8 text-center">
                   <CheckCircle2 size={24} className="text-green-500" />
                   <p className="text-sm font-medium">Dead-letter queue is empty</p>
-                  <p className="text-xs text-muted-foreground">Jobs that exhaust their retry budget appear here for operator review.</p>
+                  <p className="text-xs text-muted-foreground">Jobs that exhaust their retry budget are automatically recovered here.</p>
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {dlqEntries.map(entry => (
-                    <div key={entry.id} className="border rounded-lg p-3 bg-orange-50/30 dark:bg-orange-900/10 border-orange-200 dark:border-orange-900">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <p className="text-sm font-medium truncate">{entry.videoTitle || entry.videoId || "Unknown video"}</p>
-                            {entry.errorCode && (
-                              <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-orange-300 text-orange-700 dark:text-orange-400">
-                                {entry.errorCode}
-                              </Badge>
+                  {dlqEntries.map(entry => {
+                    const isPermanent = entry.permanentFailure;
+                    const isTerminal = entry.errorCode === "CORRUPT_SOURCE" || entry.errorCode === "SOURCE_MISSING";
+                    const tierLabel = entry.requeueCount > 0
+                      ? `Auto-recovery tier ${entry.requeueCount}/3`
+                      : "Awaiting auto-recovery (tier 1/3)";
+                    const nextRetry = entry.nextDlqRetryAt ? new Date(entry.nextDlqRetryAt) : null;
+                    const nextRetryLabel = nextRetry && nextRetry > new Date()
+                      ? `Next retry ${formatDistanceToNow(nextRetry, { addSuffix: true })}`
+                      : entry.requeueCount === 0 && !isPermanent && !isTerminal
+                        ? "Recovery scheduled — next sweep"
+                        : null;
+                    return (
+                      <div key={entry.id} className={`border rounded-lg p-3 ${
+                        isPermanent
+                          ? "bg-red-50/40 dark:bg-red-900/10 border-red-200 dark:border-red-900"
+                          : "bg-orange-50/30 dark:bg-orange-900/10 border-orange-200 dark:border-orange-900"
+                      }`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="text-sm font-medium truncate">{entry.videoTitle || entry.videoId || "Unknown video"}</p>
+                              {entry.errorCode && (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-orange-300 text-orange-700 dark:text-orange-400">
+                                  {entry.errorCode}
+                                </Badge>
+                              )}
+                              {isPermanent ? (
+                                <Badge variant="destructive" className="text-[10px] px-1.5 py-0 gap-1">
+                                  <XCircle size={9} /> Permanent Failure
+                                </Badge>
+                              ) : isTerminal ? (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-red-200 text-red-600 dark:text-red-400 gap-1">
+                                  <XCircle size={9} /> Requires Re-upload
+                                </Badge>
+                              ) : (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-blue-200 text-blue-600 dark:text-blue-400 gap-1">
+                                  <TimerReset size={9} /> {tierLabel}
+                                </Badge>
+                              )}
+                            </div>
+                            {entry.lastError && (
+                              <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{entry.lastError}</p>
+                            )}
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {entry.attempts} attempt{entry.attempts !== 1 ? "s" : ""} ·{" "}
+                              Dead-lettered {formatDistanceToNow(new Date(entry.deadLetteredAt), { addSuffix: true })}
+                              {nextRetryLabel && (
+                                <span className="text-blue-600 dark:text-blue-400"> · {nextRetryLabel}</span>
+                              )}
+                            </p>
+                            {entry.notes && (
+                              <p className="text-[11px] text-muted-foreground mt-0.5 italic">{entry.notes}</p>
                             )}
                           </div>
-                          {entry.lastError && (
-                            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{entry.lastError}</p>
-                          )}
-                          <p className="text-xs text-muted-foreground mt-1">
-                            {entry.attempts} attempt{entry.attempts !== 1 ? "s" : ""} ·{" "}
-                            Dead-lettered {formatDistanceToNow(new Date(entry.deadLetteredAt), { addSuffix: true })}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <Button
-                            size="sm" variant="outline"
-                            className="h-7 text-xs gap-1"
-                            onClick={() => dlqRequeueMutation.mutate(entry.id)}
-                            disabled={dlqRequeueMutation.isPending}
-                            title="Re-queue with fresh retry budget"
-                          >
-                            <RotateCcw size={11} /> Requeue
-                          </Button>
-                          {isAdmin && (
-                            <AlertDialog>
-                              <AlertDialogTrigger asChild>
-                                <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive hover:text-destructive" title="Purge permanently">
-                                  <Trash2 size={12} />
-                                </Button>
-                              </AlertDialogTrigger>
-                              <AlertDialogContent>
-                                <AlertDialogHeader>
-                                  <AlertDialogTitle>Purge dead-letter entry?</AlertDialogTitle>
-                                  <AlertDialogDescription>
-                                    This permanently removes the DLQ entry for "{entry.videoTitle || entry.jobId}". The job record itself is not deleted. This cannot be undone.
-                                  </AlertDialogDescription>
-                                </AlertDialogHeader>
-                                <AlertDialogFooter>
-                                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                  <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                    onClick={() => dlqPurgeMutation.mutate(entry.id)}>
-                                    Purge Entry
-                                  </AlertDialogAction>
-                                </AlertDialogFooter>
-                              </AlertDialogContent>
-                            </AlertDialog>
-                          )}
+                          <div className="flex items-center gap-2 shrink-0">
+                            {!isPermanent && (
+                              <Button
+                                size="sm" variant="outline"
+                                className="h-7 text-xs gap-1"
+                                onClick={() => dlqRequeueMutation.mutate(entry.id)}
+                                disabled={dlqRequeueMutation.isPending}
+                                title="Force requeue now, bypassing the auto-recovery schedule"
+                              >
+                                <RotateCcw size={11} /> Force Requeue
+                              </Button>
+                            )}
+                            {isAdmin && (
+                              <AlertDialog>
+                                <AlertDialogTrigger asChild>
+                                  <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-destructive hover:text-destructive" title="Purge permanently — stops auto-recovery">
+                                    <Trash2 size={12} />
+                                  </Button>
+                                </AlertDialogTrigger>
+                                <AlertDialogContent>
+                                  <AlertDialogHeader>
+                                    <AlertDialogTitle>Purge dead-letter entry?</AlertDialogTitle>
+                                    <AlertDialogDescription>
+                                      This permanently removes the DLQ entry for "{entry.videoTitle || entry.jobId}". Auto-recovery will stop for this job. The job record itself is not deleted. This cannot be undone.
+                                    </AlertDialogDescription>
+                                  </AlertDialogHeader>
+                                  <AlertDialogFooter>
+                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                    <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                      onClick={() => dlqPurgeMutation.mutate(entry.id)}>
+                                      Purge Entry
+                                    </AlertDialogAction>
+                                  </AlertDialogFooter>
+                                </AlertDialogContent>
+                              </AlertDialog>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </CardContent>

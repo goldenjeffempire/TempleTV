@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, index, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, index, jsonb, boolean } from "drizzle-orm/pg-core";
 import { videosTable } from "./videos";
 
 export const transcodingJobsTable = pgTable("transcoding_jobs", {
@@ -76,6 +76,9 @@ export const transcodingDeadLetterTable = pgTable("transcoding_dead_letter", {
   deadLetteredAt: timestamp("dead_lettered_at", { withTimezone: true }).notNull().defaultNow(),
   requeuedAt: timestamp("requeued_at", { withTimezone: true }),
   notes: text("notes"),
+  requeueCount: integer("requeue_count").notNull().default(0),
+  nextDlqRetryAt: timestamp("next_dlq_retry_at", { withTimezone: true }),
+  permanentFailure: boolean("permanent_failure").notNull().default(false),
 }, (t) => [
   index("idx_transcoding_dead_letter_dead_lettered_at").on(t.deadLetteredAt),
   index("idx_transcoding_dead_letter_video_id").on(t.videoId),

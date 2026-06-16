@@ -27,6 +27,7 @@ import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { workerRegistry } from "./transcoder.worker-registry.js";
 import { jobLeaseManager } from "./transcoder.lease.js";
 import { emitJobEvent, purgeOldEvents } from "./transcoder.job-events.js";
+import { dlqRecoveryWorker } from "./transcoder.dlq-recovery.js";
 
 const jobs = schema.transcodingJobsTable;
 const videos = schema.videosTable;
@@ -188,6 +189,13 @@ class TranscoderDispatcher {
 
     this.timer = setTimeout(() => this.tick(), env.TRANSCODER_POLL_MS);
     this.timer.unref();
+
+    // Start the autonomous DLQ recovery worker. It sweeps dead-lettered jobs
+    // every DLQ_RECOVERY_INTERVAL_MS (default 30 min) and requeues them on a
+    // 3-tier cooldown schedule (4 h → 12 h → 24 h). Terminal error codes
+    // (CORRUPT_SOURCE, SOURCE_MISSING) are never auto-requeued.
+    dlqRecoveryWorker.start();
+
     logger.info(
       { pollMs: env.TRANSCODER_POLL_MS, maxConcurrent: this.maxConcurrent, workerId: workerRegistry.id },
       "transcoder dispatcher started",
@@ -797,6 +805,32 @@ class TranscoderDispatcher {
       dispatcherStopped: this.stopped,
       possibleCauses: reasons,
     });
+
+    // Self-healing nudge: attempt to pick up stale jobs immediately.
+    // If the circuit breaker is open but ffmpeg has become available
+    // since it was tripped, this gives the dispatcher a chance to
+    // recover without waiting for the next scheduled ffmpeg re-check.
+    if (!this.ffmpegAvailable) {
+      void checkFfmpegAvailable().then((available) => {
+        if (available) {
+          this.ffmpegAvailable = true;
+          this.ffmpegRecheckTimer = null;
+          logger.info(
+            "transcoder: stale-queued watchdog detected ffmpeg restored — circuit CLOSED, nudging dispatcher",
+          );
+          this.nudge();
+        }
+      }).catch(() => { /* non-fatal — will retry on next recheck */ });
+    } else if (!this.stopped) {
+      // Circuit is closed but jobs are stale — nudge immediately to try
+      // picking them up (handles edge cases like a brief DB hiccup that
+      // prevented the previous tick from claiming any jobs).
+      logger.info(
+        { count: stale.length },
+        "transcoder: stale-queued watchdog nudging dispatcher for self-healing",
+      );
+      this.nudge();
+    }
   }
 
   getHeartbeat(): {
@@ -855,6 +889,8 @@ class TranscoderDispatcher {
       clearInterval(this.eventLogPurgeTimer);
       this.eventLogPurgeTimer = null;
     }
+    // Stop the autonomous DLQ recovery worker.
+    dlqRecoveryWorker.stop();
     // Deregister from worker registry (best-effort — non-blocking).
     void workerRegistry.deregister().catch(() => { /* non-fatal */ });
     logger.info("transcoder dispatcher stopped");
@@ -1910,6 +1946,15 @@ class TranscoderDispatcher {
           // DLQ entries pointing at jobs that were never marked dead_letter.
           if (terminalStatus === "dead_letter") {
             const dlqTable = schema.transcodingDeadLetterTable;
+            // Use onConflictDoUpdate so that when a previously-requeued job
+            // (either manually or by the DLQ recovery worker) exhausts its
+            // retry budget again, the existing DLQ entry is refreshed with
+            // the new failure info rather than silently discarded. The update:
+            //   - Refreshes attempts, lastError, errorCode, deadLetteredAt
+            //   - Clears requeuedAt to null so the entry reappears in the
+            //     default DLQ view and the recovery worker picks it up again
+            //   - Preserves requeueCount / nextDlqRetryAt (recovery metadata)
+            //   - Preserves permanentFailure (once marked, stays marked)
             await tx.insert(dlqTable).values({
               id: randomUUID(),
               jobId: job.id,
@@ -1918,7 +1963,16 @@ class TranscoderDispatcher {
               attempts,
               lastError: truncatedMessage,
               errorCode: isDiskFull ? "DISK_FULL" : "MAX_ATTEMPTS_EXCEEDED",
-            }).onConflictDoNothing();
+            }).onConflictDoUpdate({
+              target: dlqTable.jobId,
+              set: {
+                attempts: sql`EXCLUDED.attempts`,
+                lastError: sql`EXCLUDED.last_error`,
+                errorCode: sql`EXCLUDED.error_code`,
+                deadLetteredAt: sql`NOW()`,
+                requeuedAt: null,
+              },
+            });
           }
         });
 

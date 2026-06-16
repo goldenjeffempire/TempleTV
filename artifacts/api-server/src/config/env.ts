@@ -420,6 +420,20 @@ const Env = z.object({
   // ops-alert. Long-waiting queued jobs indicate a systemic issue: circuit open,
   // TRANSCODER_DISABLE=1 accidentally set, or all workers dead. Default 2 h.
   TRANSCODER_QUEUE_STALE_ALERT_MS: z.coerce.number().int().positive().default(2 * 60 * 60_000),
+  // ── DLQ autonomous auto-recovery ─────────────────────────────────────────
+  // When true (default), the DLQ recovery worker automatically requeues
+  // dead-lettered jobs on a 3-tier schedule (4h → 12h → 24h after failure).
+  // Jobs with terminal error codes (CORRUPT_SOURCE, SOURCE_MISSING) are never
+  // auto-requeued regardless of this setting.
+  // Set to false to require manual operator intervention for all DLQ entries.
+  DLQ_RECOVERY_ENABLED: z
+    .union([z.boolean(), z.string()])
+    .transform((v) => v === true || v === "true" || v === "1")
+    .default(true),
+  // How often (ms) the DLQ recovery worker sweeps for eligible entries.
+  // Default: 30 min. Recovery is opportunistic — actual requeue times depend on
+  // when the sweep runs relative to the tier deadline, not this interval alone.
+  DLQ_RECOVERY_INTERVAL_MS: z.coerce.number().int().positive().default(30 * 60_000),
   // How often (ms) to run the periodic FFmpeg zombie scan after startup.
   // At startup the scan always runs once; this controls the recurring cadence.
   // Default 30 min. Set to 0 to disable the recurring scan (startup-only).
