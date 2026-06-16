@@ -504,8 +504,9 @@ function TranscodingProgressPanel() {
 // embed, HLS adaptive stream, or raw MP4. Derived from existing BroadcastQueueRow
 // fields — no additional API fields required.
 
-function deriveSourceKind(item: Pick<BroadcastQueueRow, "youtubeId" | "hasHls" | "videoSource">): "youtube" | "hls" | "mp4" {
+function deriveSourceKind(item: Pick<BroadcastQueueRow, "youtubeId" | "hasHls" | "videoSource">): "youtube" | "hls" | "rtmp" | "mp4" {
   if (item.youtubeId) return "youtube";
+  if (item.videoSource === "rtmp") return "rtmp";
   if (item.hasHls) return "hls";
   return "mp4";
 }
@@ -520,6 +521,17 @@ function SourceKindBadge({ item }: { item: Pick<BroadcastQueueRow, "youtubeId" |
         title="Will air via YouTube embed — requires YouTube Live or a public YouTube video URL."
       >
         YT
+      </Badge>
+    );
+  }
+  if (kind === "rtmp") {
+    return (
+      <Badge
+        variant="outline"
+        className="h-4 text-[10px] gap-0.5 shrink-0 border-violet-300 text-violet-600 dark:border-violet-700 dark:text-violet-400"
+        title="Will air via RTMP live ingest — a live encoder must be pushing a stream to the ingest endpoint."
+      >
+        RTMP
       </Badge>
     );
   }

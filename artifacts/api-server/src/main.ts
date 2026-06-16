@@ -860,16 +860,23 @@ async function main() {
         "Transcoding, YouTube sync, broadcast health-monitoring, and queue maintenance " +
         "require a separate worker process (RUN_MODE=worker) or a combined process (RUN_MODE=all).",
     );
-    try {
-      const { adminEventBus: aeb } = await import("./modules/admin-ops/admin-event-bus.js");
-      aeb.push("ops-alert", {
-        level: "warn",
-        message:
-          "RUN_MODE=api — background workers are disabled in this process. " +
-          "Start a worker replica (RUN_MODE=worker) or switch to RUN_MODE=all.",
-        source: "startup",
-      });
-    } catch { /* non-fatal */ }
+    // Delay by 30 s so admin SSE connections have time to establish before
+    // the alert arrives — an immediate push at startup is lost if no admin
+    // client has connected yet. The unacked-alert sweeper will escalate
+    // to email after 10 min if no one acknowledges it.
+    void (async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 30_000));
+      try {
+        const { adminEventBus: aeb } = await import("./modules/admin-ops/admin-event-bus.js");
+        aeb.push("ops-alert", {
+          level: "warn",
+          message:
+            "RUN_MODE=api — background workers are disabled in this process. " +
+            "Start a worker replica (RUN_MODE=worker) or switch to RUN_MODE=all.",
+          source: "startup",
+        });
+      } catch { /* non-fatal */ }
+    })();
   }
 
   if (mode === "worker") {

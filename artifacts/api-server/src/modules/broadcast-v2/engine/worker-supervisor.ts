@@ -15,6 +15,7 @@
  *   });
  */
 import { logger } from "../../../infrastructure/logger.js";
+import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 
 export interface WorkerConfig {
   name: string;
@@ -196,10 +197,25 @@ class SupervisedWorker {
       this.totalErrors += 1;
       this.lastErrorAtMs = Date.now();
       this.lastError = err instanceof Error ? err.message : String(err);
-      logger.warn(
-        { worker: this.cfg.name, consecutiveFailures: this.consecutiveFailures, err },
-        "[worker-supervisor] worker run failed",
-      );
+      const isDeadman = this.lastError.startsWith("[deadman]");
+      if (isDeadman) {
+        logger.error(
+          { worker: this.cfg.name, timeoutMs },
+          "[worker-supervisor] deadman switch fired — worker was hung and forcibly killed",
+        );
+        try {
+          adminEventBus.push("ops-alert", {
+            level: "critical",
+            message: `Worker "${this.cfg.name}" hung and was killed after ${timeoutMs}ms — check for DB locks, infinite loops, or external service timeouts.`,
+            source: "worker-supervisor",
+          });
+        } catch { /* non-fatal */ }
+      } else {
+        logger.warn(
+          { worker: this.cfg.name, consecutiveFailures: this.consecutiveFailures, err },
+          "[worker-supervisor] worker run failed",
+        );
+      }
       const max = this.cfg.maxConsecutiveFailures ?? Infinity;
       if (this.consecutiveFailures >= max) {
         this.circuitOpen = true;

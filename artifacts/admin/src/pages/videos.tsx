@@ -272,6 +272,9 @@ export default function VideosPage() {
   // immediately so the badge in the video list reflects reality. refetchType
   // defaults to "active" — only re-fetches the currently-mounted query (avoids
   // skeleton flash on background pages while still updating the visible list).
+  useSSEEvent("transcoding-progress", () => {
+    void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+  });
   useSSEEvent("transcoding-update", () => {
     void qc.invalidateQueries({ queryKey: ["admin-videos"] });
     // When HLS transcoding completes the broadcast_queue row gains a
@@ -1270,6 +1273,17 @@ export default function VideosPage() {
                         ? "Ready"
                         : v.transcodingStatus || "—"}
                     </Badge>
+                    {(v.transcodingStatus === "encoding" || v.transcodingStatus === "processing") && v.transcodingProgress !== null && (
+                      <div className="w-24 flex flex-col items-end gap-0.5">
+                        <div className="w-full h-1 bg-muted rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-blue-500 transition-all duration-500 rounded-full"
+                            style={{ width: `${v.transcodingProgress}%` }}
+                          />
+                        </div>
+                        <span className="text-[9px] text-muted-foreground tabular-nums">{v.transcodingProgress}%</span>
+                      </div>
+                    )}
                     {v.transcodingStatus === "failed" && v.videoSource === "local" && (
                       <>
                         {v.sourceAvailable === false ? (
