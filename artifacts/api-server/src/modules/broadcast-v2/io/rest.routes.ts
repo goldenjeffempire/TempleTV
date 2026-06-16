@@ -1223,12 +1223,15 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   //
   // Returns a full audit report including every URL change applied.
   // Rate-limited to 3 req/min (heavy DB writer — not for polling).
+  // Accepts an optional idempotencyKey so callers can safely retry without
+  // triggering a second full repair pass within the 5-minute dedup window.
   app.post(
     "/repair-queue",
     {
       preHandler: requireAuth("admin"),
       bodyLimit: 1048576,
       schema: {
+        body: z.object({ idempotencyKey: z.string().optional() }).optional(),
         response: {
           200: z.object({
             ok: z.literal(true),
@@ -1263,6 +1266,20 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
     },
     async (req, _reply) => {
+      const body = req.body as { idempotencyKey?: string } | undefined;
+      if (body?.idempotencyKey) {
+        if (!checkIdempotency(body.idempotencyKey)) {
+          const dedupSnap = broadcastOrchestrator.snapshot();
+          return { ok: true as const, durationMs: 0, auditedLibraryUrls: 0, fixedLibraryUrls: 0,
+            invalidLibraryUrls: 0, auditedQueueUrls: 0, fixedQueueUrls: 0, orphansDeactivated: 0,
+            duplicatesDeactivated: 0, noUrlItemsDeactivated: 0, itemsReEnabled: 0,
+            badUrlCacheCleared: false, overrideWasStale: false, overrideStopped: false,
+            libraryScanned: 0, libraryEnqueued: 0, retriedFailed: 0, hlsTriggered: 0,
+            orchestratorReloaded: false, currentItemCount: broadcastOrchestrator.getItemCount(),
+            currentMode: dedupSnap.mode, urlChanges: [],
+            message: "duplicate request — idempotency key already processed" };
+        }
+      }
       const startMs = Date.now();
       req.log.info("[broadcast-v2] repair-queue: starting comprehensive URL audit and repair");
 

@@ -4,11 +4,11 @@ import path from "node:path";
 import { withHlsToken } from "../../../shared/hls-token.js";
 import { env } from "../../../config/env.js";
 import { logger } from "../../../infrastructure/logger.js";
-import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, setBroadcastMode, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
+import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, broadcastSequenceAdvanceTotal, broadcastSkipTotal, broadcastBadUrlCount, setBroadcastMode, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
 import { checkpointRepo } from "../repository/checkpoint.repo.js";
-import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, type RawQueueRow } from "../repository/queue.repo.js";
+import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, getBadUrlCacheSize, type RawQueueRow } from "../repository/queue.repo.js";
 import { faststartRecoveryWorker } from "./faststart-recovery.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { ytShuffleFallback } from "./youtube-shuffle-fallback.js";
@@ -524,7 +524,7 @@ class BroadcastOrchestrator extends EventEmitter {
     this.started = true;
     this.startedAtWallMs = Date.now();
 
-    // ── Boot-time dead-air auto-revalidation ─────────────────────────────
+    // ── Boot-time dead-air auto-revalidation (with up to 3 retries) ──────
     // After a server restart the bad-URL cache is hydrated from the DB (above).
     // If all queued items were blocked before the restart (e.g. from a 401
     // storm caused by a misconfigured auth flag that has since been fixed),
@@ -532,37 +532,51 @@ class BroadcastOrchestrator extends EventEmitter {
     // underlying source is now accessible. This 10-second delayed check
     // detects that state and immediately clears the bad-URL cache + reloads
     // so items can resolve — faster than waiting for escalateDeadAir() at 15s.
+    // Retries up to 3 times (30 s apart) so a transient DB hiccup at boot
+    // does not permanently prevent recovery.
     {
-      const bootRevalidateTimer = setTimeout(() => {
-        void (async () => {
-          try {
-            if (!this.started) return;
-            if (this.items.length > 0) return; // already playing — nothing to do
-            const dbCount = await countActiveRaw();
-            if (dbCount === 0) return; // truly empty — library scan handles it
-            logger.warn(
-              { channel: this.channelId, dbCount },
-              "[broadcast-v2] boot: DB has active queue items but none are playable " +
-              "— clearing bad-URL cache and running immediate source revalidation",
-            );
-            await reEnableAllSuspended().catch((err: unknown) => {
-              logger.warn({ err }, "[broadcast-v2] boot: reEnableAllSuspended failed (non-fatal)");
-            });
-            clearAllBadUrls();
-            this.resetQueueHash();
-            await this.reload().catch((err: unknown) => {
-              logger.warn({ err }, "[broadcast-v2] boot: revalidation reload failed (non-fatal)");
-            });
-            logger.info(
-              { channel: this.channelId, itemsAfter: this.items.length },
-              "[broadcast-v2] boot: source revalidation complete",
-            );
-          } catch (err: unknown) {
-            logger.warn({ err }, "[broadcast-v2] boot: source revalidation failed (non-fatal)");
-          }
-        })();
-      }, 10_000);
-      bootRevalidateTimer.unref?.();
+      let bootRevalidateAttempts = 0;
+      const MAX_BOOT_REVALIDATE_ATTEMPTS = 3;
+      const scheduleBootRevalidate = (delayMs: number) => {
+        const t = setTimeout(() => {
+          void (async () => {
+            bootRevalidateAttempts += 1;
+            try {
+              if (!this.started) return;
+              if (this.items.length > 0) return; // already playing — nothing to do
+              const dbCount = await countActiveRaw();
+              if (dbCount === 0) return; // truly empty — library scan handles it
+              logger.warn(
+                { channel: this.channelId, dbCount, attempt: bootRevalidateAttempts },
+                "[broadcast-v2] boot: DB has active queue items but none are playable " +
+                "— clearing bad-URL cache and running immediate source revalidation",
+              );
+              await reEnableAllSuspended().catch((err: unknown) => {
+                logger.warn({ err }, "[broadcast-v2] boot: reEnableAllSuspended failed (non-fatal)");
+              });
+              clearAllBadUrls();
+              this.resetQueueHash();
+              await this.reload().catch((err: unknown) => {
+                logger.warn({ err }, "[broadcast-v2] boot: revalidation reload failed (non-fatal)");
+              });
+              logger.info(
+                { channel: this.channelId, itemsAfter: this.items.length, attempt: bootRevalidateAttempts },
+                "[broadcast-v2] boot: source revalidation complete",
+              );
+            } catch (err: unknown) {
+              logger.warn(
+                { err, attempt: bootRevalidateAttempts },
+                "[broadcast-v2] boot: source revalidation failed (non-fatal)",
+              );
+              if (this.started && bootRevalidateAttempts < MAX_BOOT_REVALIDATE_ATTEMPTS) {
+                scheduleBootRevalidate(30_000);
+              }
+            }
+          })();
+        }, delayMs);
+        t.unref?.();
+      };
+      scheduleBootRevalidate(10_000);
     }
 
     // ── Tick loop (purely computational — no async/DB work ever) ──────────
@@ -804,7 +818,9 @@ class BroadcastOrchestrator extends EventEmitter {
     // Save the bad-URL blacklist and skip counts to the DB every 60 s so
     // that in-flight suspensions survive a crash or graceful restart.
     // A final save also fires in stop() for graceful shutdown paths.
+    // Also update the Prometheus gauge so operators can see the live count.
     this.badUrlCacheTimer = setInterval(() => {
+      broadcastBadUrlCount.set({ channel: this.channelId, ...SERVICE_LABELS }, getBadUrlCacheSize());
       void persistBadUrlCache(this.channelId);
     }, 60_000);
     this.badUrlCacheTimer.unref?.();
@@ -2801,6 +2817,7 @@ class BroadcastOrchestrator extends EventEmitter {
     }
     if (!skippedItemId) return; // elapsed fell outside all slots (shouldn't happen)
     this.consecutiveSkips += 1;
+    broadcastSkipTotal.inc({ channel: this.channelId, ...SERVICE_LABELS });
     await this.bump("item.skipped", { itemId: skippedItemId });
     this.emitSnapshot();
     // Dead-air structured alert: emit once when the consecutive-skip
@@ -2940,6 +2957,7 @@ class BroadcastOrchestrator extends EventEmitter {
   private async bump(eventType: V2EventType, payload: unknown): Promise<void> {
     this.sequence += 1;
     this.lastSequenceAdvanceMs = Date.now();
+    broadcastSequenceAdvanceTotal.inc({ channel: this.channelId, ...SERVICE_LABELS });
     const seq = this.sequence;
     // Persist state and event in the background so the tick loop stays cheap.
     void Promise.all([

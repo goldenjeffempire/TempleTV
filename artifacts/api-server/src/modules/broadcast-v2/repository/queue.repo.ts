@@ -306,6 +306,11 @@ export const SUSPENSION_TTL_MS = 5 * 60_000; // 5 minutes
 // url → expiresAtMs
 const badUrlCache = new Map<string, number>();
 
+/** Returns the current number of URLs in the bad-URL blacklist cache. */
+export function getBadUrlCacheSize(): number {
+  return badUrlCache.size;
+}
+
 /** Mark a source URL as recently confirmed unreachable.
  *
  * Uses exponential backoff: each successive call for the same URL doubles

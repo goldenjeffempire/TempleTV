@@ -134,6 +134,27 @@ export const processRssGauge = new Gauge({
   registers: [promRegistry],
 });
 
+export const broadcastSequenceAdvanceTotal = new Counter({
+  name: "broadcast_v2_sequence_advance_total",
+  help: "Total number of times the broadcast-v2 sequence has been bumped (any event type)",
+  labelNames: ["channel", "service", "env"] as const,
+  registers: [promRegistry],
+});
+
+export const broadcastSkipTotal = new Counter({
+  name: "broadcast_v2_skip_total",
+  help: "Total number of operator-triggered or auto-skip events on the broadcast queue",
+  labelNames: ["channel", "service", "env"] as const,
+  registers: [promRegistry],
+});
+
+export const broadcastBadUrlCount = new Gauge({
+  name: "broadcast_v2_bad_url_count",
+  help: "Current number of source URLs in the bad-URL blacklist cache",
+  labelNames: ["channel", "service", "env"] as const,
+  registers: [promRegistry],
+});
+
 const ALL_MODES = ["queue", "override", "failover"] as const;
 
 /**
