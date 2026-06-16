@@ -723,6 +723,124 @@ async function main() {
         logger.warn({ err }, "[broadcast-v2] boot remediation report failed (non-fatal)");
       }
     })();
+    // Startup HLS storage integrity sweep — 15 s after boot.
+    // Checks every active hls_ready broadcast queue item to confirm its
+    // master.m3u8 blob actually exists in storage. The queue integrity
+    // validator runs the same check every ~2 min, but this runs ONCE at
+    // boot so broken items are caught immediately rather than after the
+    // first validator cycle. Non-fatal; fires and forgets.
+    void (async () => {
+      await new Promise<void>((resolve) => { const t = setTimeout(resolve, 15_000); t.unref?.(); });
+      try {
+        const { enqueueTranscode } = await import("./modules/transcoder/transcoder.queue.js");
+        const { adminEventBus: bus } = await import("./modules/admin-ops/admin-event-bus.js");
+
+        type HlsCheckRow = {
+          queue_id: string;
+          video_id: string;
+          hls_key: string;
+          local_video_url: string | null;
+          source_cleanup_status: string | null;
+        };
+        const candidates = await db.execute<HlsCheckRow>(sql`
+          SELECT
+            bq.id              AS queue_id,
+            mv.id              AS video_id,
+            CONCAT('transcoded/', mv.id::text, '/master.m3u8') AS hls_key,
+            mv.local_video_url,
+            mv.source_cleanup_status
+          FROM broadcast_queue bq
+          INNER JOIN managed_videos mv ON mv.id = bq.video_id
+          WHERE bq.is_active = true
+            AND mv.transcoding_status = 'hls_ready'
+          LIMIT 200
+        `).then((r) => (r.rows as HlsCheckRow[]) ?? []);
+
+        if (candidates.length === 0) return;
+
+        const hlsKeys = candidates.map((r) => r.hls_key);
+        const presentRows = await db
+          .select({ key: schema.storageBlobsTable.key })
+          .from(schema.storageBlobsTable)
+          .where(inArray(schema.storageBlobsTable.key, hlsKeys));
+        const presentSet = new Set(presentRows.map((r) => r.key));
+
+        const missing = candidates.filter((r) => !presentSet.has(r.hls_key));
+        if (missing.length === 0) {
+          logger.info(
+            { checked: candidates.length },
+            "[startup] HLS storage integrity sweep: all hls_ready queue items have master.m3u8 ✓",
+          );
+          return;
+        }
+
+        logger.warn(
+          { missing: missing.length, checked: candidates.length },
+          "[startup] HLS storage integrity sweep: found hls_ready queue items with missing master.m3u8 — deactivating and re-enqueuing",
+        );
+
+        for (const row of missing) {
+          try {
+            await db.execute(sql`
+              UPDATE broadcast_queue
+              SET is_active = false,
+                  validator_deactivated_reason = 'hls_storage_missing',
+                  updated_at = NOW()
+              WHERE id = ${row.queue_id}
+            `);
+
+            if (row.local_video_url && row.source_cleanup_status !== "deleted") {
+              await db.execute(sql`
+                UPDATE managed_videos
+                SET hls_master_url = NULL,
+                    transcoding_status = 'queued',
+                    updated_at = NOW()
+                WHERE id = ${row.video_id}
+              `);
+              await enqueueTranscode({
+                videoId: row.video_id,
+                videoPath: row.local_video_url,
+                priority: 5,
+              });
+              logger.warn(
+                { videoId: row.video_id, queueId: row.queue_id },
+                "[startup] HLS storage integrity: deactivated item, cleared hls_master_url, re-enqueued for transcoding",
+              );
+            } else {
+              await db.execute(sql`
+                UPDATE managed_videos
+                SET hls_master_url = NULL,
+                    transcoding_status = 'none',
+                    updated_at = NOW()
+                WHERE id = ${row.video_id}
+              `);
+              logger.warn(
+                { videoId: row.video_id, queueId: row.queue_id, sourceCleanupStatus: row.source_cleanup_status },
+                "[startup] HLS storage integrity: deactivated item, cleared hls_master_url; no source blob available — operator must re-upload",
+              );
+            }
+
+            bus.push("broadcast-queue-updated", {
+              reason: "startup-hls-storage-integrity",
+              videoId: row.video_id,
+              queueId: row.queue_id,
+            });
+            bus.push("videos-library-updated", {
+              reason: "startup-hls-storage-integrity",
+              videoId: row.video_id,
+            });
+          } catch (itemErr) {
+            logger.warn(
+              { err: itemErr, videoId: row.video_id, queueId: row.queue_id },
+              "[startup] HLS storage integrity: failed to process missing item (non-fatal — validator will retry)",
+            );
+          }
+        }
+      } catch (err) {
+        logger.warn({ err }, "[startup] HLS storage integrity sweep failed (non-fatal)");
+      }
+    })();
+
     // Startup verification: 30 s after boot, log a structured health summary
     // covering all autonomous components so operators can confirm everything
     // initialised correctly without hitting the /health endpoint manually.

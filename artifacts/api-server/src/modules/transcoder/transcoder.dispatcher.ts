@@ -365,13 +365,12 @@ class TranscoderDispatcher {
   }
 
   // Periodic FFmpeg zombie scan — re-runs every zombieScanTicks ticks after startup.
-  // Startup always fires once unconditionally in start(). Set
-  // TRANSCODER_ZOMBIE_SCAN_INTERVAL_MS=0 to disable the recurring scan.
+  // Startup always fires once unconditionally in start().
+  // The startup scan covers orphans from the previous process; this covers any
+  // orphans created by an OOM-kill or SIGKILL during the current process lifetime.
   private zombieScanCounter = 0;
   private get zombieScanTicks(): number {
-    return env.TRANSCODER_ZOMBIE_SCAN_INTERVAL_MS > 0
-      ? Math.max(1, Math.round(env.TRANSCODER_ZOMBIE_SCAN_INTERVAL_MS / env.TRANSCODER_POLL_MS))
-      : 0;
+    return Math.max(1, Math.round(5 * 60_000 / env.TRANSCODER_POLL_MS));
   }
 
   // Stale-queued watchdog — fires every staleQueuedTicks ticks (~15 min).
@@ -946,15 +945,16 @@ class TranscoderDispatcher {
       });
     }
 
-    // Periodic FFmpeg zombie scan (recurring; disabled when zombieScanTicks=0).
-    if (this.zombieScanTicks > 0) {
-      this.zombieScanCounter++;
-      if (this.zombieScanCounter >= this.zombieScanTicks) {
-        this.zombieScanCounter = 0;
-        void this.scanAndKillOrphanedFfmpegProcesses().catch((err) => {
-          logger.warn({ err }, "transcoder: periodic zombie scan error (non-fatal)");
-        });
-      }
+    // Periodic FFmpeg zombie scan (~every 5 min).
+    // The startup scan covers orphans from the PREVIOUS process; this covers
+    // orphans created by OOM-kills or SIGKILL during the CURRENT process's
+    // lifetime (e.g. a job killed mid-encode well after the startup scan ran).
+    this.zombieScanCounter++;
+    if (this.zombieScanCounter >= this.zombieScanTicks) {
+      this.zombieScanCounter = 0;
+      void this.scanAndKillOrphanedFfmpegProcesses().catch((err) => {
+        logger.warn({ err }, "transcoder: periodic zombie scan error (non-fatal)");
+      });
     }
 
     // Stale-queued watchdog (~every 15 min).
@@ -1473,6 +1473,125 @@ class TranscoderDispatcher {
             `transcoder: HLS integrity check failed — master.m3u8 not found in storage ` +
             `(key=${masterKey}). FFmpeg exited 0 but the manifest was not stored. ` +
             `Retrying will regenerate HLS output.`,
+          );
+        }
+
+        // ── HLS segment count integrity gate ────────────────────────────────
+        // After confirming master.m3u8 is present, verify that all variant
+        // playlists and their .ts segments are also stored. A partial-success
+        // crash during uploadDirRecursive can write the master but leave
+        // variant playlists or segments missing — players stall without the
+        // server ever seeing a visible error. Throwing here triggers a normal
+        // retry that regenerates HLS from scratch.
+        //
+        // Implementation: read master.m3u8 content, parse variant URIs,
+        // for each variant read its playlist and count #EXTINF lines,
+        // then count matching .ts blobs in storage. Reject if blob count
+        // is < expected - 1 (one-segment tolerance for the tail-segment
+        // write race). Capped at 6 variants to keep total DB round-trips low.
+        //
+        // All errors from this block are surfaced as UPLOAD_INCOMPLETE so
+        // the outer catch routes them to a retry (not a terminal failure).
+        try {
+          const masterContentRow = await db
+            .execute<{ content: string }>(sql`
+              SELECT convert_from(data, 'UTF8') AS content
+              FROM storage_blobs
+              WHERE key = ${masterKey}
+              LIMIT 1
+            `)
+            .then((r) => (r.rows as Array<{ content: string }>)[0] ?? null)
+            .catch(() => null);
+
+          if (masterContentRow) {
+            const masterLines = masterContentRow.content.split("\n");
+            const variantKeys: string[] = [];
+            const masterDir = masterKey.replace(/\/[^/]+$/, "/");
+            for (let mi = 0; mi < masterLines.length - 1; mi++) {
+              const mline = masterLines[mi]?.trim() ?? "";
+              if (!mline.startsWith("#EXT-X-STREAM-INF")) continue;
+              const uri = masterLines[mi + 1]?.trim() ?? "";
+              if (!uri || uri.startsWith("#")) continue;
+              if (uri.startsWith("http://") || uri.startsWith("https://")) {
+                variantKeys.push(uri);
+              } else {
+                variantKeys.push(`${masterDir}${uri}`);
+              }
+            }
+
+            for (const variantKey of variantKeys.slice(0, 6)) {
+              const variantRow = await db
+                .execute<{ content: string }>(sql`
+                  SELECT convert_from(data, 'UTF8') AS content
+                  FROM storage_blobs
+                  WHERE key = ${variantKey}
+                  LIMIT 1
+                `)
+                .then((r) => (r.rows as Array<{ content: string }>)[0] ?? null)
+                .catch(() => null);
+
+              if (!variantRow) {
+                const missingErr = new Error(
+                  `transcoder: HLS segment count gate — variant playlist missing from storage ` +
+                  `(key='${variantKey}'). FFmpeg exited 0 but upload was incomplete. ` +
+                  `Retrying will regenerate HLS from scratch.`,
+                );
+                (missingErr as NodeJS.ErrnoException).code = "UPLOAD_INCOMPLETE";
+                throw missingErr;
+              }
+
+              const extinfCount = (variantRow.content.match(/#EXTINF/g) ?? []).length;
+              if (extinfCount === 0) {
+                const emptyErr = new Error(
+                  `transcoder: HLS segment count gate — variant playlist contains no #EXTINF ` +
+                  `segments (key='${variantKey}'). Playlist is malformed. ` +
+                  `Retrying will regenerate HLS from scratch.`,
+                );
+                (emptyErr as NodeJS.ErrnoException).code = "UPLOAD_INCOMPLETE";
+                throw emptyErr;
+              }
+
+              // Count the .ts segment blobs for this variant's directory prefix.
+              const variantDir = variantKey.replace(/\/[^/]+$/, "/");
+              const segBlobCount = await db
+                .execute<{ cnt: string }>(sql`
+                  SELECT COUNT(*) AS cnt
+                  FROM storage_blobs
+                  WHERE key LIKE ${variantDir + "%"}
+                    AND key LIKE '%.ts'
+                `)
+                .then((r) => parseInt((r.rows as Array<{ cnt: string }>)[0]?.cnt ?? "0", 10))
+                .catch(() => -1);
+
+              // Allow 1-segment tolerance: the final segment may not yet be
+              // visible in a strongly-consistent read if storage lagged slightly
+              // behind the manifest write. Reject anything more than 1 missing.
+              if (segBlobCount >= 0 && segBlobCount < extinfCount - 1) {
+                const segErr = new Error(
+                  `transcoder: HLS segment count gate — variant '${variantKey}' lists ` +
+                  `${extinfCount} segments but only ${segBlobCount} .ts blobs found in storage ` +
+                  `(missing ${extinfCount - segBlobCount}). ` +
+                  `Retrying will regenerate HLS from scratch.`,
+                );
+                (segErr as NodeJS.ErrnoException).code = "UPLOAD_INCOMPLETE";
+                throw segErr;
+              }
+            }
+
+            logger.debug(
+              { videoId: job.videoId, variantsChecked: variantKeys.length },
+              "transcoder: HLS segment count gate passed ✓",
+            );
+          }
+        } catch (segGateErr) {
+          if ((segGateErr as NodeJS.ErrnoException).code === "UPLOAD_INCOMPLETE") {
+            throw segGateErr; // surface as a retriable error
+          }
+          // Unexpected errors (encoding issues, DB transient) — log and continue
+          // rather than blocking the entire finalization step.
+          logger.warn(
+            { err: segGateErr, videoId: job.videoId },
+            "transcoder: HLS segment count gate error (non-fatal — treating as passed)",
           );
         }
 

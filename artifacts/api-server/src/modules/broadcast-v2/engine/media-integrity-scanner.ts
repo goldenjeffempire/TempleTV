@@ -232,68 +232,90 @@ function extractFirstSegmentUrl(variantText: string, variantUrl: string): string
 
 /**
  * Extract the LAST segment URI from a variant HLS playlist body.
- * Mirrors extractFirstSegmentUrl() but scans in reverse order.
- *
- * Why: partial transcodes can produce a well-formed variant playlist with all
- * #EXTINF entries written before the segment upload fails mid-way through.
- * The first segment exists (was uploaded early), but the last segment is
- * missing — every client stalls at the end of available content.
- * Checking only the first segment misses this failure mode entirely.
+ * Returns a fully-resolved absolute URL, or null if none can be found.
+ * Probing the last segment catches partial uploads where early segments
+ * were written successfully but later segments are missing from storage.
  */
 function extractLastSegmentUrl(variantText: string, variantUrl: string): string | null {
   const lines = variantText.split("\n");
-  let lastSegUrl: string | null = null;
+  let lastUri: string | null = null;
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
-    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-      lastSegUrl = trimmed;
-      continue;
-    }
-    try {
-      const base = new URL(variantUrl);
-      base.pathname = base.pathname.replace(/\/[^/]*$/, "/");
-      lastSegUrl = new URL(trimmed, base).href;
-    } catch {
-      // Skip malformed relative URIs — keep searching for a valid last segment.
-    }
+    lastUri = trimmed;
   }
-  return lastSegUrl;
+  if (!lastUri) return null;
+  if (lastUri.startsWith("http://") || lastUri.startsWith("https://")) return lastUri;
+  try {
+    const base = new URL(variantUrl);
+    base.pathname = base.pathname.replace(/\/[^/]*$/, "/");
+    return new URL(lastUri, base).href;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return true when the given URL is served by this API server itself.
+ * Used to distinguish own-origin HLS segment 5xx errors (our server is
+ * definitely broken — hard failure) from external CDN 5xx (transient).
+ */
+function isOwnOriginUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const candidates = [
+      env.API_ORIGIN,
+      process.env["RENDER_EXTERNAL_URL"],
+      process.env["DEV_DOMAIN"],
+      "http://127.0.0.1",
+      "http://localhost",
+    ];
+    const ownHostnames = candidates
+      .filter(Boolean)
+      .map((h) => {
+        try {
+          return new URL(/^https?:\/\//i.test(h!) ? h! : `https://${h!}`).hostname;
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean) as string[];
+    return ownHostnames.includes(u.hostname);
+  } catch {
+    return false;
+  }
 }
 
 /**
  * HEAD-probe a single HLS segment to confirm it is accessible.
  *
- * Failure semantics:
- *   • 404 — always a hard failure (segment deleted or never uploaded).
- *   • 5xx from own-origin (http://127.0.0.1 / http://localhost) — hard failure.
- *     Our own server returning a server error means the storage layer failed
- *     to serve the segment; this is NOT a transient CDN blip.
- *   • 5xx from external CDN/storage — treated as ok to avoid false-positive
- *     deactivations caused by CDN edge-node hiccups or rate-limit throttles.
- *   • Timeout / network error — treated as ok (ambiguous; probe may be flaky).
+ * Failure classification:
+ *   • 404            — definitive hard failure regardless of origin.
+ *   • 5xx + ownOrigin — hard failure: our own server is definitely broken,
+ *                        not a transient CDN hiccup.
+ *   • 5xx external   — soft (ok: true): CDN/upstream transient; avoids
+ *                        false-positive deactivations on otherwise healthy items.
+ *   • timeout/error  — soft (ok: true): network hiccup, not a storage gap.
+ *
+ * @param ownOrigin Set true when the segment URL is served by this API
+ *                  server (detected by isOwnOriginUrl). Enables strict 5xx
+ *                  handling so server-side errors are surfaced immediately.
  */
-async function probeFirstSegment(
+async function probeHlsSegment(
   url: string,
   intHeaders: Record<string, string>,
+  ownOrigin = false,
 ): Promise<{ ok: boolean; status: number | null; reason?: string }> {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
-  const isOwnOrigin = url.startsWith("http://127.0.0.1") || url.startsWith("http://localhost");
   try {
     const res = await fetch(url, { method: "HEAD", signal: ac.signal, headers: { ...intHeaders } });
     clearTimeout(t);
     if (res.status === 404) {
       return { ok: false, status: 404, reason: "segment 404 — deleted or expired from storage" };
     }
-    // Own-origin: our server returning 5xx means a real storage/DB failure.
-    // External: 5xx is ambiguous (CDN transient) — leave ok:true to avoid false positives.
-    if (isOwnOrigin && res.status >= 500) {
-      return {
-        ok: false,
-        status: res.status,
-        reason: `own-origin segment server error: HTTP ${res.status} (storage or DB failure)`,
-      };
+    if (ownOrigin && res.status >= 500) {
+      return { ok: false, status: res.status, reason: `own-origin segment server error: HTTP ${res.status}` };
     }
     return { ok: true, status: res.status };
   } catch {
@@ -357,24 +379,26 @@ async function probeHlsVariant(
         reason: "HLS variant playlist contains no #EXTINF segments",
       };
     }
-    // Probe the first AND last segment URI to catch two distinct failure modes:
+
+    // Probe the first and last segment URIs to catch two distinct failure modes:
+    //   • First segment: confirms segments were uploaded at all (partial-success
+    //     transcodes that wrote the playlist but failed before any segment upload).
+    //   • Last segment:  confirms the upload ran to completion (partial uploads
+    //     where early segments landed but later ones are missing — HLS clients
+    //     stall near the end of the content with no error surfaced to the server).
     //
-    //   First segment missing: storage migration, TTL-based cleanup, or a
-    //     partial-success transcode that wrote the playlist but failed to upload
-    //     any segments at all.
+    // For own-origin segments (served by this API server), 5xx is treated as a
+    // hard failure because our own server returning 5xx is a definitive signal,
+    // not a CDN transient. External 5xx remains soft (ok: true) to avoid
+    // false-positive deactivations from upstream CDN hiccups.
     //
-    //   Last segment missing: the most common production failure — a partial
-    //     transcode that wrote the playlist with all #EXTINF entries, uploaded
-    //     early segments, but failed (OOM, disk full, process kill) before
-    //     uploading the final segment(s). Clients stall at end-of-file; the
-    //     master and variant playlists both return HTTP 200 so HEAD-only probes
-    //     never catch this.
-    //
-    // Only definitive 404 or own-origin 5xx are treated as failure —
-    // CDN 5xx transients return ok:true to avoid false-positive deactivations.
+    // Segment URLs inherit the variant URL's internal token via relative-URL
+    // resolution against the already-tokenised variant URL (the token is already
+    // embedded in `url` by the caller).
     const firstSegUrl = extractFirstSegmentUrl(text, url);
     if (firstSegUrl) {
-      const segResult = await probeFirstSegment(withHlsToken(firstSegUrl), intHeaders);
+      const firstIsOwn = isOwnOriginUrl(firstSegUrl);
+      const segResult = await probeHlsSegment(withHlsToken(firstSegUrl), intHeaders, firstIsOwn);
       if (!segResult.ok) {
         return {
           ok: false,
@@ -383,11 +407,13 @@ async function probeHlsVariant(
         };
       }
     }
-    // Only probe last segment when it differs from first (single-segment playlists
-    // would otherwise double-count the same 404 with a confusing "last segment" label).
+
+    // Probe the last segment only when it differs from the first (single-segment
+    // playlists already covered above; duplicate probe would add latency with no value).
     const lastSegUrl = extractLastSegmentUrl(text, url);
     if (lastSegUrl && lastSegUrl !== firstSegUrl) {
-      const lastSegResult = await probeFirstSegment(withHlsToken(lastSegUrl), intHeaders);
+      const lastIsOwn = isOwnOriginUrl(lastSegUrl);
+      const lastSegResult = await probeHlsSegment(withHlsToken(lastSegUrl), intHeaders, lastIsOwn);
       if (!lastSegResult.ok) {
         return {
           ok: false,

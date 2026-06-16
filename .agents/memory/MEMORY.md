@@ -1,3 +1,4 @@
+- [HLS pipeline hardening — 5 self-healing patterns](hls-pipeline-hardening.md) — startup sweep, validator reverse-pass, first+last segment probe (ownOrigin 5xx hard-fail), periodic zombie scan, segment count gate at finalization.
 - [Graceful-restart reconnect hint pattern](graceful-restart-reconnect-hint.md) — V2ServerFrame "reconnect" type; SSE/WS gateways broadcast hint on SIGTERM; transport handles it by scheduling forceReconnect after retryAfterMs, blocking scheduleReconnect guard.
 - [/readyz startup gate via shutdown-flag](readyz-startup-gate.md) — isStartupComplete() in shutdown-flag.ts; markStartupComplete() called at end of main.ts boot; /readyz returns 503 status:"down" until fully booted.
 - [SSE KNOWN_EVENTS gap audit pattern](sse-known-events-gap-pattern.md) — broadcast-source-upgraded was silently dropped (not in KNOWN_EVENTS); corrupt-media page had no handlers; includes audit shell command to catch future gaps.
