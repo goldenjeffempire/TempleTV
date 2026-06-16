@@ -1497,9 +1497,19 @@ class BroadcastOrchestrator extends EventEmitter {
       const nowMs = Date.now();
       if (nowMs - this.lastOffAirLogAtMs > 60_000) {
         this.lastOffAirLogAtMs = nowMs;
-        logger.info(
-          "[broadcast-v2] reloadInner: no playable local content — broadcast will be OFF_AIR until videos are added to the queue",
-        );
+        if (this.mode === "override" && this.override) {
+          // Queue is empty but an override is running — not actually OFF_AIR.
+          // Log a contextual INFO so operators aren't alarmed by a queue-empty
+          // warning while YouTube shuffle (or a manual override) is on-air.
+          logger.info(
+            { overrideTitle: this.override.title, kind: this.override.kind },
+            "[broadcast-v2] reloadInner: local queue is empty — broadcast is ON_AIR via active override",
+          );
+        } else {
+          logger.info(
+            "[broadcast-v2] reloadInner: no playable local content — broadcast will be OFF_AIR until videos are added to the queue",
+          );
+        }
       }
     }
 
@@ -1944,7 +1954,7 @@ class BroadcastOrchestrator extends EventEmitter {
           title: item.title,
           thumbnailUrl: item.thumbnailUrl,
           durationSecs: item.durationSecs,
-          source: { kind: fo.kind, url: fo.url },
+          source: { kind: fo.kind, url: fo.url, expiresAtMs: null },
           failoverSource: null, // already on the fallback path; no further failover
           startsAtMs,
           endsAtMs: startsAtMs + item.durationSecs * 1000,

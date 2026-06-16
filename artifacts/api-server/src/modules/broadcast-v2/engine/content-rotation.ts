@@ -120,9 +120,12 @@ export async function contentRotationScan(): Promise<void> {
     // this cycle cleanly rather than blocking or double-shuffling.
     let lockAcquired = false;
     await db.transaction(async (tx) => {
-      const [lockRow] = await tx.execute(
+      const lockResult = await tx.execute(
         sql`SELECT pg_try_advisory_xact_lock(${ROTATION_ADVISORY_LOCK_KEY}) AS acquired`,
       );
+      // Drizzle QueryResult is not iterable in the TypeScript type system
+      // but is array-like at runtime with the postgres-js driver.
+      const lockRow = (lockResult as unknown as Array<Record<string, unknown>>)[0];
       lockAcquired = Boolean((lockRow as { acquired?: boolean } | undefined)?.acquired);
       if (!lockAcquired) return; // Another process is shuffling — skip quietly.
 

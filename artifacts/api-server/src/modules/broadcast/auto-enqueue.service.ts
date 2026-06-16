@@ -57,7 +57,7 @@ export function isAutoEnqueueEnabled(): boolean {
  */
 export async function enqueueIfMissing(opts: {
   videoId: string;
-  reason: "upload-finalize" | "yt-sync" | "library-scan" | "manual-import" | "upload-recovery-on-restart" | "repair-all" | "enqueue-missing" | "assembly-retry";
+  reason: "upload-finalize" | "yt-sync" | "library-scan" | "manual-import" | "upload-recovery-on-restart" | "repair-all" | "enqueue-missing" | "assembly-retry" | "schedule-bridge";
 }): Promise<{ enqueued: boolean; queueItemId?: string; skipReason?: string }> {
   if (!isAutoEnqueueEnabled()) {
     return { enqueued: false, skipReason: "auto-enqueue-disabled" };
@@ -193,7 +193,7 @@ export async function enqueueIfMissing(opts: {
  * UX users expect from "add to queue" on the library page.
  */
 export async function scanLibraryAndEnqueue(opts: {
-  reason: "yt-sync" | "self-heal-empty" | "self-heal-all-blocked" | "manual" | "queue-health-guard" | "startup";
+  reason: "yt-sync" | "self-heal-empty" | "self-heal-all-blocked" | "manual" | "queue-health-guard" | "startup" | "schedule-bridge-playlist";
   maxToAdd?: number;
 }): Promise<{ scanned: number; enqueued: number; skipped: number }> {
   if (!isAutoEnqueueEnabled()) {

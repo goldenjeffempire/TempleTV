@@ -1169,6 +1169,15 @@ class TranscoderDispatcher {
             await db.update(jobs).set({ progress: pct, lastProgressAt: progressTs }).where(eq(jobs.id, job.id)).catch((err) => {
               logger.warn({ err, jobId: job.id, pct }, "transcoder: progress update failed (non-fatal)");
             });
+            // Emit SSE progress event so the admin broadcast panel updates the
+            // per-item progress bar in real time rather than waiting for the next
+            // 60-second poll. Throttle matches the DB-write throttle above (5 s).
+            adminEventBus.push("transcoding-progress", {
+              videoId: job.videoId,
+              jobId: job.id,
+              progress: pct,
+              videoTitle,
+            });
           },
         });
 

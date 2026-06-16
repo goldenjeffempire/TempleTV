@@ -25,7 +25,7 @@ import { and, eq } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { broadcastOrchestrator } from "./broadcast-orchestrator.js";
-import { scanLibraryAndEnqueue } from "../../broadcast/auto-enqueue.service.js";
+import { enqueueIfMissing, scanLibraryAndEnqueue } from "../../broadcast/auto-enqueue.service.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 
 const sched = schema.scheduleTable;
@@ -124,7 +124,7 @@ export async function scheduleBridgeScan(): Promise<void> {
   }
 }
 
-type ScheduleRow = Awaited<ReturnType<typeof db.select<typeof sched>>>[number];
+type ScheduleRow = typeof sched.$inferSelect;
 
 async function handleEntry(entry: ScheduleRow): Promise<void> {
   const endsAtMs = endTimeMsForToday(entry.endTime);
@@ -139,9 +139,9 @@ async function handleEntry(entry: ScheduleRow): Promise<void> {
         logger.warn({ entryId: entry.id }, "[schedule-bridge] video entry has no contentId — skipping");
         return;
       }
-      // Look up the video to get its URLs.
+      // Verify the video exists before attempting to enqueue it.
       const [video] = await db
-        .select({ id: vt.id, localVideoUrl: vt.localVideoUrl, hlsMasterUrl: vt.hlsMasterUrl, title: vt.title })
+        .select({ id: vt.id, title: vt.title })
         .from(vt)
         .where(eq(vt.id, entry.contentId))
         .limit(1);
@@ -153,14 +153,18 @@ async function handleEntry(entry: ScheduleRow): Promise<void> {
         logger.debug({ entryId: entry.id, videoId: video.id }, "[schedule-bridge] video already in queue — no-op");
         return;
       }
-      // Enqueue the specific video by scanning for it.
-      const result = await scanLibraryAndEnqueue({ reason: "schedule-bridge", maxToAdd: 1 });
+      // Directly enqueue the specific scheduled video (not a library scan which
+      // might pick a different video). enqueueIfMissing is idempotent and handles
+      // the not-yet-playable / corrupt-source checks internally.
+      const result = await enqueueIfMissing({ videoId: video.id, reason: "schedule-bridge" });
       logger.info(
-        { entryId: entry.id, videoId: video.id, enqueued: result.enqueued },
+        { entryId: entry.id, videoId: video.id, enqueued: result.enqueued, skipReason: result.skipReason },
         "[schedule-bridge] video entry processed",
       );
-      if (result.enqueued > 0) {
+      if (result.enqueued) {
         adminEventBus.push("broadcast-queue-updated", { reason: "schedule-bridge", entryId: entry.id });
+        // Notify the admin schedule page so it can reflect that this entry fired.
+        adminEventBus.push("broadcast-schedule-updated", { reason: "schedule-bridge-fired", entryId: entry.id });
       }
       break;
     }
@@ -176,7 +180,7 @@ async function handleEntry(entry: ScheduleRow): Promise<void> {
         return;
       }
       await broadcastOrchestrator.startOverride({
-        kind: "hls-fallback-url",
+        kind: "hls",
         url: entry.contentId,
         title: entry.title,
         endsAtMs: endsAtMs ?? Date.now() + overrideDurationMs,
@@ -186,6 +190,11 @@ async function handleEntry(entry: ScheduleRow): Promise<void> {
         { entryId: entry.id, url: entry.contentId, endsAtMs },
         "[schedule-bridge] live/external override started",
       );
+      // Notify both queue and schedule pages — an override changes broadcast
+      // mode which affects both the Master Control queue view and the schedule
+      // entry list.
+      adminEventBus.push("broadcast-queue-updated", { reason: "schedule-bridge-live", entryId: entry.id });
+      adminEventBus.push("broadcast-schedule-updated", { reason: "schedule-bridge-fired", entryId: entry.id });
       break;
     }
 
@@ -198,6 +207,7 @@ async function handleEntry(entry: ScheduleRow): Promise<void> {
       );
       if (result.enqueued > 0) {
         adminEventBus.push("broadcast-queue-updated", { reason: "schedule-bridge-playlist", entryId: entry.id });
+        adminEventBus.push("broadcast-schedule-updated", { reason: "schedule-bridge-fired", entryId: entry.id });
       }
       break;
     }

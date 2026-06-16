@@ -9,6 +9,7 @@ import {
   UpdateScheduleBodySchema,
 } from "./schedule.schemas.js";
 import { scheduleService } from "./schedule.service.js";
+import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 
 const idParam = z.object({ id: z.string().min(1) });
 
@@ -60,6 +61,9 @@ export async function scheduleRoutes(app: FastifyInstance) {
     async (req, reply) => {
       invalidateScheduleCache();
       const created = await scheduleService.create(req.body);
+      // Notify all connected admin tabs so their schedule pages refresh
+      // immediately rather than waiting for the next poll cycle.
+      adminEventBus.push("broadcast-schedule-updated", { reason: "schedule-created", id: created.id });
       reply.code(201);
       return created;
     },
@@ -80,7 +84,9 @@ export async function scheduleRoutes(app: FastifyInstance) {
     },
     async (req) => {
       invalidateScheduleCache();
-      return scheduleService.update(req.params.id, req.body);
+      const updated = await scheduleService.update(req.params.id, req.body);
+      adminEventBus.push("broadcast-schedule-updated", { reason: "schedule-updated", id: req.params.id });
+      return updated;
     },
   );
 
@@ -98,7 +104,9 @@ export async function scheduleRoutes(app: FastifyInstance) {
     },
     async (req) => {
       invalidateScheduleCache();
-      return scheduleService.delete(req.params.id);
+      const result = await scheduleService.delete(req.params.id);
+      adminEventBus.push("broadcast-schedule-updated", { reason: "schedule-deleted", id: req.params.id });
+      return result;
     },
   );
 }
