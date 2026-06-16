@@ -467,6 +467,46 @@ async function runCleanupForVideo(
       }
     }
 
+    // Step 1.6: On-air MP4 safety check.
+    //
+    // Guard against deleting the source blob while this video is the active
+    // broadcast item and the broadcast_queue row still carries only
+    // localVideoUrl (no hlsMasterUrl). This narrow race occurs when:
+    //   1. Transcoder writes hls_master_url to managed_videos and fires
+    //      broadcast-queue-updated (reload pending on next orchestrator tick).
+    //   2. cleanup.service starts immediately after (CLEANUP_RETENTION_HOURS=1
+    //      in production, but zero-retention dev mode can fire within seconds).
+    //   3. Orchestrator has NOT yet reloaded → broadcast_queue row still has no
+    //      hls_master_url → clients receive localVideoUrl → blob 404 after deletion.
+    //
+    // Fix: if the video is actively in broadcast_queue with is_active=true AND
+    // no hls_master_url on the queue row, defer cleanup for 1 hour to let the
+    // orchestrator cycle. The next sweep will re-check.
+    const onAirMp4Result = await db.execute(sql`
+      SELECT 1
+      FROM broadcast_queue
+      WHERE video_id = ${videoId}
+        AND is_active = true
+        AND (hls_master_url IS NULL OR hls_master_url = '')
+      LIMIT 1
+    `);
+    if (onAirMp4Result.rows.length > 0) {
+      const deferUntil = new Date(Date.now() + 3_600_000); // 1 h
+      log.warn(
+        { videoId, deferUntil },
+        "[cleanup] video is on-air via MP4 with no HLS on the queue row — deferring deletion 1 h for orchestrator to reload",
+      );
+      await db
+        .update(videos)
+        .set({
+          sourceCleanupStatus: "scheduled",
+          sourceCleanupAttempts: attempts,
+          sourceCleanupAfter: deferUntil,
+        })
+        .where(eq(videos.id, videoId));
+      return false;
+    }
+
     // Step 2: Delete source blob + associated upload session/chunks.
     const { bytesFreed } = await deleteSourceBlob(videoId, sourceObjectKey);
 

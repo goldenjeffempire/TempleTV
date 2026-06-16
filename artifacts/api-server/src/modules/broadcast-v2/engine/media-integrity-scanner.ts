@@ -231,10 +231,47 @@ function extractFirstSegmentUrl(variantText: string, variantUrl: string): string
 }
 
 /**
+ * Extract the LAST segment URI from a variant HLS playlist body.
+ * Mirrors extractFirstSegmentUrl() but scans in reverse order.
+ *
+ * Why: partial transcodes can produce a well-formed variant playlist with all
+ * #EXTINF entries written before the segment upload fails mid-way through.
+ * The first segment exists (was uploaded early), but the last segment is
+ * missing — every client stalls at the end of available content.
+ * Checking only the first segment misses this failure mode entirely.
+ */
+function extractLastSegmentUrl(variantText: string, variantUrl: string): string | null {
+  const lines = variantText.split("\n");
+  let lastSegUrl: string | null = null;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+      lastSegUrl = trimmed;
+      continue;
+    }
+    try {
+      const base = new URL(variantUrl);
+      base.pathname = base.pathname.replace(/\/[^/]*$/, "/");
+      lastSegUrl = new URL(trimmed, base).href;
+    } catch {
+      // Skip malformed relative URIs — keep searching for a valid last segment.
+    }
+  }
+  return lastSegUrl;
+}
+
+/**
  * HEAD-probe a single HLS segment to confirm it is accessible.
- * Only a definitive 404 is treated as failure. Timeouts and 5xx responses
- * are ambiguous (CDN / storage transient) and return ok: true to avoid
- * false-positive deactivations of otherwise healthy items.
+ *
+ * Failure semantics:
+ *   • 404 — always a hard failure (segment deleted or never uploaded).
+ *   • 5xx from own-origin (http://127.0.0.1 / http://localhost) — hard failure.
+ *     Our own server returning a server error means the storage layer failed
+ *     to serve the segment; this is NOT a transient CDN blip.
+ *   • 5xx from external CDN/storage — treated as ok to avoid false-positive
+ *     deactivations caused by CDN edge-node hiccups or rate-limit throttles.
+ *   • Timeout / network error — treated as ok (ambiguous; probe may be flaky).
  */
 async function probeFirstSegment(
   url: string,
@@ -242,11 +279,21 @@ async function probeFirstSegment(
 ): Promise<{ ok: boolean; status: number | null; reason?: string }> {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
+  const isOwnOrigin = url.startsWith("http://127.0.0.1") || url.startsWith("http://localhost");
   try {
     const res = await fetch(url, { method: "HEAD", signal: ac.signal, headers: { ...intHeaders } });
     clearTimeout(t);
     if (res.status === 404) {
       return { ok: false, status: 404, reason: "segment 404 — deleted or expired from storage" };
+    }
+    // Own-origin: our server returning 5xx means a real storage/DB failure.
+    // External: 5xx is ambiguous (CDN transient) — leave ok:true to avoid false positives.
+    if (isOwnOrigin && res.status >= 500) {
+      return {
+        ok: false,
+        status: res.status,
+        reason: `own-origin segment server error: HTTP ${res.status} (storage or DB failure)`,
+      };
     }
     return { ok: true, status: res.status };
   } catch {
@@ -310,13 +357,21 @@ async function probeHlsVariant(
         reason: "HLS variant playlist contains no #EXTINF segments",
       };
     }
-    // Probe the first segment URI to catch the case where segments were deleted
-    // from storage after the playlist was written. The variant text check above
-    // only confirms the playlist is well-formed; the segments themselves may be
-    // 404 (storage migration, TTL cleanup, partial-success transcode).
-    // Only definitive 404 is treated as failure to avoid false positives from
-    // CDN transients. The segment URL inherits the variant URL's internal token
-    // via relative-URL resolution against the already-tokenised variant URL.
+    // Probe the first AND last segment URI to catch two distinct failure modes:
+    //
+    //   First segment missing: storage migration, TTL-based cleanup, or a
+    //     partial-success transcode that wrote the playlist but failed to upload
+    //     any segments at all.
+    //
+    //   Last segment missing: the most common production failure — a partial
+    //     transcode that wrote the playlist with all #EXTINF entries, uploaded
+    //     early segments, but failed (OOM, disk full, process kill) before
+    //     uploading the final segment(s). Clients stall at end-of-file; the
+    //     master and variant playlists both return HTTP 200 so HEAD-only probes
+    //     never catch this.
+    //
+    // Only definitive 404 or own-origin 5xx are treated as failure —
+    // CDN 5xx transients return ok:true to avoid false-positive deactivations.
     const firstSegUrl = extractFirstSegmentUrl(text, url);
     if (firstSegUrl) {
       const segResult = await probeFirstSegment(withHlsToken(firstSegUrl), intHeaders);
@@ -324,7 +379,20 @@ async function probeHlsVariant(
         return {
           ok: false,
           status: segResult.status,
-          reason: `HLS segment unreachable: ${segResult.reason ?? `HTTP ${segResult.status}`}`,
+          reason: `HLS first segment unreachable: ${segResult.reason ?? `HTTP ${segResult.status}`}`,
+        };
+      }
+    }
+    // Only probe last segment when it differs from first (single-segment playlists
+    // would otherwise double-count the same 404 with a confusing "last segment" label).
+    const lastSegUrl = extractLastSegmentUrl(text, url);
+    if (lastSegUrl && lastSegUrl !== firstSegUrl) {
+      const lastSegResult = await probeFirstSegment(withHlsToken(lastSegUrl), intHeaders);
+      if (!lastSegResult.ok) {
+        return {
+          ok: false,
+          status: lastSegResult.status,
+          reason: `HLS last segment unreachable: ${lastSegResult.reason ?? `HTTP ${lastSegResult.status}`}`,
         };
       }
     }

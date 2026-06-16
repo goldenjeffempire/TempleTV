@@ -24,6 +24,7 @@ import { startMemoryWatchdog, stopMemoryWatchdog } from "./infrastructure/memory
 import { startEventLoopLagMonitor, stopEventLoopLagMonitor } from "./infrastructure/event-loop-lag.js";
 import { installDbPoolHealthMonitor, uninstallDbPoolHealthMonitor } from "./infrastructure/db-pool-health.js";
 import { markShuttingDown, markStartupComplete } from "./infrastructure/shutdown-flag.js";
+import { runHlsStartupIntegrityScan } from "./modules/broadcast-v2/engine/hls-startup-integrity.js";
 import { schema } from "./infrastructure/db.js";
 import { hashPassword } from "./modules/auth/password.js";
 import { nanoid } from "nanoid";
@@ -529,6 +530,15 @@ async function main() {
   // GET /api/channels returns at least one entry and the broadcast
   // engine has a valid channel to attach to.
   await seedPrimaryChannelIfAbsent();
+
+  // HLS startup integrity scan: verify every active broadcast_queue item with
+  // hls_master_url actually has a master.m3u8 blob in storage_blobs. Items with
+  // zero blobs are deactivated immediately; others trigger an ops-alert so the
+  // admin dashboard surfaces the problem before any content airs.
+  // Fire-and-forget: non-fatal — never blocks the server from starting.
+  runHlsStartupIntegrityScan().catch((err) =>
+    logger.warn({ err }, "[hls-startup-integrity] scan failed (non-fatal)"),
+  );
 
   // One-time repair: some older uploads stored an absolute URL as objectPath
   // (e.g. "https://api.templetv.org.ng/api/v1/uploads/…") instead of the bare

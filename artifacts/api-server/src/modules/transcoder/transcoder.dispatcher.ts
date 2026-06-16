@@ -364,6 +364,26 @@ class TranscoderDispatcher {
     return Math.max(1, Math.round(30 * 60_000 / env.TRANSCODER_POLL_MS));
   }
 
+  // Periodic FFmpeg zombie scan — re-runs every zombieScanTicks ticks after startup.
+  // Startup always fires once unconditionally in start(). Set
+  // TRANSCODER_ZOMBIE_SCAN_INTERVAL_MS=0 to disable the recurring scan.
+  private zombieScanCounter = 0;
+  private get zombieScanTicks(): number {
+    return env.TRANSCODER_ZOMBIE_SCAN_INTERVAL_MS > 0
+      ? Math.max(1, Math.round(env.TRANSCODER_ZOMBIE_SCAN_INTERVAL_MS / env.TRANSCODER_POLL_MS))
+      : 0;
+  }
+
+  // Stale-queued watchdog — fires every staleQueuedTicks ticks (~15 min).
+  // Emits an ops-alert when jobs have sat in 'queued' status for longer than
+  // TRANSCODER_QUEUE_STALE_ALERT_MS without a worker picking them up.
+  // Symptoms: circuit breaker permanently open (ffmpeg missing), all workers
+  // dead without leaving a 'processing' row, or TRANSCODER_DISABLE=1 accidentally set.
+  private staleQueuedCounter = 0;
+  private get staleQueuedTicks(): number {
+    return Math.max(1, Math.round(15 * 60_000 / env.TRANSCODER_POLL_MS));
+  }
+
   // ── In-process heartbeat ────────────────────────────────────────────────────
   // Written on every dispatch tick so the diagnostics panel can surface
   // real-time transcoder state without a DB round-trip.
@@ -385,6 +405,9 @@ class TranscoderDispatcher {
           .update(jobs)
           .set({
             status: "queued",
+            // Reset stage to "pending" so the UI shows a clean restart state
+            // rather than a stale "processing"/"finalizing" badge on a queued job.
+            stage: "pending",
             progress: 0,
             startedAt: null,
             errorMessage: "Reset: server restarted while job was in-progress (FFmpeg process orphaned).",
@@ -666,6 +689,9 @@ class TranscoderDispatcher {
       .update(jobs)
       .set({
         status: "queued",
+        // Reset stage so re-queued jobs start from "pending" rather than
+        // showing a stale "processing"/"finalizing" stage in the admin UI.
+        stage: "pending",
         nextRetryAt: new Date(),
         errorMessage: sql`CONCAT(COALESCE(error_message, ''), ' [auto-retried by dispatcher]')`,
       })
@@ -696,6 +722,82 @@ class TranscoderDispatcher {
     // Wake the dispatcher immediately so re-queued jobs start within
     // milliseconds rather than waiting up to TRANSCODER_POLL_MS.
     this.nudge();
+  }
+
+  /**
+   * Stale-queued watchdog.
+   *
+   * Emits an ops-alert SSE event when any transcoding_jobs row has been
+   * sitting in status='queued' for longer than TRANSCODER_QUEUE_STALE_ALERT_MS
+   * without a worker picking it up.  This is a signal that something systemic
+   * is broken, not that a single job is slow — healthy queues drain within
+   * seconds (one dispatch tick).
+   *
+   * Causes of stale-queued jobs:
+   *   • TRANSCODER_DISABLE=1 accidentally set (workers never poll)
+   *   • FFmpeg circuit breaker permanently open (ffmpeg binary not installed)
+   *   • All workers crashed without leaving a 'processing' row
+   *   • DB connectivity lost after the job was enqueued
+   *   • nextRetryAt set far in the future by exponential back-off (expected)
+   *
+   * Only jobs whose nextRetryAt IS NULL or is in the past are considered —
+   * jobs waiting for an exponential back-off window are intentionally deferred
+   * and do NOT trigger the alert.
+   */
+  private async sweepStaleQueuedJobs(): Promise<void> {
+    const staleMs = env.TRANSCODER_QUEUE_STALE_ALERT_MS;
+    const staleCutoff = new Date(Date.now() - staleMs);
+    type StaleRow = { id: string; videoId: string | null; createdAt: Date; attempts: number };
+    let stale: StaleRow[];
+    try {
+      const result = await db.execute<StaleRow>(sql`
+        SELECT id, video_id AS "videoId", created_at AS "createdAt", attempts
+        FROM transcoding_jobs
+        WHERE status = 'queued'
+          AND created_at < ${staleCutoff}
+          AND (next_retry_at IS NULL OR next_retry_at < now())
+        ORDER BY created_at ASC
+        LIMIT 50
+      `);
+      stale = (result.rows as StaleRow[]) ?? [];
+    } catch (err) {
+      logger.warn({ err }, "transcoder: stale-queued check DB error (non-fatal)");
+      return;
+    }
+    if (stale.length === 0) return;
+
+    const staleMinutes = Math.round(staleMs / 60_000);
+    logger.warn(
+      {
+        count: stale.length,
+        oldestJobId: stale[0]?.id,
+        oldestCreatedAt: stale[0]?.createdAt,
+        staleThresholdMs: staleMs,
+        ffmpegAvailable: this.ffmpegAvailable,
+        activeJobCount: this.activeJobs.size,
+      },
+      `transcoder: ${stale.length} job(s) have been in 'queued' for >${staleMinutes} min without a worker pick-up`,
+    );
+
+    const reasons: string[] = [];
+    if (!this.ffmpegAvailable) reasons.push("ffmpeg binary not found (circuit breaker open)");
+    if (env.TRANSCODER_DISABLE) reasons.push("TRANSCODER_DISABLE is set");
+    if (this.stopped) reasons.push("dispatcher is stopped");
+    const hint = reasons.length > 0 ? ` — likely cause: ${reasons.join("; ")}` : "";
+
+    adminEventBus.push("ops-alert", {
+      level: "warn",
+      component: "transcoder",
+      message:
+        `${stale.length} transcoding job(s) stuck in queue for >${staleMinutes} min with no worker activity${hint}. ` +
+        `Oldest job: ${stale[0]?.id ?? "unknown"} (created ${stale[0]?.createdAt?.toISOString() ?? "unknown"}). ` +
+        `Check TRANSCODER_DISABLE, ffmpeg availability, and dispatcher health.`,
+      count: stale.length,
+      staleThresholdMinutes: staleMinutes,
+      ffmpegAvailable: this.ffmpegAvailable,
+      dispatcherStopped: this.stopped,
+      possibleCauses: reasons,
+    });
   }
 
   getHeartbeat(): {
@@ -844,6 +946,26 @@ class TranscoderDispatcher {
       });
     }
 
+    // Periodic FFmpeg zombie scan (recurring; disabled when zombieScanTicks=0).
+    if (this.zombieScanTicks > 0) {
+      this.zombieScanCounter++;
+      if (this.zombieScanCounter >= this.zombieScanTicks) {
+        this.zombieScanCounter = 0;
+        void this.scanAndKillOrphanedFfmpegProcesses().catch((err) => {
+          logger.warn({ err }, "transcoder: periodic zombie scan error (non-fatal)");
+        });
+      }
+    }
+
+    // Stale-queued watchdog (~every 15 min).
+    this.staleQueuedCounter++;
+    if (this.staleQueuedCounter >= this.staleQueuedTicks) {
+      this.staleQueuedCounter = 0;
+      await this.sweepStaleQueuedJobs().catch((err) => {
+        logger.warn({ err }, "transcoder: stale-queued watchdog error (non-fatal)");
+      });
+    }
+
     // Sample queue depth metric.
     db.select({ total: count() })
       .from(jobs)
@@ -985,6 +1107,12 @@ class TranscoderDispatcher {
           .update(jobs)
           .set({
             status: exceeded ? "failed" : "queued",
+            // Reset stage to "pending" in all cases:
+            //   - Re-queued: "pending" is the correct start-of-pipeline state.
+            //   - Permanently failed: "pending" signals "start from scratch if
+            //     an operator retries" — avoids misleading "processing" badge
+            //     on a job that will never make further progress in its current form.
+            stage: "pending",
             progress: 0,
             attempts: newAttempts,
             startedAt: null,
@@ -1624,6 +1752,13 @@ class TranscoderDispatcher {
           await tx.update(jobs)
             .set({
               status: terminalStatus,
+              // Reset stage to "pending" so:
+              //   - Re-queued jobs (terminalStatus="queued") start cleanly from
+              //     the beginning on the next pick-up — no stale "processing" badge.
+              //   - Permanently failed/dead_letter jobs show "pending" rather than
+              //     a misleading last-active stage, signalling "start from scratch
+              //     if an operator retries this job".
+              stage: "pending",
               attempts,
               progress: 0,
               errorMessage: message,

@@ -416,6 +416,14 @@ const Env = z.object({
   // Number of dead-letter queue entries above which an ops-alert SSE event fires.
   // Default 5: alert on 5+ permanently-failed jobs awaiting operator review.
   TRANSCODER_DLQ_ALERT_THRESHOLD: z.coerce.number().int().min(1).default(5),
+  // Age threshold (ms) after which a job still in "queued" status triggers an
+  // ops-alert. Long-waiting queued jobs indicate a systemic issue: circuit open,
+  // TRANSCODER_DISABLE=1 accidentally set, or all workers dead. Default 2 h.
+  TRANSCODER_QUEUE_STALE_ALERT_MS: z.coerce.number().int().positive().default(2 * 60 * 60_000),
+  // How often (ms) to run the periodic FFmpeg zombie scan after startup.
+  // At startup the scan always runs once; this controls the recurring cadence.
+  // Default 30 min. Set to 0 to disable the recurring scan (startup-only).
+  TRANSCODER_ZOMBIE_SCAN_INTERVAL_MS: z.coerce.number().int().nonnegative().default(30 * 60_000),
   // Maximum wall-clock time (ms) for the background blob-assembly task that
   // runs after a chunked video upload is finalized. The iterative bytea-concat
   // loop is O(n²) in PostgreSQL I/O — a 2 GB file (250 chunks) can legitimately
