@@ -162,6 +162,9 @@ const KNOWN_EVENTS = [
   // Transcoding progress with per-rendition detail — emitted by the
   // transcoder dispatcher with structured progress data including % complete.
   "transcoding-progress",
+  // Worker-registry heartbeat — emitted when a transcoder worker registers,
+  // deregisters, or its heartbeat changes so the Workers tab refreshes live.
+  "transcoding-worker-update",
   // Real-time viewer count broken down by surface (web / tv / mobile).
   // Emitted on SSE connect and every 15 s thereafter by the admin SSE handler.
   "viewer-platform-breakdown",

@@ -5,15 +5,25 @@ import os from "node:os";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
-import { transcodingQueueDepth, SERVICE_LABELS } from "../../infrastructure/metrics.js";
+import {
+  transcodingQueueDepth,
+  transcoderActiveJobCount,
+  transcoderDlqDepth,
+  transcoderStageTransitionTotal,
+  transcoderJobDurationSeconds,
+  SERVICE_LABELS,
+} from "../../infrastructure/metrics.js";
 import { runTranscode, checkFfmpegAvailable } from "./transcoder.service.js";
-import { enqueueTranscode } from "./transcoder.queue.js";
+import { enqueueTranscode, moveToDlq } from "./transcoder.queue.js";
 import { scheduleSourceCleanup } from "./cleanup.service.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { broadcastSignal } from "../network/signal-bus.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
+import { workerRegistry } from "./transcoder.worker-registry.js";
+import { jobLeaseManager } from "./transcoder.lease.js";
+import { emitJobEvent, purgeOldEvents } from "./transcoder.job-events.js";
 
 const jobs = schema.transcodingJobsTable;
 const videos = schema.videosTable;
@@ -40,7 +50,14 @@ const videos = schema.videosTable;
  */
 class TranscoderDispatcher {
   private timer: NodeJS.Timeout | null = null;
-  private running = false;
+  private leaseReclaimTimer: NodeJS.Timeout | null = null;
+  private eventLogPurgeTimer: NodeJS.Timeout | null = null;
+  /**
+   * Active job IDs currently being processed in concurrent slots.
+   * Replaces the old single `running: boolean` flag.
+   * Size is bounded by TRANSCODER_MAX_CONCURRENT_JOBS (default 2).
+   */
+  private activeJobs: Set<string> = new Set();
   private stopped = false;
   /**
    * Set to true only by start(). Guards nudge() so that an explicit
@@ -51,6 +68,8 @@ class TranscoderDispatcher {
    * dispatcher was intentionally never started.
    */
   private started = false;
+  /** Max concurrent jobs = TRANSCODER_MAX_CONCURRENT_JOBS (validated 1–4). */
+  private get maxConcurrent(): number { return env.TRANSCODER_MAX_CONCURRENT_JOBS; }
 
   /**
    * FFmpeg circuit breaker.
@@ -121,25 +140,16 @@ class TranscoderDispatcher {
     this.started = true;
     this.stopped = false;
 
+    // Register this worker process in the worker registry so the admin UI
+    // can display active workers and the lease reclaimer can identify dead ones.
+    void workerRegistry.register();
+
     // Any job left in 'processing' was orphaned when the previous server
     // process died (its FFmpeg child was killed with it). Reset them back
     // to 'queued' immediately so they retry on the next poll tick.
     // Fire-and-forget is safe: first tick is delayed by TRANSCODER_POLL_MS
     // (10 s) so the reset always completes before a new job is claimed.
     void this.resetOrphanedJobs();
-
-    // Periodic stuck-job watchdog — runs every 10 min (unref'd so it never
-    // prevents graceful shutdown). Complements the startup-only resetOrphanedJobs
-    // by resetting jobs that became stuck mid-encode in long-running deployments
-    // (e.g. SIGKILL swallowed, zombie ffmpeg left alive, DB write timed out).
-    // Unlike resetOrphanedJobs, this increments the attempt counter so that
-    // jobs that time out repeatedly are permanently failed after maxAttempts.
-    const stuckWatchdogTimer = setInterval(() => {
-      void (async () => {
-        try { await this.resetStuckJobs(); } catch { /* logged inside */ }
-      })();
-    }, 10 * 60_000);
-    stuckWatchdogTimer.unref();
 
     // Purge any leftover scratch directories from a previous process that
     // was SIGKILL-ed (the finally block in runTranscode never ran). Each
@@ -155,9 +165,30 @@ class TranscoderDispatcher {
     // processes that may be running in the same container.
     void this.scanAndKillOrphanedFfmpegProcesses();
 
+    // Lease reclaim timer: periodically reset expired leases from dead workers
+    // so their jobs re-enter the queue and are picked up by healthy workers.
+    this.leaseReclaimTimer = setInterval(() => {
+      void jobLeaseManager.reclaimExpiredLeases(workerRegistry.id).catch((err) => {
+        logger.warn({ err }, "transcoder: lease reclaim error (non-fatal)");
+      });
+      void workerRegistry.pruneStale().catch(() => { /* non-fatal */ });
+    }, env.TRANSCODER_LEASE_RECLAIM_INTERVAL_MS);
+    this.leaseReclaimTimer.unref();
+
+    // Event log purge: remove events older than 30 days once every 24 h.
+    this.eventLogPurgeTimer = setInterval(() => {
+      void purgeOldEvents(30).then((n) => {
+        if (n > 0) logger.info({ purged: n }, "transcoder: purged old job events");
+      }).catch(() => { /* non-fatal */ });
+    }, 24 * 3_600_000);
+    this.eventLogPurgeTimer.unref();
+
     this.timer = setTimeout(() => this.tick(), env.TRANSCODER_POLL_MS);
     this.timer.unref();
-    logger.info({ pollMs: env.TRANSCODER_POLL_MS }, "transcoder dispatcher started");
+    logger.info(
+      { pollMs: env.TRANSCODER_POLL_MS, maxConcurrent: this.maxConcurrent, workerId: workerRegistry.id },
+      "transcoder dispatcher started",
+    );
 
     // Verify the ffmpeg binary is reachable so we surface a clear error
     // immediately at startup rather than silently failing on every job.
@@ -295,6 +326,8 @@ class TranscoderDispatcher {
   private get stuckJobsTicks(): number {
     return Math.max(1, Math.round(2 * 60_000 / env.TRANSCODER_POLL_MS));
   }
+
+  private dlqCheckCounter = 0;
 
   // Faststart-orphan watchdog: sweeps managed_videos for rows stuck in
   // transcodingStatus='processing'/'queued' with no backing transcoding_jobs
@@ -682,7 +715,9 @@ class TranscoderDispatcher {
       lastCompletedAt: this.lastCompletedAt,
       lastCompletedJobId: this.lastCompletedJobId,
       lastCompletedStatus: this.lastCompletedStatus,
-      isRunning: this.running,
+      isRunning: this.activeJobs.size > 0,
+      activeJobCount: this.activeJobs.size,
+      maxConcurrent: this.maxConcurrent,
       ffmpegAvailable: this.ffmpegAvailable,
       stopped: this.stopped,
       storageCircuitOpenUntil: this.storageCircuitOpenUntil,
@@ -702,26 +737,122 @@ class TranscoderDispatcher {
       clearTimeout(this.ffmpegRecheckTimer);
       this.ffmpegRecheckTimer = null;
     }
+    if (this.leaseReclaimTimer) {
+      clearInterval(this.leaseReclaimTimer);
+      this.leaseReclaimTimer = null;
+    }
+    if (this.eventLogPurgeTimer) {
+      clearInterval(this.eventLogPurgeTimer);
+      this.eventLogPurgeTimer = null;
+    }
+    // Deregister from worker registry (best-effort — non-blocking).
+    void workerRegistry.deregister().catch(() => { /* non-fatal */ });
     logger.info("transcoder dispatcher stopped");
   }
 
   /**
-   * Shared tick used by start() and nudge(). Runs one dispatch cycle then
+   * Shared tick used by start() and nudge(). Runs periodic maintenance
+   * tasks and launches up to maxConcurrent job slots concurrently, then
    * re-arms the timer at the normal TRANSCODER_POLL_MS cadence.
+   *
+   * The timer is re-armed immediately (not in .finally) so concurrent jobs
+   * don't block future ticks — we want the poll loop to keep running even
+   * while multiple jobs are executing in parallel.
    */
   private tick(): void {
     if (this.stopped) return;
-    // Stamp liveness on every scheduler cycle — including idle ticks where no
-    // job is claimed — so getHeartbeat() accurately reflects that the dispatcher
-    // is alive even when the queue is empty.
+    // Stamp liveness on every scheduler cycle so getHeartbeat() accurately
+    // reflects that the dispatcher is alive even when the queue is empty.
     this.lastHeartbeatAt = Date.now();
-    void this.runOnce().catch((err) => {
-      logger.warn({ err }, "transcoder: unhandled runOnce error — will retry on next tick");
-    }).finally(() => {
-      if (this.stopped) return;
+
+    // Run periodic maintenance tasks (independent of job execution).
+    void this.runPeriodicTasks().catch((err) => {
+      logger.warn({ err }, "transcoder: periodic tasks error (non-fatal)");
+    });
+
+    // Launch up to maxConcurrent job slots concurrently.
+    const slotsAvailable = this.maxConcurrent - this.activeJobs.size;
+    for (let i = 0; i < slotsAvailable; i++) {
+      void this.runOnce().catch((err) => {
+        logger.warn({ err }, "transcoder: unhandled runOnce error — will retry on next tick");
+      });
+    }
+
+    // Re-arm timer immediately so future ticks don't wait for active jobs.
+    if (!this.stopped) {
       this.timer = setTimeout(() => this.tick(), env.TRANSCODER_POLL_MS);
       this.timer.unref();
-    });
+    }
+  }
+
+  /**
+   * Periodic maintenance tasks, called once per tick regardless of active
+   * job count. Moved out of runOnce() so they run even when all slots are
+   * occupied by concurrent jobs.
+   */
+  private async runPeriodicTasks(): Promise<void> {
+    // Run the stuck-job watchdog periodically.
+    this.stuckJobsCounter++;
+    if (this.stuckJobsCounter >= this.stuckJobsTicks) {
+      this.stuckJobsCounter = 0;
+      await this.resetStuckJobs();
+    }
+
+    // Periodic scratch directory GC (~every 30 min).
+    this.scratchGcCounter++;
+    if (this.scratchGcCounter >= this.scratchGcTicks) {
+      this.scratchGcCounter = 0;
+      void this.purgeOrphanedScratchDirs();
+    }
+
+    // Periodic partial-success recovery.
+    this.partialRecoveryCounter++;
+    if (this.partialRecoveryCounter >= this.partialRecoveryTicks) {
+      this.partialRecoveryCounter = 0;
+      await this.recoverPartialSuccessVideos().catch((err) => {
+        logger.warn({ err }, "transcoder: periodic partial-success recovery error (non-fatal)");
+      });
+    }
+
+    // Auto-retry recoverable failed jobs.
+    if (env.TRANSCODER_AUTO_RETRY_FAILED) {
+      this.autoRetryCounter++;
+      const retryTicks = Math.max(1, Math.round(env.TRANSCODER_AUTO_RETRY_INTERVAL_MS / env.TRANSCODER_POLL_MS));
+      if (this.autoRetryCounter >= retryTicks) {
+        this.autoRetryCounter = 0;
+        await this.sweepRecoverableFailed().catch((err) => {
+          logger.warn({ err }, "transcoder: auto-retry sweep error (non-fatal)");
+        });
+      }
+    }
+
+    // Periodic faststart-orphan watchdog (~every 45 min).
+    this.faststartOrphanCounter++;
+    if (this.faststartOrphanCounter >= this.faststartOrphanTicks) {
+      this.faststartOrphanCounter = 0;
+      await this.resetFaststartOrphans().catch((err) => {
+        logger.warn({ err }, "[transcoder] faststart-orphan watchdog error (non-fatal)");
+      });
+    }
+
+    // Sample queue depth metric.
+    db.select({ total: count() })
+      .from(jobs)
+      .where(eq(jobs.status, "queued"))
+      .then(([row]) => {
+        transcodingQueueDepth.set(SERVICE_LABELS, row?.total ?? 0);
+      })
+      .catch(() => { /* non-fatal metric skip */ });
+
+    // Update active job count metric.
+    transcoderActiveJobCount.set(SERVICE_LABELS, this.activeJobs.size);
+
+    // Sample DLQ depth metric periodically.
+    this.dlqCheckCounter = (this.dlqCheckCounter ?? 0) + 1;
+    if (this.dlqCheckCounter >= 30) {
+      this.dlqCheckCounter = 0;
+      void this.updateDlqMetric();
+    }
   }
 
   /**
@@ -1035,7 +1166,8 @@ class TranscoderDispatcher {
   }
 
   async runOnce(): Promise<{ ran: boolean }> {
-    if (this.running) return { ran: false };
+    // Semaphore: reject if all concurrent slots are occupied.
+    if (this.activeJobs.size >= this.maxConcurrent) return { ran: false };
     // Circuit open — ffmpeg unavailable. Pause dispatch to preserve every
     // job's retry budget. The openFfmpegCircuit() re-check loop closes the
     // circuit automatically when ffmpeg becomes reachable again.
@@ -1044,111 +1176,34 @@ class TranscoderDispatcher {
     // outages so healthy jobs don't burn retries against an infrastructure
     // failure that will resolve on its own within the cool-down window.
     if (this.storageCircuitOpenUntil > Date.now()) return { ran: false };
-    this.running = true;
+
+    // Claim a job via the lease manager — atomically stamps lease_expires_at
+    // and leased_by so dead workers can be detected and their jobs reclaimed.
+    const job = await jobLeaseManager.claimJob(workerRegistry.id);
+    if (!job) return { ran: false };
+
+    // Slot acquired — track in activeJobs so the semaphore and metrics are accurate.
+    this.activeJobs.add(job.id);
+    transcoderActiveJobCount.set(SERVICE_LABELS, this.activeJobs.size);
+    const jobStartMs = Date.now();
+
     try {
-      // Run the stuck-job watchdog periodically, not on every tick.
-      // The shortest detectable stuck window is TRANSCODER_JOB_TIMEOUT_MS
-      // (default 2 h) + 5 min grace, so firing every 10 s runs ~1 800
-      // unnecessary DB round-trips per timeout window.  Every ~5 min is plenty.
-      this.stuckJobsCounter++;
-      if (this.stuckJobsCounter >= this.stuckJobsTicks) {
-        this.stuckJobsCounter = 0;
-        await this.resetStuckJobs();
-      }
-
-      // Periodic scratch directory GC (~every 30 min) so stale dirs from
-      // SIGKILL-orphaned processes don't accumulate between restarts in
-      // long-running production deployments.
-      this.scratchGcCounter++;
-      if (this.scratchGcCounter >= this.scratchGcTicks) {
-        this.scratchGcCounter = 0;
-        void this.purgeOrphanedScratchDirs();
-      }
-
-      // Heal partial-success drift periodically (not just at boot) so a video
-      // whose hls_ready write was lost to a crash is recovered within minutes
-      // in a long-running 24/7 process instead of waiting for the next restart.
-      this.partialRecoveryCounter++;
-      if (this.partialRecoveryCounter >= this.partialRecoveryTicks) {
-        this.partialRecoveryCounter = 0;
-        await this.recoverPartialSuccessVideos().catch((err) => {
-          logger.warn({ err }, "transcoder: periodic partial-success recovery error (non-fatal)");
-        });
-      }
-
-      // Auto-retry recoverable failed jobs on a periodic cadence.
-      // Guard counter increment behind env flag so it doesn't tick when disabled.
-      if (env.TRANSCODER_AUTO_RETRY_FAILED) {
-        this.autoRetryCounter++;
-        const retryTicks = Math.max(1, Math.round(env.TRANSCODER_AUTO_RETRY_INTERVAL_MS / env.TRANSCODER_POLL_MS));
-        if (this.autoRetryCounter >= retryTicks) {
-          this.autoRetryCounter = 0;
-          await this.sweepRecoverableFailed().catch((err) => {
-            logger.warn({ err }, "transcoder: auto-retry sweep error (non-fatal)");
-          });
-        }
-      }
-
-      // Periodic faststart-orphan watchdog (~every 45 min at 10 s/tick).
-      // Resets managed_videos rows stuck in processing/queued with no active
-      // transcoding_jobs row — caused by crashes mid-faststart.
-      this.faststartOrphanCounter++;
-      if (this.faststartOrphanCounter >= this.faststartOrphanTicks) {
-        this.faststartOrphanCounter = 0;
-        await this.resetFaststartOrphans().catch((err) => {
-          logger.warn({ err }, "[transcoder] faststart-orphan watchdog error (non-fatal)");
-        });
-      }
-
-      const now = new Date();
-
-      // Sample and publish queue depth before claiming a job.
-      db.select({ total: count() })
-        .from(jobs)
-        .where(eq(jobs.status, "queued"))
-        .then(([row]) => {
-          transcodingQueueDepth.set(SERVICE_LABELS, row?.total ?? 0);
-        })
-        .catch(() => { /* non-fatal metric skip */ });
-
-      const candidates = await db
-        .select()
-        .from(jobs)
-        .where(and(
-          eq(jobs.status, "queued"),
-          or(isNull(jobs.nextRetryAt), lte(jobs.nextRetryAt, now)),
-        ))
-        .orderBy(sql`${jobs.priority} desc`, sql`${jobs.createdAt} asc`)
-        .limit(1);
-
-      const candidate = candidates[0];
-      if (!candidate) return { ran: false };
-
-      // Atomic claim — race-safe across replicas.
-      const claimed = await db
-        .update(jobs)
-        .set({ status: "processing", startedAt: now, progress: 0, errorMessage: null })
-        .where(and(eq(jobs.id, candidate.id), eq(jobs.status, "queued")))
-        .returning();
-
-      const job = claimed[0];
-      if (!job) return { ran: false };
-
       // Guard: videoId is null when the parent managed_videos row was deleted
       // after the job was queued (FK ON DELETE SET NULL). Abandon the job
-      // rather than failing with a cryptic "column does not exist" error.
+      // rather than failing with a cryptic error.
       if (!job.videoId) {
         logger.warn({ jobId: job.id }, "transcoder: abandoning orphaned job — parent video was deleted");
         await db.update(jobs)
-          .set({ status: "failed", errorMessage: "Parent video was deleted; job abandoned." })
+          .set({ status: "failed", errorMessage: "Parent video was deleted; job abandoned.", leaseExpiresAt: null, leasedBy: null })
           .where(eq(jobs.id, job.id))
           .catch(() => { /* non-fatal */ });
         return { ran: false };
       }
 
-      // Look up the video title for SSE event payloads — allows the admin
-      // operations log and broadcast UI to show the real video name instead
-      // of a "video" placeholder. Non-critical: null on lookup failure.
+      // ── Stage: pending → validating ──────────────────────────────────────
+      await this.transitionStage(job.id, "validating", workerRegistry.id);
+
+      // Look up the video title for SSE event payloads. Non-critical: null on failure.
       const videoTitle = await db
         .select({ title: videos.title })
         .from(videos)
@@ -1156,6 +1211,9 @@ class TranscoderDispatcher {
         .limit(1)
         .then((r) => r[0]?.title ?? null)
         .catch(() => null);
+
+      // ── Stage: validating → processing ───────────────────────────────────
+      await this.transitionStage(job.id, "processing", workerRegistry.id);
 
       await db.update(videos)
         .set({ transcodingStatus: "encoding" })
@@ -1166,14 +1224,35 @@ class TranscoderDispatcher {
         jobId: job.id,
         status: "encoding",
         progress: 0,
+        stage: "processing",
         videoTitle,
       });
 
-      logger.info({ jobId: job.id, videoId: job.videoId, attempt: job.attempts + 1 }, "transcoder: starting job");
+      logger.info(
+        { jobId: job.id, videoId: job.videoId, attempt: job.attempts + 1, workerId: workerRegistry.id },
+        "transcoder: starting job",
+      );
 
       this.lastHeartbeatAt = Date.now();
       this.currentJobId = job.id;
       this.currentJobVideoId = job.videoId;
+
+      // Update worker registry with current job state.
+      void workerRegistry.setJobState(job.id, "processing");
+
+      // Lease renewal timer — renews the lease every LEASE_RENEW_MS while the
+      // job is in progress so the lease never expires on a healthy worker.
+      let leaseStillHeld = true;
+      const leaseRenewer = setInterval(() => {
+        if (!leaseStillHeld) return;
+        void jobLeaseManager.renewLease(job.id, workerRegistry.id).then((ok) => {
+          if (!ok) {
+            leaseStillHeld = false;
+            logger.warn({ jobId: job.id }, "transcoder: lease renewal failed — job may have been reclaimed by another worker");
+          }
+        }).catch(() => { /* non-fatal — will be detected on next renewal */ });
+      }, env.TRANSCODER_LEASE_RENEW_MS);
+      leaseRenewer.unref();
 
       let lastProgressUpdate = Date.now();
 
@@ -1201,6 +1280,9 @@ class TranscoderDispatcher {
             });
           },
         });
+
+        // ── Stage: processing → finalizing ───────────────────────────────────
+        await this.transitionStage(job.id, "finalizing", workerRegistry.id);
 
         // ── HLS output integrity check ────────────────────────────────────────
         // Verify the master playlist actually landed in storage before committing
@@ -1354,11 +1436,28 @@ class TranscoderDispatcher {
           logger.warn({ err, videoId: job.videoId }, "transcoder: post-transcode source cleanup scheduling failed (non-fatal)");
         });
 
+        // ── Stage: finalizing → completed ────────────────────────────────────
+        await this.transitionStage(job.id, "completed", workerRegistry.id);
+
         // ── Storage circuit breaker: reset streak on success ───────────────
         this.storageErrorStreak = 0;
         this.lastCompletedAt = Date.now();
         this.lastCompletedJobId = job.id;
         this.lastCompletedStatus = "done";
+
+        // ── Duration metric ─────────────────────────────────────────────────
+        transcoderJobDurationSeconds.observe({ status: "done", ...SERVICE_LABELS }, (Date.now() - jobStartMs) / 1000);
+        clearInterval(leaseRenewer);
+        void jobLeaseManager.releaseLease(job.id, workerRegistry.id).catch(() => { /* non-fatal */ });
+        workerRegistry.recordJobCompleted();
+
+        void emitJobEvent({
+          jobId: job.id,
+          workerId: workerRegistry.id,
+          eventType: "completed",
+          stage: "completed",
+          payload: { elapsedMs: result.elapsedMs, masterUrl: result.masterPlaylistUrl },
+        }).catch(() => { /* non-fatal */ });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const errCode = (err as NodeJS.ErrnoException).code;
@@ -1558,15 +1657,55 @@ class TranscoderDispatcher {
           this.lastCompletedAt = Date.now();
           this.lastCompletedJobId = job.id;
           this.lastCompletedStatus = "failed";
+          transcoderJobDurationSeconds.observe({ status: "failed", ...SERVICE_LABELS }, (Date.now() - jobStartMs) / 1000);
+          workerRegistry.recordJobFailed();
+
+          // ── Dead-Letter Queue routing ──────────────────────────────────────
+          // Route to DLQ only for "exhausted retry budget" failures — NOT for
+          // CORRUPT_SOURCE/SOURCE_MISSING which are permanently unrecoverable
+          // terminal errors that the operator already handles in the video detail
+          // page. DLQ is specifically for jobs that hit maxAttempts on transient
+          // errors (disk-full, timeout, storage outage) so operators get a clear
+          // review queue separate from the normal failed-jobs list.
+          if (!isCorruptSource && !isSourceMissing) {
+            void moveToDlq({
+              jobId: job.id,
+              videoId: job.videoId ?? undefined,
+              videoPath: job.videoPath ?? undefined,
+              attempts,
+              lastError: truncatedMessage,
+              errorCode: isDiskFull ? "DISK_FULL" : "MAX_ATTEMPTS_EXCEEDED",
+            }).catch((dlqErr) => {
+              logger.warn({ dlqErr, jobId: job.id }, "transcoder: DLQ routing failed (non-fatal)");
+            });
+          }
+
+          void emitJobEvent({
+            jobId: job.id,
+            workerId: workerRegistry.id,
+            eventType: "dead_lettered",
+            stage: "failed",
+            payload: { attempts, errorCode: isDiskFull ? "DISK_FULL" : "MAX_ATTEMPTS_EXCEEDED", message: truncatedMessage },
+          }).catch(() => { /* non-fatal */ });
         }
+
+        clearInterval(leaseRenewer);
+        void jobLeaseManager.releaseLease(job.id, workerRegistry.id).catch(() => { /* non-fatal */ });
+
+        void emitJobEvent({
+          jobId: job.id,
+          workerId: workerRegistry.id,
+          eventType: "error",
+          stage: "failed",
+          payload: { message: truncatedMessage, errCode, attempts, maxAttempts: job.maxAttempts, willRetry: !exceeded },
+        }).catch(() => { /* non-fatal */ });
       }
 
       return { ran: true };
     } catch (err) {
-      // Reaches here only for pre-claim failures: the candidates SELECT,
-      // the atomic UPDATE claim, or the initial video-status write.
-      // Job-execution errors are caught by the inner try/catch above.
-      // Log and absorb so the tick() caller never sees an unhandled rejection.
+      // Reaches here only for pre-claim failures or unhandled errors not caught
+      // by the inner try/catch above.  Log and absorb so tick() never sees an
+      // unhandled rejection.
       const message = err instanceof Error ? err.message : String(err);
       const errCode = (err as NodeJS.ErrnoException).code;
       const isStorageError =
@@ -1596,9 +1735,57 @@ class TranscoderDispatcher {
       }
       return { ran: false };
     } finally {
-      this.running = false;
-      this.currentJobId = null;
-      this.currentJobVideoId = null;
+      // Release semaphore slot regardless of outcome.
+      this.activeJobs.delete(job.id);
+      transcoderActiveJobCount.set(SERVICE_LABELS, this.activeJobs.size);
+      // Release DB lease so another worker can pick up if this slot errored unexpectedly.
+      void jobLeaseManager.releaseLease(job.id, workerRegistry.id).catch(() => { /* non-fatal */ });
+      // Clear current-job tracking if this was the only active slot.
+      if (this.activeJobs.size === 0) {
+        this.currentJobId = null;
+        this.currentJobVideoId = null;
+      }
+      // Update worker registry state.
+      void workerRegistry.setJobState(
+        this.activeJobs.size > 0 ? [...this.activeJobs][0] ?? null : null,
+        this.activeJobs.size > 0 ? "processing" : null,
+      ).catch(() => { /* non-fatal */ });
+    }
+  }
+
+  /** Transition a job to a new stage, recording the event and updating the metric. */
+  private async transitionStage(jobId: string, stage: string, workerId: string): Promise<void> {
+    try {
+      await db.update(jobs)
+        .set({ stage, stageProgress: 0 })
+        .where(eq(jobs.id, jobId));
+      transcoderStageTransitionTotal.inc({ stage, ...SERVICE_LABELS });
+      void emitJobEvent({ jobId, workerId, eventType: "stage_enter", stage });
+    } catch (err) {
+      logger.debug({ err, jobId, stage }, "transcoder: transitionStage failed (non-fatal)");
+    }
+  }
+
+  /** Update the DLQ depth Prometheus metric. */
+  private async updateDlqMetric(): Promise<void> {
+    try {
+      const [row] = await db
+        .select({ cnt: count() })
+        .from(schema.transcodingDeadLetterTable)
+        .where(isNull(schema.transcodingDeadLetterTable.requeuedAt));
+      transcoderDlqDepth.set(SERVICE_LABELS, row?.cnt ?? 0);
+      const dlqDepth = row?.cnt ?? 0;
+      if (dlqDepth >= env.TRANSCODER_DLQ_ALERT_THRESHOLD) {
+        adminEventBus.push("ops-alert", {
+          level: "warn",
+          title: "Transcoder Dead-Letter Queue Alert",
+          message: `${dlqDepth} transcoding job(s) are in the dead-letter queue awaiting operator review.`,
+          metric: "transcoder_dlq_depth",
+          value: dlqDepth,
+        });
+      }
+    } catch {
+      /* non-fatal */
     }
   }
 }

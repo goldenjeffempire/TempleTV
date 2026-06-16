@@ -214,3 +214,46 @@ export const broadcastQueueActiveItems = new Gauge({
   labelNames: ["channel", "service", "env"] as const,
   registers: [promRegistry],
 });
+
+export const transcoderWorkerCount = new Gauge({
+  name: "transcoder_worker_count",
+  help: "Number of live transcoder worker processes registered in the worker registry",
+  labelNames: ["service", "env"] as const,
+  registers: [promRegistry],
+});
+
+export const transcoderActiveJobCount = new Gauge({
+  name: "transcoder_active_job_count",
+  help: "Number of transcoding jobs currently processing (across all concurrent slots)",
+  labelNames: ["service", "env"] as const,
+  registers: [promRegistry],
+});
+
+export const transcoderDlqDepth = new Gauge({
+  name: "transcoder_dlq_depth",
+  help: "Number of jobs in the dead-letter queue awaiting operator review",
+  labelNames: ["service", "env"] as const,
+  registers: [promRegistry],
+});
+
+export const transcoderLeaseReclaimTotal = new Counter({
+  name: "transcoder_lease_reclaim_total",
+  help: "Total number of expired job leases reclaimed from dead workers",
+  labelNames: ["service", "env"] as const,
+  registers: [promRegistry],
+});
+
+export const transcoderStageTransitionTotal = new Counter({
+  name: "transcoder_stage_transition_total",
+  help: "Total stage transitions by stage name",
+  labelNames: ["stage", "service", "env"] as const,
+  registers: [promRegistry],
+});
+
+export const transcoderJobDurationSeconds = new Histogram({
+  name: "transcoder_job_duration_seconds",
+  help: "Total wall-clock time for completed transcoding jobs",
+  labelNames: ["status", "service", "env"] as const,
+  buckets: [30, 60, 120, 300, 600, 900, 1800, 3600, 7200],
+  registers: [promRegistry],
+});

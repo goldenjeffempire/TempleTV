@@ -460,6 +460,116 @@ export async function queueStats() {
  * Returns true when the update was applied, false when no eligible job exists.
  * Safe to call fire-and-forget; errors are surfaced as the resolved boolean.
  */
+/**
+ * Route a permanently-failed transcoding job to the Dead-Letter Queue.
+ *
+ * Inserts a row in `transcoding_dead_letter` and emits an ops-alert SSE
+ * event so operators are notified via the admin dashboard.  Idempotent —
+ * if the job is already in the DLQ the row is silently left unchanged.
+ *
+ * The DLQ is specifically for jobs that exhausted their retry budget on
+ * transient errors (disk-full, timeout, network outage).  Jobs that fail
+ * permanently with CORRUPT_SOURCE or SOURCE_MISSING are tracked only in
+ * `managed_videos.transcodingErrorCode` and excluded from the DLQ so
+ * operators get a clear signal: DLQ = "fixable, needs intervention".
+ */
+export async function moveToDlq(args: {
+  jobId: string;
+  videoId?: string;
+  videoPath?: string;
+  attempts: number;
+  lastError: string;
+  errorCode: string;
+}): Promise<void> {
+  const { randomUUID } = await import("node:crypto");
+  const dlq = schema.transcodingDeadLetterTable;
+
+  // Look up video title for human-readable DLQ display.
+  const videoTitle = args.videoId
+    ? await db.select({ title: videos.title })
+        .from(videos)
+        .where(eq(videos.id, args.videoId))
+        .limit(1)
+        .then((r) => r[0]?.title ?? null)
+        .catch(() => null)
+    : null;
+
+  await db.insert(dlq).values({
+    id: randomUUID(),
+    jobId: args.jobId,
+    videoId: args.videoId ?? null,
+    videoPath: args.videoPath ?? null,
+    videoTitle: videoTitle ?? null,
+    attempts: args.attempts,
+    lastError: args.lastError,
+    errorCode: args.errorCode,
+    deadLetteredAt: new Date(),
+    requeuedAt: null,
+    notes: null,
+  }).onConflictDoNothing(); // idempotent
+
+  logger.warn(
+    { jobId: args.jobId, videoId: args.videoId, attempts: args.attempts, errorCode: args.errorCode },
+    "transcoder: job routed to dead-letter queue",
+  );
+}
+
+/**
+ * Re-queue a dead-letter entry so the dispatcher picks it up again.
+ *
+ * Resets the matching transcoding_jobs row to status='queued' (clearing
+ * attempts so a fresh retry budget is applied), stamps requeued_at on the
+ * DLQ row, and fires a broadcast-queue-updated notification so any in-flight
+ * orchestrator state refreshes immediately.
+ */
+export async function requeueFromDlq(dlqId: string): Promise<{ jobId: string }> {
+  const dlq = schema.transcodingDeadLetterTable;
+
+  const [entry] = await db.select().from(dlq).where(eq(dlq.id, dlqId)).limit(1);
+  if (!entry) throw new Error(`DLQ entry not found: ${dlqId}`);
+
+  // Reset the job row back to queued so the dispatcher can pick it up.
+  await db.update(jobs)
+    .set({
+      status: "queued",
+      stage: "pending",
+      attempts: 0,
+      progress: 0,
+      errorMessage: null,
+      nextRetryAt: null,
+      startedAt: null,
+      completedAt: null,
+      leaseExpiresAt: null,
+      leasedBy: null,
+    })
+    .where(eq(jobs.id, entry.jobId));
+
+  // Stamp requeued_at to prevent the DLQ row from showing again next sweep.
+  await db.update(dlq)
+    .set({ requeuedAt: new Date() })
+    .where(eq(dlq.id, dlqId));
+
+  // Update managed_videos status if we have a videoId.
+  if (entry.videoId) {
+    await db.update(videos)
+      .set({ transcodingStatus: "queued", transcodingErrorMessage: null, transcodingErrorCode: null })
+      .where(eq(videos.id, entry.videoId))
+      .catch(() => { /* non-fatal */ });
+  }
+
+  logger.info({ dlqId, jobId: entry.jobId, videoId: entry.videoId }, "transcoder: DLQ entry requeued");
+  return { jobId: entry.jobId };
+}
+
+/**
+ * Purge a dead-letter entry permanently (no re-queue).
+ */
+export async function purgeDlqEntry(dlqId: string): Promise<void> {
+  const dlq = schema.transcodingDeadLetterTable;
+  await db.delete(dlq).where(eq(dlq.id, dlqId));
+  logger.info({ dlqId }, "transcoder: DLQ entry purged");
+}
+
 export async function boostTranscodePriority(
   videoId: string,
   priority: number,

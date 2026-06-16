@@ -396,6 +396,26 @@ const Env = z.object({
   // enough for a 2-hour 1080p sermon to encode on modest hardware without
   // ever blocking the queue indefinitely on a corrupt or malformed source file.
   TRANSCODER_JOB_TIMEOUT_MS: z.coerce.number().int().positive().default(2 * 60 * 60_000),
+  // Enterprise distributed-lease settings.
+  //
+  // TRANSCODER_MAX_CONCURRENT_JOBS — how many jobs run concurrently per process.
+  // Default 2: doubles throughput on multi-core hosts without exceeding the
+  // HLS_MAX_CONCURRENT memory budget (each additional job adds ~24 MiB RSS).
+  // Hard cap 4 enforced in code; set 1 to restore the old single-job behaviour.
+  TRANSCODER_MAX_CONCURRENT_JOBS: z.coerce.number().int().min(1).max(4).default(2),
+  // How long (ms) a job's lease is valid before another worker may reclaim it.
+  // Default 90 s: comfortably longer than the 30-s renewal interval so a
+  // healthy worker never loses its lease between heartbeats.
+  TRANSCODER_LEASE_TTL_MS: z.coerce.number().int().positive().default(90_000),
+  // How often (ms) an active worker renews its lease. Must be << LEASE_TTL_MS.
+  // Default 30 s: gives 3× margin before the TTL expires.
+  TRANSCODER_LEASE_RENEW_MS: z.coerce.number().int().positive().default(30_000),
+  // How often (ms) the lease-reclaim sweep runs to reset expired leases from
+  // dead workers. Default 60 s: a dead worker's job is reclaimed in ≤ 90+60 s.
+  TRANSCODER_LEASE_RECLAIM_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+  // Number of dead-letter queue entries above which an ops-alert SSE event fires.
+  // Default 5: alert on 5+ permanently-failed jobs awaiting operator review.
+  TRANSCODER_DLQ_ALERT_THRESHOLD: z.coerce.number().int().min(1).default(5),
   // Maximum wall-clock time (ms) for the background blob-assembly task that
   // runs after a chunked video upload is finalized. The iterative bytea-concat
   // loop is O(n²) in PostgreSQL I/O — a 2 GB file (250 chunks) can legitimately

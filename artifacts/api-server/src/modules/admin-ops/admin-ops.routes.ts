@@ -33,7 +33,7 @@ import { spawnSync } from "node:child_process";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { sql, eq, desc, isNotNull, inArray } from "drizzle-orm";
+import { sql, eq, desc, isNull, isNotNull, inArray } from "drizzle-orm";
 import { requireAuth, safeStringEqual, extractAndValidateCookieToken } from "../../middleware/auth.js";
 import { UnauthorizedError } from "../../shared/errors.js";
 import { env, isProd } from "../../config/env.js";
@@ -58,8 +58,13 @@ import {
   getJob,
   listJobs,
   queueStats,
+  requeueFromDlq,
+  purgeDlqEntry,
   retryJob,
 } from "../transcoder/transcoder.queue.js";
+import { workerRegistry } from "../transcoder/transcoder.worker-registry.js";
+import { getJobEvents } from "../transcoder/transcoder.job-events.js";
+import { jobLeaseManager } from "../transcoder/transcoder.lease.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
 import { liveOverridesService } from "../live-overrides/live-overrides.service.js";
@@ -2112,6 +2117,219 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       return { ok: true as const };
     },
   );
+  // ── Transcoding Workers ─────────────────────────────────────────────────
+  r.get(
+    "/transcoding/workers",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        tags: ["admin-ops"],
+        summary: "List live transcoder worker processes",
+        response: {
+          200: z.object({
+            workers: z.array(z.object({
+              workerId: z.string(),
+              hostname: z.string(),
+              pid: z.number(),
+              startedAt: z.string(),
+              lastHeartbeatAt: z.string(),
+              currentJobId: z.string().nullable(),
+              currentStage: z.string().nullable(),
+              jobsCompleted: z.number(),
+              jobsFailed: z.number(),
+              version: z.string().nullable(),
+              isStale: z.boolean(),
+            })),
+          }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => {
+      const rows = await workerRegistry.getAll();
+      return {
+        workers: rows.map((r) => ({
+          ...r,
+          startedAt: r.startedAt.toISOString(),
+          lastHeartbeatAt: r.lastHeartbeatAt.toISOString(),
+        })),
+      };
+    },
+  );
+
+  // ── Transcoding Job Events ───────────────────────────────────────────────
+  r.get(
+    "/transcoding/jobs/:jobId/events",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Job event log (stage transitions, errors, completions)",
+        params: z.object({ jobId: z.string().min(1) }),
+        querystring: z.object({ limit: z.coerce.number().int().positive().max(200).default(50) }),
+        response: {
+          200: z.object({
+            events: z.array(z.object({
+              id: z.string(),
+              jobId: z.string(),
+              workerId: z.string().nullable(),
+              eventType: z.string(),
+              stage: z.string().nullable(),
+              payload: z.unknown().nullable(),
+              createdAt: z.string(),
+            })),
+          }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => {
+      const { jobId } = req.params;
+      const { limit } = req.query;
+      const rows = await getJobEvents(jobId, limit);
+      return {
+        events: rows.map((e) => ({
+          ...e,
+          createdAt: e.createdAt.toISOString(),
+        })),
+      };
+    },
+  );
+
+  // ── Dead-Letter Queue ────────────────────────────────────────────────────
+  r.get(
+    "/transcoding/dlq",
+    {
+      preHandler: requireAuth("editor"),
+      schema: {
+        tags: ["admin-ops"],
+        summary: "List dead-lettered transcoding jobs",
+        querystring: z.object({
+          includeRequeued: z.coerce.boolean().default(false),
+          limit: z.coerce.number().int().positive().max(500).default(100),
+        }),
+        response: {
+          200: z.object({
+            entries: z.array(z.object({
+              id: z.string(),
+              jobId: z.string(),
+              videoId: z.string().nullable(),
+              videoPath: z.string().nullable(),
+              videoTitle: z.string().nullable(),
+              attempts: z.number(),
+              lastError: z.string().nullable(),
+              errorCode: z.string().nullable(),
+              deadLetteredAt: z.string(),
+              requeuedAt: z.string().nullable(),
+              notes: z.string().nullable(),
+            })),
+            total: z.number(),
+          }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => {
+      const { includeRequeued, limit } = req.query;
+      const dlq = schema.transcodingDeadLetterTable;
+      const rows = await db
+        .select()
+        .from(dlq)
+        .where(includeRequeued ? undefined : isNull(dlq.requeuedAt))
+        .orderBy(desc(dlq.deadLetteredAt))
+        .limit(limit);
+      return {
+        entries: rows.map((r) => ({
+          ...r,
+          deadLetteredAt: r.deadLetteredAt.toISOString(),
+          requeuedAt: r.requeuedAt?.toISOString() ?? null,
+        })),
+        total: rows.length,
+      };
+    },
+  );
+
+  r.post(
+    "/transcoding/dlq/:id/requeue",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Re-queue a dead-letter entry (resets attempt budget)",
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({ ok: z.literal(true), jobId: z.string() }),
+          404: z.object({ message: z.string() }),
+          429: z.object({ error: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req, reply) => {
+      try {
+        const { jobId } = await requeueFromDlq(req.params.id);
+        transcoderDispatcher.nudge();
+        adminEventBus.push("transcoding-update", { type: "dlq-requeue", jobId });
+        return { ok: true as const, jobId };
+      } catch (err) {
+        reply.code(404);
+        return { message: (err as Error).message };
+      }
+    },
+  );
+
+  r.delete(
+    "/transcoding/dlq/:id",
+    {
+      preHandler: requireAuth("admin"),
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Permanently purge a dead-letter entry",
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({ ok: z.literal(true) }),
+          429: z.object({ error: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => {
+      await purgeDlqEntry(req.params.id);
+      return { ok: true as const };
+    },
+  );
+
+  // ── Active Leases (diagnostics) ──────────────────────────────────────────
+  r.get(
+    "/transcoding/leases",
+    {
+      preHandler: requireAuth("admin"),
+      schema: {
+        tags: ["admin-ops"],
+        summary: "List active and recently expired job leases (diagnostics)",
+        response: {
+          200: z.object({
+            leases: z.array(z.object({
+              jobId: z.string(),
+              leasedBy: z.string().nullable(),
+              leaseExpiresAt: z.string().nullable(),
+              status: z.string(),
+              stage: z.string().nullable(),
+              isExpired: z.boolean(),
+            })),
+          }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => {
+      const leases = await jobLeaseManager.listActiveLeases();
+      return { leases };
+    },
+  );
+
   r.post(
     "/transcoding/requeue/:videoId",
     {
