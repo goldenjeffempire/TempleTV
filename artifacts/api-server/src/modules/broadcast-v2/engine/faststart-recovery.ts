@@ -34,7 +34,7 @@
  *       when storage is degraded.
  */
 
-import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { storage } from "../../../infrastructure/storage.js";
 import { logger as rootLogger } from "../../../infrastructure/logger.js";
@@ -293,6 +293,12 @@ async function findCandidatesOnce(
         inArray(v.transcodingStatus, ["none", "queued", "encoding", "failed"]),
         isNull(v.hlsMasterUrl),
         isNull(q.hlsMasterUrl),
+        // Permanently exclude CORRUPT_SOURCE videos — they have no moov atom
+        // or unresolvable container damage and can never be recovered by faststart.
+        // This is a DB-level guard that survives process restarts (unlike the
+        // in-memory givenUpIds set, which is wiped on every restart and would
+        // otherwise let these videos re-enter the candidate set indefinitely).
+        or(isNull(v.transcodingErrorCode), ne(v.transcodingErrorCode, "CORRUPT_SOURCE")),
       ),
     )
     .limit(CANDIDATE_QUERY_LIMIT);
