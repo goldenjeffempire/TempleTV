@@ -134,9 +134,13 @@ async function validateHlsOutput(videoId: string): Promise<HlsValidationResult> 
   //    queries). ANY(array) leverages the B-Tree index on storage_blobs.key and
   //    avoids N round-trips for N renditions (typical: 4 renditions = 360/540/
   //    720/1080p). The result is stored in a Map keyed by storage key.
+  // Use sql.param() to pass the array as a single $N binding so the pg driver
+  // serialises it to {v1,v2,...}. The broken pattern ANY(${array}::text[])
+  // causes Drizzle to expand the JS array to tuple notation ($1,$2,...) which
+  // PostgreSQL rejects with ERROR 42846 (cannot cast type record to text[]).
   const rendBatch = await db.execute(sql`
     SELECT key, data FROM storage_blobs
-    WHERE key = ANY(${renditionKeys}::text[])
+    WHERE key = ANY(${sql.param(renditionKeys)}::text[])
   `);
   const rendMap = new Map<string, string>();
   for (const row of rendBatch.rows as Array<{ key: string; data: Buffer }>) {

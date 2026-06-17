@@ -35,6 +35,10 @@ import { db } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
+import {
+  blobCountByVideoIdPrefix,
+  presentStorageKeys,
+} from "../../../infrastructure/sql-array-utils.js";
 
 const MODULE = "[hls-startup-integrity]";
 
@@ -89,10 +93,6 @@ type QueueRow = {
   hlsMasterUrl: string;
 };
 
-type BlobCountRow = {
-  videoId: string;
-  blobCount: number;
-};
 
 export async function runHlsStartupIntegrityScan(): Promise<void> {
   const startMs = Date.now();
@@ -158,40 +158,23 @@ export async function runHlsStartupIntegrityScan(): Promise<void> {
   // Any blob under the prefix indicates at least partial HLS output.
   const videoIds = [...videoIdToRow.keys()];
 
-  let blobCounts: BlobCountRow[];
+  // Count blobs per video prefix using the UNNEST-based helper that correctly
+  // passes the array as a single pg binding (sql.param) instead of the broken
+  // LIKE ANY(${jsArray}::text[]) pattern (Drizzle expands JS arrays to tuple
+  // notation ($1,$2,...) which PostgreSQL rejects with ERROR 42846).
+  let blobCountByVideoId: Map<string, number>;
   try {
-    // Count blobs per video prefix in one round-trip.
-    // LIKE ANY(array::text[]) is safe: videoIds are DB-sourced UUIDs and are
-    // parameterized via the Drizzle sql template — no string interpolation.
-    const likePatterns = videoIds.map((id) => `transcoded/${id}/%`);
-    const result = await db.execute<BlobCountRow>(sql`
-      SELECT
-        regexp_replace(key, '^transcoded/([^/]+)/.*$', '\\1') AS "videoId",
-        COUNT(*) AS "blobCount"
-      FROM storage_blobs
-      WHERE key LIKE ANY(${likePatterns}::text[])
-      GROUP BY 1
-    `);
-    blobCounts = (result.rows as BlobCountRow[]) ?? [];
+    blobCountByVideoId = await blobCountByVideoIdPrefix(videoIds);
   } catch (err) {
     logger.warn({ err }, `${MODULE} storage_blobs check failed — skipping (non-fatal)`);
     return;
   }
 
-  // Build a map of videoId → blob count.
-  const blobCountByVideoId = new Map<string, number>();
-  for (const row of blobCounts) {
-    blobCountByVideoId.set(row.videoId, Number(row.blobCount));
-  }
-
-  // Separately check for the master.m3u8 blob.
+  // Separately check for the master.m3u8 blob using inArray (valid IN ($1,$2,...)).
   const masterKeys = videoIds.map((id) => `transcoded/${id}/master.m3u8`);
   let masterExists: Set<string>;
   try {
-    const result = await db.execute<{ key: string }>(sql`
-      SELECT key FROM storage_blobs WHERE key = ANY(${masterKeys}::text[])
-    `);
-    masterExists = new Set((result.rows as { key: string }[]).map((r) => r.key));
+    masterExists = await presentStorageKeys(masterKeys);
   } catch (err) {
     logger.warn({ err }, `${MODULE} master.m3u8 existence check failed — skipping (non-fatal)`);
     return;
@@ -276,7 +259,7 @@ export async function runHlsStartupIntegrityScan(): Promise<void> {
         UPDATE broadcast_queue
         SET is_active = false,
             updated_at = now()
-        WHERE video_id = ANY(${totallyMissing}::text[])
+        WHERE video_id = ANY(${sql.param(totallyMissing)}::text[])
           AND is_active = true
           AND hls_master_url IS NOT NULL
       `);

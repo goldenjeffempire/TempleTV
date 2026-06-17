@@ -541,11 +541,14 @@ class TranscoderDispatcher {
       masterKey: `transcoded/${job.videoId}/master.m3u8`,
     }));
     const masterKeysToProbe = jobEntries.map((e) => e.masterKey);
+    // sql.param() passes the array as a single $N binding; the pg driver
+    // serialises string[] to {v1,v2,...}. The bare ${array}::text[] pattern
+    // causes Drizzle to emit tuple notation ($1,$2)::text[] → ERROR 42846.
     const existingMasterKeys: Set<string> = masterKeysToProbe.length > 0
       ? await db
           .execute(sql`
             SELECT key FROM storage_blobs
-            WHERE key = ANY(${masterKeysToProbe}::text[])
+            WHERE key = ANY(${sql.param(masterKeysToProbe)}::text[])
           `)
           .then((r) => new Set((r.rows as Array<{ key: string }>).map((row) => row.key)))
           .catch((err) => {
@@ -641,7 +644,7 @@ class TranscoderDispatcher {
         SET    duration_secs = ROUND(mv.duration::numeric)
         FROM   managed_videos mv
         WHERE  bq.video_id = mv.id
-          AND  bq.video_id = ANY(${healedVideoIds}::text[])
+          AND  bq.video_id = ANY(${sql.param(healedVideoIds)}::text[])
           AND  mv.duration IS NOT NULL
           AND  mv.duration ~ '^[0-9]+(\\.[0-9]+)?$'
           AND  mv.duration::numeric > 10
@@ -1288,7 +1291,7 @@ class TranscoderDispatcher {
         SET transcoding_status = 'queued',
             transcoding_error_message = NULL,
             updated_at = NOW()
-        WHERE id = ANY(${stuckIds}::text[])
+        WHERE id = ANY(${sql.param(stuckIds)}::text[])
       `);
 
       adminEventBus.push("videos-library-updated", {

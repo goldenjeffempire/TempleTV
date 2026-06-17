@@ -122,3 +122,31 @@ export function likeAnyOr(col: Column, patterns: string[]): SQL {
   if (patterns.length === 1) return like(col, patterns[0]!) as unknown as SQL;
   return or(...patterns.map((p) => like(col, p))) as unknown as SQL;
 }
+
+// ─── 5. Safe ANY() param helper for raw sql templates ────────────────────────
+
+/**
+ * Produces a SQL fragment `= ANY($N::text[])` that is safe for use inside a
+ * Drizzle `sql\`...\`` template.
+ *
+ * **Why this is needed:**
+ * Drizzle's `sql\`...\`` template expands a plain JS array to a tuple literal
+ * `($1, $2, ...)`.  Casting a tuple to `text[]` — `($1, $2)::text[]` — is
+ * rejected by PostgreSQL with ERROR 42846 (cannot cast type record to text[]).
+ *
+ * `sql.param(values)` passes the entire array as a *single* `$N` binding.
+ * The `pg` driver then serialises `string[]` as the PostgreSQL array literal
+ * `{v1,v2,...}`, so `$N::text[]` is valid.
+ *
+ * Returns `sql\`= ANY('{}'::text[])\`` (matches nothing) for an empty array.
+ *
+ * @example
+ *   await db.execute(sql`
+ *     UPDATE foo SET bar = true
+ *     WHERE id ${anyTextParam(ids)}
+ *   `);
+ */
+export function anyTextParam(values: string[]): SQL {
+  if (values.length === 0) return sql`= ANY('{}'::text[])`;
+  return sql`= ANY(${sql.param(values)}::text[])`;
+}
