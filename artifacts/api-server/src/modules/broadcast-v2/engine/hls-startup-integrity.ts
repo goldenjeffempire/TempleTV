@@ -166,7 +166,7 @@ export async function runHlsStartupIntegrityScan(): Promise<void> {
     const likePatterns = videoIds.map((id) => `transcoded/${id}/%`);
     const result = await db.execute<BlobCountRow>(sql`
       SELECT
-        regexp_replace(key, '^transcoded/([^/]+)/.*$', '\1') AS "videoId",
+        regexp_replace(key, '^transcoded/([^/]+)/.*$', '\\1') AS "videoId",
         COUNT(*) AS "blobCount"
       FROM storage_blobs
       WHERE key LIKE ANY(${likePatterns}::text[])

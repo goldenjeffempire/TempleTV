@@ -40,6 +40,18 @@ const HealthSchema = z.object({
     uptimeMs: z.number().int(),
     itemCount: z.number().int(),
   }),
+  storageReconciliation: z.object({
+    lastPassAtMs: z.number().nullable(),
+    lastPassElapsedMs: z.number().nullable(),
+    checked: z.number().int(),
+    healthy: z.number().int(),
+    tier1RetranscodeTotal: z.number().int(),
+    tier1AlertTotal: z.number().int(),
+    tier2Total: z.number().int(),
+    tier3Total: z.number().int(),
+    orphanedBlobsTotal: z.number().int(),
+    consecutiveErrors: z.number().int(),
+  }).optional(),
 });
 
 const startedAt = Date.now();
@@ -241,8 +253,25 @@ export async function healthRoutes(app: FastifyInstance) {
         uptimeMs: v2StartedAtMs > 0 ? Math.max(0, Date.now() - v2StartedAtMs) : 0,
         itemCount: broadcastOrchestrator.getItemCount(),
       };
+      // Expose storage reconciliation stats for production monitoring.
+      // Lazy-import so the health endpoint works even before the reconciliation
+      // worker module has been loaded (early boot / worker disabled).
+      let storageReconciliationStats: ReturnType<typeof import("../broadcast-v2/engine/storage-blob-recovery.service.js")["storageBlobRecoveryService"]["getStats"]> | undefined;
+      try {
+        const { storageBlobRecoveryService } = await import("../broadcast-v2/engine/storage-blob-recovery.service.js");
+        storageReconciliationStats = storageBlobRecoveryService.getStats();
+      } catch {
+        // module not loaded — stats omitted
+      }
+
       if (status === "down") reply.code(503);
-      return { ...body, broadcastEngine: v2EngineBody };
+      return {
+        ...body,
+        broadcastEngine: v2EngineBody,
+        ...(storageReconciliationStats !== undefined
+          ? { storageReconciliation: storageReconciliationStats }
+          : {}),
+      };
     },
   );
 

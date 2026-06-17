@@ -2020,6 +2020,38 @@ class TranscoderDispatcher {
           });
         }
 
+        // When a job terminally fails due to SOURCE_MISSING, trigger the storage
+        // blob recovery waterfall non-blockingly.  The waterfall verifies storage
+        // state and either re-enqueues transcoding if a blob was re-uploaded since
+        // the job was claimed, or quarantines the video if truly gone.
+        // This closes the gap where a SOURCE_MISSING failure is recorded but no
+        // autonomous recovery attempt is made without the 10-min reconciliation pass.
+        if (isSourceMissing && exceeded && job.videoId) {
+          void (async () => {
+            try {
+              const { storageBlobRecoveryService } = await import("../broadcast-v2/engine/storage-blob-recovery.service.js");
+              // Fetch objectPath from managed_videos for the waterfall.
+              const vidRow = await db
+                .select({ objectPath: videos.objectPath, hlsMasterUrl: videos.hlsMasterUrl, title: videos.title })
+                .from(videos)
+                .where(eq(videos.id, job.videoId!))
+                .then((r) => r[0] ?? null);
+              if (vidRow) {
+                await storageBlobRecoveryService.runWaterfall({
+                  videoId: job.videoId!,
+                  queueId: "",
+                  title: vidRow.title ?? job.videoId ?? "(unknown)",
+                  objectPath: vidRow.objectPath,
+                  hlsUrl: vidRow.hlsMasterUrl,
+                  triggeredBy: "transcoder-dispatcher",
+                });
+              }
+            } catch (recErr) {
+              logger.warn({ err: recErr, videoId: job.videoId }, "transcoder: post-SOURCE_MISSING recovery trigger failed (non-fatal)");
+            }
+          })();
+        }
+
         if (isCorruptSource) {
           logger.error(
             { err, jobId: job.id, videoId: job.videoId, errCode },
