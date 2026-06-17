@@ -340,7 +340,7 @@ services:
       #
       # 10 s gives Render's LB ≥2 confirmed 503 probes (5 s cadence) before
       # the socket closes, preventing mid-request TCP resets during deploys.
-      # Stays well under the 15 s hard force-timer in index.ts.
+      # Stays well under the 28 s SHUTDOWN_FORCE_EXIT_BUDGET_MS set below.
       - key: SHUTDOWN_DRAIN_MS
         value: "10000"
 
@@ -352,6 +352,15 @@ services:
       # and WebSocket clients.
       - key: SHUTDOWN_PRECLOSE_DELAY_MS
         value: "10000"
+
+      # SHUTDOWN_FORCE_EXIT_BUDGET_MS: absolute wall-clock budget from SIGTERM
+      # to forced process.exit(). Render sends SIGKILL after 30 s — set to
+      # 28 000 (2 s headroom). Effective drain window:
+      #   28 000 − 10 000 (preclose) = 18 s for SSE/WS/uploads to drain.
+      # Previously hardcoded to 25 000 ms (15 s drain window), which was tight
+      # enough that active chunk uploads always triggered force-exit.
+      - key: SHUTDOWN_FORCE_EXIT_BUDGET_MS
+        value: "28000"
 
       # ── Autonomous monitor tuning ──────────────────────────────────────────
       # QUEUE_MIN_ITEMS: queue-health-guard threshold — if the active broadcast

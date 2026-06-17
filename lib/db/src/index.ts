@@ -33,6 +33,10 @@ if (!process.env.DATABASE_URL) {
  *      same behavior automatically.
  */
 function normalizeDatabaseUrl(raw: string): string {
+  // Strip leading/trailing whitespace and newlines. Render environment-group
+  // secrets are sometimes stored with a trailing \n when copy-pasted in the
+  // dashboard, which produces an invalid URL and a confusing parse error.
+  raw = raw.trim();
   // Skip non-URL connection strings (e.g. KV-style "host=... user=..."), which
   // don't have URL search params and don't trigger the warning anyway.
   if (!/^postgres(ql)?:\/\//i.test(raw)) return raw;

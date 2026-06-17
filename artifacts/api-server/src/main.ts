@@ -394,10 +394,15 @@ async function main() {
           !env.SMTP_USER  && "SMTP_USER",
           !env.SMTP_PASS  && "SMTP_PASS",
         ].filter(Boolean);
-        configErrors.push(
+        // Downgraded from configErrors → configWarnings: the mailer no-ops
+        // gracefully when any SMTP var is absent, so this is advisory rather
+        // than production-blocking. A configErrors entry logged at level:50
+        // on every boot is alarming and obscures genuinely critical errors.
+        configWarnings.push(
           `SMTP partially configured — missing: ${missing.join(", ")}. ` +
           "The mailer silently no-ops until all three are set. " +
-          "All transactional email (welcome, password reset, admin alerts) will be lost.",
+          "All transactional email (welcome, password reset, admin alerts) will be lost. " +
+          "Set the missing vars in the Render dashboard (or environment-secrets) to enable.",
         );
       }
     }
@@ -1110,10 +1115,16 @@ async function main() {
     // Safety net: if the drain sequence hangs (DB pool stalls, a worker
     // deadlocks, a spawned child won't die), force-exit before the platform
     // escalates to SIGKILL. SIGKILL skips checkpoint flush and leaves broadcast
-    // position unsaved. 25 s budget: PRECLOSE(10 s) + SSE/WS drain(10 s) +
-    // storage/DB close(5 s). The memory-watchdog has its own 60 s gate for
-    // watchdog-triggered SIGTERMs; this gate covers all other SIGTERM sources.
-    const SHUTDOWN_FORCE_EXIT_MS = 25_000;
+    // position unsaved.
+    //
+    // Budget is controlled by SHUTDOWN_FORCE_EXIT_BUDGET_MS (env.ts):
+    //   default 25 s  — covers PRECLOSE(10 s) + SSE/WS drain(10 s) + close(5 s)
+    //   Render free   — set to 28 000 (30 s SIGKILL window − 2 s headroom)
+    //   Render paid   — set to 55 000 (60 s SIGKILL window − 5 s headroom)
+    //
+    // The memory-watchdog has its own 60 s gate for watchdog-triggered
+    // SIGTERMs; this gate covers all other SIGTERM sources.
+    const SHUTDOWN_FORCE_EXIT_MS = env.SHUTDOWN_FORCE_EXIT_BUDGET_MS;
     const forceExitTimer = setTimeout(() => {
       logger.fatal({ signal, budgetMs: SHUTDOWN_FORCE_EXIT_MS }, "shutdown drain budget exceeded — force-exiting");
       process.exit(exitCode || 1);

@@ -593,6 +593,23 @@ const Env = z.object({
   // 0 = skip drain and close immediately.
   SHUTDOWN_DRAIN_MS: z.coerce.number().int().nonnegative().default(5_000),
 
+  // Absolute wall-clock budget (ms) from the moment SIGTERM is received until
+  // the process force-exits if the graceful drain has not completed. Must be
+  // set BELOW the platform's SIGKILL grace period so the server exits cleanly
+  // rather than being hard-killed.
+  //
+  // Timeline: SIGTERM → SHUTDOWN_PRECLOSE_DELAY_MS → app.close() → drain →
+  //           process.exit(0). Force-exit fires if this whole sequence exceeds
+  //           SHUTDOWN_FORCE_EXIT_BUDGET_MS.
+  //
+  //   Render free tier (30 s SIGKILL window)  → set to 28 000 (2 s headroom)
+  //   Render paid / k8s (60 s SIGKILL window) → set to 55 000
+  //   Replit dev (no SIGKILL)                 → 25 000 (default) is fine
+  //
+  // Effective drain window = SHUTDOWN_FORCE_EXIT_BUDGET_MS − SHUTDOWN_PRECLOSE_DELAY_MS.
+  // Example: 28 000 − 10 000 preclose = 18 s to drain active SSE/WS/uploads.
+  SHUTDOWN_FORCE_EXIT_BUDGET_MS: z.coerce.number().int().positive().default(25_000),
+
   // ── Application version ───────────────────────────────────────────────────
   // Injected at build time (e.g. CI sets APP_VERSION=<git tag>).
   // Falls back to npm_package_version (set by `node` when run via npm/pnpm).
