@@ -2372,7 +2372,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 .update(videos)
                 .set({ s3MirroredAt: new Date() })
                 .where(eq(videos.id, videoId))
-                .catch(() => {}),
+                .catch((err: unknown) =>
+                  capturedLog.warn(
+                    { err, videoId },
+                    "[finalize:bg] s3MirroredAt stamp failed (non-fatal) — startup repair will recover on next boot",
+                  ),
+                ),
             ]);
             // Wrap telemetry write: a DB failure here must not propagate to
             // the outer catch and trigger blob deletion — the blob is already
@@ -2956,7 +2961,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               .update(videos)
               .set({ s3MirroredAt: new Date(), localVideoUrl: result.localVideoUrl, objectPath: result.objectKey })
               .where(eq(videos.id, videoIdB))
-              .catch(() => {}),
+              .catch((err: unknown) =>
+                capturedLogB.warn(
+                  { err, videoId: videoIdB },
+                  "[finalize:db_fallback:bg] s3MirroredAt stamp failed (non-fatal) — startup repair will recover on next boot",
+                ),
+              ),
           ]);
 
           // Reclaim BYTEA chunk rows now that the blob is fully assembled.

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
@@ -174,6 +174,119 @@ export async function enqueueIfMissing(opts: {
   }
 }
 
+// ── Storage key derivation (mirrors queue.repo.ts deriveStorageKey) ──────────
+//
+// publicUrl("uploads/2024/01/15/abc.mp4") → "/api/v1/uploads/2024/01/15/abc.mp4"
+// The storage_blobs key is "uploads/2024/01/15/abc.mp4" (with the prefix).
+// For relative URLs we strip the leading /api/v1/ segment to restore the key.
+// For absolute URLs the suffix after /api/v1/uploads/ must have "uploads/"
+// re-added because publicUrl() strips it when building the URL.
+function deriveStorageKeyFromUrl(localVideoUrl: string): string | null {
+  if (!localVideoUrl) return null;
+  if (/^https?:\/\//i.test(localVideoUrl)) {
+    const marker = "/api/v1/uploads/";
+    const idx = localVideoUrl.indexOf(marker);
+    if (idx !== -1) return "uploads/" + localVideoUrl.slice(idx + marker.length);
+    const legacyMarker = "/api/uploads/";
+    const idx2 = localVideoUrl.indexOf(legacyMarker);
+    if (idx2 !== -1) return "uploads/" + localVideoUrl.slice(idx2 + legacyMarker.length);
+    return null;
+  }
+  // Relative URL: /api/v1/uploads/2024/... → uploads/2024/...
+  const stripped = localVideoUrl.replace(/^\/(?:api\/(?:v\d+\/)?)?/, "");
+  return stripped.startsWith("uploads/") ? stripped : null;
+}
+
+/**
+ * Self-healing repair sweep: finds all local `managed_videos` rows where
+ * `s3_mirrored_at IS NULL` (indicating the post-assembly stamp was either
+ * never written or silently swallowed), confirms the storage blob actually
+ * exists in `storage_blobs`, and stamps `s3_mirrored_at = NOW()` for every
+ * confirmed match.
+ *
+ * WHY THIS EXISTS:
+ *   Both upload finalize paths (Path A "db" and Path B "db_fallback") set
+ *   `s3MirroredAt` inside a `Promise.all` with `.catch(() => {})` that
+ *   previously swallowed errors silently. If that UPDATE ever failed (transient
+ *   pool exhaustion, statement timeout), the video's `s3_mirrored_at` would
+ *   remain NULL permanently. `scanLibraryAndEnqueue` pre-filters out local
+ *   videos whose `s3_mirrored_at IS NULL`, so those videos would never enter
+ *   the broadcast queue — not at startup, not during self-heal, never.
+ *
+ *   This function runs before every `scanLibraryAndEnqueue` call to ensure that
+ *   no valid, assembled video is permanently excluded by a stale NULL stamp.
+ *
+ * SAFETY:
+ *   - Only repairs videos where the blob is confirmed present in storage_blobs
+ *     (i.e., `completeMultipartUpload` actually committed the bytes). Pre-
+ *     committed or partially-assembled rows have no blob row yet and are left
+ *     untouched — they continue to be excluded from the scan until the
+ *     assembly finishes and stamps the field correctly.
+ *   - Excludes terminal error codes (ASSEMBLY_FAILED, CORRUPT_SOURCE,
+ *     SOURCE_MISSING) so we don't re-admit permanently broken uploads.
+ *   - Batch-updates with a single UPDATE … WHERE id IN (…) to minimise
+ *     round-trips; the cap of 500 rows prevents runaway scans on large DBs.
+ */
+export async function repairMissingS3MirroredAt(): Promise<{ repaired: number }> {
+  try {
+    // Step 1: Find all local videos with s3MirroredAt IS NULL that look
+    // potentially assembled (have a localVideoUrl and no terminal error).
+    const candidates = await db
+      .select({
+        id: videosTable.id,
+        localVideoUrl: videosTable.localVideoUrl,
+      })
+      .from(videosTable)
+      .where(
+        and(
+          ne(videosTable.videoSource, "youtube"),
+          isNull(videosTable.s3MirroredAt),
+          isNotNull(videosTable.localVideoUrl),
+          sql`(${videosTable.transcodingErrorCode} IS NULL OR ${videosTable.transcodingErrorCode} NOT IN ('ASSEMBLY_FAILED', 'CORRUPT_SOURCE', 'SOURCE_MISSING'))`,
+        ),
+      )
+      .limit(500);
+
+    if (candidates.length === 0) return { repaired: 0 };
+
+    // Step 2: Derive storage keys and filter out non-derivable URLs.
+    const withKeys = candidates.flatMap((r) => {
+      const key = deriveStorageKeyFromUrl(r.localVideoUrl ?? "");
+      return key ? [{ id: r.id, key }] : [];
+    });
+    if (withKeys.length === 0) return { repaired: 0 };
+
+    // Step 3: Batch-check storage_blobs for the derived keys (single round-trip).
+    const keys = withKeys.map((r) => r.key);
+    const presentRows = await db
+      .select({ key: schema.storageBlobsTable.key })
+      .from(schema.storageBlobsTable)
+      .where(inArray(schema.storageBlobsTable.key, keys));
+    const presentSet = new Set(presentRows.map((r) => r.key));
+
+    // Step 4: Stamp s3MirroredAt for every video whose blob is confirmed present.
+    const toRepair = withKeys.filter((r) => presentSet.has(r.key)).map((r) => r.id);
+    if (toRepair.length === 0) return { repaired: 0 };
+
+    await db
+      .update(videosTable)
+      .set({ s3MirroredAt: new Date() })
+      .where(inArray(videosTable.id, toRepair))
+      .catch((err: unknown) =>
+        logger.warn({ err, count: toRepair.length }, "[auto-enqueue] repair: s3MirroredAt batch stamp failed"),
+      );
+
+    logger.info(
+      { repaired: toRepair.length, candidates: candidates.length, withKeys: withKeys.length, present: presentSet.size },
+      "[auto-enqueue] repair: stamped s3MirroredAt for videos with confirmed storage blobs",
+    );
+    return { repaired: toRepair.length };
+  } catch (err) {
+    logger.warn({ err }, "[auto-enqueue] repairMissingS3MirroredAt failed (non-fatal)");
+    return { repaired: 0 };
+  }
+}
+
 /**
  * Scan the entire library for playable videos that are NOT in the broadcast
  * queue, and enqueue every one of them. Two call sites:
@@ -201,6 +314,12 @@ export async function scanLibraryAndEnqueue(opts: {
   }
   const limit = opts.maxToAdd ?? 200;
   try {
+    // Self-healing pre-pass: stamp s3MirroredAt for any local videos whose
+    // post-assembly DB update silently failed. This runs before the main
+    // candidate query so that repaired videos are immediately visible to the
+    // s3_mirrored_at IS NOT NULL filter below.
+    await repairMissingS3MirroredAt();
+
     // Single query: managed_videos LEFT ANTI JOIN broadcast_queue. Returns
     // only library rows that aren't represented in the queue by either
     // videoId or youtubeId. Ordered newest-first so the broadcast leads

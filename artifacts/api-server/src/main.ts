@@ -722,17 +722,39 @@ async function main() {
     void (async () => {
       await new Promise<void>((resolve) => { const t = setTimeout(resolve, 5_000); t.unref?.(); });
       try {
-        const { scanLibraryAndEnqueue } = await import("./modules/broadcast/auto-enqueue.service.js");
+        const { scanLibraryAndEnqueue, repairMissingS3MirroredAt } = await import("./modules/broadcast/auto-enqueue.service.js");
+
+        // Run the s3MirroredAt repair first so videos whose post-assembly stamp
+        // silently failed are healed before the candidate query runs.
+        // scanLibraryAndEnqueue also calls this internally, but running it here
+        // gives us a dedicated startup log line that operators can grep for.
+        const repairResult = await repairMissingS3MirroredAt();
+        if (repairResult.repaired > 0) {
+          logger.info(
+            { repaired: repairResult.repaired },
+            "[startup] s3MirroredAt repair: recovered videos with missing blob stamp — they will be picked up by the library scan",
+          );
+        }
+
         const result = await scanLibraryAndEnqueue({ reason: "startup", maxToAdd: 500 });
         if (result.enqueued > 0) {
           logger.info(
             { scanned: result.scanned, enqueued: result.enqueued, skipped: result.skipped },
             "[startup] library scan: queued eligible videos for broadcast",
           );
-        } else {
+        } else if (result.scanned > 0) {
           logger.info(
             { scanned: result.scanned, skipped: result.skipped },
-            "[startup] library scan: all eligible videos already in broadcast queue",
+            "[startup] library scan: all eligible unqueued videos were already in the broadcast queue",
+          );
+        } else {
+          // scanned === 0 means either:
+          //   (a) every playable video is already in the queue — healthy state, or
+          //   (b) no playable videos exist in the library yet — fresh install.
+          // The orchestrator's self-heal will pick up any new uploads within 30 s.
+          logger.info(
+            { scanned: result.scanned, skipped: result.skipped, repaired: repairResult.repaired },
+            "[startup] library scan: no unqueued eligible videos found — queue may already be populated or library is empty",
           );
         }
       } catch (err) {
