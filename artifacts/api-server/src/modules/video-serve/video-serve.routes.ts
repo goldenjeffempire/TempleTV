@@ -296,6 +296,51 @@ export async function videoServeRoutes(app: FastifyInstance) {
     },
   );
 
+  // ── Shared constant: storage namespaces that don't use the "uploads/" prefix ──
+  // Referenced by both the HEAD and GET /uploads/* handlers.
+  const NON_UPLOAD_STORAGE_PREFIXES = ["thumbnails/", "transcoded/", "_parts/", "_meta/"];
+
+  // ── In-process TTL cache for HEAD /uploads/* ─────────────────────────────
+  // Media players (VLC, Safari, broadcast orchestrator) send a HEAD before
+  // every GET to discover Content-Length and Range support. Without a cache
+  // each probe issues a cold S3 HeadObject round-trip (~600 ms on a new TLS
+  // connection, ~100 ms on a warm one). The same URL is typically probed 3-5×
+  // in a 90 s window, so caching for 60 s eliminates most of those S3 calls.
+  //
+  // Bounded at 500 entries — each entry is ~100 bytes so max footprint ≈ 50 kB.
+  // ETag-style invalidation is not needed: uploads are write-once; once a key
+  // exists its Content-Length never changes.
+  const HEAD_CACHE_TTL_MS = 60_000;
+  const HEAD_CACHE_MAX = 500;
+  const headMetaCache = new Map<
+    string,
+    { contentLength?: number; contentType?: string; expiresAt: number }
+  >();
+
+  function headCacheGet(key: string) {
+    const entry = headMetaCache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+      headMetaCache.delete(key);
+      return null;
+    }
+    return entry;
+  }
+
+  function headCacheSet(key: string, contentLength?: number, contentType?: string) {
+    // Simple FIFO eviction — Map preserves insertion order; delete the oldest
+    // entry when the cache is full before inserting the new one.
+    if (headMetaCache.size >= HEAD_CACHE_MAX) {
+      const oldest = headMetaCache.keys().next().value;
+      if (oldest !== undefined) headMetaCache.delete(oldest);
+    }
+    headMetaCache.set(key, {
+      contentLength,
+      contentType,
+      expiresAt: Date.now() + HEAD_CACHE_TTL_MS,
+    });
+  }
+
   // ── Shared helper for /uploads/* content-type resolution ───────────────
   function resolveUploadMime(key: string, storedContentType?: string): string {
     const ext = key.split(".").pop()?.toLowerCase() ?? "";
@@ -365,6 +410,11 @@ export async function videoServeRoutes(app: FastifyInstance) {
   // Many browsers and media players send HEAD before GET to discover
   // Content-Length and whether Range is supported. A missing HEAD handler
   // means they get a 404, which makes them think the asset doesn't exist.
+  //
+  // Uses headMetaCache (60 s TTL, 500 entries) so repeated availability
+  // probes from the same media player skip the S3 HeadObject round-trip
+  // entirely. Uploads are write-once so cached metadata stays correct for
+  // the TTL window.
   app.head<{ Params: { "*": string } }>(
     "/uploads/*",
     async (req, reply) => {
@@ -377,10 +427,29 @@ export async function videoServeRoutes(app: FastifyInstance) {
       // storage_blobs. publicUrl() strips "uploads/" for actual upload blobs
       // so their suffix starts with a date path (e.g. "2025/01/02/abc.mp4").
       // For other storage namespaces we use the suffix directly as the key.
-      const NON_UPLOAD_STORAGE_PREFIXES = ["thumbnails/", "transcoded/", "_parts/", "_meta/"];
       const key = NON_UPLOAD_STORAGE_PREFIXES.some((p) => suffix.startsWith(p))
         ? suffix
         : `uploads/${suffix}`;
+
+      const ext = key.split(".").pop()?.toLowerCase() ?? "";
+      const isImage = ["jpg", "jpeg", "png", "webp"].includes(ext);
+      const cacheControl = isImage
+        ? "public, max-age=2592000, immutable"
+        : "public, max-age=3600, stale-while-revalidate=86400";
+
+      // ── Cache hit: serve without any storage I/O ──────────────────────
+      const cached = headCacheGet(key);
+      if (cached) {
+        const contentType = resolveUploadMime(key, cached.contentType);
+        reply.header("Content-Type", contentType).header("Cache-Control", cacheControl);
+        if (cached.contentLength) {
+          reply.header("Content-Length", String(cached.contentLength));
+        }
+        setUploadCorsHeaders(reply, isImage);
+        return reply.code(200).send();
+      }
+
+      // ── Cache miss: hit storage, then populate cache ──────────────────
       const s = storage();
       if (!s.enabled) {
         return reply.code(503).send();
@@ -390,15 +459,9 @@ export async function videoServeRoutes(app: FastifyInstance) {
         if (!head.exists) {
           return reply.code(404).send();
         }
-        const ext = key.split(".").pop()?.toLowerCase() ?? "";
-        const isImage = ["jpg", "jpeg", "png", "webp"].includes(ext);
-        const cacheControl = isImage
-          ? "public, max-age=2592000, immutable"
-          : "public, max-age=3600, stale-while-revalidate=86400";
+        headCacheSet(key, head.contentLength, head.contentType);
         const contentType = resolveUploadMime(key, head.contentType);
-        reply
-          .header("Content-Type", contentType)
-          .header("Cache-Control", cacheControl);
+        reply.header("Content-Type", contentType).header("Cache-Control", cacheControl);
         if (head.contentLength) {
           reply.header("Content-Length", String(head.contentLength));
         }
@@ -430,7 +493,6 @@ export async function videoServeRoutes(app: FastifyInstance) {
       // Same key-resolution logic as the HEAD handler above:
       // non-upload namespaces (thumbnails/, transcoded/) are stored without
       // the "uploads/" prefix, so we use the suffix directly for those.
-      const NON_UPLOAD_STORAGE_PREFIXES = ["thumbnails/", "transcoded/", "_parts/", "_meta/"];
       const key = NON_UPLOAD_STORAGE_PREFIXES.some((p) => suffix.startsWith(p))
         ? suffix
         : `uploads/${suffix}`;

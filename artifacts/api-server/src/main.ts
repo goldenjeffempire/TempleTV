@@ -287,7 +287,7 @@ async function stopWorkers() {
 
 async function main() {
   const mode = env.RUN_MODE;
-  logger.info({ service: "api", env: process.env.NODE_ENV ?? "unknown", runMode: mode }, "process starting");
+  logger.info({ runMode: mode }, "process starting");
   // Log the effective V8 heap limit immediately so production operators can
   // confirm --max-old-space-size is active without having to parse Node flags.
   // heap_size_limit == 0 means V8 hasn't committed to a limit yet; any non-zero

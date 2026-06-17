@@ -604,11 +604,16 @@ const Env = z.object({
   //
   //   Render free tier (30 s SIGKILL window)  → set to 28 000 (2 s headroom)
   //   Render paid / k8s (60 s SIGKILL window) → set to 55 000
-  //   Replit dev (no SIGKILL)                 → 25 000 (default) is fine
+  //   Replit dev (no SIGKILL)                 → 28 000 default is fine
   //
   // Effective drain window = SHUTDOWN_FORCE_EXIT_BUDGET_MS − SHUTDOWN_PRECLOSE_DELAY_MS.
   // Example: 28 000 − 10 000 preclose = 18 s to drain active SSE/WS/uploads.
-  SHUTDOWN_FORCE_EXIT_BUDGET_MS: z.coerce.number().int().positive().default(25_000),
+  //
+  // Default raised from 25 000 → 28 000: production restarts on Render free-tier
+  // (30 s SIGKILL window) were force-exiting at exactly 25 s and aborting in-flight
+  // chunk uploads. 28 000 gives 2 s headroom under Render's SIGKILL, extending the
+  // effective drain window from 15 s → 18 s.
+  SHUTDOWN_FORCE_EXIT_BUDGET_MS: z.coerce.number().int().positive().default(28_000),
 
   // ── Application version ───────────────────────────────────────────────────
   // Injected at build time (e.g. CI sets APP_VERSION=<git tag>).

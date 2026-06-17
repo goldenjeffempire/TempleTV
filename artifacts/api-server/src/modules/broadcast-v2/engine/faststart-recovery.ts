@@ -47,7 +47,7 @@ import { probeUploadedDuration } from "../../transcoder/transcoder.service.js";
 const v = schema.videosTable;
 const q = schema.broadcastQueueTable;
 
-const logger = rootLogger.child({ service: "faststart-recovery" });
+const logger = rootLogger.child({ module: "faststart-recovery" });
 
 // ── Tuning constants ──────────────────────────────────────────────────────────
 const MAX_ATTEMPTS = 3;

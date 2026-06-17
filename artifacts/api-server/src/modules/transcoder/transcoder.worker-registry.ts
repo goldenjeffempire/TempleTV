@@ -44,7 +44,7 @@ class WorkerRegistry {
   private jobsFailed = 0;
   private currentJobId: string | null = null;
   private currentStage: string | null = null;
-  private readonly log = rootLogger.child({ service: "worker-registry" });
+  private readonly log = rootLogger.child({ module: "worker-registry" });
 
   get id(): string { return this.workerId; }
 

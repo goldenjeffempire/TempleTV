@@ -247,7 +247,7 @@ export async function runFaststart(
     return runFaststart(videoId, normalizedKey, options);
   }
 
-  const log = rootLogger.child({ service: "faststart", videoId, objectKey, skipStatusUpdate: options.skipStatusUpdate ?? false });
+  const log = rootLogger.child({ module: "faststart", videoId, objectKey, skipStatusUpdate: options.skipStatusUpdate ?? false });
   const scratchDir = path.join(os.tmpdir(), `faststart-${randomUUID()}`);
   const inputPath = path.join(scratchDir, "input.mp4");
   const outputPath = path.join(scratchDir, "output.mp4");

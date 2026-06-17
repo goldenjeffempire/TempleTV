@@ -24,7 +24,7 @@ import { emitJobEvent } from "./transcoder.job-events.js";
 const jobs = schema.transcodingJobsTable;
 
 export class JobLeaseManager {
-  private readonly log = rootLogger.child({ service: "job-lease-manager" });
+  private readonly log = rootLogger.child({ module: "job-lease-manager" });
 
   get leaseTtlMs(): number { return env.TRANSCODER_LEASE_TTL_MS; }
 
