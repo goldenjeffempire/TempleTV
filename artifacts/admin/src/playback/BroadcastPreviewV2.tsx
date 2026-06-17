@@ -288,13 +288,19 @@ function classifySourceFailure(
       url.includes("/api/uploads/");
 
     if (isApiUpload) {
+      // Admin browser MP4 failures on uploaded files are always a preview-only
+      // limitation. The moov metadata block is placed at the end of the file
+      // until faststart relocates it — browsers cannot play these via HTTP
+      // range requests. Real viewers receive HLS from the broadcast path
+      // (TV, mobile, web all use the HLS master playlist, not the raw upload).
+      // Classifying this as "likely-all-surfaces" creates a false alarm.
       return {
-        scope: "likely-all-surfaces",
-        headline: "MP4 upload failed to load",
+        scope: "preview-only",
+        headline: "Preview-only failure",
         reason:
-          "The MP4 file could not be loaded — the moov metadata block may still be at the end of the file (faststart not yet complete or failed). The video is not streamable until faststart relocates it to the beginning.",
+          "This browser could not load the raw MP4 upload. The most common cause is that the moov metadata block is still at the end of the file — browsers time out waiting to seek it. Faststart relocates it to the beginning (30–90 s after upload).",
         viewerNote:
-          "This can affect real viewers. If the upload was recent, wait 60–120 s for faststart to finish and the queue to reload. If the problem persists: Videos page → find the video → dropdown → Re-apply faststart. If already HLS-ready this error is stale — reload the queue.",
+          "Real viewers on TV and mobile receive the HLS stream from the broadcast path, not the raw MP4 upload. This browser preview limitation does not affect them. If the video is actively broadcasting, check the health panel — viewer stalls would indicate an HLS problem, not an MP4 one.",
         urlHint: url,
         typeLabel: "MP4 upload",
       };
@@ -642,36 +648,7 @@ export function BroadcastPreviewV2({ className }: Props) {
       };
     }
 
-    const diagnosis = classifySourceFailure(source);
-
-    // If the server is actively broadcasting an item, the admin-browser
-    // failure is almost certainly a preview-only issue — the browser can't
-    // load a large non-faststart MP4 (moov atom at EOF) or is being blocked
-    // by a missing crossOrigin header when fetching across domains. Real
-    // viewers on TV and mobile are unaffected: they load via the platform
-    // HLS/native video path, which handles moov-at-EOF transparently.
-    //
-    // Downgrade scope from "likely-all-surfaces" to "preview-only" so
-    // operators see an accurate (green) indicator instead of a red alarm
-    // when the broadcast is confirmed running server-side.
-    const isServerPlaying = !!(server?.current);
-    const isApiUploadMp4 =
-      source?.kind === "mp4" &&
-      (source.url.includes("/api/v1/uploads/") || source.url.includes("/api/uploads/"));
-
-    if (isServerPlaying && isApiUploadMp4 && diagnosis.scope === "likely-all-surfaces") {
-      return {
-        ...diagnosis,
-        scope: "preview-only" as const,
-        headline: "Preview-only failure",
-        reason:
-          "This admin browser could not load the MP4. The most common cause is a large file whose moov metadata block is at the end rather than the beginning — the browser times out waiting for it. The broadcast server is actively playing this item.",
-        viewerNote:
-          "The server confirms this item is currently on air. Viewers on TV and mobile use the server's streaming path and are typically unaffected by this admin browser failure. No action needed unless viewers report stalling.",
-      };
-    }
-
-    return diagnosis;
+    return classifySourceFailure(source);
   }, [snapshot.state, snapshot.activeBufferId, snapshot.bufferA, snapshot.bufferB, server]);
 
   // Extract the managed_videos ID for the currently-failing item so the operator

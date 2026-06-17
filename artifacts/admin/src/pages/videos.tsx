@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import Hls from "hls.js";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError } from "@/lib/api";
 import { useSSEEvent } from "@/contexts/sse-context";
@@ -30,7 +31,7 @@ import {
   RefreshCw, Star, StarOff, ChevronLeft, ChevronRight, Film, Eye, EyeOff,
   UploadCloud, X, FileVideo, Layers, Lock, LockOpen, Youtube, HardDrive,
   ArrowUpDown, SlidersHorizontal, Zap, Clapperboard, Globe, AlertTriangle,
-  Wrench, CheckCircle2,
+  Wrench, CheckCircle2, Play, Loader2, Info,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { LiveStatusBadge } from "@/components/live-status-badge";
@@ -174,6 +175,157 @@ function formatDuration(secs: number | string | null | undefined): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+// ── VideoPreviewPlayer ────────────────────────────────────────────────────────
+// HLS-first preview player for the video library. Uses hls.js when an
+// hlsMasterUrl is available (same path real viewers receive), falls back to
+// the raw MP4 upload with a non-blocking advisory when HLS isn't ready yet.
+// Never sends stall reports; never affects the broadcast queue.
+
+function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [playerError, setPlayerError] = useState<string | null>(null);
+  const [playerReady, setPlayerReady] = useState(false);
+
+  const previewUrl = video.hlsMasterUrl ?? video.localVideoUrl ?? null;
+  const isHls = !!video.hlsMasterUrl;
+
+  useEffect(() => {
+    setPlayerError(null);
+    setPlayerReady(false);
+    const el = videoRef.current;
+    if (!el || !previewUrl) return;
+
+    if (isHls && Hls.isSupported()) {
+      const hls = new Hls({
+        debug: false,
+        enableWorker: true,
+        maxBufferLength: 30,
+        startLevel: -1,
+      });
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setPlayerReady(true);
+        void el.play().catch(() => {});
+      });
+      hls.on(Hls.Events.ERROR, (_e, data) => {
+        if (data.fatal) {
+          setPlayerError("HLS stream failed to load — the manifest may be unreachable or expired.");
+          try { hls.destroy(); } catch { /* ignore */ }
+        }
+      });
+      hls.loadSource(previewUrl);
+      hls.attachMedia(el);
+      return () => { try { hls.destroy(); } catch { /* ignore */ } };
+    }
+
+    // Native HLS (Safari) or raw MP4 — set src and let the browser handle it.
+    const onMeta = () => setPlayerReady(true);
+    const onErr = () => setPlayerError(
+      isHls
+        ? "HLS stream failed to load in this browser. Try Chrome or Firefox."
+        : "This MP4 could not load. The moov metadata block is likely at the end of the file (faststart not yet applied). This is a browser preview limitation — real viewers receive HLS from the broadcast path and are unaffected.",
+    );
+    el.src = previewUrl;
+    el.addEventListener("loadedmetadata", onMeta);
+    el.addEventListener("error", onErr);
+    return () => {
+      el.removeEventListener("loadedmetadata", onMeta);
+      el.removeEventListener("error", onErr);
+      el.removeAttribute("src");
+      el.load();
+    };
+  }, [previewUrl, isHls]);
+
+  // No playable source
+  if (!previewUrl) {
+    const inProgress =
+      video.transcodingStatus === "queued" ||
+      video.transcodingStatus === "encoding" ||
+      video.transcodingStatus === "processing";
+    const isCorrupt =
+      video.transcodingStatus === "failed" &&
+      (video.transcodingErrorCode === "CORRUPT_SOURCE" ||
+        video.transcodingErrorCode === "SOURCE_MISSING" ||
+        video.sourceAvailable === false);
+    return (
+      <div className="flex flex-col items-center gap-3 py-10 text-center">
+        {inProgress ? (
+          <>
+            <Loader2 size={28} className="animate-spin text-amber-500" />
+            <div>
+              <p className="font-medium text-sm">HLS transcoding in progress</p>
+              <p className="text-xs text-muted-foreground mt-1">Preview will be available once transcoding completes.</p>
+            </div>
+          </>
+        ) : isCorrupt ? (
+          <>
+            <AlertTriangle size={28} className="text-red-500" />
+            <div>
+              <p className="font-medium text-sm">Source unavailable</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {video.sourceAvailable === false
+                  ? "Source file was deleted. Re-upload the original to recover."
+                  : "File is corrupt or unreadable. Re-upload the original."}
+              </p>
+            </div>
+          </>
+        ) : (
+          <>
+            <Film size={28} className="text-muted-foreground/30" />
+            <p className="text-sm text-muted-foreground">No playable source available yet.</p>
+          </>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="relative bg-black rounded-md overflow-hidden" style={{ aspectRatio: "16/9" }}>
+        {!playerReady && !playerError && (
+          <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+            <Loader2 size={24} className="animate-spin text-white/40" />
+          </div>
+        )}
+        {playerError && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 p-6 text-center z-10">
+            <AlertTriangle size={20} className="text-amber-400 shrink-0" />
+            <p className="text-white/70 text-xs leading-relaxed max-w-xs">{playerError}</p>
+          </div>
+        )}
+        <video
+          ref={videoRef}
+          className={`w-full h-full ${playerError ? "invisible" : "visible"}`}
+          controls
+          playsInline
+        />
+      </div>
+
+      <div className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
+        {isHls ? (
+          <>
+            <CheckCircle2 size={11} className="text-emerald-500 shrink-0 mt-0.5" />
+            <span>Previewing via HLS — same delivery path as TV and mobile viewers.</span>
+          </>
+        ) : (
+          <>
+            <Info size={11} className="text-amber-500 shrink-0 mt-0.5" />
+            <span>
+              Previewing raw MP4 upload.
+              {video.transcodingStatus === "hls_ready" || video.transcodingStatus === "ready"
+                ? " HLS is ready — reload the preview to use it."
+                : " HLS transcoding is not yet complete."}
+              {" "}Browser MP4 playback can fail if the moov atom hasn't been relocated via faststart. Real viewers receive HLS from the broadcast path and are unaffected.
+            </span>
+          </>
+        )}
+      </div>
+      <p className="text-[10px] text-muted-foreground/50 italic">
+        Admin-only preview — never sends stall reports or affects the broadcast queue.
+      </p>
+    </div>
+  );
+}
+
 // ── Multi-file upload dialog types ────────────────────────────────────────────
 
 interface DialogFile {
@@ -199,6 +351,7 @@ export default function VideosPage() {
   const [sortOrder, setSortOrder] = useState("newest");
   const [editVideo, setEditVideo] = useState<AdminVideo | null>(null);
   const [deleteVideo, setDeleteVideo] = useState<AdminVideo | null>(null);
+  const [previewVideo, setPreviewVideo] = useState<AdminVideo | null>(null);
   const [editForm, setEditForm] = useState<EditForm>({
     title: "", description: "", category: "", preacher: "", featured: false, metadataLocked: false, broadcastOnly: false,
   });
@@ -1344,6 +1497,10 @@ export default function VideosPage() {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => setPreviewVideo(v)}>
+                        <Play size={13} className="mr-2" /> Preview
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
                       <DropdownMenuItem onClick={() => openEdit(v)}>
                         <Pencil size={13} className="mr-2" /> Edit metadata
                       </DropdownMenuItem>
@@ -1443,6 +1600,25 @@ export default function VideosPage() {
           </div>
         )}
       </div>
+
+      {/* ── Video Preview Dialog ────────────────────────────────────────────── */}
+      <Dialog
+        open={previewVideo !== null}
+        onOpenChange={(open) => { if (!open) setPreviewVideo(null); }}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 min-w-0">
+              <Film size={16} className="shrink-0" />
+              <span className="truncate">{previewVideo?.title || "Preview"}</span>
+            </DialogTitle>
+            <DialogDescription>
+              Admin preview — does not affect broadcast health or viewer sessions.
+            </DialogDescription>
+          </DialogHeader>
+          {previewVideo && <VideoPreviewPlayer video={previewVideo} />}
+        </DialogContent>
+      </Dialog>
 
       {/* ── Batch Upload Dialog ─────────────────────────────────────────────── */}
       <Dialog
