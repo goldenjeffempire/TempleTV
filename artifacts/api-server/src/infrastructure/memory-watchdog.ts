@@ -30,6 +30,7 @@ import { env } from "../config/env.js";
 import { processRssGauge, SERVICE_LABELS } from "./metrics.js";
 import { sampleNamedStorePeaks, getRegisteredCacheStats, purgeExpiredCacheEntries } from "./cache.js";
 import { getEventLoopLagMs, isEventLoopLagAlertActive } from "./event-loop-lag.js";
+import { adminEventBus } from "../modules/admin-ops/admin-event-bus.js";
 
 const SAMPLE_INTERVAL_MS = 30_000;
 const SUSTAIN_SAMPLES = 3;
@@ -136,15 +137,6 @@ let lastHeapUsedGrowthMbPerMin: number | null = null;
 /** Rolling window of { external bytes, heapUsed bytes, arrayBuffers bytes, timestamp ms } pairs. */
 const memWindow: Array<{ external: number; heapUsed: number; arrayBuffers: number; ts: number }> = [];
 
-type BroadcastEngineEvent = { type: string; data: unknown };
-let _emit: ((e: BroadcastEngineEvent) => void) | null = null;
-
-async function loadEmitter() {
-  if (_emit) return;
-  const { broadcastEngine } = await import("../modules/broadcast/queue.engine.js");
-  _emit = (e) => broadcastEngine.emit("event", e);
-}
-
 /** Calculate external memory growth rate (MB/min) from the rolling window. */
 function calcExternalGrowthMbPerMin(): number | null {
   if (memWindow.length < 2) return null;
@@ -207,15 +199,12 @@ function sample() {
     if (rssAlertActive && rssMb < thresholdMb - 200) {
       rssAlertActive = false;
       logger.info({ rssMb, thresholdMb }, "[memory-watchdog] RSS pressure recovered");
-      _emit?.({
-        type: "ops-alert",
-        data: {
-          level: "info",
-          code: "memory-recovered",
-          message: `RSS dropped to ${rssMb} MB (threshold: ${thresholdMb} MB)`,
-          rssMb,
-          thresholdMb,
-        },
+      adminEventBus.push("ops-alert", {
+        level: "info",
+        code: "memory-recovered",
+        message: `RSS dropped to ${rssMb} MB (threshold: ${thresholdMb} MB)`,
+        rssMb,
+        thresholdMb,
       });
     }
     consecutiveRssOver = 0;
@@ -245,17 +234,29 @@ function sample() {
         { rssMb, thresholdMb, consecutiveSamples: consecutiveRssOver },
       ),
     ).catch(() => {});
-    _emit?.({
-      type: "ops-alert",
-      data: {
-        level: "warn",
-        code: "memory-pressure",
-        message: `RSS has been above ${thresholdMb} MB for ${consecutiveRssOver} consecutive samples (current: ${rssMb} MB). OOM risk is elevated.`,
-        rssMb,
-        thresholdMb,
-        consecutiveSamples: consecutiveRssOver,
-      },
+    adminEventBus.push("ops-alert", {
+      level: "warn",
+      code: "memory-pressure",
+      message: `RSS has been above ${thresholdMb} MB for ${consecutiveRssOver} consecutive samples (current: ${rssMb} MB). OOM risk is elevated.`,
+      rssMb,
+      thresholdMb,
+      consecutiveSamples: consecutiveRssOver,
     });
+    // Trim HLS segment cache on first RSS alert — it is the largest
+    // controllable Buffer consumer and a trim may recover enough RSS to
+    // avoid crossing the restart threshold entirely.
+    void import("../modules/video-serve/video-serve.routes.js")
+      .then(({ trimHlsSegmentCache }) => {
+        const hlsCacheMb = Number(process.env.HLS_SEGMENT_CACHE_MB ?? 64);
+        const freed = trimHlsSegmentCache(hlsCacheMb / 2);
+        if (freed > 0) {
+          logger.info(
+            { freedBytes: freed, targetMb: hlsCacheMb / 2 },
+            "[memory-watchdog] trimmed HLS segment cache under RSS pressure",
+          );
+        }
+      })
+      .catch(() => {/* non-fatal — module may not be initialised yet */});
   } else if (rssAlertActive && consecutiveRssOver % 60 === 0) {
     // Fire a "still elevated" reminder every 60 samples (60 × 30 s = 30 min).
     // The previous cadence of every 10 samples (5 min) produced a new toast
@@ -264,16 +265,13 @@ function sample() {
     // stacking identical-looking alerts in the notification panel. At 30 min
     // the reminder is still timely for an overnight on-call check, but not
     // noisy enough to fill the toast stack during a quiet steady-state.
-    _emit?.({
-      type: "ops-alert",
-      data: {
-        level: "warn",
-        code: "memory-pressure",
-        message: `RSS still elevated: ${rssMb} MB (threshold: ${thresholdMb} MB, ${consecutiveRssOver} samples over)`,
-        rssMb,
-        thresholdMb,
-        consecutiveSamples: consecutiveRssOver,
-      },
+    adminEventBus.push("ops-alert", {
+      level: "warn",
+      code: "memory-pressure",
+      message: `RSS still elevated: ${rssMb} MB (threshold: ${thresholdMb} MB, ${consecutiveRssOver} samples over)`,
+      rssMb,
+      thresholdMb,
+      consecutiveSamples: consecutiveRssOver,
     });
   }
 
@@ -299,15 +297,12 @@ function sample() {
         { growthMbPerMin: Math.round(externalGrowthRate * 10) / 10, threshold: EXTERNAL_GROWTH_ALERT_MB_PER_MIN },
         "[memory-watchdog] external memory growth rate exceeded threshold",
       );
-      _emit?.({
-        type: "ops-alert",
-        data: {
-          level: "warn",
-          code: "memory-external-growth",
-          message: `External memory growing at ${Math.round(externalGrowthRate * 10) / 10} MB/min (threshold: ${EXTERNAL_GROWTH_ALERT_MB_PER_MIN} MB/min) — possible native memory leak`,
-          growthMbPerMin: Math.round(externalGrowthRate * 10) / 10,
-          threshold: EXTERNAL_GROWTH_ALERT_MB_PER_MIN,
-        },
+      adminEventBus.push("ops-alert", {
+        level: "warn",
+        code: "memory-external-growth",
+        message: `External memory growing at ${Math.round(externalGrowthRate * 10) / 10} MB/min (threshold: ${EXTERNAL_GROWTH_ALERT_MB_PER_MIN} MB/min) — possible native memory leak`,
+        growthMbPerMin: Math.round(externalGrowthRate * 10) / 10,
+        threshold: EXTERNAL_GROWTH_ALERT_MB_PER_MIN,
       });
     }
   } else if (slopeAlertActive && (externalGrowthRate === null || externalGrowthRate < EXTERNAL_GROWTH_RECOVERY_MB_PER_MIN)) {
@@ -317,14 +312,11 @@ function sample() {
       { growthMbPerMin: lastExternalGrowthMbPerMin },
       "[memory-watchdog] external memory growth rate recovered",
     );
-    _emit?.({
-      type: "ops-alert",
-      data: {
-        level: "info",
-        code: "memory-external-recovered",
-        message: `External memory growth rate recovered (${lastExternalGrowthMbPerMin ?? 0} MB/min)`,
-        growthMbPerMin: lastExternalGrowthMbPerMin ?? 0,
-      },
+    adminEventBus.push("ops-alert", {
+      level: "info",
+      code: "memory-external-recovered",
+      message: `External memory growth rate recovered (${lastExternalGrowthMbPerMin ?? 0} MB/min)`,
+      growthMbPerMin: lastExternalGrowthMbPerMin ?? 0,
     });
   } else if (!slopeAlertActive) {
     consecutiveSlopeOver = 0;
@@ -354,15 +346,12 @@ function sample() {
           { growthMbPerMin: Math.round(heapGrowthRate * 10) / 10, threshold: HEAP_USED_GROWTH_ALERT_MB_PER_MIN },
         ),
       ).catch(() => {});
-      _emit?.({
-        type: "ops-alert",
-        data: {
-          level: "warn",
-          code: "memory-heap-growth",
-          message: `V8 heapUsed growing at ${Math.round(heapGrowthRate * 10) / 10} MB/min (threshold: ${HEAP_USED_GROWTH_ALERT_MB_PER_MIN} MB/min) — possible JS object leak`,
-          growthMbPerMin: Math.round(heapGrowthRate * 10) / 10,
-          threshold: HEAP_USED_GROWTH_ALERT_MB_PER_MIN,
-        },
+      adminEventBus.push("ops-alert", {
+        level: "warn",
+        code: "memory-heap-growth",
+        message: `V8 heapUsed growing at ${Math.round(heapGrowthRate * 10) / 10} MB/min (threshold: ${HEAP_USED_GROWTH_ALERT_MB_PER_MIN} MB/min) — possible JS object leak`,
+        growthMbPerMin: Math.round(heapGrowthRate * 10) / 10,
+        threshold: HEAP_USED_GROWTH_ALERT_MB_PER_MIN,
       });
     }
   } else if (heapUsedAlertActive && (heapGrowthRate === null || heapGrowthRate < HEAP_USED_GROWTH_RECOVERY_MB_PER_MIN)) {
@@ -372,14 +361,11 @@ function sample() {
       { growthMbPerMin: lastHeapUsedGrowthMbPerMin },
       "[memory-watchdog] V8 heapUsed growth rate recovered",
     );
-    _emit?.({
-      type: "ops-alert",
-      data: {
-        level: "info",
-        code: "memory-heap-recovered",
-        message: `V8 heapUsed growth rate recovered (${lastHeapUsedGrowthMbPerMin ?? 0} MB/min)`,
-        growthMbPerMin: lastHeapUsedGrowthMbPerMin ?? 0,
-      },
+    adminEventBus.push("ops-alert", {
+      level: "info",
+      code: "memory-heap-recovered",
+      message: `V8 heapUsed growth rate recovered (${lastHeapUsedGrowthMbPerMin ?? 0} MB/min)`,
+      growthMbPerMin: lastHeapUsedGrowthMbPerMin ?? 0,
     });
   } else if (!heapUsedAlertActive) {
     consecutiveHeapOver = 0;
@@ -417,15 +403,12 @@ function sample() {
         { growthMbPerMin: Math.round(abGrowthRate * 10) / 10, threshold: ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN },
         "[memory-watchdog] ArrayBuffers growth rate exceeded threshold — possible HLS segment cache pressure",
       );
-      _emit?.({
-        type: "ops-alert",
-        data: {
-          level: "warn",
-          code: "memory-arraybuffers-growth",
-          message: `ArrayBuffers growing at ${Math.round(abGrowthRate * 10) / 10} MB/min (threshold: ${ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN} MB/min) — HLS cache auto-trimmed; check segment cache or upload pipeline`,
-          growthMbPerMin: Math.round(abGrowthRate * 10) / 10,
-          threshold: ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN,
-        },
+      adminEventBus.push("ops-alert", {
+        level: "warn",
+        code: "memory-arraybuffers-growth",
+        message: `ArrayBuffers growing at ${Math.round(abGrowthRate * 10) / 10} MB/min (threshold: ${ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN} MB/min) — HLS cache auto-trimmed; check segment cache or upload pipeline`,
+        growthMbPerMin: Math.round(abGrowthRate * 10) / 10,
+        threshold: ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN,
       });
     }
   } else if (arrayBuffersAlertActive && (abGrowthRate === null || abGrowthRate < ARRAY_BUFFERS_GROWTH_RECOVERY_MB_PER_MIN)) {
@@ -435,14 +418,11 @@ function sample() {
       { growthMbPerMin: lastArrayBuffersMbPerMin },
       "[memory-watchdog] ArrayBuffers growth rate recovered",
     );
-    _emit?.({
-      type: "ops-alert",
-      data: {
-        level: "info",
-        code: "memory-arraybuffers-recovered",
-        message: `ArrayBuffers growth rate recovered (${lastArrayBuffersMbPerMin ?? 0} MB/min)`,
-        growthMbPerMin: lastArrayBuffersMbPerMin ?? 0,
-      },
+    adminEventBus.push("ops-alert", {
+      level: "info",
+      code: "memory-arraybuffers-recovered",
+      message: `ArrayBuffers growth rate recovered (${lastArrayBuffersMbPerMin ?? 0} MB/min)`,
+      growthMbPerMin: lastArrayBuffersMbPerMin ?? 0,
     });
   } else if (!arrayBuffersAlertActive) {
     consecutiveArrayBuffersOver = 0;
@@ -550,16 +530,13 @@ function sample() {
         { rssMb, restartThresholdMb, consecutiveRssOverRestart, graceMs: FORCE_EXIT_GRACE_MS },
       ),
     ).catch(() => {});
-    _emit?.({
-      type: "ops-alert",
-      data: {
-        level: "fatal",
-        code: "memory-critical-exit",
-        message: `RSS sustained above restart threshold ${restartThresholdMb} MB for ${consecutiveRssOverRestart} samples — process will exit for clean restart in ${FORCE_EXIT_GRACE_MS / 1000}s`,
-        rssMb,
-        restartThresholdMb,
-        graceMs: FORCE_EXIT_GRACE_MS,
-      },
+    adminEventBus.push("ops-alert", {
+      level: "fatal",
+      code: "memory-critical-exit",
+      message: `RSS sustained above restart threshold ${restartThresholdMb} MB for ${consecutiveRssOverRestart} samples — process will exit for clean restart in ${FORCE_EXIT_GRACE_MS / 1000}s`,
+      rssMb,
+      restartThresholdMb,
+      graceMs: FORCE_EXIT_GRACE_MS,
     });
     // Email alert (fire-and-forget before SIGTERM). SSE only reaches an open
     // admin dashboard — email is the only out-of-band signal for an overnight
@@ -669,9 +646,8 @@ let hourlyLogInterval: NodeJS.Timeout | null = null;
 
 export function startMemoryWatchdog(): void {
   if (interval) return;
-  loadEmitter().catch(() => { /* non-fatal */ });
   interval = setInterval(() => {
-    loadEmitter().then(() => sample()).catch(() => { /* non-fatal */ });
+    try { sample(); } catch { /* non-fatal */ }
   }, SAMPLE_INTERVAL_MS);
   interval.unref();
   hourlyLogInterval = setInterval(logMemorySummary, HOURLY_LOG_INTERVAL_MS);

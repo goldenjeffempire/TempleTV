@@ -26,6 +26,14 @@ import { logger } from "../../infrastructure/logger.js";
 const ESCALATION_DELAY_MS = 10 * 60_000;
 const SWEEP_INTERVAL_MS   = 60_000;
 const EMAIL_COOLDOWN_MS   = 5 * 60_000;
+/**
+ * Separate cooldown for immediate critical/fatal alerts so they don't
+ * consume the batch-escalation cooldown window.  2 minutes prevents alert
+ * storms (e.g. repeated OOM restarts) from flooding the inbox while still
+ * delivering the first critical event promptly.
+ */
+const CRITICAL_IMMEDIATE_COOLDOWN_MS = 2 * 60_000;
+let criticalEmailCooldownUntilMs = 0;
 
 export interface UnackedAlert {
   id: string;
@@ -66,6 +74,30 @@ function handleEvent(payload: unknown): void {
     store.set(id, { id, level, message, receivedAtMs: Date.now(), emailedAtMs: null, delivered });
     if (delivered) {
       logger.debug({ id, sseClients }, "[unacked-alerts] alert marked delivered (SSE clients connected)");
+    }
+  }
+
+  // Immediately email fatal/critical alerts — don't wait 10 min for the sweeper.
+  // These represent conditions (OOM restart, circuit-open, storage failure) that
+  // require operator action regardless of whether a dashboard tab is open.
+  // Uses a separate 2-min cooldown so it never interferes with the batch sweeper.
+  if ((level === "fatal" || level === "critical") && env.SMTP_USER && env.SMTP_HOST) {
+    const now = Date.now();
+    if (now > criticalEmailCooldownUntilMs) {
+      criticalEmailCooldownUntilMs = now + CRITICAL_IMMEDIATE_COOLDOWN_MS;
+      void sendMail({
+        to: env.SMTP_USER,
+        subject: `[Temple TV] ${level.toUpperCase()}: ${message.slice(0, 100)}`,
+        text: `IMMEDIATE ${level.toUpperCase()} ALERT\n\n${message}\n\nAlert ID: ${id}\nTime: ${new Date().toISOString()}\n\nPlease review in the Temple TV admin console immediately.`,
+        html: `<p><strong>IMMEDIATE ${level.toUpperCase()} ALERT</strong></p><p>${message}</p><p><small>Alert ID: ${id} &mdash; ${new Date().toISOString()}</small></p><p>Please review in the Temple TV admin console immediately.</p>`,
+      }).then(() => {
+        // Mark the stored alert as emailed so the sweeper skips it in 10 min.
+        const stored = store.get(id);
+        if (stored && stored.emailedAtMs === null) stored.emailedAtMs = Date.now();
+        logger.info({ id, level }, "[unacked-alerts] immediate critical alert email sent");
+      }).catch((err) => {
+        logger.warn({ err, id, level }, "[unacked-alerts] immediate critical alert email failed (non-fatal)");
+      });
     }
   }
 }
