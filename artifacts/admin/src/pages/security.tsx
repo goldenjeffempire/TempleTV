@@ -27,6 +27,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
+import { PageHeader } from "@/components/shared/page-header";
 import {
   ShieldCheck, ShieldOff, KeyRound, Copy, RefreshCw,
   AlertCircle, CheckCircle2, Smartphone, Eye, EyeOff,
@@ -125,7 +126,7 @@ export default function SecurityPage() {
   const [showSecret, setShowSecret] = useState(false);
   const [newBackupCodes, setNewBackupCodes] = useState<string[] | null>(null);
 
-  const { data: status, isLoading } = useQuery({
+  const { data: status, isLoading, isError, refetch } = useQuery({
     queryKey: ["mfa-status"],
     queryFn: () => api.get<MfaStatus>("/auth/mfa/status"),
     staleTime: 30_000,
@@ -188,21 +189,37 @@ export default function SecurityPage() {
     );
   }
 
+  if (isError) {
+    return (
+      <div className="max-w-2xl mx-auto p-6 space-y-6">
+        <PageHeader title="Account Security" />
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription className="flex items-center justify-between">
+            <span>Could not load MFA status. Check your connection and try again.</span>
+            <Button variant="outline" size="sm" onClick={() => void refetch()} className="ml-4 shrink-0">
+              <RefreshCw size={13} className="mr-1.5" />
+              Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
   const mfaEnabled = status?.enabled ?? false;
 
   return (
     <div className="max-w-2xl mx-auto p-6 space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold flex items-center gap-2">
-          <KeyRound size={22} />
-          Account Security
-        </h1>
-        <p className="text-muted-foreground mt-1 text-sm">
-          Manage two-factor authentication for{" "}
-          <span className="font-medium text-foreground">{user?.email}</span>
-        </p>
-      </div>
+      <PageHeader
+        title="Account Security"
+        description={
+          <>
+            Manage two-factor authentication for{" "}
+            <span className="font-medium text-foreground">{user?.email}</span>
+          </>
+        }
+      />
 
       {/* MFA Status Card */}
       <Card>

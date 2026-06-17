@@ -257,6 +257,7 @@ function UploadRow({
               className="h-6 w-6"
               onClick={() => uploadQueue.prioritize(item.id)}
               title="Move to front"
+              aria-label="Move to front of queue"
             >
               <ArrowUp size={11} />
             </Button>
@@ -268,6 +269,7 @@ function UploadRow({
               className="h-6 w-6"
               onClick={() => uploadQueue.pause(item.id)}
               title="Pause"
+              aria-label="Pause upload"
             >
               <Pause size={11} />
             </Button>
@@ -279,6 +281,7 @@ function UploadRow({
               className="h-6 w-6 text-primary"
               onClick={() => uploadQueue.resume(item.id)}
               title="Resume"
+              aria-label="Resume upload"
             >
               <Play size={11} />
             </Button>
@@ -309,17 +312,18 @@ function UploadRow({
               className="h-6 w-6 text-muted-foreground hover:text-primary"
               onClick={() => { void handleAddToQueue(); }}
               title="Add to broadcast queue"
+              aria-label="Add to broadcast queue"
             >
               <ListPlus size={11} />
             </Button>
           )}
           {isCompleted && item.videoId && queueAction === "loading" && (
-            <Button variant="ghost" size="icon" className="h-6 w-6" disabled>
+            <Button variant="ghost" size="icon" className="h-6 w-6" disabled aria-label="Adding to broadcast queue">
               <Loader2 size={11} className="animate-spin" />
             </Button>
           )}
           {isCompleted && item.videoId && queueAction === "queued" && (
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-green-500 cursor-default" disabled>
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-green-500 cursor-default" disabled aria-label="Added to broadcast queue">
               <CheckCircle2 size={11} />
             </Button>
           )}
@@ -331,6 +335,7 @@ function UploadRow({
               className="h-6 w-6 text-muted-foreground hover:text-foreground"
               onClick={() => uploadQueue.dismiss(item.id)}
               title="Dismiss"
+              aria-label="Dismiss"
             >
               <X size={11} />
             </Button>
@@ -342,6 +347,7 @@ function UploadRow({
               className="h-6 w-6 text-muted-foreground hover:text-red-500"
               onClick={() => uploadQueue.cancel(item.id)}
               title="Cancel upload"
+              aria-label="Cancel upload"
             >
               <X size={11} />
             </Button>
@@ -501,6 +507,7 @@ export function UploadQueuePanel() {
             size="icon"
             className="h-6 w-6"
             onClick={(e) => { e.stopPropagation(); setCollapsed((c) => !c); }}
+            aria-label={collapsed ? "Expand upload queue" : "Collapse upload queue"}
           >
             {collapsed ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
           </Button>

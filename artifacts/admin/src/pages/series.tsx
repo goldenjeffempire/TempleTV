@@ -240,6 +240,8 @@ function EpisodesDialog({
                           className="h-7 w-7 flex-shrink-0 text-muted-foreground hover:text-destructive"
                           disabled={removeEpisodeMutation.isPending}
                           onClick={() => setRemovePendingEpId(ep.id)}
+                          aria-label="Remove episode from series"
+                          title="Remove episode"
                         >
                           <X size={13} />
                         </Button>
@@ -746,6 +748,7 @@ export default function SeriesPage() {
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7 bg-black/50 hover:bg-black/70 text-white rounded-md opacity-0 group-hover:opacity-100 transition-opacity"
+                        aria-label={`Options for ${s.title}`}
                       >
                         <MoreVertical size={14} />
                       </Button>

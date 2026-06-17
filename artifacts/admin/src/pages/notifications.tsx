@@ -353,6 +353,8 @@ export default function NotificationsPage() {
                                 className="h-7 w-7 text-red-500 hover:text-red-600"
                                 onClick={() => cancelMutation.mutate(s.id)}
                                 disabled={cancelMutation.isPending}
+                                aria-label="Cancel scheduled notification"
+                                title="Cancel notification"
                               >
                                 <XCircle size={14} />
                               </Button>

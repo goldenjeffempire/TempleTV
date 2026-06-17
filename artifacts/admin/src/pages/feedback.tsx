@@ -290,6 +290,8 @@ function FeedbackRow({
           size="icon"
           className="h-7 w-7 text-red-500 hover:text-red-600"
           onClick={() => onDelete(item)}
+          aria-label="Delete feedback item"
+          title="Delete"
         >
           <Trash2 size={13} />
         </Button>

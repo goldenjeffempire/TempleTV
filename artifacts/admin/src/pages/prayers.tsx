@@ -161,7 +161,7 @@ function PrayerList({ prayers, loading, done, onPray, onDelete, isPraying }: {
                       <CheckCircle2 size={12} /> Prayed
                     </Button>
                   )}
-                  <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500 hover:text-red-600" onClick={() => onDelete(p)}>
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500 hover:text-red-600" onClick={() => onDelete(p)} aria-label="Delete prayer request" title="Delete">
                     <Trash2 size={13} />
                   </Button>
                 </div>

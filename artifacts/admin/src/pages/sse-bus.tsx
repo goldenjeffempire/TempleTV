@@ -90,7 +90,7 @@ export default function SseBusPage() {
                 <Switch id="pause" checked={paused} onCheckedChange={setPaused} />
                 <Label htmlFor="pause" className="text-xs">{paused ? "Paused" : "Live"}</Label>
               </div>
-              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground" onClick={() => { eventsRef.current = []; setEvents([]); }}>
+              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground" onClick={() => { eventsRef.current = []; setEvents([]); }} aria-label="Clear all events" title="Clear all events">
                 <Trash2 size={13} />
               </Button>
             </div>

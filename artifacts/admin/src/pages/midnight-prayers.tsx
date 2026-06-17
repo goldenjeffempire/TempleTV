@@ -1304,6 +1304,7 @@ function VideoListRow({
           size="icon"
           className="h-7 w-7"
           title="Edit metadata"
+          aria-label="Edit video metadata"
           onClick={onEdit}
         >
           <Edit2 className="h-3.5 w-3.5" />
@@ -1314,6 +1315,7 @@ function VideoListRow({
             size="icon"
             className="h-7 w-7 text-yellow-600 hover:text-yellow-700 hover:bg-yellow-50 dark:hover:bg-yellow-950/20"
             title="Retry transcoding"
+            aria-label="Retry transcoding"
             onClick={onRetry}
             disabled={isRetrying}
           >
@@ -1325,6 +1327,7 @@ function VideoListRow({
           size="icon"
           className="h-7 w-7 text-destructive/70 hover:text-destructive hover:bg-destructive/10"
           title="Remove or delete"
+          aria-label="Remove from queue"
           onClick={onRemove}
         >
           <Trash2 className="h-3.5 w-3.5" />

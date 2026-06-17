@@ -1875,6 +1875,8 @@ export default function VideosPage() {
                               variant="ghost" size="icon"
                               className="h-6 w-6 flex-shrink-0 text-muted-foreground hover:text-red-500 mt-1"
                               onClick={() => removeDialogFile(df.id)}
+                              aria-label={`Remove ${df.file.name} from selection`}
+                              title="Remove"
                             >
                               <X size={12} />
                             </Button>

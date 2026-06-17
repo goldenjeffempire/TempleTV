@@ -1009,6 +1009,7 @@ export function BroadcastPreviewV2({ className }: Props) {
                 }
               }}
               title="Picture-in-Picture — monitor while navigating other panels"
+              aria-label="Toggle picture-in-picture"
             >
               {/* PiP icon */}
               <svg viewBox="0 0 16 16" fill="currentColor" style={{ width: 11, height: 11 }}>

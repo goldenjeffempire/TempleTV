@@ -112,6 +112,7 @@ function CopyButton({ value, label }: { value: string; label: string }) {
           variant="ghost"
           size="icon"
           className="h-7 w-7 shrink-0"
+          aria-label={`Copy ${label} to clipboard`}
           onClick={() => {
             void navigator.clipboard.writeText(value);
             setCopied(true);

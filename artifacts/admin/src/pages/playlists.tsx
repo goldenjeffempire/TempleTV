@@ -160,7 +160,7 @@ export default function PlaylistsPage() {
                 </div>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0 -mt-0.5">
+                    <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0 -mt-0.5" aria-label={`Options for playlist ${p.name}`}>
                       <MoreVertical size={14} />
                     </Button>
                   </DropdownMenuTrigger>

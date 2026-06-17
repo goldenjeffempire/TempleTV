@@ -231,7 +231,7 @@ export default function UsersPage() {
                   </Badge>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0">
+                      <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" aria-label={`Options for ${user.email}`}>
                         <MoreVertical size={14} />
                       </Button>
                     </DropdownMenuTrigger>
