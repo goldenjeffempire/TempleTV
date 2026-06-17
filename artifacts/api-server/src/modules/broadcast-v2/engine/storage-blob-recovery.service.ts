@@ -42,15 +42,13 @@ export interface RecoveryResult {
 }
 
 export interface RecoveryStats {
-  lastPassAtMs: number | null;
+  lastRunAt: number | null;
   lastPassElapsedMs: number | null;
-  checked: number;
-  healthy: number;
-  tier1RetranscodeTotal: number;
-  tier1AlertTotal: number;
-  tier2Total: number;
-  tier3Total: number;
-  orphanedBlobsTotal: number;
+  itemsChecked: number;
+  blobsVerified: number;
+  gapsFound: number;
+  recoveries: number;
+  orphanedBlobCount: number;
   consecutiveErrors: number;
 }
 
@@ -65,28 +63,42 @@ function toStorageKey(objectPath: string): string {
 
 class StorageBlobRecoveryServiceImpl {
   private stats: RecoveryStats = {
-    lastPassAtMs: null,
+    lastRunAt: null,
     lastPassElapsedMs: null,
-    checked: 0,
-    healthy: 0,
-    tier1RetranscodeTotal: 0,
-    tier1AlertTotal: 0,
-    tier2Total: 0,
-    tier3Total: 0,
-    orphanedBlobsTotal: 0,
+    itemsChecked: 0,
+    blobsVerified: 0,
+    gapsFound: 0,
+    recoveries: 0,
+    orphanedBlobCount: 0,
     consecutiveErrors: 0,
   };
+
+  // Internal per-waterfall counters (not in public interface)
+  private _checked = 0;
+  private _healthy = 0;
+  private _tier1Retranscode = 0;
+  private _tier1Alert = 0;
+  private _tier2 = 0;
+  private _tier3 = 0;
 
   getStats(): Readonly<RecoveryStats> {
     return { ...this.stats };
   }
 
   recordPassStart() {
-    this.stats.lastPassAtMs = Date.now();
+    this.stats.lastRunAt = Date.now();
   }
 
-  recordPassEnd(elapsedMs: number) {
+  /**
+   * Called by the reconciliation worker at the end of each batch pass.
+   * Accumulates the pass-level metrics into the public stats object.
+   */
+  recordPassEnd(elapsedMs: number, itemsChecked = 0, blobsVerified = 0, gapsFound = 0, recoveries = 0) {
     this.stats.lastPassElapsedMs = elapsedMs;
+    this.stats.itemsChecked += itemsChecked;
+    this.stats.blobsVerified += blobsVerified;
+    this.stats.gapsFound += gapsFound;
+    this.stats.recoveries += recoveries;
   }
 
   /**
@@ -108,7 +120,7 @@ class StorageBlobRecoveryServiceImpl {
     triggeredBy: string;
   }): Promise<RecoveryResult> {
     const { videoId, queueId, title, objectPath, hlsUrl, triggeredBy } = opts;
-    this.stats.checked += 1;
+    this._checked += 1;
 
     try {
       // ── Step 1: Check HLS master.m3u8 blob ─────────────────────────────────
@@ -127,7 +139,7 @@ class StorageBlobRecoveryServiceImpl {
             });
           adminEventBus.push("broadcast-queue-updated", { reason: "storage-blob-recovery-restored-hls", videoId });
         }
-        this.stats.healthy += 1;
+        this._healthy += 1;
         this.stats.consecutiveErrors = 0;
         return { tier: "healthy", videoId, message: "HLS master.m3u8 present" };
       }
@@ -166,7 +178,7 @@ class StorageBlobRecoveryServiceImpl {
             queueId,
             segmentCount,
           });
-          this.stats.tier1RetranscodeTotal += 1;
+          this._tier1Retranscode += 1;
           this.stats.consecutiveErrors = 0;
           return { tier: "tier1_retranscode", videoId, message: `${segmentCount} HLS segment blob(s) found, MP4 present — re-transcoding` };
         } else {
@@ -204,7 +216,7 @@ class StorageBlobRecoveryServiceImpl {
             queueId,
             segmentCount,
           });
-          this.stats.tier1AlertTotal += 1;
+          this._tier1Alert += 1;
           this.stats.consecutiveErrors = 0;
           return { tier: "tier1_alert_only", videoId, message: `${segmentCount} HLS segment blob(s) found but no MP4 source — deactivated, operator action required` };
         }
@@ -226,7 +238,7 @@ class StorageBlobRecoveryServiceImpl {
           videoId,
           queueId,
         });
-        this.stats.tier2Total += 1;
+        this._tier2 += 1;
         this.stats.consecutiveErrors = 0;
         return { tier: "tier2_retranscode", videoId, message: "No HLS blobs; MP4 source present — re-transcoding" };
       }
@@ -259,7 +271,7 @@ class StorageBlobRecoveryServiceImpl {
         metadata: { hlsUrl, objectPath, detectedAtMs: Date.now() },
       });
 
-      this.stats.tier3Total += 1;
+      this._tier3 += 1;
       this.stats.consecutiveErrors = 0;
       return { tier: "tier3_quarantine", videoId, message: "ZERO blobs — quarantined as SOURCE_MISSING" };
     } catch (err) {
@@ -317,7 +329,7 @@ class StorageBlobRecoveryServiceImpl {
       const uploadsCount = Number(uploadsResult.rows[0]?.orphaned_count ?? 0);
       const total = transcodedCount + uploadsCount;
 
-      this.stats.orphanedBlobsTotal = total;
+      this.stats.orphanedBlobCount = total;
 
       if (total > 0) {
         logger.warn(

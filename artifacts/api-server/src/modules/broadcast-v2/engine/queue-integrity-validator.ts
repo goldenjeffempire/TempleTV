@@ -1565,6 +1565,95 @@ class QueueIntegrityValidatorImpl {
         }
       }
 
+      // ── Gap 1.5: MP4_BLOB_MISSING — every 4th validator cycle ─────────────
+      // Active queue items whose managed_videos row has objectPath set (a local
+      // upload source) but the corresponding storage_blobs key is absent.  These
+      // are items the orchestrator will try to serve as a raw MP4 but whose blob
+      // was deleted or never written to storage_blobs.
+      //
+      // Detection: batch LEFT JOIN storage_blobs on the derived storage key so
+      // we avoid N headObject calls on the hot path.
+      //
+      // Auto-fix: calls storageBlobRecoveryService.runWaterfall() which re-
+      // transcodes (tier2) if HLS blobs exist or quarantines (tier3) if nothing
+      // is present.
+      //
+      // Rate-limited to every 4th cycle (~8 min at the 2-min validator cadence)
+      // to avoid hammering the DB on large queues.
+      if (this.validatorCycleCount % 4 === 0) {
+        void (async () => {
+          try {
+            // Items with hls_ready status already have HLS — skip MP4 blob check
+            // (they are covered by Gap 1 HLS_STORAGE_MISSING above).
+            const mp4MissingRows = await db.execute<{
+              queue_id: string;
+              video_id: string;
+              title: string;
+              object_path: string;
+              hls_master_url: string | null;
+            }>(sql`
+              SELECT
+                bq.id           AS queue_id,
+                mv.id           AS video_id,
+                bq.title        AS title,
+                mv.object_path  AS object_path,
+                mv.hls_master_url AS hls_master_url
+              FROM broadcast_queue bq
+              INNER JOIN managed_videos mv ON mv.id = bq.video_id
+              WHERE bq.is_active = true
+                AND mv.object_path IS NOT NULL
+                AND mv.transcoding_status <> 'hls_ready'
+                AND NOT EXISTS (
+                  SELECT 1 FROM storage_blobs sb
+                  WHERE sb.key = mv.object_path
+                    OR sb.key = regexp_replace(mv.object_path, '^/(?:api/(?:v[0-9]+/)?)?', '')
+                )
+              LIMIT 20
+            `);
+
+            const missingRows = mp4MissingRows.rows;
+            if (missingRows.length === 0) return;
+
+            logger.warn(
+              { count: missingRows.length },
+              "[queue-validator] MP4_BLOB_MISSING: found active queue items with missing MP4 source blobs — triggering recovery",
+            );
+
+            for (const row of missingRows) {
+              issues.push({
+                itemId: row.queue_id,
+                code: "MP4_BLOB_MISSING",
+                severity: "error",
+                message:
+                  `Active queue item "${row.title}" (videoId: ${row.video_id}) has objectPath set ` +
+                  "but no matching entry in storage_blobs — the source blob is missing.",
+              });
+
+              void (async () => {
+                try {
+                  const { storageBlobRecoveryService: svc } = await import("./storage-blob-recovery.service.js");
+                  await svc.runWaterfall({
+                    videoId: row.video_id,
+                    queueId: row.queue_id,
+                    title: row.title,
+                    objectPath: row.object_path,
+                    hlsUrl: row.hls_master_url,
+                    triggeredBy: "queue-validator-MP4_BLOB_MISSING",
+                  });
+                } catch (wfErr) {
+                  logger.warn(
+                    { err: wfErr, videoId: row.video_id },
+                    "[queue-validator] MP4_BLOB_MISSING recovery waterfall failed (non-fatal)",
+                  );
+                }
+              })();
+            }
+          } catch (mp4Err) {
+            logger.warn({ err: mp4Err }, "[queue-validator] MP4_BLOB_MISSING sweep failed (non-fatal)");
+          }
+        })();
+      }
+
       // ── Gap 2: STUCK_ENCODING_NO_JOB — every 3rd validator cycle ──────────
       // Videos stuck at transcodingStatus='encoding' with no active or recently-
       // completed transcoding job AND updated_at older than 2 h. This happens
