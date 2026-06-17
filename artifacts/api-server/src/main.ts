@@ -240,6 +240,34 @@ async function startWorkers() {
   } else {
     logger.info("storage health monitor disabled by STORAGE_HEALTH_INTERVAL_MS=0");
   }
+
+  // Storage reconciliation worker: reconciles active broadcast queue items'
+  // blob references against storage_blobs and runs a recovery waterfall for
+  // any missing blobs. Default 10-minute interval.
+  if (env.STORAGE_RECONCILIATION_INTERVAL_MS > 0) {
+    const { storageReconciliationWorker } = await import("./modules/broadcast-v2/engine/storage-reconciliation-worker.js");
+    workerSupervisor.spawn({
+      name: "storage-reconciliation",
+      intervalMs: env.STORAGE_RECONCILIATION_INTERVAL_MS,
+      initialDelayMs: 3 * 60_000,      // 3-minute startup delay (let orchestrator warm up first)
+      timeoutMs: 5 * 60_000,           // 5-minute hard timeout per pass
+      maxConsecutiveFailures: 5,
+      fn: () => storageReconciliationWorker.run(),
+      onCircuitOpen: (name, n) => {
+        adminEventBus.push("ops-alert", {
+          level: "error",
+          component: name,
+          message: `Storage reconciliation worker circuit opened after ${n} consecutive failures — storage integrity checks are paused.`,
+        });
+      },
+    });
+    logger.info(
+      { intervalMs: env.STORAGE_RECONCILIATION_INTERVAL_MS },
+      "storage reconciliation worker registered",
+    );
+  } else {
+    logger.info("storage reconciliation worker disabled by STORAGE_RECONCILIATION_INTERVAL_MS=0");
+  }
 }
 
 async function stopWorkers() {

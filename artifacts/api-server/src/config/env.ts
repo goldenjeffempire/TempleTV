@@ -726,6 +726,17 @@ const Env = z.object({
   // Interval (ms) between object-storage write/head/delete probe cycles.
   // Default 60 s. Set to 0 to disable the monitor.
   STORAGE_HEALTH_INTERVAL_MS: z.coerce.number().int().nonnegative().default(60_000),
+
+  // ── Storage reconciliation worker ─────────────────────────────────────────
+  // Interval (ms) between full storage→DB reconciliation passes.
+  // Each pass checks every active broadcast queue item's referenced blobs
+  // (HLS master.m3u8 + MP4 objectPath) against storage_blobs and runs a
+  // recovery waterfall for any missing blobs:
+  //   1. HLS blobs present despite missing master → promote HLS, clear MP4 URL
+  //   2. MP4 objectPath blob present → re-enqueue for transcoding
+  //   3. No blobs at all → quarantine + SOURCE_MISSING + ops-alert
+  // Default 600 000 ms (10 min). Set to 0 to disable.
+  STORAGE_RECONCILIATION_INTERVAL_MS: z.coerce.number().int().nonnegative().default(600_000),
 });
 
 export type AppEnv = z.infer<typeof Env>;
