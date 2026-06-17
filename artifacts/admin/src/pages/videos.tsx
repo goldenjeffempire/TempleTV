@@ -31,7 +31,8 @@ import {
   RefreshCw, Star, StarOff, ChevronLeft, ChevronRight, Film, Eye, EyeOff,
   UploadCloud, X, FileVideo, Layers, Lock, LockOpen, Youtube, HardDrive,
   ArrowUpDown, SlidersHorizontal, Zap, Clapperboard, Globe, AlertTriangle,
-  Wrench, CheckCircle2, Play, Loader2, Info,
+  Wrench, CheckCircle2, Play, Loader2, Info, ClipboardList, TriangleAlert,
+  CircleCheck, CircleX, RefreshCcw, Inbox,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { LiveStatusBadge } from "@/components/live-status-badge";
@@ -93,6 +94,44 @@ interface VideoListResponse {
   totalPages: number;
   page: number;
   limit: number;
+}
+
+interface RecoveryItem {
+  videoId: string;
+  title: string;
+  issueKind: string;
+  issueDetail: string;
+  actionTaken: string;
+  actionDetail: string;
+  previousStatus: string;
+  previousErrorCode: string | null;
+  blobVerified: boolean | null;
+  rootCause: string | null;
+}
+
+interface RecoveryReport {
+  runAt: string;
+  durationMs: number;
+  totalLocalVideos: number;
+  summary: {
+    healthy: number;
+    recovered: number;
+    quarantined: number;
+    errors: number;
+  };
+  actions: {
+    retriedFailed: number;
+    resetOrphaned: number;
+    resetStuck: number;
+    enqueuedUnprocessed: number;
+    enqueuedBroadcast: number;
+    requeuedDlq: number;
+    sourceMissingConfirmed: number;
+    badUrlCacheCleared: boolean;
+    suspendedReEnabled: number;
+  };
+  items: RecoveryItem[];
+  remainingActions: string[];
 }
 
 interface EditForm {
@@ -364,6 +403,10 @@ export default function VideosPage() {
 
   // Drag-over state for the page-level drop zone
   const [pageDragOver, setPageDragOver] = useState(false);
+
+  // Deep recovery report state
+  const [recoveryReport, setRecoveryReport] = useState<RecoveryReport | null>(null);
+  const [recoveryReportOpen, setRecoveryReportOpen] = useState(false);
 
   // Bulk selection state — cleared on page/filter change so stale IDs don't
   // linger when the visible video list changes.
@@ -759,8 +802,9 @@ export default function VideosPage() {
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Batch retry failed"),
   });
 
-  // One-click full pipeline repair: re-arm failed jobs, reset orphaned encoding
+  // One-click quick repair: re-arm failed jobs, reset orphaned encoding
   // videos, and enqueue hls_ready videos missing from the broadcast queue.
+  // Used by the inline pipeline health banner "Fix now" button.
   const repairAllMutation = useMutation({
     mutationFn: () =>
       api.post<{ ok: boolean; retriedFailed: number; resetOrphaned: number; enqueuedMissing: number }>(
@@ -786,6 +830,36 @@ export default function VideosPage() {
       void qc.invalidateQueries({ queryKey: ["transcoding-audit"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Repair failed"),
+  });
+
+  // Production-grade deep recovery: full audit of every local video, blob
+  // verification, per-video root-cause classification, and structured report.
+  const deepRecoverMutation = useMutation({
+    mutationFn: () => api.post<RecoveryReport>("/admin/videos/deep-recover"),
+    onSuccess: (report) => {
+      const { summary } = report;
+      const totalActions = summary.recovered + summary.quarantined + summary.errors;
+      if (totalActions === 0 && summary.healthy === report.totalLocalVideos) {
+        toast.success(`All ${report.totalLocalVideos} local videos are healthy — nothing to recover.`);
+      } else {
+        const parts: string[] = [];
+        if (summary.recovered > 0) parts.push(`${summary.recovered} recovered`);
+        if (summary.quarantined > 0) parts.push(`${summary.quarantined} quarantined`);
+        if (summary.errors > 0) parts.push(`${summary.errors} errors`);
+        toast.success(`Deep recovery complete: ${parts.join(", ")}. ${summary.healthy} healthy.`);
+      }
+      setRecoveryReport(report);
+      setRecoveryReportOpen(true);
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["transcoding-audit"] });
+    },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Deep recovery failed"),
   });
 
   // ── Pipeline audit query ─────────────────────────────────────────────────
@@ -1067,15 +1141,27 @@ export default function VideosPage() {
             <Button
               variant="outline"
               size="sm"
-              disabled={repairAllMutation.isPending}
-              onClick={() => repairAllMutation.mutate()}
+              disabled={deepRecoverMutation.isPending}
+              onClick={() => deepRecoverMutation.mutate()}
               className="gap-1.5"
-              title="Re-arm failed jobs, reset stuck videos, and enqueue ready videos missing from the broadcast queue"
+              title="Full audit of every local video: verifies source blobs, classifies root causes, retries recoverable failures, fixes broadcast queue — returns a detailed per-video report"
             >
-              {repairAllMutation.isPending
-                ? <><RefreshCw size={13} className="animate-spin" /> Repairing…</>
-                : <><Wrench size={13} /> Full Repair</>}
+              {deepRecoverMutation.isPending
+                ? <><RefreshCw size={13} className="animate-spin" /> Scanning…</>
+                : <><ClipboardList size={13} /> Deep Recovery</>}
             </Button>
+            {recoveryReport && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setRecoveryReportOpen(true)}
+                className="gap-1.5 text-muted-foreground"
+                title="View last recovery report"
+              >
+                <ClipboardList size={13} />
+                Last Report
+              </Button>
+            )}
             <Button size="sm" onClick={() => setUploadOpen(true)} className="gap-1.5 relative">
               <UploadCloud size={14} />
               Upload Video
@@ -2129,6 +2215,167 @@ export default function VideosPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* ── Deep Recovery Report Dialog ────────────────────────────────────── */}
+      <Dialog open={recoveryReportOpen} onOpenChange={setRecoveryReportOpen}>
+        <DialogContent className="max-w-3xl max-h-[85vh] flex flex-col">
+          <DialogHeader className="flex-shrink-0">
+            <DialogTitle className="flex items-center gap-2">
+              <ClipboardList size={18} className="text-primary" />
+              Deep Recovery Report
+            </DialogTitle>
+            <DialogDescription>
+              {recoveryReport && (
+                <span>
+                  {new Date(recoveryReport.runAt).toLocaleString()} · {recoveryReport.totalLocalVideos} local video{recoveryReport.totalLocalVideos !== 1 ? "s" : ""} scanned · {recoveryReport.durationMs}ms
+                </span>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          {recoveryReport && (
+            <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+              {/* Summary cards */}
+              <div className="grid grid-cols-4 gap-2">
+                {[
+                  { label: "Healthy", value: recoveryReport.summary.healthy, icon: CircleCheck, color: "text-emerald-600 dark:text-emerald-400", bg: "bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-900/40" },
+                  { label: "Recovered", value: recoveryReport.summary.recovered, icon: RefreshCcw, color: "text-blue-600 dark:text-blue-400", bg: "bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-900/40" },
+                  { label: "Quarantined", value: recoveryReport.summary.quarantined, icon: TriangleAlert, color: "text-amber-600 dark:text-amber-400", bg: "bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900/40" },
+                  { label: "Errors", value: recoveryReport.summary.errors, icon: CircleX, color: "text-red-600 dark:text-red-400", bg: "bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-900/40" },
+                ].map(({ label, value, icon: Icon, color, bg }) => (
+                  <div key={label} className={`rounded-lg border px-3 py-2.5 ${bg}`}>
+                    <div className={`flex items-center gap-1.5 text-xs font-medium mb-0.5 ${color}`}>
+                      <Icon size={12} />
+                      {label}
+                    </div>
+                    <div className={`text-2xl font-bold tabular-nums ${color}`}>{value}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Action counts */}
+              {(() => {
+                const a = recoveryReport.actions;
+                const actionRows = [
+                  { label: "Failed jobs retried", value: a.retriedFailed },
+                  { label: "Orphaned encoding videos reset", value: a.resetOrphaned },
+                  { label: "Stuck queued videos reset", value: a.resetStuck },
+                  { label: "Never-processed videos enqueued", value: a.enqueuedUnprocessed },
+                  { label: "Added to broadcast queue", value: a.enqueuedBroadcast },
+                  { label: "Dead-letter jobs requeued", value: a.requeuedDlq },
+                  { label: "Source-missing videos confirmed", value: a.sourceMissingConfirmed },
+                  { label: "Suspended queue items re-enabled", value: a.suspendedReEnabled },
+                ].filter((r) => r.value > 0);
+                if (actionRows.length === 0) return null;
+                return (
+                  <div className="rounded-lg border bg-muted/30 px-3 py-2.5">
+                    <p className="text-xs font-semibold mb-2 text-muted-foreground uppercase tracking-wide">Actions taken</p>
+                    <div className="grid grid-cols-2 gap-x-6 gap-y-1">
+                      {actionRows.map((r) => (
+                        <div key={r.label} className="flex items-center justify-between text-xs">
+                          <span className="text-muted-foreground">{r.label}</span>
+                          <span className="font-semibold tabular-nums ml-2">{r.value}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Remaining actions */}
+              {recoveryReport.remainingActions.length > 0 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50/50 dark:border-amber-900/40 dark:bg-amber-950/10 px-3 py-2.5 space-y-1">
+                  <p className="text-xs font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                    <TriangleAlert size={12} />
+                    Manual action required
+                  </p>
+                  {recoveryReport.remainingActions.map((msg, i) => (
+                    <p key={i} className="text-xs text-amber-700/80 dark:text-amber-400/70 pl-4">{msg}</p>
+                  ))}
+                </div>
+              )}
+
+              {/* Per-video table */}
+              {recoveryReport.items.length > 0 ? (
+                <div className="rounded-lg border overflow-hidden">
+                  <div className="px-3 py-2 border-b bg-muted/20">
+                    <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Per-video results</p>
+                  </div>
+                  <div className="divide-y max-h-80 overflow-y-auto">
+                    {recoveryReport.items.map((item) => {
+                      const isHealthy = item.actionTaken === "skipped_healthy";
+                      const isQuarantined = item.actionTaken === "quarantined_source_gone";
+                      const isError = item.actionTaken === "error";
+                      const rowBg = isHealthy ? "" : isQuarantined ? "bg-amber-50/50 dark:bg-amber-950/10" : isError ? "bg-red-50/50 dark:bg-red-950/10" : "bg-blue-50/30 dark:bg-blue-950/10";
+                      return (
+                        <div key={item.videoId} className={`px-3 py-2 ${rowBg}`}>
+                          <div className="flex items-start gap-2">
+                            <div className="flex-shrink-0 mt-0.5">
+                              {isHealthy ? (
+                                <CircleCheck size={13} className="text-emerald-500" />
+                              ) : isQuarantined ? (
+                                <TriangleAlert size={13} className="text-amber-500" />
+                              ) : isError ? (
+                                <CircleX size={13} className="text-red-500" />
+                              ) : (
+                                <RefreshCcw size={13} className="text-blue-500" />
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs font-medium truncate" title={item.title}>{item.title}</p>
+                              <p className="text-[10px] text-muted-foreground mt-0.5">{item.issueDetail}</p>
+                              {!isHealthy && (
+                                <p className="text-[10px] mt-0.5">
+                                  <span className="font-medium">Action: </span>
+                                  <span className="text-muted-foreground">{item.actionDetail}</span>
+                                </p>
+                              )}
+                              {item.rootCause && (
+                                <p className="text-[10px] text-red-600/70 dark:text-red-400/60 mt-0.5 italic">{item.rootCause}</p>
+                              )}
+                            </div>
+                            <div className="flex-shrink-0 text-right">
+                              <Badge variant="outline" className={`text-[9px] px-1 h-4 ${
+                                isHealthy ? "border-emerald-400 text-emerald-700 dark:text-emerald-400" :
+                                isQuarantined ? "border-amber-400 text-amber-700 dark:text-amber-400" :
+                                isError ? "border-red-400 text-red-700 dark:text-red-400" :
+                                "border-blue-400 text-blue-700 dark:text-blue-400"
+                              }`}>
+                                {item.previousStatus}
+                              </Badge>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center gap-2 py-8 text-center">
+                  <Inbox size={28} className="text-muted-foreground/20" />
+                  <p className="text-sm text-muted-foreground">No local videos found in this environment.</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter className="flex-shrink-0 mt-4">
+            <Button variant="outline" size="sm" onClick={() => setRecoveryReportOpen(false)}>
+              Close
+            </Button>
+            <Button
+              size="sm"
+              disabled={deepRecoverMutation.isPending}
+              onClick={() => { setRecoveryReportOpen(false); deepRecoverMutation.mutate(); }}
+              className="gap-1.5"
+            >
+              {deepRecoverMutation.isPending
+                ? <><RefreshCw size={12} className="animate-spin" /> Scanning…</>
+                : <><RefreshCcw size={12} /> Run again</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ── Delete Confirm Dialog ──────────────────────────────────────────── */}
       <AlertDialog

@@ -77,6 +77,7 @@ import { sseCorsHeaders } from "../../lib/sse-cors.js";
 import { startViewerSlopeMonitor, getViewerSlopeStatus } from "./viewer-slope-monitor.js";
 import { getRegisteredCacheStats, registerNamedStore } from "../../infrastructure/cache.js";
 import { getSlowRequestsSnapshot } from "../../infrastructure/slow-request-capture.js";
+import { runDeepRecovery } from "../transcoder/video-recovery.service.js";
 
 const startedAtMs = Date.now();
 const instanceId = `inst-${Math.random().toString(36).slice(2, 10)}`;
@@ -2683,6 +2684,68 @@ export async function adminOpsRoutes(app: FastifyInstance) {
 
       return { ok: true as const, retriedFailed, resetOrphaned, enqueuedMissing, reEnabledItems, badUrlCacheCleared: true };
     },
+  );
+
+  // ── POST /admin/videos/deep-recover ──────────────────────────────────────
+  // Production-grade deep recovery: scans every locally-uploaded video for
+  // pipeline issues (failed, orphaned, stuck, never-processed, missing from
+  // broadcast queue), classifies the root cause, applies the appropriate
+  // recovery action idempotently, and returns a structured per-video report.
+  //
+  // More comprehensive than /repair-all — adds blob verification, never-
+  // processed detection, dead-letter requeueing, and per-video audit trail.
+  //
+  // Rate-limited to 2 req/min (admin only) to prevent operator-initiated storms.
+  r.post(
+    "/videos/deep-recover",
+    {
+      preHandler: requireAuth("admin"),
+      config: { rateLimit: { max: 2, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin-ops"],
+        summary: "Full local-video audit and auto-recovery — returns per-video report",
+        response: {
+          200: z.object({
+            runAt: z.string(),
+            durationMs: z.number(),
+            totalLocalVideos: z.number(),
+            summary: z.object({
+              healthy: z.number(),
+              recovered: z.number(),
+              quarantined: z.number(),
+              errors: z.number(),
+            }),
+            actions: z.object({
+              retriedFailed: z.number(),
+              resetOrphaned: z.number(),
+              resetStuck: z.number(),
+              enqueuedUnprocessed: z.number(),
+              enqueuedBroadcast: z.number(),
+              requeuedDlq: z.number(),
+              sourceMissingConfirmed: z.number(),
+              badUrlCacheCleared: z.boolean(),
+              suspendedReEnabled: z.number(),
+            }),
+            items: z.array(z.object({
+              videoId: z.string(),
+              title: z.string(),
+              issueKind: z.string(),
+              issueDetail: z.string(),
+              actionTaken: z.string(),
+              actionDetail: z.string(),
+              previousStatus: z.string(),
+              previousErrorCode: z.string().nullable(),
+              blobVerified: z.boolean().nullable(),
+              rootCause: z.string().nullable(),
+            })),
+            remainingActions: z.array(z.string()),
+          }),
+          429: z.object({ error: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => runDeepRecovery(),
   );
 
   // ── POST /admin/transcoding/enqueue-missing ───────────────────────────────
