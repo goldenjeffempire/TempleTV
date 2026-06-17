@@ -33,6 +33,39 @@ const vt = schema.videosTable;
 const qt = schema.broadcastQueueTable;
 
 /**
+ * Tracks schedule entries that have already fired in this server session.
+ * Key: "<entryId>_<dayOfWeek>_<startMinutesSinceMidnight>"
+ * Value: Unix timestamp (ms) when the entry fired.
+ *
+ * This enables a ±2-minute catch-up window: if the supervisor fires slightly
+ * late (delayed by a prior long-running job), entries that should have started
+ * up to 2 minutes ago are still dispatched on the next tick. The map prevents
+ * double-fires when the same entry falls within the catch-up window on
+ * consecutive ticks.
+ *
+ * The map is cleared at midnight so entries can re-fire the next day.
+ * On server restart the map is empty — entries that already fired today may
+ * re-fire once, but all actions are idempotent (unique-index on the queue,
+ * override dedup key) so the only effect is a redundant log line.
+ */
+const firedSlots = new Map<string, number>();
+
+function firedSlotKey(entryId: string, dow: number, startMin: number): string {
+  return `${entryId}_${dow}_${startMin}`;
+}
+
+(function scheduleMidnightClear() {
+  const now = new Date();
+  const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const msUntilMidnight = midnight.getTime() - now.getTime();
+  const t = setTimeout(() => {
+    firedSlots.clear();
+    scheduleMidnightClear();
+  }, msUntilMidnight);
+  t.unref?.();
+})();
+
+/**
  * Parse "HH:MM" or "HH:MM:SS" into total minutes since midnight.
  */
 function parseTimeToMinutes(t: string): number {
@@ -101,7 +134,13 @@ export async function scheduleBridgeScan(): Promise<void> {
 
   const firing = entries.filter((e) => {
     const startMin = parseTimeToMinutes(e.startTime);
-    return startMin === currentMin;
+    // 2-minute catch-up window: fire if start was within the last 2 minutes.
+    // This handles supervisor delays (previous job took >60 s, server briefly
+    // paused, etc.) so a missed tick does not permanently skip the entry.
+    const diff = currentMin - startMin;
+    if (diff < 0 || diff > 2) return false;
+    // Idempotency: skip if this exact slot already fired in this server session.
+    return !firedSlots.has(firedSlotKey(e.id, dow, startMin));
   });
 
   if (firing.length === 0) return;
@@ -113,6 +152,10 @@ export async function scheduleBridgeScan(): Promise<void> {
   );
 
   for (const entry of firing) {
+    // Mark the slot as fired BEFORE handleEntry so that a throw inside
+    // handleEntry does not cause the same entry to re-fire on the next tick.
+    const startMin = parseTimeToMinutes(entry.startTime);
+    firedSlots.set(firedSlotKey(entry.id, dow, startMin), Date.now());
     try {
       await handleEntry(entry);
     } catch (err: unknown) {

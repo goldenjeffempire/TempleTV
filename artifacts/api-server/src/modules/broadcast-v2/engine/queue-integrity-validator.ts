@@ -1841,6 +1841,92 @@ class QueueIntegrityValidatorImpl {
         })();
       }
 
+      // ── Gap 2c: STUCK_HLS_NEVER_STARTED — every 20th cycle ─────────────────
+      // Broadcast-queued local videos with transcodingStatus='none' and no
+      // hlsMasterUrl but with an objectPath present. These are videos that
+      // were admitted to the broadcast queue (raw MP4 is enough for admission)
+      // but whose initial enqueueTranscode call was either never made or was
+      // silently swallowed by a non-fatal catch. Without this sweep they
+      // broadcast forever as un-optimised MP4 or — if the MP4 cannot be
+      // range-streamed before faststart completes — cause repeated auto-skip
+      // cycles. Rate-limited to every 20th cycle (~40 min at 2-min cadence).
+      if (this.validatorCycleCount % 20 === 0) {
+        void (async () => {
+          try {
+            const result = await db.execute<{
+              id: string;
+              local_video_url: string | null;
+            }>(sql`
+              SELECT v.id, v.local_video_url
+              FROM managed_videos v
+              WHERE v.transcoding_status = 'none'
+                AND v.hls_master_url IS NULL
+                AND v.object_path IS NOT NULL
+                AND (v.source_cleanup_status IS NULL OR v.source_cleanup_status != 'deleted')
+                AND (
+                  v.transcoding_error_code IS NULL
+                  OR v.transcoding_error_code NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING', 'ASSEMBLY_FAILED')
+                )
+                AND EXISTS (
+                  SELECT 1 FROM broadcast_queue bq
+                  WHERE bq.video_id = v.id AND bq.is_active = true
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM transcoding_jobs j
+                  WHERE j.video_id = v.id
+                    AND j.status IN ('queued', 'processing')
+                )
+              LIMIT 10
+            `);
+
+            const neverStarted = result.rows as Array<{
+              id: string;
+              local_video_url: string | null;
+            }>;
+            if (neverStarted.length === 0) return;
+
+            logger.warn(
+              { count: neverStarted.length },
+              "[queue-validator] STUCK_HLS_NEVER_STARTED: found broadcast-queued videos " +
+              "with transcodingStatus=none and no HLS — submitting to transcoder",
+            );
+
+            let submitted = 0;
+            for (const row of neverStarted) {
+              if (!row.local_video_url) {
+                logger.warn(
+                  { videoId: row.id },
+                  "[queue-validator] STUCK_HLS_NEVER_STARTED: no local_video_url — skipping",
+                );
+                continue;
+              }
+              try {
+                await enqueueTranscode({ videoId: row.id, videoPath: row.local_video_url, priority: 2 });
+                submitted += 1;
+                logger.info(
+                  { videoId: row.id },
+                  "[queue-validator] STUCK_HLS_NEVER_STARTED: submitted video for HLS transcoding",
+                );
+              } catch (enqErr) {
+                logger.warn(
+                  { err: enqErr, videoId: row.id },
+                  "[queue-validator] STUCK_HLS_NEVER_STARTED: enqueueTranscode failed (non-fatal)",
+                );
+              }
+            }
+
+            if (submitted > 0) {
+              adminEventBus.push("broadcast-queue-updated", {
+                reason: "auto-submit-hls-never-started",
+                count: submitted,
+              });
+            }
+          } catch (err) {
+            logger.warn({ err }, "[queue-validator] STUCK_HLS_NEVER_STARTED sweep failed (non-fatal)");
+          }
+        })();
+      }
+
       const errorIds = new Set(issues.filter((i) => i.severity === "error" && i.itemId).map((i) => i.itemId!));
       const healthyItems = rows.filter((r) => !errorIds.has(r.id)).length;
       const report: ValidationReport = {

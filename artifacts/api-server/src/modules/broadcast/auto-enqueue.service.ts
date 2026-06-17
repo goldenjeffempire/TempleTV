@@ -521,17 +521,25 @@ export async function listMissingFromQueue(limit = 50): Promise<
       })
       .from(videosTable)
       .where(
-        // IMPORTANT: restrict NOT EXISTS to is_active = true so we surface
-        // videos whose only queue entry is inactive (deactivated/orphaned).
-        // Without this filter, videos with inactive rows appear "queued" to
-        // the diagnostics endpoint while the orchestrator never plays them.
-        sql`NOT EXISTS (
-          SELECT 1 FROM ${queueTable}
-          WHERE ${queueTable.isActive} = true
-            AND (${queueTable.videoId} = ${videosTable.id}
-                 OR (${videosTable.youtubeId} IS NOT NULL
-                     AND ${queueTable.youtubeId} = ${videosTable.youtubeId}))
-        )`,
+        and(
+          // YouTube is intentionally library-only and never enters the
+          // broadcast queue. Exclude these rows so they don't inflate the
+          // "missing from queue" count shown in the admin diagnostics panel —
+          // operators can't fix a YouTube video being "not queued" because
+          // it isn't supposed to be queued.
+          ne(videosTable.videoSource, "youtube"),
+          // IMPORTANT: restrict NOT EXISTS to is_active = true so we surface
+          // videos whose only queue entry is inactive (deactivated/orphaned).
+          // Without this filter, videos with inactive rows appear "queued" to
+          // the diagnostics endpoint while the orchestrator never plays them.
+          sql`NOT EXISTS (
+            SELECT 1 FROM ${queueTable}
+            WHERE ${queueTable.isActive} = true
+              AND (${queueTable.videoId} = ${videosTable.id}
+                   OR (${videosTable.youtubeId} IS NOT NULL
+                       AND ${queueTable.youtubeId} = ${videosTable.youtubeId}))
+          )`,
+        ),
       )
       .orderBy(desc(videosTable.importedAt))
       .limit(limit);
