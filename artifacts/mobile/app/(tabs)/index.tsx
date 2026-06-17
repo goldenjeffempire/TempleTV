@@ -5,8 +5,11 @@
  *  • Live broadcast state via V2 player-core singleton (WS transport)
  *  • Video catalog via useVideos (GET /api/videos, AsyncStorage cache)
  *
- * Layout:
- *  1. Live broadcast hero (16:9, animated ON AIR, viewer count, program title)
+ * Layout (immersive — no redundant app header above the video):
+ *  1. Live broadcast hero — extends under the system status bar; a dark
+ *     top-gradient protects status-bar readability while keeping the full
+ *     video area visible. A floating logo overlay sits inside the hero so
+ *     the brand is present without consuming a separate header row.
  *  2. Category rows (Live Service, Sermons, Deliverance, Prayers, …)
  *  3. Error / empty states
  */
@@ -46,7 +49,6 @@ import { getApiBase } from "@/lib/apiBase";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import { usePlayer } from "@/context/PlayerContext";
 import { useBroadcastSync } from "@/hooks/useBroadcastSync";
-import { ScreenHeader } from "@/components/ScreenHeader";
 import type { Sermon, SermonCategory } from "@/types";
 
 const CATEGORY_ROWS: SermonCategory[] = [
@@ -100,16 +102,27 @@ function navigateToLive(
 }
 
 // ─── Hero Section ─────────────────────────────────────────────────────────────
+// Fully immersive: the hero begins at y=0 (behind the system status bar).
+// topInset is the safe-area top inset used to:
+//  • Extend the hero height so it fills the notch/status-bar area.
+//  • Position the floating logo overlay below the notch.
+//  • Position the emergency banner below the notch.
+// The content below the hero (category rows) scrolls normally — only the hero
+// extends under the status bar.
 
 interface HeroSectionProps {
   fallbackSermon: Sermon | null;
+  topInset: number;
 }
 
-const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSectionProps) {
+const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }: HeroSectionProps) {
   const c = useColors();
   const { width } = useWindowDimensions();
-  // True 16:9 aspect ratio for the hero — matches broadcast video native aspect.
-  const heroHeight = Math.round(width * 0.5625);
+  // True 16:9 video area + status-bar region above it = total hero height.
+  // This lets the video fill the space that was previously occupied by the
+  // redundant app header, maximising visible video area.
+  const videoHeight = Math.round(width * 0.5625);
+  const totalHeroHeight = videoHeight + topInset;
   const apiBase = getApiBase() ?? "";
 
   const { isBroadcastMode } = usePlayer();
@@ -177,16 +190,10 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
   );
   const hasActiveBroadcast = hasUploadedBroadcast;
 
-  // Current program title from V2 snapshot — shown when broadcast is active.
-  const broadcastTitle = hasActiveBroadcast ? (v2Server?.current?.title ?? null) : null;
-
   // Live viewer count + OMEGA emergency signal from the v1 broadcast sync heartbeat.
   // V2Snapshot (player-core) does not carry viewer counts or OMEGA signals — those
   // are pushed by the v1 WS gateway and surfaced via useBroadcastSync.
   const { viewerCount, emergencyBroadcast, emergencyMessage } = useBroadcastSync();
-
-  // Fallback title for the off-air hero (latest sermon).
-  const fallbackTitle = fallbackSermon?.title ?? "";
 
   // Thumbnail: broadcast thumbnail > fallback sermon poster > null (gradient only).
   const thumbUrl =
@@ -209,7 +216,7 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
     <Pressable
       onPress={handleTuneIn}
       disabled={watchNowDisabled}
-      style={{ width, height: heroHeight }}
+      style={{ width, height: totalHeroHeight }}
       accessibilityRole="button"
       accessibilityLabel={hasActiveBroadcast ? "Watch Now — live broadcast" : "Watch latest sermon"}
       accessibilityState={{ disabled: watchNowDisabled }}
@@ -237,7 +244,27 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
         />
       </View>
 
-      {/* 4-stop gradient — stronger hold at bottom for text legibility */}
+      {/* ── Top gradient — protects status-bar icon readability ──────────────
+          Explicit absolute position (NOT StyleSheet.absoluteFill) so that the
+          `height` constraint is respected without `bottom: 0` fighting it.
+          Dark enough to keep clock/battery icons legible against any video,
+          subtle enough not to obscure the content below. */}
+      <LinearGradient
+        colors={["rgba(0,0,0,0.55)", "rgba(0,0,0,0.20)", "transparent"]}
+        locations={[0, 0.55, 1]}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          height: topInset + 72,
+        }}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0, y: 1 }}
+        pointerEvents="none"
+      />
+
+      {/* ── Bottom gradient — text-legibility behind badges + CTA ─────────── */}
       <LinearGradient
         colors={[
           "transparent",
@@ -278,7 +305,6 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
             )}
           </View>
 
-
           {/* ── CTA button ── */}
           {!watchNowDisabled && (
             <Pressable
@@ -299,14 +325,35 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon }: HeroSect
         </View>
       </LinearGradient>
 
+      {/* ── Floating logo overlay ─────────────────────────────────────────────
+          Positioned inside the hero, below the notch/status-bar area.
+          Establishes brand context without occupying a separate header row.
+          pointerEvents="none" — taps pass through to the Pressable beneath. */}
+      <View
+        style={[styles.heroTopBar, { paddingTop: topInset + 10 }]}
+        pointerEvents="none"
+      >
+        <Image
+          source={require("@/assets/images/temple-tv-logo-full.png")}
+          style={styles.heroLogo}
+          resizeMode="contain"
+          accessible
+          accessibilityLabel="Temple TV"
+        />
+      </View>
+
       {/* ── OMEGA emergency broadcast banner ────────────────────────────────────
           Rendered above all other hero layers (zIndex 30) when the server fires
           an EMERGENCY_BROADCAST signal via the v1 WS gateway. Cleared on the
-          next PROGRAM_CHANGED event. pointerEvents="none" — taps still reach
+          next PROGRAM_CHANGED event. Positioned below the notch so it never
+          clips behind the status bar. pointerEvents="none" — taps still reach
           the underlying Pressable so the viewer can navigate to the player. */}
       {emergencyBroadcast && (
         <Animated.View
-          style={[styles.emergencyBanner, { opacity: emergencyPulseAnim }]}
+          style={[
+            styles.emergencyBanner,
+            { top: topInset, opacity: emergencyPulseAnim },
+          ]}
           pointerEvents="none"
           accessibilityRole="alert"
           accessibilityLiveRegion="assertive"
@@ -393,6 +440,9 @@ function SkeletonRows() {
 }
 
 // ─── Main Screen ──────────────────────────────────────────────────────────────
+// The Watch screen is intentionally headerless — the live video is the primary
+// content and should command the full visual space from the top of the screen.
+// Brand context is provided by the floating logo overlay inside the hero itself.
 
 export default function WatchScreen() {
   const c = useColors();
@@ -426,42 +476,9 @@ export default function WatchScreen() {
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
-      <ScreenHeader title="Watch" />
-
-      {/* Stale cache banner — three states:
-          1. isStale + refreshing:  "Showing cached content — refreshing…"
-          2. isStale + failed:      "Couldn't refresh — showing saved content" + retry
-          3. offline:               hidden (NetworkBanner already covers this) */}
-      {isStale && !loading && networkConnected && (
-        <View style={[
-          styles.staleBanner,
-          refreshFailed && styles.staleBannerFailed,
-        ]}>
-          <Feather
-            name={refreshFailed ? "wifi-off" : "clock"}
-            size={11}
-            color={refreshFailed ? "#991b1b" : "#92400e"}
-          />
-          <Text style={[
-            styles.staleBannerText,
-            refreshFailed && styles.staleBannerTextFailed,
-          ]}>
-            {refreshFailed
-              ? "Couldn't refresh — showing saved content"
-              : "Showing cached content — refreshing…"}
-          </Text>
-          {refreshFailed && (
-            <Pressable
-              onPress={refetch}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="Retry loading videos"
-            >
-              <Text style={styles.staleBannerRetry}>Retry</Text>
-            </Pressable>
-          )}
-        </View>
-      )}
+      {/* No ScreenHeader here — the Watch screen is fully immersive.
+          The hero extends under the system status bar; the floating logo
+          overlay inside the hero provides brand context. */}
 
       <ScrollView
         showsVerticalScrollIndicator={false}
@@ -474,8 +491,44 @@ export default function WatchScreen() {
           />
         }
       >
-        {/* Hero */}
-        <HeroSection fallbackSermon={fallbackSermon} />
+        {/* Immersive hero — occupies (statusBarHeight + 16:9 video) pixels */}
+        <HeroSection fallbackSermon={fallbackSermon} topInset={insets.top} />
+
+        {/* Stale cache banner — inside ScrollView so it never floats over video.
+            Three states:
+            1. isStale + refreshing:  "Showing cached content — refreshing…"
+            2. isStale + failed:      "Couldn't refresh — showing saved content" + retry
+            3. offline:               hidden (NetworkBanner already covers this) */}
+        {isStale && !loading && networkConnected && (
+          <View style={[
+            styles.staleBanner,
+            refreshFailed && styles.staleBannerFailed,
+          ]}>
+            <Feather
+              name={refreshFailed ? "wifi-off" : "clock"}
+              size={11}
+              color={refreshFailed ? "#991b1b" : "#92400e"}
+            />
+            <Text style={[
+              styles.staleBannerText,
+              refreshFailed && styles.staleBannerTextFailed,
+            ]}>
+              {refreshFailed
+                ? "Couldn't refresh — showing saved content"
+                : "Showing cached content — refreshing…"}
+            </Text>
+            {refreshFailed && (
+              <Pressable
+                onPress={refetch}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Retry loading videos"
+              >
+                <Text style={styles.staleBannerRetry}>Retry</Text>
+              </Pressable>
+            )}
+          </View>
+        )}
 
         {/* Error state */}
         {error && sermons.length === 0 && (
@@ -533,9 +586,9 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
 
   // ── OMEGA emergency banner ───────────────────────────────────────────────────
+  // `top` is set dynamically via topInset so it never clips behind the notch.
   emergencyBanner: {
     position: "absolute",
-    top: 0,
     left: 0,
     right: 0,
     backgroundColor: "rgba(220, 38, 38, 0.95)",
@@ -559,7 +612,23 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
-  // ── Hero ────────────────────────────────────────────────────────────────────
+  // ── Hero floating elements ───────────────────────────────────────────────────
+  // Floating logo bar — anchored at top, positioned by topInset at render time.
+  heroTopBar: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    zIndex: 10,
+  },
+  heroLogo: {
+    height: 30,
+    width: 92,
+  },
+
+  // ── Hero content (bottom gradient zone) ─────────────────────────────────────
   heroContent: {
     padding: 20,
     paddingBottom: 24,
@@ -607,16 +676,6 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   categoryBadgeText: { fontSize: 10, fontWeight: "700", color: "#fff" },
-  heroTitle: {
-    fontSize: 22,
-    fontWeight: "800",
-    color: "#fff",
-    lineHeight: 28,
-    letterSpacing: -0.4,
-    textShadowColor: "rgba(0,0,0,0.6)",
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 8,
-  },
   heroBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -669,6 +728,7 @@ const styles = StyleSheet.create({
     gap: 5,
     marginHorizontal: 16,
     marginTop: 6,
+    marginBottom: 2,
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 8,

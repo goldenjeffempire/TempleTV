@@ -9,8 +9,9 @@ type FeatherIconName = React.ComponentProps<typeof Feather>["name"];
 
 export interface AppHeaderProps {
   /**
-   * "tab"   — Temple TV logo on the left, page title on the right.
-   *           Use on the five main tab screens.
+   * "tab"   — Large bold page title on the left, optional trailing action on the right.
+   *           Use on the five main tab screens (Library, Channels, Radio, Settings).
+   *           The Watch/Live screen is fully immersive — use no header there.
    * "stack" — Back arrow on the left, centred title, optional trailing action.
    *           Use on every secondary / push screen.
    * Defaults to "stack".
@@ -27,7 +28,7 @@ export interface AppHeaderProps {
   onBack?: () => void;
 
   /**
-   * Trailing icon button (stack variant).
+   * Trailing icon button (stack or tab variant).
    * Renders a 44 × 44 Feather icon button at the trailing edge.
    */
   rightIcon?: {
@@ -64,9 +65,12 @@ export interface AppHeaderProps {
 /**
  * Unified navigation header for the Temple TV mobile app.
  *
- * Variant "tab"   — Tab-bar screens: logo left, title right.
- * Variant "stack" — Stack screens:   back arrow left, centred title,
- *                                    optional trailing action right.
+ * Variant "tab"   — Tab-bar screens: large bold page title left, optional
+ *                   action right. No logo — the app icon already establishes
+ *                   the brand; repeating the wordmark on every screen is
+ *                   redundant and competes with content.
+ * Variant "stack" — Stack screens: back arrow left, centred title,
+ *                   optional trailing action right.
  *
  * Safe-area top inset is handled internally; callers must NOT add extra
  * paddingTop. The component does NOT render <Stack.Screen> — each screen
@@ -75,6 +79,9 @@ export interface AppHeaderProps {
  *
  * Usage — tab screen:
  *   <AppHeader variant="tab" title="Library" />
+ *
+ * Usage — tab screen with trailing action:
+ *   <AppHeader variant="tab" title="Library" rightIcon={{ name: "search", ... }} />
  *
  * Usage — stack screen (simple):
  *   <AppHeader title="Playlists" />
@@ -151,21 +158,21 @@ export function AppHeader({
     >
       {variant === "tab" ? (
         // ── Tab variant ──────────────────────────────────────────────────────
+        // Large bold page title — clean, modern, lets content breathe.
+        // No logo: the app icon + splash screen establish the brand; repeating
+        // the wordmark on every tab header is visual noise that competes with
+        // the content hierarchy.
         <>
-          <Image
-            source={require("@/assets/images/temple-tv-logo-full.png")}
-            style={styles.logo}
-            resizeMode="contain"
-            accessible
-            accessibilityLabel="Temple TV"
-          />
           <Text
             style={[styles.tabTitle, { color: c.foreground }]}
             numberOfLines={1}
-            accessibilityRole="text"
+            accessibilityRole="header"
           >
             {title}
           </Text>
+          {trailing != null && (
+            <View style={styles.tabTrailing}>{trailing}</View>
+          )}
         </>
       ) : (
         // ── Stack variant ────────────────────────────────────────────────────
@@ -213,17 +220,19 @@ const styles = StyleSheet.create({
   },
 
   // ── Tab variant ─────────────────────────────────────────────────────────────
-  logo: {
-    height: 38,
-    width: 110,
-    flexShrink: 0,
-  },
+  // Large, prominent page title — left-aligned like a modern streaming app.
+  // Font weight 800 creates clear hierarchy: screen title > section headers > body.
   tabTitle: {
     flex: 1,
-    fontSize: 19,
-    fontWeight: "700",
-    letterSpacing: -0.4,
-    textAlign: "right",
+    fontSize: 28,
+    fontWeight: "800",
+    letterSpacing: -0.6,
+    textAlign: "left",
+  },
+  tabTrailing: {
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
   },
 
   // ── Stack variant ───────────────────────────────────────────────────────────
