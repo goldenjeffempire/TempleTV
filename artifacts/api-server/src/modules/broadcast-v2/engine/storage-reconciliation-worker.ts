@@ -54,13 +54,10 @@ async function runReconciliationPass(): Promise<void> {
   const startMs = Date.now();
   storageBlobRecoveryService.recordPassStart();
 
-  const q = schema.broadcastQueueTable;
-  const v = schema.videosTable;
-
   // ── Step 1: Load all active queue items ────────────────────────────────────
   let rows: ReconciliationRow[];
   try {
-    const raw = await db.execute<ReconciliationRow>(sql`
+    const raw = await db.execute<Record<string, unknown>>(sql`
       SELECT
         bq.id          AS "queueId",
         bq.video_id    AS "videoId",
@@ -75,7 +72,7 @@ async function runReconciliationPass(): Promise<void> {
         AND bq.video_id IS NOT NULL
       ORDER BY bq.sort_order
     `);
-    rows = raw.rows;
+    rows = raw.rows as unknown as ReconciliationRow[];
   } catch (err) {
     logger.warn({ err }, `${MODULE} DB query failed — skipping pass (non-fatal)`);
     return;

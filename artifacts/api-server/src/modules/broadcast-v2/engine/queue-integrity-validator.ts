@@ -1622,6 +1622,7 @@ class QueueIntegrityValidatorImpl {
             for (const row of missingRows) {
               issues.push({
                 itemId: row.queue_id,
+                itemTitle: row.title,
                 code: "MP4_BLOB_MISSING",
                 severity: "error",
                 message:

@@ -254,10 +254,12 @@ async function startWorkers() {
       maxConsecutiveFailures: 5,
       fn: () => storageReconciliationWorker.run(),
       onCircuitOpen: (name, n) => {
-        adminEventBus.push("ops-alert", {
-          level: "error",
-          component: name,
-          message: `Storage reconciliation worker circuit opened after ${n} consecutive failures — storage integrity checks are paused.`,
+        void import("./modules/admin-ops/admin-event-bus.js").then(({ adminEventBus }) => {
+          adminEventBus.push("ops-alert", {
+            level: "error",
+            component: name,
+            message: `Storage reconciliation worker circuit opened after ${n} consecutive failures — storage integrity checks are paused.`,
+          });
         });
       },
     });
