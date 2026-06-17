@@ -21,17 +21,20 @@
  *      set objectPath = null.
  *
  *  (d) Stuck transcoding: managed_videos rows with transcodingStatus = 'queued'
- *      and importedAt older than 2 h with no active transcoding job — reset to
- *      'failed' with STUCK_TRANSCODE error code.
+ *      and updatedAt older than 2 h with no active transcoding job (status
+ *      'queued' or 'processing' in transcoding_jobs) — auto-requeued via
+ *      enqueueTranscode() so the dispatcher picks them up on restart; or reset
+ *      to 'failed' with STUCK_TRANSCODE if objectPath is missing (can't retry).
  *
  * All sweeps are non-fatal: errors are logged and the worker continues.
  * Emits ops-alerts only when anomalies are found.
  */
-import { sql, and, eq, lt, inArray } from "drizzle-orm";
+import { sql, and, eq, lt, inArray, isNotNull, isNull } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { storage } from "../../infrastructure/storage.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
+import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
 
 const CORRUPT_UPLOAD_RETENTION_DAYS = Number(
   process.env["CORRUPT_UPLOAD_RETENTION_DAYS"] ?? "7",
@@ -268,56 +271,107 @@ async function sweepCorruptBlobs(stats: SweepStats): Promise<void> {
 
 async function sweepStuckTranscodes(stats: SweepStats): Promise<void> {
   try {
+    // Use updatedAt (not importedAt) as the cutoff so old videos that are
+    // legitimately re-queued today are not immediately flagged. updatedAt is
+    // bumped automatically by the $onUpdate hook on every row write, including
+    // every transcodingStatus change.
     const cutoff = new Date(Date.now() - STUCK_TRANSCODE_AGE_H * 60 * 60_000);
+
+    // Only include videos with no active transcoding job (queued or processing).
+    // The doc comment always promised this check but the original code omitted it,
+    // causing videos being actively processed to be wrongly reset.
     const rows = await db
-      .select({ id: v.id, title: v.title })
+      .select({ id: v.id, title: v.title, objectPath: v.objectPath })
       .from(v)
       .where(
         and(
           eq(v.transcodingStatus, "queued"),
-          lt(v.importedAt, cutoff),
+          lt(v.updatedAt, cutoff),
+          sql`NOT EXISTS (
+            SELECT 1 FROM transcoding_jobs j
+            WHERE j.video_id = ${v.id}
+            AND j.status IN ('queued', 'processing')
+          )`,
         ),
       )
       .limit(20);
 
     if (rows.length === 0) return;
 
-    const ids = rows.map((r) => r.id);
-    await db
-      .update(v)
-      .set({
-        transcodingStatus: "failed",
-        transcodingErrorCode: "STUCK_TRANSCODE",
-        transcodingErrorMessage:
-          "Transcoding job was queued more than 2 hours ago but never started. " +
-          "This may indicate a transcoder crash or missing worker process. " +
-          "Re-enqueue from the admin panel to retry.",
-      })
-      .where(inArray(v.id, ids));
+    // Split into re-queuable (have a source blob) vs truly unrecoverable.
+    const requeue = rows.filter((r) => r.objectPath != null);
+    const noSource = rows.filter((r) => r.objectPath == null);
 
-    stats.stuckTranscodeReset += ids.length;
-    logger.warn(
-      { count: ids.length, videoIds: ids },
-      "[cleanup-worker] reset stuck transcoding jobs (queued > 2 h with no progress)",
-    );
+    // Re-enqueue videos that have a source blob so the dispatcher picks them
+    // up automatically on its next poll — no manual operator action needed.
+    const requeuedIds: string[] = [];
+    for (const row of requeue) {
+      try {
+        await enqueueTranscode({ videoId: row.id, videoPath: row.objectPath! });
+        requeuedIds.push(row.id);
+      } catch (enqErr) {
+        logger.warn(
+          { err: enqErr, videoId: row.id },
+          "[cleanup-worker] stuck-transcode: failed to re-enqueue video",
+        );
+        // Fall through — will be caught by the noSource path on next sweep
+      }
+    }
+
+    // Videos with no objectPath cannot be re-transcoded: mark failed so the
+    // operator knows to re-upload.
+    const noSourceIds = noSource.map((r) => r.id);
+    if (noSourceIds.length > 0) {
+      await db
+        .update(v)
+        .set({
+          transcodingStatus: "failed",
+          transcodingErrorCode: "STUCK_TRANSCODE",
+          transcodingErrorMessage:
+            "Transcoding job was queued more than 2 hours ago but never started, " +
+            "and no source blob is on file to retry from. " +
+            "Re-upload the video to retry.",
+        })
+        .where(inArray(v.id, noSourceIds));
+    }
+
+    const totalAffected = requeuedIds.length + noSourceIds.length;
+    stats.stuckTranscodeReset += totalAffected;
+
+    if (requeuedIds.length > 0) {
+      logger.warn(
+        { count: requeuedIds.length, videoIds: requeuedIds },
+        "[cleanup-worker] stuck-transcode: auto-requeued videos stuck in 'queued' >2 h",
+      );
+    }
+    if (noSourceIds.length > 0) {
+      logger.warn(
+        { count: noSourceIds.length, videoIds: noSourceIds },
+        "[cleanup-worker] stuck-transcode: marked videos failed (no source blob, cannot retry)",
+      );
+    }
 
     adminEventBus.push("videos-library-updated", {
       reason: "cleanup-worker-stuck-transcode-reset",
-      count: ids.length,
+      count: totalAffected,
     });
 
-    if (ids.length > 0) {
-      try {
-        adminEventBus.push("ops-alert", {
-          level: "warn",
-          title: "Stuck transcoding jobs detected",
-          message: `${ids.length} video(s) were stuck in 'queued' state for >2 hours and have been reset to 'failed'. Check the transcoder worker.`,
-          timestamp: new Date().toISOString(),
-          source: "cleanup-worker",
-        });
-      } catch {
-        // non-fatal
-      }
+    try {
+      adminEventBus.push("ops-alert", {
+        level: "warn",
+        title: "Stuck transcoding jobs requeued",
+        message:
+          `${requeuedIds.length} video(s) were stuck in 'queued' state for >2 hours with no active job ` +
+          `and have been automatically requeued. ` +
+          (noSourceIds.length > 0
+            ? `${noSourceIds.length} additional video(s) had no source blob and were marked failed. `
+            : "") +
+          `Check the transcoder worker if jobs remain stuck after the next poll.`,
+        timestamp: new Date().toISOString(),
+        source: "cleanup-worker",
+      });
+    } catch {
+      // non-fatal
     }
   } catch (err) {
     stats.errors++;
