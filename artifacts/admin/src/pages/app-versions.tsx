@@ -11,7 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { useToast } from "@/hooks/use-toast";
+import { PageHeader } from "@/components/shared/page-header";
+import { toast } from "sonner";
 import { api } from "@/lib/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -344,7 +345,6 @@ function SendNotifDialog({ open, onClose, version, onSend, loading }: SendNotifD
 
 export default function AppVersionsPage() {
   const qc      = useQueryClient();
-  const { toast } = useToast();
 
   const [formOpen,     setFormOpen]     = useState(false);
   const [editTarget,   setEditTarget]   = useState<AppVersion | null>(null);
@@ -362,9 +362,9 @@ export default function AppVersionsPage() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["admin-app-versions"] });
       setFormOpen(false);
-      toast({ title: "Version created" });
+      toast.success("Version created");
     },
-    onError: (err: Error) => toast({ variant: "destructive", title: "Failed to create", description: err.message }),
+    onError: (err: Error) => toast.error("Failed to create", { description: err.message }),
   });
 
   const updateMutation = useMutation({
@@ -373,9 +373,9 @@ export default function AppVersionsPage() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["admin-app-versions"] });
       setEditTarget(null);
-      toast({ title: "Version updated" });
+      toast.success("Version updated");
     },
-    onError: (err: Error) => toast({ variant: "destructive", title: "Failed to update", description: err.message }),
+    onError: (err: Error) => toast.error("Failed to update", { description: err.message }),
   });
 
   const deleteMutation = useMutation({
@@ -383,9 +383,9 @@ export default function AppVersionsPage() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["admin-app-versions"] });
       setDeleteTarget(null);
-      toast({ title: "Version deleted" });
+      toast.success("Version deleted");
     },
-    onError: (err: Error) => toast({ variant: "destructive", title: "Failed to delete", description: err.message }),
+    onError: (err: Error) => toast.error("Failed to delete", { description: err.message }),
   });
 
   const notifMutation = useMutation({
@@ -394,39 +394,34 @@ export default function AppVersionsPage() {
     onSuccess: (result) => {
       void qc.invalidateQueries({ queryKey: ["admin-app-versions"] });
       setNotifTarget(null);
-      toast({ title: "Notification sent", description: `Delivered to ${result.delivered} device(s)` });
+      toast.success("Notification sent", { description: `Delivered to ${result.delivered} device(s)` });
     },
-    onError: (err: Error) => toast({ variant: "destructive", title: "Failed to send", description: err.message }),
+    onError: (err: Error) => toast.error("Failed to send", { description: err.message }),
   });
 
   const versions = data?.items ?? [];
 
   return (
     <div className="space-y-6 p-6">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-            <Smartphone size={22} /> App Versions
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Manage app releases, mandatory updates, and push notification announcements.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void qc.invalidateQueries({ queryKey: ["admin-app-versions"] })}
-            className="gap-1.5"
-          >
-            <RefreshCw size={14} /> Refresh
-          </Button>
-          <Button size="sm" onClick={() => setFormOpen(true)} className="gap-1.5">
-            <Plus size={14} /> New Version
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="App Versions"
+        description="Manage app releases, mandatory updates, and push notification announcements."
+        actions={
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void qc.invalidateQueries({ queryKey: ["admin-app-versions"] })}
+              className="gap-1.5"
+            >
+              <RefreshCw size={14} /> Refresh
+            </Button>
+            <Button size="sm" onClick={() => setFormOpen(true)} className="gap-1.5">
+              <Plus size={14} /> New Version
+            </Button>
+          </>
+        }
+      />
 
       {/* How it works */}
       <Card className="border-blue-500/20 bg-blue-500/5">

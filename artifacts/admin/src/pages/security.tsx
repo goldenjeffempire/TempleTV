@@ -26,7 +26,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { useToast } from "@/hooks/use-toast";
+import { toast } from "sonner";
 import {
   ShieldCheck, ShieldOff, KeyRound, Copy, RefreshCw,
   AlertCircle, CheckCircle2, Smartphone, Eye, EyeOff,
@@ -112,7 +112,6 @@ function QrCode({ uri }: { uri: string }) {
 
 export default function SecurityPage() {
   const { user } = useAuth();
-  const { toast } = useToast();
   const qc = useQueryClient();
 
   const [setupStep, setSetupStep] = useState<SetupStep>("idle");
@@ -139,7 +138,7 @@ export default function SecurityPage() {
       setSetupStep("scanning");
       setTotpCode("");
     },
-    onError: () => toast({ title: "Setup failed", description: "Could not generate MFA secret. Try again.", variant: "destructive" }),
+    onError: () => toast.error("Setup failed", { description: "Could not generate MFA secret. Try again." }),
   });
 
   const enableMutation = useMutation({
@@ -147,9 +146,9 @@ export default function SecurityPage() {
     onSuccess: () => {
       setSetupStep("done");
       void qc.invalidateQueries({ queryKey: ["mfa-status"] });
-      toast({ title: "MFA enabled", description: "Your account is now protected by two-factor authentication." });
+      toast.success("MFA enabled", { description: "Your account is now protected by two-factor authentication." });
     },
-    onError: () => toast({ title: "Verification failed", description: "Code is incorrect or expired. Check your authenticator app.", variant: "destructive" }),
+    onError: () => toast.error("Verification failed", { description: "Code is incorrect or expired. Check your authenticator app." }),
   });
 
   const disableMutation = useMutation({
@@ -162,9 +161,9 @@ export default function SecurityPage() {
       setSetupStep("idle");
       setSetupData(null);
       void qc.invalidateQueries({ queryKey: ["mfa-status"] });
-      toast({ title: "MFA disabled", description: "Two-factor authentication has been removed from your account." });
+      toast.success("MFA disabled", { description: "Two-factor authentication has been removed from your account." });
     },
-    onError: () => toast({ title: "Disable failed", description: "Code or password is incorrect.", variant: "destructive" }),
+    onError: () => toast.error("Disable failed", { description: "Code or password is incorrect." }),
   });
 
   const regenMutation = useMutation({
@@ -175,9 +174,9 @@ export default function SecurityPage() {
       setShowRegenForm(false);
       setRegenCode("");
       void qc.invalidateQueries({ queryKey: ["mfa-status"] });
-      toast({ title: "Backup codes regenerated", description: "Save your new backup codes — the old ones are now invalid." });
+      toast.success("Backup codes regenerated", { description: "Save your new backup codes — the old ones are now invalid." });
     },
-    onError: () => toast({ title: "Failed", description: "TOTP code is incorrect or expired.", variant: "destructive" }),
+    onError: () => toast.error("Failed", { description: "TOTP code is incorrect or expired." }),
   });
 
   if (isLoading) {
@@ -264,7 +263,7 @@ export default function SecurityPage() {
                               {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
                             </button>
                             <button
-                              onClick={() => { void navigator.clipboard.writeText(setupData.secret); toast({ title: "Secret copied" }); }}
+                              onClick={() => { void navigator.clipboard.writeText(setupData.secret); toast.success("Secret copied"); }}
                               className="p-1.5 text-muted-foreground hover:text-foreground rounded"
                               title="Copy secret"
                             >
@@ -295,7 +294,7 @@ export default function SecurityPage() {
                       size="sm"
                       onClick={() => {
                         void navigator.clipboard.writeText(setupData.backupCodes.join("\n"));
-                        toast({ title: "Backup codes copied" });
+                        toast.success("Backup codes copied");
                       }}
                     >
                       <Copy size={13} className="mr-1.5" /> Copy all codes
@@ -421,7 +420,7 @@ export default function SecurityPage() {
                     ))}
                   </div>
                   <div className="flex gap-2">
-                    <Button variant="outline" size="sm" onClick={() => { void navigator.clipboard.writeText(newBackupCodes.join("\n")); toast({ title: "Codes copied" }); }}>
+                    <Button variant="outline" size="sm" onClick={() => { void navigator.clipboard.writeText(newBackupCodes.join("\n")); toast.success("Codes copied"); }}>
                       <Copy size={13} className="mr-1.5" /> Copy all
                     </Button>
                     <Button variant="ghost" size="sm" onClick={() => setNewBackupCodes(null)}>Dismiss</Button>

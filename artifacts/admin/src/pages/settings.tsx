@@ -10,7 +10,8 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { useToast } from "@/hooks/use-toast";
+import { PageHeader } from "@/components/shared/page-header";
+import { toast } from "sonner";
 import {
   Settings2, Plus, Trash2, Save, RefreshCw, Info, Search,
 } from "lucide-react";
@@ -49,7 +50,6 @@ function timeAgo(ts: string): string {
 }
 
 export default function SettingsPage() {
-  const { toast } = useToast();
   const qc = useQueryClient();
   const [newKey, setNewKey] = useState("");
   const [newValue, setNewValue] = useState("");
@@ -69,9 +69,9 @@ export default function SettingsPage() {
     onSuccess: (saved) => {
       void qc.invalidateQueries({ queryKey: ["admin-system-settings"] });
       setEditMap((m) => { const n = { ...m }; delete n[saved.key]; return n; });
-      toast({ title: "Setting saved", description: saved.key });
+      toast.success("Setting saved", { description: saved.key });
     },
-    onError: (e) => toast({ title: "Save failed", description: e instanceof HttpError ? e.message : "An unexpected error occurred", variant: "destructive" }),
+    onError: (e) => toast.error("Save failed", { description: e instanceof HttpError ? e.message : "An unexpected error occurred" }),
   });
 
   const deleteMutation = useMutation({
@@ -79,14 +79,14 @@ export default function SettingsPage() {
       api.delete(`/admin/system-settings/${encodeURIComponent(key)}`),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["admin-system-settings"] });
-      toast({ title: "Setting deleted" });
+      toast.success("Setting deleted");
     },
-    onError: (e) => toast({ title: "Delete failed", description: e instanceof HttpError ? e.message : "An unexpected error occurred", variant: "destructive" }),
+    onError: (e) => toast.error("Delete failed", { description: e instanceof HttpError ? e.message : "An unexpected error occurred" }),
   });
 
   const handleAdd = () => {
     if (!newKey.trim() || !newValue.trim()) {
-      toast({ title: "Key and value are required", variant: "destructive" });
+      toast.error("Key and value are required");
       return;
     }
     upsertMutation.mutate({ key: newKey.trim(), value: newValue.trim() });
@@ -114,19 +114,16 @@ export default function SettingsPage() {
 
   return (
     <div className="p-4 sm:p-6 max-w-4xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">System Settings</h1>
-          <p className="text-muted-foreground text-sm mt-1">
-            Runtime configuration stored in the database. Changes take effect immediately.
-          </p>
-        </div>
-        <Button variant="outline" size="sm" onClick={() => refetch()} className="gap-2 flex-shrink-0">
-          <RefreshCw size={14} />
-          Refresh
-        </Button>
-      </div>
+      <PageHeader
+        title="System Settings"
+        description="Runtime configuration stored in the database. Changes take effect immediately."
+        actions={
+          <Button variant="outline" size="sm" onClick={() => refetch()} className="gap-2">
+            <RefreshCw size={14} />
+            Refresh
+          </Button>
+        }
+      />
 
       {/* Add new setting */}
       <Card>

@@ -36,7 +36,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { useToast } from "@/hooks/use-toast";
+import { PageHeader } from "@/components/shared/page-header";
+import { toast } from "sonner";
 import {
   Moon,
   Clock,
@@ -278,7 +279,6 @@ function StatCard({
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 export default function MidnightPrayersPage() {
-  const { toast } = useToast();
   const qc = useQueryClient();
 
   // ── Tab + UI state ──────────────────────────────────────────────────────────
@@ -393,9 +393,9 @@ export default function MidnightPrayersPage() {
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/queue"] });
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/state"] });
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/diagnostics"] });
-      toast({ title: "Schedule saved", description: "Midnight Prayers schedule updated." });
+      toast.success("Schedule saved", { description: "Midnight Prayers schedule updated." });
     },
-    onError: () => toast({ title: "Save failed", variant: "destructive" }),
+    onError: () => toast.error("Save failed"),
   });
 
   const refreshQueueMutation = useMutation({
@@ -404,9 +404,9 @@ export default function MidnightPrayersPage() {
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/queue"] });
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/state"] });
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/diagnostics"] });
-      toast({ title: "Queue refreshed", description: `${data.videoCount} videos loaded.` });
+      toast.success("Queue refreshed", { description: `${data.videoCount} videos loaded.` });
     },
-    onError: () => toast({ title: "Refresh failed", variant: "destructive" }),
+    onError: () => toast.error("Refresh failed"),
   });
 
   const patchVideoMutation = useMutation({
@@ -416,9 +416,9 @@ export default function MidnightPrayersPage() {
       void qc.invalidateQueries({ queryKey: ["mp-library"] });
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/queue"] });
       setEditVideo(null);
-      toast({ title: "Video updated successfully." });
+      toast.success("Video updated successfully.");
     },
-    onError: () => toast({ title: "Update failed", variant: "destructive" }),
+    onError: () => toast.error("Update failed"),
   });
 
   const deleteVideoMutation = useMutation({
@@ -428,9 +428,9 @@ export default function MidnightPrayersPage() {
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/queue"] });
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/diagnostics"] });
       setDeleteTarget(null);
-      toast({ title: "Video deleted permanently." });
+      toast.success("Video deleted permanently.");
     },
-    onError: () => toast({ title: "Delete failed", variant: "destructive" }),
+    onError: () => toast.error("Delete failed"),
   });
 
   const removeFromRotationMutation = useMutation({
@@ -440,9 +440,9 @@ export default function MidnightPrayersPage() {
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/queue"] });
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/diagnostics"] });
       setDeleteTarget(null);
-      toast({ title: "Removed from Midnight Prayers", description: "Video remains in the library." });
+      toast.success("Removed from Midnight Prayers", { description: "Video remains in the library." });
     },
-    onError: () => toast({ title: "Operation failed", variant: "destructive" }),
+    onError: () => toast.error("Operation failed"),
   });
 
   const retryTranscodeMutation = useMutation({
@@ -450,9 +450,9 @@ export default function MidnightPrayersPage() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["mp-library"] });
       void qc.invalidateQueries({ queryKey: ["midnight-prayers/diagnostics"] });
-      toast({ title: "Re-queued for encoding", description: "HLS transcoding will begin shortly." });
+      toast.success("Re-queued for encoding", { description: "HLS transcoding will begin shortly." });
     },
-    onError: () => toast({ title: "Retry failed", variant: "destructive" }),
+    onError: () => toast.error("Retry failed"),
   });
 
   // ── Upload handlers ──────────────────────────────────────────────────────────
@@ -463,10 +463,8 @@ export default function MidnightPrayersPage() {
         (f) => f.type.startsWith("video/") || f.type.startsWith("audio/"),
       );
       if (supported.length === 0) {
-        toast({
-          title: "No supported files",
+        toast.error("No supported files", {
           description: "Please select video or audio files.",
-          variant: "destructive",
         });
         return;
       }
@@ -480,12 +478,11 @@ export default function MidnightPrayersPage() {
           featured: false,
         })),
       );
-      toast({
-        title: `${supported.length} file${supported.length > 1 ? "s" : ""} queued`,
+      toast.success(`${supported.length} file${supported.length > 1 ? "s" : ""} queued`, {
         description: "Auto-tagged as Midnight Prayers. Transcoding will start automatically.",
       });
     },
-    [toast],
+    [],
   );
 
   const handleDrop = useCallback(
@@ -531,35 +528,29 @@ export default function MidnightPrayersPage() {
 
   return (
     <div className="space-y-6 p-6">
-      {/* ── Header ───────────────────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <Moon className="h-6 w-6 text-indigo-500" />
-            Midnight Prayers
-          </h1>
-          <p className="text-muted-foreground text-sm mt-0.5">
-            Automated prayer broadcast active for every viewer at their local midnight.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {diagnostics?.deadAirRisk && (
-            <Badge className="bg-red-500/10 text-red-700 dark:text-red-400 border-red-300 gap-1">
-              <ShieldAlert className="h-3 w-3" /> Dead Air Risk
+      <PageHeader
+        title="Midnight Prayers"
+        description="Automated prayer broadcast active for every viewer at their local midnight."
+        actions={
+          <>
+            {diagnostics?.deadAirRisk && (
+              <Badge className="bg-red-500/10 text-red-700 dark:text-red-400 border-red-300 gap-1">
+                <ShieldAlert className="h-3 w-3" /> Dead Air Risk
+              </Badge>
+            )}
+            <Badge
+              variant={mergedConfig?.enabled ? (inWindow ? "default" : "secondary") : "outline"}
+              className={mergedConfig?.enabled && inWindow ? "bg-indigo-600 text-white animate-pulse" : ""}
+            >
+              {mergedConfig?.enabled
+                ? inWindow
+                  ? "● Broadcasting Now"
+                  : "Scheduled"
+                : "Disabled"}
             </Badge>
-          )}
-          <Badge
-            variant={mergedConfig?.enabled ? (inWindow ? "default" : "secondary") : "outline"}
-            className={mergedConfig?.enabled && inWindow ? "bg-indigo-600 text-white animate-pulse" : ""}
-          >
-            {mergedConfig?.enabled
-              ? inWindow
-                ? "● Broadcasting Now"
-                : "Scheduled"
-              : "Disabled"}
-          </Badge>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {/* ── Tabs ─────────────────────────────────────────────────────────────── */}
       <Tabs value={tab} onValueChange={setTab}>

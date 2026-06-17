@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import { exportRowsAsCsv } from "@/lib/csv-export";
 import { toast } from "sonner";
+import { PageHeader } from "@/components/shared/page-header";
+import { ErrorAlert } from "@/components/shared/error-alert";
 
 type EntryType = "video_uploaded" | "video_transcoded" | "user_created" | "schedule_added" | "config_changed";
 
@@ -122,7 +124,7 @@ export default function AuditLogPage() {
   const [search, setSearch] = useState("");
   const [limit, setLimit] = useState(100);
 
-  const { data, isLoading, refetch, isFetching } = useQuery({
+  const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["admin-audit-log", typeFilter, limit],
     queryFn: async () => {
       const params = new URLSearchParams({ limit: String(limit), type: typeFilter });
@@ -149,55 +151,50 @@ export default function AuditLogPage() {
 
   return (
     <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Audit Log</h1>
-          <p className="text-muted-foreground text-sm mt-1">
-            Recent platform activity across videos, users, schedule, and config.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={entries.length === 0}
-            className="gap-2"
-            onClick={() => {
-              // Export the *filtered* set the operator is currently looking at,
-              // not the raw fetch — matches what they see on screen.
-              exportRowsAsCsv(
-                `temple-tv-audit-log-${new Date().toISOString().slice(0, 10)}`,
-                entries,
-                [
-                  { header: "Timestamp", value: (e) => e.timestamp },
-                  { header: "Type", value: (e) => e.type },
-                  { header: "Actor", value: (e) => e.actor ?? "" },
-                  { header: "Title", value: (e) => e.title },
-                  { header: "Description", value: (e) => e.description },
-                ],
-              );
-              toast.success(`Exported ${entries.length} ${entries.length === 1 ? "entry" : "entries"}`);
-            }}
-            aria-label="Export audit log entries as CSV"
-            title="Export CSV"
-          >
-            <Download size={14} />
-            Export
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => refetch()}
-            disabled={isFetching}
-            className="gap-2"
-            aria-label="Refresh audit log"
-          >
-            <RefreshCw size={14} className={isFetching ? "animate-spin" : ""} />
-            Refresh
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="Audit Log"
+        description="Recent platform activity across videos, users, schedule, and config."
+        actions={
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={entries.length === 0}
+              className="gap-2"
+              onClick={() => {
+                exportRowsAsCsv(
+                  `temple-tv-audit-log-${new Date().toISOString().slice(0, 10)}`,
+                  entries,
+                  [
+                    { header: "Timestamp", value: (e) => e.timestamp },
+                    { header: "Type", value: (e) => e.type },
+                    { header: "Actor", value: (e) => e.actor ?? "" },
+                    { header: "Title", value: (e) => e.title },
+                    { header: "Description", value: (e) => e.description },
+                  ],
+                );
+                toast.success(`Exported ${entries.length} ${entries.length === 1 ? "entry" : "entries"}`);
+              }}
+              aria-label="Export audit log entries as CSV"
+              title="Export CSV"
+            >
+              <Download size={14} />
+              Export
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => refetch()}
+              disabled={isFetching}
+              className="gap-2"
+              aria-label="Refresh audit log"
+            >
+              <RefreshCw size={14} className={isFetching ? "animate-spin" : ""} />
+              Refresh
+            </Button>
+          </>
+        }
+      />
 
       {/* Stats row */}
       {data && (
@@ -279,6 +276,14 @@ export default function AuditLogPage() {
                   <Skeleton className="h-4 w-16 flex-shrink-0" />
                 </div>
               ))}
+            </div>
+          ) : isError ? (
+            <div className="p-6">
+              <ErrorAlert
+                title="Failed to load audit log"
+                message="Could not fetch activity entries from the server."
+                onRetry={() => refetch()}
+              />
             </div>
           ) : entries.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 gap-3">

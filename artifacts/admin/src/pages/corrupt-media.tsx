@@ -18,6 +18,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
+import { PageHeader } from "@/components/shared/page-header";
+import { ErrorAlert } from "@/components/shared/error-alert";
 
 interface CorruptItem {
   videoId: string | null;
@@ -96,7 +98,7 @@ export default function CorruptMediaPage() {
     refetchInterval: 60_000,
   });
 
-  const { data, isLoading, isFetching } = useQuery<InventoryResponse>({
+  const { data, isLoading, isError, isFetching } = useQuery<InventoryResponse>({
     queryKey: ["corrupt-media", "list", page, errorCodeFilter],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), limit: String(LIMIT) });
@@ -139,15 +141,22 @@ export default function CorruptMediaPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-6 max-w-6xl mx-auto">
-      <div className="flex items-center gap-3">
-        <ShieldAlert className="h-6 w-6 text-destructive" />
-        <div>
-          <h1 className="text-xl font-semibold">Corrupt Media</h1>
-          <p className="text-sm text-muted-foreground">
-            Videos quarantined due to structural upload failures. Re-upload or delete to resolve.
-          </p>
-        </div>
-      </div>
+      <PageHeader
+        title="Corrupt Media"
+        description="Videos quarantined due to structural upload failures. Re-upload or delete to resolve."
+        actions={
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void qc.invalidateQueries({ queryKey: ["corrupt-media"] })}
+            disabled={isFetching}
+            className="gap-2"
+          >
+            <RefreshCcw className={`h-4 w-4 ${isFetching ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+        }
+      />
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card>
@@ -186,19 +195,16 @@ export default function CorruptMediaPage() {
             onChange={(e) => { setErrorCodeFilter(e.target.value); setPage(1); }}
           />
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void qc.invalidateQueries({ queryKey: ["corrupt-media"] })}
-          disabled={isFetching}
-        >
-          <RefreshCcw className={`h-4 w-4 mr-1.5 ${isFetching ? "animate-spin" : ""}`} />
-          Refresh
-        </Button>
       </div>
 
       {isLoading ? (
         <div className="text-center py-12 text-muted-foreground">Loading…</div>
+      ) : isError ? (
+        <ErrorAlert
+          title="Failed to load corrupt media"
+          message="Could not fetch quarantined video data from the server."
+          onRetry={() => void qc.invalidateQueries({ queryKey: ["corrupt-media"] })}
+        />
       ) : !data || data.items.length === 0 ? (
         <div className="text-center py-12">
           <AlertTriangle className="h-10 w-10 mx-auto text-muted-foreground/40 mb-3" />

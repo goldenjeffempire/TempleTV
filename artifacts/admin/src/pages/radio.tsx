@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, HttpError } from "@/lib/api";
 import { toast } from "sonner";
+import { PageHeader } from "@/components/shared/page-header";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -162,21 +163,11 @@ export default function RadioPage() {
 
   return (
     <div className="p-4 sm:p-6 max-w-3xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-primary/10 rounded-lg">
-            <Radio className="h-5 w-5 text-primary" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold">Radio Station</h1>
-            <p className="text-sm text-muted-foreground">
-              Configure the live audio stream broadcast to all listeners
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {config?.isActive ? (
+      <PageHeader
+        title="Radio Station"
+        description="Configure the live audio stream broadcast to all listeners."
+        actions={
+          config?.isActive ? (
             <Badge className="bg-green-500/15 text-green-600 border-green-500/30 gap-1.5">
               <Wifi className="h-3 w-3" />
               Active
@@ -186,9 +177,9 @@ export default function RadioPage() {
               <WifiOff className="h-3 w-3" />
               Inactive
             </Badge>
-          )}
-        </div>
-      </div>
+          )
+        }
+      />
 
       {/* On-air toggle card */}
       <Card>
