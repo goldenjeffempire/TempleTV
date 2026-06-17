@@ -1810,6 +1810,31 @@ function BroadcastV2PageInner() {
     },
   });
 
+  // Bulk-retry all non-terminal failed HLS transcoding jobs in the broadcast queue.
+  // Calls POST /broadcast-v2/retry-failed-hls which re-arms every failed job
+  // whose error code is NOT CORRUPT_SOURCE/SOURCE_MISSING (i.e. source still exists).
+  const retryFailedHlsMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean; retriedJobs: number; message: string }>(
+        "/broadcast-v2/retry-failed-hls",
+        {},
+      ),
+    onSuccess: (data) => {
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      toast.success(data.message, { duration: 7000 });
+    },
+    onError: (err) => {
+      toast.error(err instanceof HttpError ? err.message : "Failed to retry failed HLS jobs.");
+    },
+  });
+
   // Re-probe duration via ffprobe for items stuck at the 1800 s placeholder.
   // Spawns ffprobe on the server against the item's source URL and writes the
   // real duration back to broadcast_queue (and managed_videos if linked).
@@ -2059,6 +2084,10 @@ function BroadcastV2PageInner() {
   // so the 1 s delayed POST is belt-and-suspenders for when the bus bridge
   // misses the signal (e.g. during a cold-start retry window).
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Ref for the Engine Diagnostics card — used to scroll to it from error toasts.
+  const diagnosticsRef = useRef<HTMLDivElement | null>(null);
+  const scrollToDiagnostics = () =>
+    diagnosticsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   useSSEEvent("broadcast-queue-updated", () => {
     void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-live-state"] });
@@ -2360,17 +2389,32 @@ function BroadcastV2PageInner() {
     // the same categories tracked in the remediation report — refresh it so
     // operators see an up-to-date health summary alongside the diagnostics panel.
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
-    const d = data as { errors: number; warnings: number; total: number } | null;
+    const d = data as {
+      errors: number;
+      warnings: number;
+      total: number;
+      issues?: Array<{ code: string; severity: string; message: string }>;
+    } | null;
     if (!d) return;
     if (d.errors > 0) {
+      // When there's only one critical issue, include its code directly in the
+      // toast message so operators know what to look for without opening the panel.
+      const errorIssues = d.issues?.filter((i) => i.severity === "error") ?? [];
+      const singleCode = errorIssues.length === 1 ? ` (${errorIssues[0]!.code})` : "";
       toast.error(
-        `Queue validation: ${d.errors} critical issue${d.errors > 1 ? "s" : ""} detected — check Engine Diagnostics.`,
-        { duration: 8000 },
+        `Queue validation: ${d.errors} critical issue${d.errors > 1 ? "s" : ""}${singleCode} detected.`,
+        {
+          duration: 12_000,
+          action: { label: "View", onClick: scrollToDiagnostics },
+        },
       );
     } else if (d.warnings > 0) {
       toast.warning(
-        `Queue validation: ${d.warnings} warning${d.warnings > 1 ? "s" : ""} — check Engine Diagnostics.`,
-        { duration: 5000 },
+        `Queue validation: ${d.warnings} warning${d.warnings > 1 ? "s" : ""}.`,
+        {
+          duration: 6_000,
+          action: { label: "View", onClick: scrollToDiagnostics },
+        },
       );
     }
     // No toast when issues clear — diagnostics refresh is sufficient.
@@ -3803,21 +3847,45 @@ function BroadcastV2PageInner() {
       <StreamHealthHistoryChart history={healthHistory} />
 
       {/* ── Engine Diagnostics panel ────────────────────────────────────────── */}
-      <Card>
+      <Card ref={diagnosticsRef}>
         <CardHeader className="flex flex-row items-center justify-between pb-3">
           <CardTitle className="flex items-center gap-2 text-base">
             <Stethoscope className="h-4 w-4 text-muted-foreground" />
             Engine Diagnostics
           </CardTitle>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="h-7 gap-1 px-2 text-xs"
-            onClick={() => { void refetchDiagnostics(); }}
-          >
-            <RefreshCw className="h-3 w-3" />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* Show "Retry all failed HLS" when there are non-terminal failed jobs
+                in the queue — provides a bulk one-click fix without needing to
+                scroll through each item or use the full repair-queue. */}
+            {diagnostics?.queueValidation && diagnostics.queueValidation.issues.some(
+              (i) => i.code === "FASTSTART_FAILED_NO_HLS" || i.code === "DISK_FULL_TRANSCODE_FAILED",
+            ) && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1 px-2 text-xs text-amber-700 border-amber-300 hover:bg-amber-50 dark:text-amber-400 dark:border-amber-700 dark:hover:bg-amber-950/30"
+                onClick={() => retryFailedHlsMutation.mutate()}
+                disabled={retryFailedHlsMutation.isPending}
+                title="Re-arm all non-terminal failed HLS jobs (DISK_FULL, timeout, OOM). Does not touch CORRUPT_SOURCE or SOURCE_MISSING — those require re-upload."
+              >
+                {retryFailedHlsMutation.isPending ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <RotateCw className="h-3 w-3" />
+                )}
+                Retry all failed HLS
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 gap-1 px-2 text-xs"
+              onClick={() => { void refetchDiagnostics(); }}
+            >
+              <RefreshCw className="h-3 w-3" />
+              Refresh
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="space-y-5">
           {!diagnostics ? (

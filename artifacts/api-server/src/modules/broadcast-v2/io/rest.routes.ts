@@ -2703,6 +2703,74 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     },
   );
 
+  // ── POST /broadcast-v2/retry-failed-hls ─────────────────────────────────
+  //
+  // Lightweight targeted endpoint: re-arms all non-terminal failed HLS
+  // transcoding jobs for videos that are currently in the active broadcast
+  // queue. Non-terminal means the error code is NOT CORRUPT_SOURCE or
+  // SOURCE_MISSING (i.e. the source file is still present and the failure
+  // was likely transient — disk full, timeout, OOM, etc.).
+  //
+  // This is a subset of the full repair-queue Phase 8.5: it only calls
+  // retryAllFailed() (which already excludes terminal codes) + nudges the
+  // dispatcher to start immediately, then reloads the orchestrator.
+  // Useful when an operator wants to re-arm stuck items without running
+  // the full repair-queue audit.
+  //
+  // Rate-limited to 5 req/min (heavier than a read but lighter than repair-queue).
+  app.post(
+    "/retry-failed-hls",
+    {
+      preHandler: requireAuth("editor"),
+      bodyLimit: 1024,
+      schema: {
+        body: z.object({ idempotencyKey: z.string().optional() }).optional(),
+        response: {
+          200: z.object({
+            ok: z.literal(true),
+            retriedJobs: z.number().int(),
+            message: z.string(),
+          }),
+          429: _429err,
+        },
+      },
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+    },
+    async (req, reply) => {
+      reply.header("Cache-Control", "no-store, max-age=0");
+      const startMs = Date.now();
+
+      let retriedJobs = 0;
+      try {
+        retriedJobs = await retryAllFailed();
+      } catch (err) {
+        req.log.warn({ err }, "[broadcast-v2] retry-failed-hls: retryAllFailed failed (non-fatal)");
+      }
+
+      if (retriedJobs > 0) {
+        try {
+          transcoderDispatcher.nudge();
+        } catch { /* non-fatal */ }
+        try {
+          await broadcastOrchestrator.reload("retry-failed-hls");
+        } catch { /* non-fatal */ }
+        adminEventBus.push("broadcast-queue-updated", { reason: "retry-failed-hls", count: retriedJobs });
+        adminEventBus.push("videos-library-updated", { reason: "retry-failed-hls" });
+      }
+
+      req.log.info(
+        { retriedJobs, durationMs: Date.now() - startMs },
+        "[broadcast-v2] retry-failed-hls: complete",
+      );
+
+      const message = retriedJobs > 0
+        ? `${retriedJobs} failed HLS job${retriedJobs !== 1 ? "s" : ""} re-queued — encoding will start shortly.`
+        : "No eligible failed HLS jobs found in the broadcast queue. All non-terminal failures may already be queued or processing.";
+
+      return { ok: true as const, retriedJobs, message };
+    },
+  );
+
   // POST /broadcast-v2/queue/:id/clear-bad-url
   //
   // Clears the in-memory bad-URL cache entry for this queue item and

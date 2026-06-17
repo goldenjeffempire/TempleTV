@@ -1674,7 +1674,97 @@ class QueueIntegrityValidatorImpl {
         })();
       }
 
-      // ── Gap 2: STUCK_ENCODING_NO_JOB — every 3rd validator cycle ──────────
+      // ── Gap 2a: STUCK_HLS_FAILED — non-terminal failed items every 15th cycle ─
+      // Videos with transcodingStatus='failed' and a non-terminal error code
+      // (DISK_FULL, or null — not CORRUPT_SOURCE/SOURCE_MISSING) that still have
+      // their source blob intact (objectPath IS NOT NULL, not deleted) and have
+      // been stuck for >1 h with no active transcoding job AND are referenced by
+      // an active broadcast queue item. These commonly result from temporary
+      // resource contention (disk full, OOM, timeout) — the source file is still
+      // present and the job can succeed on retry.
+      // Rate-limited to every 15th cycle (~30 min at the 2-min validator cadence).
+      if (this.validatorCycleCount % 15 === 0) {
+        void (async () => {
+          try {
+            const oneHourAgo = new Date(Date.now() - 60 * 60_000);
+            const result = await db.execute<{
+              id: string;
+              local_video_url: string | null;
+              transcoding_error_code: string | null;
+            }>(sql`
+              SELECT v.id, v.local_video_url, v.transcoding_error_code
+              FROM managed_videos v
+              WHERE v.transcoding_status = 'failed'
+                AND (
+                  v.transcoding_error_code IS NULL
+                  OR v.transcoding_error_code NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING')
+                )
+                AND v.object_path IS NOT NULL
+                AND (v.source_cleanup_status IS NULL OR v.source_cleanup_status != 'deleted')
+                AND v.updated_at < ${oneHourAgo}
+                AND EXISTS (
+                  SELECT 1 FROM broadcast_queue bq
+                  WHERE bq.video_id = v.id AND bq.is_active = true
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM transcoding_jobs j
+                  WHERE j.video_id = v.id
+                    AND j.status IN ('queued', 'processing')
+                )
+              LIMIT 10
+            `);
+
+            const stuckRows = result.rows as Array<{
+              id: string;
+              local_video_url: string | null;
+              transcoding_error_code: string | null;
+            }>;
+            if (stuckRows.length === 0) return;
+
+            logger.warn(
+              { count: stuckRows.length },
+              "[queue-validator] STUCK_HLS_FAILED: found videos stuck at 'failed' >1 h " +
+              "with recoverable error code and intact source blob — auto-retrying transcoding",
+            );
+
+            let retried = 0;
+            for (const row of stuckRows) {
+              if (!row.local_video_url) {
+                logger.warn(
+                  { videoId: row.id },
+                  "[queue-validator] STUCK_HLS_FAILED: no local_video_url on an item with objectPath " +
+                  "— skipping (source may be storage-only; use repair-queue to recover)",
+                );
+                continue;
+              }
+              try {
+                await enqueueTranscode({ videoId: row.id, videoPath: row.local_video_url, priority: 3 });
+                retried += 1;
+                logger.info(
+                  { videoId: row.id, errorCode: row.transcoding_error_code },
+                  "[queue-validator] STUCK_HLS_FAILED: re-enqueued video for transcoding",
+                );
+              } catch (enqErr) {
+                logger.warn(
+                  { err: enqErr, videoId: row.id },
+                  "[queue-validator] STUCK_HLS_FAILED: enqueueTranscode failed (non-fatal)",
+                );
+              }
+            }
+
+            if (retried > 0) {
+              adminEventBus.push("broadcast-queue-updated", {
+                reason: "auto-retry-stuck-hls-failed",
+                count: retried,
+              });
+            }
+          } catch (err) {
+            logger.warn({ err }, "[queue-validator] STUCK_HLS_FAILED sweep failed (non-fatal)");
+          }
+        })();
+      }
+
+      // ── Gap 2b: STUCK_ENCODING_NO_JOB — every 3rd validator cycle ─────────
       // Videos stuck at transcodingStatus='encoding' with no active or recently-
       // completed transcoding job AND updated_at older than 2 h. This happens
       // when the DB write for the job status was lost to a crash but the job
