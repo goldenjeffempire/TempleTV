@@ -40,6 +40,7 @@ import { storage } from "../../../infrastructure/storage.js";
 import { logger as rootLogger } from "../../../infrastructure/logger.js";
 import { registerNamedStore } from "../../../infrastructure/cache.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
+import { sendAdminAlert } from "../../mail/mail.service.js";
 import { runFaststart } from "../../transcoder/faststart.service.js";
 import { probeUploadedDuration } from "../../transcoder/transcoder.service.js";
 
@@ -447,6 +448,7 @@ function dispatchOne(
       // the operator sees a clear error, and add to givenUpIds so this video
       // never enters the candidate set again.
       const errCode = (err as { code?: string } | null)?.code;
+      const errKind = (err as { kind?: string } | null)?.kind ?? null;
       const isUnrecoverable = errCode === "CORRUPT_UPLOAD" || errCode === "SOURCE_MISSING";
 
       if (isUnrecoverable) {
@@ -454,17 +456,22 @@ function dispatchOne(
         attemptCounts.delete(c.videoId);
         stats.totalGivenUp += 1;
         logger.error(
-          { err, videoId: c.videoId, title: c.title, errCode, attempt: prev + 1, elapsedMs: Date.now() - jobStart },
+          { err, videoId: c.videoId, title: c.title, errCode, errKind, attempt: prev + 1, elapsedMs: Date.now() - jobStart },
           "faststart-recovery: unrecoverable container error — marking CORRUPT_SOURCE and skipping all future attempts",
         );
-        // Write the permanent failure to the DB so the admin panel shows a
-        // clear error and the queue-integrity-validator deactivates the
-        // broadcast queue item on its next cycle.
+
+        // ── 1. Persist permanent failure to DB ─────────────────────────────
+        // Include transcodingErrorKind so the retry-repair endpoint can
+        // correctly reject moov_absent items (re-running faststart on a file
+        // with no moov will always fail — re-upload is the only fix), and so
+        // the admin panel shows the specific diagnostic rather than a generic
+        // "CORRUPT_SOURCE" badge with no actionable detail.
         void db
           .update(v)
           .set({
             transcodingStatus: "failed",
             transcodingErrorCode: "CORRUPT_SOURCE",
+            transcodingErrorKind: errKind,
             transcodingErrorMessage: msg.slice(0, 2048),
           })
           .where(eq(v.id, c.videoId))
@@ -474,7 +481,64 @@ function dispatchOne(
               "faststart-recovery: failed to write CORRUPT_SOURCE to DB (non-fatal)",
             ),
           );
+
+        // ── 2. Proactively deactivate the broadcast queue item ──────────────
+        // Don't wait for the queue-integrity-validator's next cycle — deactivate
+        // immediately so the orchestrator stops trying to play an undecodable
+        // file. validatorDeactivatedReason is set so the UI shows a clear
+        // reason and the item can be re-activated if the user re-uploads.
+        void db
+          .update(q)
+          .set({
+            isActive: false,
+            validatorDeactivatedReason:
+              errKind === "moov_absent"
+                ? "moov_absent — recording interrupted before moov was written; re-upload required"
+                : "CORRUPT_SOURCE — container unrepairable after all remux strategies; re-upload required",
+          })
+          .where(and(eq(q.videoId, c.videoId), eq(q.isActive, true)))
+          .catch((dbErr: unknown) =>
+            logger.warn(
+              { err: dbErr, videoId: c.videoId },
+              "faststart-recovery: failed to deactivate broadcast queue item (non-fatal — validator will catch on next cycle)",
+            ),
+          );
+
+        // ── 3. SSE ops-alert — surfaces a dashboard banner immediately ──────
+        const alertTitle =
+          errKind === "moov_absent"
+            ? "Video unplayable — re-upload required"
+            : "Video container corrupt — re-upload required";
+        const alertMessage =
+          errKind === "moov_absent"
+            ? `"${c.title ?? c.videoId}" has media data but no moov atom. The recording was interrupted before it could finish writing. The file cannot be decoded by any player. The broadcast queue item has been deactivated — re-upload the original source file to restore it.`
+            : `"${c.title ?? c.videoId}" has a permanently corrupt container — all five remux recovery strategies were exhausted. The broadcast queue item has been deactivated — re-upload the original source file.`;
+        adminEventBus.push("ops-alert", {
+          code: "FASTSTART_UNRECOVERABLE",
+          severity: "error",
+          title: alertTitle,
+          message: alertMessage,
+          videoId: c.videoId,
+        });
+
+        // ── 4. Admin email — out-of-band alert for operators not on dashboard ─
+        void sendAdminAlert({
+          severity: "error",
+          subject: `${alertTitle}: "${c.title ?? c.videoId}"`,
+          body:
+            `${alertMessage}\n\n` +
+            `Video ID: ${c.videoId}\n` +
+            `Error code: ${errCode ?? "unknown"}${errKind ? ` (${errKind})` : ""}\n` +
+            `Faststart attempts before giving up: ${prev + 1}`,
+        }).catch((mailErr: unknown) =>
+          logger.warn({ err: mailErr, videoId: c.videoId }, "faststart-recovery: admin alert email failed (non-fatal)"),
+        );
+
         adminEventBus.push("videos-library-updated", {
+          videoId: c.videoId,
+          reason: "faststart-unrecoverable",
+        });
+        adminEventBus.push("broadcast-queue-updated", {
           videoId: c.videoId,
           reason: "faststart-unrecoverable",
         });

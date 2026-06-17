@@ -643,27 +643,54 @@ export async function runFaststart(
     // When skipStatusUpdate=true the transcoder owns this field.
     if (!options.skipStatusUpdate) {
       try {
-        // Restore the pre-faststart status. The original upload blob is intact
-        // (the multipart re-upload was either aborted or never reached
-        // completeMultipartUpload, so the original key was never overwritten).
-        // Setting "failed" here would permanently block the item from loadActive()
-        // and cause an avoidable Off Air state — the source file is still playable.
-        //
-        // CRITICAL: Never restore to "processing" — that value means "faststart is
-        // actively running" and restoring it leaves the video permanently stuck if
-        // this crash-restart scenario set priorTranscodingStatus to "processing"
-        // (i.e. the previous server process was killed while faststart was running).
-        // "queued" is always safe: the source blob is intact and the video will be
-        // re-processed by faststart-on-finalize or by the transcoder dispatcher.
-        const safeRestoreStatus = (
-          priorTranscodingStatus === "processing" ? "queued" : priorTranscodingStatus
-        ) as "none" | "queued" | "encoding" | "ready" | "hls_ready" | "failed";
-        await db
-          .update(videos)
-          .set({ transcodingStatus: safeRestoreStatus })
-          // Same dual guard as the success path: don't clobber "encoding"
-          // (HLS transcoder may have started while faststart was running).
-          .where(and(eq(videos.id, videoId), ne(videos.transcodingStatus, "hls_ready"), ne(videos.transcodingStatus, "encoding")));
+        const errCode = (err as { code?: string } | null)?.code;
+        const errKind = (err as { kind?: string } | null)?.kind ?? null;
+        const isMoovAbsent = errCode === "CORRUPT_UPLOAD" && errKind === "moov_absent";
+
+        if (isMoovAbsent) {
+          // moov_absent is a terminal, unrecoverable failure — the recording was
+          // interrupted before the moov atom was written. The source file has mdat
+          // bytes but is completely undecodable (no codec config in moov/avcC box).
+          // Do NOT restore to the prior status: that would let faststart-recovery
+          // re-enqueue the same broken file on every process restart. Mark it
+          // permanently failed here so the queue-integrity-validator can deactivate
+          // the broadcast queue item on its very next cycle, and so the
+          // faststart-recovery worker never re-adds this videoId to its candidate set.
+          await db
+            .update(videos)
+            .set({
+              transcodingStatus: "failed",
+              transcodingErrorCode: "CORRUPT_SOURCE",
+              transcodingErrorKind: "moov_absent",
+              transcodingErrorMessage:
+                "Source MP4 has media data (mdat) but no moov atom — " +
+                "recording was interrupted before moov was written. Re-upload from the original source file.",
+            })
+            .where(and(eq(videos.id, videoId), ne(videos.transcodingStatus, "hls_ready"), ne(videos.transcodingStatus, "encoding")));
+        } else {
+          // Restore the pre-faststart status. The original upload blob is intact
+          // (the multipart re-upload was either aborted or never reached
+          // completeMultipartUpload, so the original key was never overwritten).
+          // Setting "failed" for transient errors (disk full, ffmpeg timeout, etc.)
+          // would permanently block the item from loadActive() and cause an avoidable
+          // Off Air state — the source file is still playable in those cases.
+          //
+          // CRITICAL: Never restore to "processing" — that value means "faststart is
+          // actively running" and restoring it leaves the video permanently stuck if
+          // this crash-restart scenario set priorTranscodingStatus to "processing"
+          // (i.e. the previous server process was killed while faststart was running).
+          // "queued" is always safe: the source blob is intact and the video will be
+          // re-processed by faststart-on-finalize or by the transcoder dispatcher.
+          const safeRestoreStatus = (
+            priorTranscodingStatus === "processing" ? "queued" : priorTranscodingStatus
+          ) as "none" | "queued" | "encoding" | "ready" | "hls_ready" | "failed";
+          await db
+            .update(videos)
+            .set({ transcodingStatus: safeRestoreStatus })
+            // Same dual guard as the success path: don't clobber "encoding"
+            // (HLS transcoder may have started while faststart was running).
+            .where(and(eq(videos.id, videoId), ne(videos.transcodingStatus, "hls_ready"), ne(videos.transcodingStatus, "encoding")));
+        }
       } catch (dbErr) {
         log.error({ dbErr }, "faststart: could not restore transcodingStatus");
       }
