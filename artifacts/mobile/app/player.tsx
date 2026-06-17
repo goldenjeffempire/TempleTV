@@ -102,7 +102,8 @@ function ReactionButton({
   onPress: () => void;
 }) {
   const c = useColors();
-  const scale = useRef(new Animated.Value(1)).current;
+  const scale   = useRef(new Animated.Value(1)).current;
+  const glowOp  = useRef(new Animated.Value(0)).current;
   const [sent, setSent] = useState(false);
   const sentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -115,20 +116,54 @@ function ReactionButton({
   const handlePress = () => {
     if (sentTimerRef.current) clearTimeout(sentTimerRef.current);
     setSent(true);
-    sentTimerRef.current = setTimeout(() => setSent(false), 1400);
+    sentTimerRef.current = setTimeout(() => setSent(false), 1600);
+
+    // Bounce up + settle
     Animated.sequence([
-      Animated.spring(scale, { toValue: 1.38, useNativeDriver: true, speed: 55, bounciness: 14 }),
-      Animated.spring(scale, { toValue: 1, useNativeDriver: true, speed: 28 }),
+      Animated.spring(scale, { toValue: 1.45, useNativeDriver: true, speed: 60, bounciness: 16 }),
+      Animated.spring(scale, { toValue: 1,    useNativeDriver: true, speed: 30 }),
     ]).start();
+
+    // Brief glow flash
+    Animated.sequence([
+      Animated.timing(glowOp, { toValue: 1, duration: 100, useNativeDriver: true }),
+      Animated.timing(glowOp, { toValue: 0, duration: 600, useNativeDriver: true }),
+    ]).start();
+
     onPress();
   };
 
   return (
-    <Pressable onPress={handlePress} style={styles.reactionBtn} hitSlop={10} accessibilityLabel={label} accessibilityRole="button">
-      <Animated.View style={[styles.reactionCircle, { backgroundColor: sent ? c.primary + "20" : c.card, borderColor: sent ? c.primary + "60" : c.border, transform: [{ scale }] }]}>
+    <Pressable
+      onPress={handlePress}
+      style={styles.reactionBtn}
+      hitSlop={10}
+      accessibilityLabel={label}
+      accessibilityRole="button"
+    >
+      {/* Glow ring — fades in on press, fades out */}
+      <Animated.View
+        style={[
+          styles.reactionGlow,
+          { borderColor: c.primary, opacity: glowOp },
+        ]}
+        pointerEvents="none"
+      />
+      <Animated.View
+        style={[
+          styles.reactionCircle,
+          {
+            backgroundColor: sent ? c.primary + "18" : c.card,
+            borderColor:     sent ? c.primary + "55" : c.border,
+            transform: [{ scale }],
+          },
+        ]}
+      >
         <Text style={styles.reactionEmoji}>{emoji}</Text>
       </Animated.View>
-      <Text style={[styles.reactionLabel, { color: sent ? c.primary : c.mutedForeground }]}>{label}</Text>
+      <Text style={[styles.reactionLabel, { color: sent ? c.primary : c.mutedForeground }]}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -139,10 +174,6 @@ function PrayerSection() {
   const c = useColors();
   const [submitted, setSubmitted] = useState(false);
   const [sending, setSending] = useState(false);
-  // Guard against setState on an unmounted component. The player screen can
-  // be dismissed via hardware-back while a prayer-request fetch is in flight,
-  // leaving the promise callbacks referencing an unmounted component and
-  // triggering React Native warnings (and in strict mode, errors).
   const isMountedRef = useRef(true);
   useEffect(() => {
     isMountedRef.current = true;
@@ -151,14 +182,18 @@ function PrayerSection() {
 
   if (submitted) {
     return (
-      <View style={[styles.prayerCard, { backgroundColor: c.card, borderColor: "#22c55e33" }]}>
+      <View style={[styles.prayerCard, { backgroundColor: c.card, borderColor: "#22c55e30" }]}>
         <View style={styles.prayerSuccessRow}>
-          <View style={[styles.prayerSuccessIcon, { backgroundColor: "#22c55e20" }]}>
-            <Feather name="check" size={18} color="#22c55e" />
+          <View style={[styles.prayerSuccessIcon, { backgroundColor: "#22c55e18" }]}>
+            <Text style={{ fontSize: 22 }}>🙏</Text>
           </View>
-          <View style={{ flex: 1, gap: 2 }}>
-            <Text style={[styles.prayerSentTitle, { color: c.foreground }]}>Prayer request received</Text>
-            <Text style={[styles.prayerSentSub, { color: c.mutedForeground }]}>Our team is praying for you</Text>
+          <View style={{ flex: 1, gap: 3 }}>
+            <Text style={[styles.prayerSentTitle, { color: c.foreground }]}>
+              Your prayer has been received
+            </Text>
+            <Text style={[styles.prayerSentSub, { color: c.mutedForeground }]}>
+              Our prayer team is interceding for you right now
+            </Text>
           </View>
         </View>
       </View>
@@ -167,33 +202,47 @@ function PrayerSection() {
 
   return (
     <View style={[styles.prayerCard, { backgroundColor: c.card, borderColor: c.border }]}>
+      {/* Header row */}
       <View style={styles.prayerHeader}>
-        <View style={[styles.prayerIconWrap, { backgroundColor: c.primary + "1A" }]}>
-          <Feather name="heart" size={16} color={c.primary} />
+        <View style={[styles.prayerIconWrap, { backgroundColor: c.primary + "18" }]}>
+          <Text style={{ fontSize: 20 }}>🕊️</Text>
         </View>
-        <View style={{ flex: 1, gap: 2 }}>
-          <Text style={[styles.prayerTitle, { color: c.foreground }]}>Send a Prayer Request</Text>
-          <Text style={[styles.prayerSubtitle, { color: c.mutedForeground }]}>Our team will pray for you during the service</Text>
+        <View style={{ flex: 1, gap: 3 }}>
+          <Text style={[styles.prayerTitle, { color: c.foreground }]}>
+            Send a Prayer Request
+          </Text>
+          <Text style={[styles.prayerSubtitle, { color: c.mutedForeground }]}>
+            Our team will pray for you during the service
+          </Text>
         </View>
       </View>
+
+      {/* Full-width CTA */}
       <Pressable
         onPress={() => {
           setSending(true);
-          submitPrayerRequest(null, "Praying with Temple TV").then((ok) => {
-            if (!isMountedRef.current) return;
-            setSending(false);
-            if (ok) setSubmitted(true);
-          }).catch(() => {
-            if (!isMountedRef.current) return;
-            setSending(false);
-          });
+          submitPrayerRequest(null, "Praying with Temple TV")
+            .then((ok) => {
+              if (!isMountedRef.current) return;
+              setSending(false);
+              if (ok) setSubmitted(true);
+            })
+            .catch(() => {
+              if (!isMountedRef.current) return;
+              setSending(false);
+            });
         }}
-        style={({ pressed }) => [styles.prayerBtn, { backgroundColor: c.primary, opacity: sending || pressed ? 0.72 : 1 }]}
+        style={({ pressed }) => [
+          styles.prayerBtn,
+          { backgroundColor: c.primary, opacity: sending || pressed ? 0.76 : 1 },
+        ]}
         accessibilityRole="button"
         accessibilityLabel="Send prayer request"
       >
-        <Feather name="send" size={14} color="#fff" />
-        <Text style={styles.prayerBtnText}>{sending ? "Sending…" : "Send Request"}</Text>
+        <Feather name="send" size={15} color="#fff" />
+        <Text style={styles.prayerBtnText}>
+          {sending ? "Sending…" : "Send Prayer Request"}
+        </Text>
       </Pressable>
     </View>
   );
@@ -1248,32 +1297,44 @@ export default function PlayerScreen() {
         {/* ── Title & Metadata ──────────────────────────────────────────── */}
         <View style={[styles.infoBlock, { borderBottomColor: c.border }]}>
           {isLive ? (
-            /* Live broadcast — channel identity only, no video title */
+            /* Live broadcast — channel identity + live status */
             <View style={styles.liveMeta}>
-              <View style={styles.liveRow}>
+              {/* Program / channel name — primary visual element */}
+              <Text style={[styles.liveChannelName, { color: c.foreground }]} numberOfLines={2}>
+                {title || "Live Broadcast"}
+              </Text>
+
+              {/* Sub-row: badge + ministry + viewer count */}
+              <View style={styles.liveSubRow}>
                 <LiveBadge size="small" />
-                <Text style={[styles.liveLabelText, { color: c.mutedForeground }]}>Live Broadcast</Text>
+                <Text style={[styles.liveMinistry, { color: c.mutedForeground }]}>
+                  JCTM Ministries
+                </Text>
                 {sync.viewerCount != null && sync.viewerCount > 0 && (
-                  <>
-                    <Text style={[styles.metaSep, { color: c.mutedForeground }]}>·</Text>
-                    <Feather name="users" size={11} color={c.mutedForeground} />
-                    <Text style={[styles.metaText, { color: c.mutedForeground }]}>
+                  <View style={[styles.viewerChip, { backgroundColor: c.card, borderColor: c.border }]}>
+                    <Feather name="users" size={10} color={c.mutedForeground} />
+                    <Text style={[styles.viewerChipText, { color: c.mutedForeground }]}>
                       {sync.viewerCount >= 1000
                         ? `${(sync.viewerCount / 1000).toFixed(1)}k`
-                        : String(sync.viewerCount)}{" watching"}
+                        : String(sync.viewerCount)}
                     </Text>
-                  </>
+                  </View>
                 )}
               </View>
-              <Text style={[styles.channelSub, { color: c.mutedForeground }]}>JCTM Ministries</Text>
             </View>
           ) : (
             <>
-              <Text style={[styles.videoTitle, { color: c.foreground }]} numberOfLines={3} accessibilityRole="header">
+              <Text
+                style={[styles.videoTitle, { color: c.foreground }]}
+                numberOfLines={3}
+                accessibilityRole="header"
+              >
                 {title}
               </Text>
               <View style={styles.metaRow}>
-                <Text style={[styles.preacherText, { color: c.mutedForeground }]} numberOfLines={1}>{preacher}</Text>
+                <Text style={[styles.preacherText, { color: c.mutedForeground }]} numberOfLines={1}>
+                  {preacher}
+                </Text>
                 {!!duration && (
                   <>
                     <Text style={[styles.metaSep, { color: c.mutedForeground }]}>·</Text>
@@ -1296,15 +1357,37 @@ export default function PlayerScreen() {
 
         {/* ── Action Bar ────────────────────────────────────────────────── */}
         <View style={[styles.actionBar, { borderBottomColor: c.border }]}>
+
+          {/* Save — VOD only */}
           {videoId !== "live" && (
-            <Pressable onPress={handleToggleFavorite} style={styles.actionItem} accessibilityLabel={favorited ? "Remove from saved" : "Save video"} accessibilityRole="button">
-              <View style={[styles.actionCircle, { backgroundColor: favorited ? "#ef444420" : c.card, borderColor: favorited ? "#ef444440" : c.border }]}>
-                <Feather name="heart" size={19} color={favorited ? "#ef4444" : c.foreground} />
+            <Pressable
+              onPress={handleToggleFavorite}
+              style={styles.actionItem}
+              accessibilityLabel={favorited ? "Remove from saved" : "Save video"}
+              accessibilityRole="button"
+            >
+              <View
+                style={[
+                  styles.actionIconWrap,
+                  {
+                    backgroundColor: favorited ? "#ef444418" : c.card,
+                    borderColor:     favorited ? "#ef444435" : c.border,
+                  },
+                ]}
+              >
+                <Feather
+                  name="heart"
+                  size={20}
+                  color={favorited ? "#ef4444" : c.foreground}
+                />
               </View>
-              <Text style={[styles.actionLabel, { color: c.mutedForeground }]}>{favorited ? "Saved" : "Save"}</Text>
+              <Text style={[styles.actionLabel, { color: favorited ? "#ef4444" : c.mutedForeground }]}>
+                {favorited ? "Saved" : "Save"}
+              </Text>
             </Pressable>
           )}
 
+          {/* Share */}
           <Pressable
             onPress={() =>
               isLive
@@ -1315,13 +1398,13 @@ export default function PlayerScreen() {
             accessibilityLabel="Share"
             accessibilityRole="button"
           >
-            <View style={[styles.actionCircle, { backgroundColor: c.card, borderColor: c.border }]}>
-              <Feather name="share-2" size={19} color={c.foreground} />
+            <View style={[styles.actionIconWrap, { backgroundColor: c.card, borderColor: c.border }]}>
+              <Feather name="share-2" size={20} color={c.foreground} />
             </View>
             <Text style={[styles.actionLabel, { color: c.mutedForeground }]}>Share</Text>
           </Pressable>
 
-          {/* PiP action — Android only, hidden for YouTube (manages its own PiP). */}
+          {/* PiP — Android only, not for YouTube */}
           {Platform.OS === "android" && isPipSupported && !isYoutube && (
             <Pressable
               onPress={enterPip}
@@ -1329,13 +1412,14 @@ export default function PlayerScreen() {
               accessibilityLabel="Picture in Picture — watch in a small floating window"
               accessibilityRole="button"
             >
-              <View style={[styles.actionCircle, { backgroundColor: c.card, borderColor: c.border }]}>
-                <Feather name="monitor" size={19} color={c.foreground} />
+              <View style={[styles.actionIconWrap, { backgroundColor: c.card, borderColor: c.border }]}>
+                <Feather name="monitor" size={20} color={c.foreground} />
               </View>
               <Text style={[styles.actionLabel, { color: c.mutedForeground }]}>Mini Player</Text>
             </Pressable>
           )}
 
+          {/* Chat — live only */}
           {isLive && (
             <Pressable
               onPress={() => setShowChat((v) => !v)}
@@ -1343,10 +1427,24 @@ export default function PlayerScreen() {
               accessibilityLabel={showChat ? "Hide live chat" : "Open live chat"}
               accessibilityRole="button"
             >
-              <View style={[styles.actionCircle, { backgroundColor: showChat ? c.primary + "22" : c.card, borderColor: showChat ? c.primary + "55" : c.border }]}>
-                <Feather name="message-circle" size={19} color={showChat ? c.primary : c.foreground} />
+              <View
+                style={[
+                  styles.actionIconWrap,
+                  {
+                    backgroundColor: showChat ? c.primary + "20" : c.card,
+                    borderColor:     showChat ? c.primary + "50" : c.border,
+                  },
+                ]}
+              >
+                <Feather
+                  name="message-circle"
+                  size={20}
+                  color={showChat ? c.primary : c.foreground}
+                />
               </View>
-              <Text style={[styles.actionLabel, { color: showChat ? c.primary : c.mutedForeground }]}>{showChat ? "Hide Chat" : "Chat"}</Text>
+              <Text style={[styles.actionLabel, { color: showChat ? c.primary : c.mutedForeground }]}>
+                {showChat ? "Hide Chat" : "Chat"}
+              </Text>
             </Pressable>
           )}
         </View>
@@ -1367,15 +1465,25 @@ export default function PlayerScreen() {
         {/* ── Live: Reactions + Prayer ──────────────────────────────────── */}
         {isLive && (
           <View style={styles.liveSection}>
+
+            {/* Reactions card — no title, just the emoji grid */}
             <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
-              <Text style={[styles.cardTitle, { color: c.foreground }]}>React</Text>
+              <View style={styles.reactionsHeaderRow}>
+                <Text style={[styles.reactionsTitle, { color: c.foreground }]}>
+                  React to the Service
+                </Text>
+                <Text style={[styles.reactionsHint, { color: c.mutedForeground }]}>
+                  Tap to react
+                </Text>
+              </View>
               <View style={styles.reactionsRow}>
-                <ReactionButton emoji="🙏" label="Amen"    onPress={() => handleReaction("🙏", "amen")} />
-                <ReactionButton emoji="🔥" label="Fire"    onPress={() => handleReaction("🔥", "fire")} />
-                <ReactionButton emoji="✨" label="Glory"   onPress={() => handleReaction("✨", "hallelujah")} />
-                <ReactionButton emoji="🕊️" label="Peace"  onPress={() => handleReaction("🕊️", "hallelujah")} />
+                <ReactionButton emoji="🙏" label="Amen"   onPress={() => handleReaction("🙏", "amen")} />
+                <ReactionButton emoji="🔥" label="Fire"   onPress={() => handleReaction("🔥", "fire")} />
+                <ReactionButton emoji="✨" label="Glory"  onPress={() => handleReaction("✨", "hallelujah")} />
+                <ReactionButton emoji="🕊️" label="Peace" onPress={() => handleReaction("🕊️", "hallelujah")} />
               </View>
             </View>
+
             <PrayerSection />
           </View>
         )}
@@ -1871,12 +1979,19 @@ const styles = StyleSheet.create({
   fsScrubFill: { height: 3, borderRadius: 2, backgroundColor: "#DC2626" },
   fsScrubThumb: { position: "absolute", width: 14, height: 14, borderRadius: 7, backgroundColor: "#fff", top: (34 - 14) / 2, shadowColor: "#000", shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.4, shadowRadius: 3, elevation: 4 },
 
-  infoBlock: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 14, gap: 6, borderBottomWidth: StyleSheet.hairlineWidth },
-  liveMeta: { gap: 6 },
-  liveRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 2 },
-  liveLabelText: { fontSize: 12, fontWeight: "600", letterSpacing: 0.2 },
-  channelSub: { fontSize: 13, fontWeight: "500" },
-  videoTitle: { fontSize: 18, fontWeight: "700", lineHeight: 25, letterSpacing: -0.3 },
+  // ── Info block ──────────────────────────────────────────────────────────────
+  infoBlock: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 16, gap: 8, borderBottomWidth: StyleSheet.hairlineWidth },
+  liveMeta: { gap: 8 },
+  liveChannelName: { fontSize: 20, fontWeight: "800", lineHeight: 27, letterSpacing: -0.4 },
+  liveSubRow: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  liveMinistry: { fontSize: 13, fontWeight: "500" },
+  viewerChip: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    borderWidth: StyleSheet.hairlineWidth, borderRadius: 20,
+    paddingHorizontal: 8, paddingVertical: 3,
+  },
+  viewerChipText: { fontSize: 11, fontWeight: "600" },
+  videoTitle: { fontSize: 19, fontWeight: "800", lineHeight: 26, letterSpacing: -0.4 },
   metaRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4, marginTop: 1 },
   preacherText: { fontSize: 13, fontWeight: "500", flexShrink: 1 },
   metaSep: { fontSize: 13, marginHorizontal: 1 },
@@ -1884,36 +1999,79 @@ const styles = StyleSheet.create({
   categoryPill: { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 20 },
   categoryPillText: { fontSize: 11, fontWeight: "700", letterSpacing: 0.2 },
 
-  actionBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-around", paddingVertical: 14, paddingHorizontal: 12, borderBottomWidth: StyleSheet.hairlineWidth },
+  // ── Action bar ──────────────────────────────────────────────────────────────
+  actionBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-around",
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
   actionItem: { alignItems: "center", gap: 6, flex: 1 },
-  actionCircle: { width: 44, height: 44, borderRadius: 22, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  actionLabel: { fontSize: 11, fontWeight: "500", letterSpacing: 0.1 },
+  actionIconWrap: {
+    width: 48, height: 48, borderRadius: 24,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center", justifyContent: "center",
+  },
+  actionLabel: { fontSize: 11, fontWeight: "600", letterSpacing: 0.15 },
 
+  // ── Description ─────────────────────────────────────────────────────────────
   descSection: { paddingHorizontal: 16, paddingVertical: 12, gap: 6, borderBottomWidth: StyleSheet.hairlineWidth },
   descText: { fontSize: 14, lineHeight: 20 },
   descToggle: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 },
   descToggleText: { fontSize: 13, fontWeight: "600" },
 
-  liveSection: { paddingHorizontal: 16, paddingTop: 16, gap: 12 },
-  card: { borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, padding: 14, gap: 10 },
+  // ── Live section (reactions + prayer) ───────────────────────────────────────
+  liveSection: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8, gap: 12 },
+  card: { borderRadius: 16, borderWidth: StyleSheet.hairlineWidth, padding: 16, gap: 14 },
   cardTitle: { fontSize: 14, fontWeight: "700", letterSpacing: 0.1 },
-  reactionsRow: { flexDirection: "row", justifyContent: "space-around" },
-  reactionBtn: { alignItems: "center", gap: 6 },
-  reactionCircle: { width: 52, height: 52, borderRadius: 26, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  reactionEmoji: { fontSize: 24 },
-  reactionLabel: { fontSize: 11, fontWeight: "600", letterSpacing: 0.1 },
 
-  prayerCard: { borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, padding: 14, gap: 12 },
-  prayerHeader: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
-  prayerIconWrap: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center" },
-  prayerTitle: { fontSize: 14, fontWeight: "700" },
-  prayerSubtitle: { fontSize: 12, lineHeight: 16 },
-  prayerBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 11, borderRadius: 10 },
-  prayerBtnText: { fontSize: 14, fontWeight: "700", color: "#fff" },
-  prayerSuccessRow: { flexDirection: "row", alignItems: "center", gap: 12 },
-  prayerSuccessIcon: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center" },
+  reactionsHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  reactionsTitle: { fontSize: 14, fontWeight: "700", letterSpacing: 0.1 },
+  reactionsHint: { fontSize: 11, fontWeight: "500" },
+  reactionsRow: { flexDirection: "row", justifyContent: "space-around" },
+
+  reactionBtn: { alignItems: "center", gap: 6, position: "relative" },
+  reactionGlow: {
+    position: "absolute",
+    top: -4, left: -4, right: -4, bottom: -4,
+    borderRadius: 34,
+    borderWidth: 2,
+    zIndex: 1,
+  },
+  reactionCircle: {
+    width: 58, height: 58, borderRadius: 29,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center", justifyContent: "center",
+  },
+  reactionEmoji: { fontSize: 26 },
+  reactionLabel: { fontSize: 11, fontWeight: "700", letterSpacing: 0.15 },
+
+  // ── Prayer card ─────────────────────────────────────────────────────────────
+  prayerCard: { borderRadius: 16, borderWidth: StyleSheet.hairlineWidth, padding: 16, gap: 14 },
+  prayerHeader: { flexDirection: "row", alignItems: "center", gap: 12 },
+  prayerIconWrap: {
+    width: 44, height: 44, borderRadius: 22,
+    alignItems: "center", justifyContent: "center",
+    flexShrink: 0,
+  },
+  prayerTitle: { fontSize: 15, fontWeight: "800", letterSpacing: -0.2 },
+  prayerSubtitle: { fontSize: 12, lineHeight: 17, marginTop: 2 },
+  prayerBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center",
+    gap: 8, paddingVertical: 13, borderRadius: 12,
+    shadowColor: "#000", shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18, shadowRadius: 6, elevation: 3,
+  },
+  prayerBtnText: { fontSize: 15, fontWeight: "800", color: "#fff", letterSpacing: 0.1 },
+  prayerSuccessRow: { flexDirection: "row", alignItems: "center", gap: 14 },
+  prayerSuccessIcon: {
+    width: 44, height: 44, borderRadius: 22,
+    alignItems: "center", justifyContent: "center",
+  },
   prayerSentTitle: { fontSize: 14, fontWeight: "700" },
-  prayerSentSub: { fontSize: 12 },
+  prayerSentSub: { fontSize: 12, lineHeight: 17, marginTop: 2 },
 
   relatedSection: { paddingTop: 16, paddingHorizontal: 16, gap: 12 },
   relatedHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
