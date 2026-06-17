@@ -548,6 +548,15 @@ export async function restRoutes(app: FastifyInstance) {
       viewerSync: driftAggregator.getStats(),
       /** Corrupt-upload quarantine summary (last 24 h + all-time totals). */
       corruptMedia: await getCorruptMediaHealthSummary(),
+      /**
+       * Storage blob reconciliation telemetry — batch DB-to-storage integrity
+       * checks run every STORAGE_RECONCILIATION_INTERVAL_MS (default 10 min).
+       * Exposes: lastRunAt, itemsChecked, blobsVerified, gapsFound, recoveries,
+       * orphanedBlobCount, consecutiveErrors.
+       */
+      storageReconciliation: await import("../engine/storage-blob-recovery.service.js")
+        .then(({ storageBlobRecoveryService }) => storageBlobRecoveryService.getStats())
+        .catch(() => null),
     };
   });
 

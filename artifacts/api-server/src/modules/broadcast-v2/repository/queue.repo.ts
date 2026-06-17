@@ -329,15 +329,14 @@ export function invalidateStorageVerifyCache(videoId?: string): void {
 adminEventBus.on("broadcast-queue-updated", (payload: unknown) => {
   const p = payload as { videoId?: string } | undefined;
   if (p?.videoId) {
+    // Targeted eviction: clear only the specific video so the next loadActive()
+    // re-verifies it immediately (e.g. after a recovery waterfall completes).
     storageVerifyCache.delete(p.videoId);
   } else {
-    // Bulk change (e.g. reconciliation pass, queue clear) — evict all entries
-    // that are within the last minute to avoid serving stale exclusions after
-    // a mass recovery.
-    const cutoff = Date.now() + STORAGE_VERIFY_TTL_MS - 60_000;
-    for (const [id, entry] of storageVerifyCache) {
-      if (entry.expiresMs < cutoff) storageVerifyCache.delete(id);
-    }
+    // Bulk queue change (queue clear, mass recovery, prod-sync) — clear the
+    // entire cache so every item is re-verified on the next reload cycle.
+    // Stale "blob missing" decisions MUST NOT persist after a bulk recovery.
+    storageVerifyCache.clear();
   }
 });
 
