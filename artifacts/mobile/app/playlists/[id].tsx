@@ -1,3 +1,10 @@
+import type { ErrorBoundaryProps } from "expo-router";
+import { ErrorFallback } from "@/components/ErrorFallback";
+
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return <ErrorFallback error={error} resetError={retry} />;
+}
+
 /**
  * Playlist Detail Screen — Temple TV Mobile
  *

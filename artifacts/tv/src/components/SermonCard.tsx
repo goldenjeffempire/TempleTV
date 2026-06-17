@@ -8,6 +8,8 @@ interface SermonCardProps {
   onFocus: () => void;
   onClick: () => void;
   style?: React.CSSProperties;
+  index?: number;
+  setSize?: number;
 }
 
 // Mobile-first card width — scales from 2-card mobile to 5-card TV layout.
@@ -21,6 +23,8 @@ export const SermonCard = React.memo(function SermonCard({
   onFocus,
   onClick,
   style,
+  index,
+  setSize,
 }: SermonCardProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [imgFailed, setImgFailed] = useState(false);
@@ -55,6 +59,8 @@ export const SermonCard = React.memo(function SermonCard({
       role="button"
       aria-label={`Play ${sermon.title}`}
       aria-pressed={focused}
+      aria-posinset={index !== undefined ? index + 1 : undefined}
+      aria-setsize={setSize}
       className={`tt-card ${focused ? "tv-focused" : ""}`}
       style={{
         width: CARD_W,

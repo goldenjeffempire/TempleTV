@@ -94,12 +94,13 @@ export function useTVNav({
         case "left":
           e.preventDefault();
           if (zone === "header") {
-            setHeaderItem((i) => Math.max(0, i - 1));
+            setHeaderItem((i) => (i > 0 ? i - 1 : headerItemCount - 1));
             return;
           }
           setFocusRow((r) => {
             const cur = getFI(r);
-            setFocusItem(r, Math.max(0, cur - 1));
+            const max = Math.max(0, getRowItemCount(r) - 1);
+            setFocusItem(r, cur > 0 ? cur - 1 : max);
             return r;
           });
           break;
@@ -107,13 +108,13 @@ export function useTVNav({
         case "right":
           e.preventDefault();
           if (zone === "header") {
-            setHeaderItem((i) => Math.min(headerItemCount - 1, i + 1));
+            setHeaderItem((i) => (i < headerItemCount - 1 ? i + 1 : 0));
             return;
           }
           setFocusRow((r) => {
             const cur = getFI(r);
-            const max = getRowItemCount(r) - 1;
-            setFocusItem(r, Math.min(max, cur + 1));
+            const max = Math.max(0, getRowItemCount(r) - 1);
+            setFocusItem(r, cur < max ? cur + 1 : 0);
             return r;
           });
           break;

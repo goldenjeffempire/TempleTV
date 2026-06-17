@@ -164,6 +164,8 @@ export const SermonRow = memo(function SermonRow({
 
       {/* Horizontally scrollable cards */}
       <div
+        role="list"
+        aria-label={`${title} — ${sermons.length} items`}
         style={{
           display: "flex",
           gap: "clamp(10px, 1.1vw, 18px)",
@@ -185,6 +187,8 @@ export const SermonRow = memo(function SermonRow({
             onFocus={() => onCardFocus(i)}
             onClick={() => onCardSelect(sermon)}
             style={{ scrollSnapAlign: "start" }}
+            index={i}
+            setSize={sermons.length}
           />
         ))}
         {/* Trailing spacer so last card doesn't sit flush against the edge */}
