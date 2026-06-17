@@ -396,99 +396,32 @@ export async function runFaststart(
     }
 
     // ── Magic-bytes and file-type pre-flight ──────────────────────────────────
-    // Verify the downloaded file is not an HTML error page, JSON response,
-    // image, or other non-video content. validateLocalSourceFile also enforces
-    // the minimum size (1 KiB) so a zero-write caused by a storage edge case
-    // is caught here with a clear diagnostic rather than a misleading
-    // "moov atom not found" from probeContainerIsValid.
-    // Use DOWNLOAD_TRUNCATED (not CORRUPT_UPLOAD) so a transient storage blip
-    // does not permanently mark the video as corrupt and block all retries.
+    // Log a warning if the downloaded file looks like a non-video (HTML page,
+    // image, etc.) but do NOT block it — ffmpeg will handle or fail gracefully,
+    // and the video stays queued to broadcast as-is regardless.
     try {
       await validateLocalSourceFile(inputPath);
     } catch (valErr) {
-      const code = (valErr as { code?: string })?.code === "SOURCE_MISSING"
-        ? "DOWNLOAD_TRUNCATED"
-        : "CORRUPT_UPLOAD";
-      throw Object.assign(
-        new Error(
-          `faststart: source file failed pre-flight validation: ` +
-          `${valErr instanceof Error ? valErr.message : String(valErr)}`,
-        ),
-        { code },
+      log.warn(
+        { videoId, objectKey, err: valErr },
+        "faststart: source file failed pre-flight type check — proceeding anyway",
       );
     }
 
-    // ── Container pre-flight: detect moov-missing / structurally corrupt MP4 ──
-    //
-    // probeContainerIsValid runs ffprobe -v error and checks for the exact
-    // stderr patterns that cause HLS encode failures: "moov atom not found",
-    // "invalid data found", "partial file", "EOF before frame", etc.
-    //
-    // If the container is intact we run the normal spawnFfmpegFaststart pass.
-    // If ffprobe detects damage we attempt a stream-copy remux via
-    // remuxForFaststart — which also applies -movflags +faststart — so a
-    // successful repair produces the final output in one shot (no second pass).
-    // If remux also fails we throw a labelled CORRUPT_UPLOAD error so the
-    // finalize caller can log a clear diagnostic rather than cycling through
-    // transcoder retry attempts against a permanently unreadable file.
-    log.info("faststart: probing container validity");
-    const containerValid = await probeContainerIsValid(inputPath);
-    if (!containerValid) {
-      // Run the moov-absent check first so we can fast-fail permanently broken
-      // files before wasting CPU on remux strategies that cannot help them.
-      //
-      // A truly moov-absent file (mdat present, moov absent) means the recording
-      // was hard-interrupted before the container header was written.  All five
-      // remux strategies need the moov atom to obtain codec configuration
-      // (SPS/PPS in the avcC box) — without it every strategy produces either
-      // an empty output or an ffmpeg "moov atom not found" error within seconds.
-      // Running them wastes up to 75 minutes and produces the same outcome.
-      //
-      // detectMdatWithoutMoov does a full-file ffprobe (not just a header scan)
-      // to confirm the moov is genuinely absent before we throw.  If it returns
-      // false the damage may be repairable, so we fall through to remuxForFaststart.
-      const mdatNoMoov = await detectMdatWithoutMoov(inputPath);
-      if (mdatNoMoov) {
-        // Terminal — no recovery possible without the original source file.
-        log.warn(
-          { videoId, objectKey },
-          "faststart: moov atom confirmed absent — skipping remux strategies (they require moov " +
-          "codec config and will always fail). Recording was interrupted before moov was written.",
-        );
-        throw Object.assign(
-          new Error(
-            "faststart: source MP4 has media data (mdat) but NO moov atom. " +
-            "The recording was interrupted before the moov atom could be written. " +
-            "Re-upload from the original source file.",
-          ),
-          { code: "CORRUPT_UPLOAD", kind: "moov_absent" },
-        );
-      }
-
-      // moov may exist but is at EOF, mildly corrupt, or in an unusual position —
-      // the remux strategies (stream-copy, error-tolerant, fMP4, extended-probe)
-      // can often recover these cases without losing any content.
-      log.warn(
-        { videoId, objectKey },
-        "faststart: container probe failed — attempting stream-copy remux recovery " +
-        "(normal for uploads with moov atom at EOF or mild container damage)",
-      );
-      const recovered = await remuxForFaststart(inputPath, outputPath, videoId);
-      if (!recovered) {
-        throw Object.assign(
-          new Error(
-            "faststart: MP4 container is unrepairable — ffprobe detected structural damage " +
-            "and all stream-copy remux strategies failed. Re-upload the video file to recover.",
-          ),
-          { code: "CORRUPT_UPLOAD", kind: "structure_invalid" },
-        );
-      }
-      // Repair succeeded: outputPath already has -movflags +faststart applied.
-      // Skip spawnFfmpegFaststart — no second pass needed.
-      log.info({ videoId }, "faststart: remux-recovery succeeded — moov atom rebuilt at file head");
-    } else {
-      log.info("faststart: running ffmpeg -movflags +faststart");
+    // Run ffmpeg -movflags +faststart to relocate the moov atom to the file
+    // head for instant-play streaming.  If ffmpeg cannot process the file
+    // (moov absent, unsupported container, damaged data) we log a warning and
+    // return early — the video remains queued and broadcasts as the raw
+    // uploaded MP4.  No validity pre-checks: every upload reaches the queue.
+    log.info("faststart: running ffmpeg -movflags +faststart");
+    try {
       await spawnFfmpegFaststart(inputPath, outputPath, log);
+    } catch (ffmpegErr) {
+      log.warn(
+        { videoId, objectKey, err: ffmpegErr },
+        "faststart: ffmpeg failed — video will broadcast as raw uploaded MP4",
+      );
+      return;
     }
 
     const { size: outputSizeBytes } = await stat(outputPath);
@@ -657,54 +590,28 @@ export async function runFaststart(
     // When skipStatusUpdate=true the transcoder owns this field.
     if (!options.skipStatusUpdate) {
       try {
-        const errCode = (err as { code?: string } | null)?.code;
-        const errKind = (err as { kind?: string } | null)?.kind ?? null;
-        const isMoovAbsent = errCode === "CORRUPT_UPLOAD" && errKind === "moov_absent";
-
-        if (isMoovAbsent) {
-          // moov_absent is a terminal, unrecoverable failure — the recording was
-          // interrupted before the moov atom was written. The source file has mdat
-          // bytes but is completely undecodable (no codec config in moov/avcC box).
-          // Do NOT restore to the prior status: that would let faststart-recovery
-          // re-enqueue the same broken file on every process restart. Mark it
-          // permanently failed here so the queue-integrity-validator can deactivate
-          // the broadcast queue item on its very next cycle, and so the
-          // faststart-recovery worker never re-adds this videoId to its candidate set.
-          await db
-            .update(videos)
-            .set({
-              transcodingStatus: "failed",
-              transcodingErrorCode: "CORRUPT_SOURCE",
-              transcodingErrorKind: "moov_absent",
-              transcodingErrorMessage:
-                "Source MP4 has media data (mdat) but no moov atom — " +
-                "recording was interrupted before moov was written. Re-upload from the original source file.",
-            })
-            .where(and(eq(videos.id, videoId), ne(videos.transcodingStatus, "hls_ready"), ne(videos.transcodingStatus, "encoding")));
-        } else {
-          // Restore the pre-faststart status. The original upload blob is intact
-          // (the multipart re-upload was either aborted or never reached
-          // completeMultipartUpload, so the original key was never overwritten).
-          // Setting "failed" for transient errors (disk full, ffmpeg timeout, etc.)
-          // would permanently block the item from loadActive() and cause an avoidable
-          // Off Air state — the source file is still playable in those cases.
-          //
-          // CRITICAL: Never restore to "processing" — that value means "faststart is
-          // actively running" and restoring it leaves the video permanently stuck if
-          // this crash-restart scenario set priorTranscodingStatus to "processing"
-          // (i.e. the previous server process was killed while faststart was running).
-          // "queued" is always safe: the source blob is intact and the video will be
-          // re-processed by faststart-on-finalize or by the transcoder dispatcher.
-          const safeRestoreStatus = (
-            priorTranscodingStatus === "processing" ? "queued" : priorTranscodingStatus
-          ) as "none" | "queued" | "encoding" | "ready" | "hls_ready" | "failed";
-          await db
-            .update(videos)
-            .set({ transcodingStatus: safeRestoreStatus })
-            // Same dual guard as the success path: don't clobber "encoding"
-            // (HLS transcoder may have started while faststart was running).
-            .where(and(eq(videos.id, videoId), ne(videos.transcodingStatus, "hls_ready"), ne(videos.transcodingStatus, "encoding")));
-        }
+        // Restore the pre-faststart status. The original upload blob is intact
+        // (the multipart re-upload was either aborted or never reached
+        // completeMultipartUpload, so the original key was never overwritten).
+        // Setting "failed" for transient errors (disk full, ffmpeg timeout, etc.)
+        // would permanently block the item from loadActive() and cause an avoidable
+        // Off Air state — the source file is still playable in those cases.
+        //
+        // CRITICAL: Never restore to "processing" — that value means "faststart is
+        // actively running" and restoring it leaves the video permanently stuck if
+        // this crash-restart scenario set priorTranscodingStatus to "processing"
+        // (i.e. the previous server process was killed while faststart was running).
+        // "queued" is always safe: the source blob is intact and the video will be
+        // re-processed by faststart-on-finalize or by the transcoder dispatcher.
+        const safeRestoreStatus = (
+          priorTranscodingStatus === "processing" ? "queued" : priorTranscodingStatus
+        ) as "none" | "queued" | "encoding" | "ready" | "hls_ready" | "failed";
+        await db
+          .update(videos)
+          .set({ transcodingStatus: safeRestoreStatus })
+          // Same dual guard as the success path: don't clobber "encoding"
+          // (HLS transcoder may have started while faststart was running).
+          .where(and(eq(videos.id, videoId), ne(videos.transcodingStatus, "hls_ready"), ne(videos.transcodingStatus, "encoding")));
       } catch (dbErr) {
         log.error({ dbErr }, "faststart: could not restore transcodingStatus");
       }

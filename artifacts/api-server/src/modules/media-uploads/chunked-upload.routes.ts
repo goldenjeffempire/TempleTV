@@ -411,52 +411,16 @@ async function spawnAssemblyRetry(
         log.warn({ err: probeErr, videoId }, "[assembly-retry] ffprobe failed (non-fatal) — using existing duration");
       }
 
-      // ── Step 5b: container validity gate ─────────────────────────────────
-      // Detect unrecoverable containers early so we don't burn broadcast queue
-      // slots and transcoder retry cycles on a permanently broken file.
-      let skipEnqueue = false;
       try {
-        const containerProbe = await probeUploadedContainerValidity(vRow.objectPath);
-        if (!containerProbe.valid && containerProbe.unrecoverable === true) {
-          log.error(
-            { videoId, objectKey: vRow.objectPath, kind: containerProbe.kind },
-            "[assembly-retry] CORRUPT GATE — unrecoverable container detected; " +
-            "marking failed and skipping broadcast queue admission",
-          );
-          skipEnqueue = true;
-          await db
-            .update(videos)
-            .set({
-              transcodingStatus: "failed",
-              transcodingErrorCode: "CORRUPT_SOURCE",
-              transcodingErrorMessage:
-                containerProbe.error ??
-                "Video container is unrecoverable (moov atom absent or invalid file type). " +
-                "Please re-upload from the original source file.",
-            })
-            .where(eq(videos.id, videoId))
-            .catch(() => {});
-          adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-assembly-retry" });
+        const enqResult = await enqueueIfMissing({ videoId, reason: "assembly-retry" });
+        if (enqResult.enqueued) {
+          adminEventBus.push("broadcast-queue-updated", { reason: "assembly-retry-enqueue", videoId });
         }
-      } catch (gateErr) {
-        log.warn(
-          { err: gateErr, videoId },
-          "[assembly-retry] container gate probe failed (non-fatal) — proceeding to enqueue",
-        );
+      } catch (err) {
+        log.warn({ err, videoId }, "[assembly-retry] enqueueIfMissing failed (non-fatal)");
       }
 
-      if (!skipEnqueue) {
-        try {
-          const enqResult = await enqueueIfMissing({ videoId, reason: "assembly-retry" });
-          if (enqResult.enqueued) {
-            adminEventBus.push("broadcast-queue-updated", { reason: "assembly-retry-enqueue", videoId });
-          }
-        } catch (err) {
-          log.warn({ err, videoId }, "[assembly-retry] enqueueIfMissing failed (non-fatal)");
-        }
-      }
-
-      if (!skipEnqueue && !vRow.faststartApplied) {
+      if (!vRow.faststartApplied) {
         try {
           await runFaststart(videoId, vRow.objectPath, { skipStatusUpdate: false });
           log.info({ videoId }, "[assembly-retry] faststart applied");
@@ -465,7 +429,7 @@ async function spawnAssemblyRetry(
         }
       }
 
-      if (!skipEnqueue && !vRow.hlsMasterUrl) {
+      if (!vRow.hlsMasterUrl) {
         try {
           await enqueueTranscode({ videoId, videoPath: vRow.objectPath });
           if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
@@ -1049,41 +1013,6 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   );
                 }
 
-                // Step 3: Container validity gate.
-                // Skip the broadcast queue + faststart + transcode for truly
-                // unrecoverable containers rather than burning retry budget.
-                let skipRecoveryEnqueue = false;
-                try {
-                  const containerProbe = await probeUploadedContainerValidity(vRow.objectPath);
-                  if (!containerProbe.valid && containerProbe.unrecoverable === true) {
-                    app.log.error(
-                      { videoId, objectKey: vRow.objectPath, kind: containerProbe.kind },
-                      "[upload] recovery: CORRUPT GATE — unrecoverable container; " +
-                      "marking failed and skipping broadcast queue admission",
-                    );
-                    skipRecoveryEnqueue = true;
-                    await db
-                      .update(videos)
-                      .set({
-                        transcodingStatus: "failed",
-                        transcodingErrorCode: "CORRUPT_SOURCE",
-                        transcodingErrorMessage:
-                          containerProbe.error ??
-                          "Video container is unrecoverable (moov atom absent or invalid file type). " +
-                          "Please re-upload from the original source file.",
-                      })
-                      .where(eq(videos.id, videoId))
-                      .catch(() => {});
-                    adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-recovery" });
-                  }
-                } catch (gateErr) {
-                  app.log.warn(
-                    { err: gateErr, videoId },
-                    "[upload] recovery: container gate probe failed (non-fatal) — proceeding to enqueue",
-                  );
-                }
-
-                if (skipRecoveryEnqueue) return;
 
                 // Step 4: Broadcast queue slot.
                 const enqResult = await enqueueIfMissing({ videoId, reason: "upload-recovery-on-restart" });
@@ -2619,174 +2548,47 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             // re-upload. If the transcoder downloads the source while that
             // assembly is still in progress it fetches a partial file and
             // ffprobe reports "moov atom not found", killing the transcode job.
-            //
-            // faststart now also runs a container pre-flight probe and attempts
-            // a stream-copy remux repair for files with moov-at-EOF or mild
-            // container damage. If the container is totally unrepairable,
-            // faststart throws with code="CORRUPT_UPLOAD" — we mark the video
-            // "failed" immediately rather than cycling through 3 transcoder
-            // retries against an unreadable file.
-            //
-            // EARLY GATE: probeUploadedContainerValidity runs before faststart
-            // to detect clear non-video uploads (HTML pages, images, etc.) via
-            // the pre-flight validation stage.  A moov_absent result is now
-            // treated as a SOFT FAIL (unrecoverable: false) so the full
-            // faststart → HLS transcoder pipeline runs.  remuxForFaststart has
-            // 5 strategies (including extended-probe) that recover some files
-            // incorrectly flagged as moov-absent by the default ffprobe scan.
-            // Only a clear non-video pre-flight failure (kind "preflight_failed")
-            // triggers an immediate permanent failure here.
-            let skipTranscodeEnqueue = false;
-            try {
-              const containerProbe = await probeUploadedContainerValidity(objectKey);
-              if (!containerProbe.valid) {
-                if (containerProbe.unrecoverable === true) {
-                  // Moov atom is completely absent or file failed pre-flight —
-                  // no remux strategy can recover this. Mark failed immediately
-                  // so the operator knows to re-upload the original source file.
-                  capturedLog.error(
-                    { videoId, objectKey, kind: containerProbe.kind },
-                    "[finalize:bg] EARLY CORRUPT GATE (unrecoverable) — container probe confirmed " +
-                    "no moov atom or invalid file type; marking failed before faststart.",
-                  );
-                  skipTranscodeEnqueue = true;
-                  await db
-                    .update(videos)
-                    .set({
-                      transcodingStatus: "failed",
-                      transcodingErrorCode: "CORRUPT_SOURCE",
-                      transcodingErrorMessage: containerProbe.error ??
-                        "Upload rejected: the video file is unrecoverable " +
-                        "(moov atom absent or invalid file type). " +
-                        "Please re-upload from the original source file.",
-                    })
-                    .where(eq(videos.id, videoId))
-                    .catch(() => {});
-                  adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-early-gate" });
-                  void quarantineVideo(videoId, {
-                    errorCode: "CORRUPT_SOURCE",
-                    reason:
-                      containerProbe.error ??
-                      "Upload rejected at early gate: moov atom absent or invalid file type.",
-                    triggeredBy: "finalize-early-gate",
-                    metadata: { objectKey, kind: containerProbe.kind },
-                  });
-                } else {
-                  // Container is mildly damaged but moov is not confirmed absent —
-                  // faststart's remux strategies (including error-tolerant copy and
-                  // fMP4 output) may recover it. Log a warning and let faststart run.
-                  capturedLog.warn(
-                    { videoId, objectKey, kind: containerProbe.kind },
-                    "[finalize:bg] container probe soft-fail — allowing faststart remux to attempt repair.",
-                  );
-                }
-              }
-            } catch (earlyGateErr) {
-              capturedLog.warn(
-                { err: earlyGateErr, videoId },
-                "[finalize:bg] early container gate probe failed (non-fatal) — proceeding to faststart",
-              );
-            }
 
             // ── Immediate broadcast queue entry ─────────────────────────────
-            // Queue the video right after the raw file is confirmed valid and
-            // accessible in storage — no need to wait for faststart or HLS.
-            // Faststart re-uploads an optimised file to the same storage key;
-            // HLS transcoding produces a separate manifest URL. Both upgrade
-            // the broadcast source in-place without a re-queue.
-            // Skipped for confirmed corrupt/unrepairable uploads.
-            if (!skipTranscodeEnqueue) {
-              try {
-                const enqueueResult = await enqueueIfMissing({ videoId, reason: "upload-finalize" });
-                if (enqueueResult.enqueued) {
-                  capturedLog.info(
-                    { videoId, queueItemId: enqueueResult.queueItemId },
-                    "[finalize:bg] video auto-queued for broadcast immediately after assembly",
-                  );
-                } else {
-                  capturedLog.info(
-                    { videoId, queueItemId: enqueueResult.queueItemId },
-                    "[finalize:bg] video already in broadcast queue — skipping duplicate insert",
-                  );
-                }
-                // Update the queue slot's duration_secs with the real ffprobe
-                // result now that the row exists. enqueueIfMissing reads the
-                // managed_videos.duration column (already updated by the probe
-                // above) so this is a best-effort secondary sync — it ensures
-                // the queue row reflects the true file length even if
-                // enqueueIfMissing used a cached/stale managed_videos snapshot.
-                if (ffprobeDurSecs !== null) {
-                  await db
-                    .update(schema.broadcastQueueTable)
-                    .set({ durationSecs: Math.round(ffprobeDurSecs) })
-                    .where(eq(schema.broadcastQueueTable.videoId, videoId))
-                    .catch(() => {});
-                }
-                // Always emit broadcast-queue-updated so the admin UI refreshes —
-                // whether the video was freshly enqueued or was already present.
-                // This guarantees the queue panel shows current state even when the
-                // SSE connection was down during the background assembly window.
-                adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId });
-              } catch (enqErr) {
-                capturedLog.warn({ err: enqErr, videoId }, "[finalize:bg] immediate enqueueIfMissing failed (non-fatal)");
-                // Emit broadcast-queue-updated even on failure so clients
-                // reload the queue and see the accurate server-side state.
-                adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize-enqueue-failed", videoId });
+            // Queue the video as soon as the raw file is in storage — no
+            // validity gate.  Every upload reaches the broadcast queue and can
+            // air as raw MP4.  Faststart upgrades the source in-place if ffmpeg
+            // succeeds; HLS adds a separate manifest URL when transcoding finishes.
+            try {
+              const enqueueResult = await enqueueIfMissing({ videoId, reason: "upload-finalize" });
+              if (enqueueResult.enqueued) {
+                capturedLog.info(
+                  { videoId, queueItemId: enqueueResult.queueItemId },
+                  "[finalize:bg] video auto-queued for broadcast immediately after assembly",
+                );
+              } else {
+                capturedLog.info(
+                  { videoId, queueItemId: enqueueResult.queueItemId },
+                  "[finalize:bg] video already in broadcast queue — skipping duplicate insert",
+                );
               }
+              if (ffprobeDurSecs !== null) {
+                await db
+                  .update(schema.broadcastQueueTable)
+                  .set({ durationSecs: Math.round(ffprobeDurSecs) })
+                  .where(eq(schema.broadcastQueueTable.videoId, videoId))
+                  .catch(() => {});
+              }
+              adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId });
+            } catch (enqErr) {
+              capturedLog.warn({ err: enqErr, videoId }, "[finalize:bg] immediate enqueueIfMissing failed (non-fatal)");
+              adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize-enqueue-failed", videoId });
             }
 
-            if (!skipTranscodeEnqueue) {
-              try {
-                await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
-                capturedLog.info({ sessionId, videoId }, "[finalize:bg] faststart done");
-              } catch (err) {
-                const isCorrupt = (err as { code?: string })?.code === "CORRUPT_UPLOAD";
-                if (isCorrupt) {
-                  // faststart exhausted all 5 remux strategies and gave up.
-                  // Do NOT mark as permanently failed and do NOT block the HLS
-                  // transcoder.  The transcoder uses a completely independent
-                  // download path (downloadSourceToTempFile with stricter byte
-                  // verification) and now also runs all 5 remux strategies.
-                  // A transient faststart download issue or a file format that
-                  // only the transcoder's ffmpeg flags can handle may succeed.
-                  // If the transcoder ALSO fails, its dispatcher will permanently
-                  // mark the video failed with a clear CORRUPT_SOURCE error.
-                  //
-                  // What we DO here:
-                  //   • Reset transcodingStatus to "none" so the admin panel
-                  //     doesn't show a stale "processing" indicator.
-                  //   • Deactivate the broadcast queue entry — raw MP4 without
-                  //     faststart may stall playback on some devices.  The
-                  //     transcoder re-activates the entry on HLS success.
-                  //   • Log at ERROR level so operators can track the failure.
-                  capturedLog.error(
-                    { err, videoId, objectKey },
-                    "[finalize:bg] faststart exhausted all remux strategies — HLS transcoder will " +
-                    "attempt independent recovery with fresh download and extended probe",
-                  );
-                  await db
-                    .update(videos)
-                    .set({ transcodingStatus: "none" })
-                    .where(eq(videos.id, videoId))
-                    .catch(() => {});
-                  await db
-                    .update(schema.broadcastQueueTable)
-                    .set({ isActive: false })
-                    .where(eq(schema.broadcastQueueTable.videoId, videoId))
-                    .catch(() => {});
-                  adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-failed-transcoder-recovery" });
-                  adminEventBus.push("broadcast-queue-updated", { reason: "faststart-corrupt-dequeue", videoId });
-                  // skipTranscodeEnqueue intentionally NOT set — HLS transcoder runs next.
-                } else {
-                  capturedLog.warn({ err, videoId }, "[finalize:bg] faststart failed (non-fatal)");
-                }
-              }
+            try {
+              await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
+              capturedLog.info({ sessionId, videoId }, "[finalize:bg] faststart done");
+            } catch (err) {
+              capturedLog.warn({ err, videoId }, "[finalize:bg] faststart failed (non-fatal) — broadcasting as raw MP4");
             }
 
             // Enqueue HLS transcoding AFTER faststart is complete.
-            // Skipped when the container is confirmed unrepairable (CORRUPT_UPLOAD or early gate)
-            // to avoid wasting transcoder retry cycles on a permanently broken file.
-            if (!skipTranscodeEnqueue) {
+            {
               try {
                 await enqueueTranscode({ videoId, videoPath: objectKey });
                 capturedLog.info({ sessionId, videoId }, "[finalize:bg] HLS transcode job queued");
@@ -3161,157 +2963,60 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             capturedLogB.warn({ err, videoId: videoIdB }, "[finalize:db_fallback:bg] post-upload probes failed (non-fatal)");
           }
 
-          // ── Early container gate (Path B) ────────────────────────────────
-          // Mirror Path A: run probeUploadedContainerValidity before faststart
-          // so that structurally corrupt db_fallback uploads are caught here
-          // rather than burning 3 transcoder retry cycles against a broken file.
-          let skipTranscodeEnqueueB = false;
-          try {
-            const containerProbeB = await probeUploadedContainerValidity(result.objectKey);
-            if (!containerProbeB.valid) {
-              if (containerProbeB.unrecoverable === true) {
-                // Moov atom is completely absent or file failed pre-flight —
-                // no remux strategy can recover this. Mark failed immediately.
-                capturedLogB.error(
-                  { videoId: videoIdB, objectKey: result.objectKey, kind: containerProbeB.kind },
-                  "[finalize:db_fallback:bg] EARLY CORRUPT GATE (unrecoverable) — container probe confirmed " +
-                  "no moov atom or invalid file type; marking failed before faststart.",
-                );
-                skipTranscodeEnqueueB = true;
-                await db
-                  .update(videos)
-                  .set({
-                    transcodingStatus: "failed",
-                    transcodingErrorCode: "CORRUPT_SOURCE",
-                    transcodingErrorMessage: containerProbeB.error ??
-                      "Upload rejected: the video file is unrecoverable " +
-                      "(moov atom absent or invalid file type). " +
-                      "Please re-upload from the original source file.",
-                  })
-                  .where(eq(videos.id, videoIdB))
-                  .catch(() => {});
-                adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "corrupt-upload-early-gate" });
-              } else {
-                // Mildly damaged container — faststart remux may recover it.
-                capturedLogB.warn(
-                  { videoId: videoIdB, objectKey: result.objectKey, kind: containerProbeB.kind },
-                  "[finalize:db_fallback:bg] container probe soft-fail — allowing faststart remux to attempt repair.",
-                );
-              }
-            }
-          } catch (earlyGateBErr) {
-            capturedLogB.warn(
-              { err: earlyGateBErr, videoId: videoIdB },
-              "[finalize:db_fallback:bg] early container gate probe failed (non-fatal) — proceeding to faststart",
-            );
-          }
-
           // ── Immediate broadcast queue entry (Path B) ─────────────────────
-          // Queue the video right after the blob is assembled and validated —
-          // no need to wait for faststart or HLS.  Matches Path A behaviour:
-          // faststart upgrades the source in-place; HLS adds a separate URL.
-          // Skipped for confirmed corrupt/unrepairable uploads.
+          // Queue the video as soon as the raw blob is in storage — no validity
+          // gate.  Every upload reaches the broadcast queue and can air as raw
+          // MP4.  Faststart upgrades the source in-place; HLS adds a manifest.
           //
-          // IMPORTANT: this call must happen BEFORE runFaststart.  faststart
-          // sets transcodingStatus='processing' while it swaps the blob, which
-          // temporarily blocks the item in loadActive().  If faststart then
-          // fails non-fatally (no ffmpeg, network hiccup), enqueueIfMissing
-          // inside faststart.service never runs and the video would never be
-          // queued.  Calling it here ensures the item is queued regardless.
-          if (!skipTranscodeEnqueueB) {
-            try {
-              const enqueueResultB = await enqueueIfMissing({ videoId: videoIdB, reason: "upload-finalize" });
-              if (enqueueResultB.enqueued) {
-                capturedLogB.info(
-                  { videoId: videoIdB, queueItemId: enqueueResultB.queueItemId },
-                  "[finalize:db_fallback:bg] video auto-queued for broadcast immediately after assembly",
-                );
-              } else {
-                capturedLogB.info(
-                  { videoId: videoIdB, queueItemId: enqueueResultB.queueItemId },
-                  "[finalize:db_fallback:bg] video already in broadcast queue — skipping duplicate insert",
-                );
-              }
-              // Update the queue slot's duration_secs with the real ffprobe
-              // result now that the row exists (mirrors Path A behaviour).
-              if (ffprobeDurSecsB !== null) {
-                await db
-                  .update(schema.broadcastQueueTable)
-                  .set({ durationSecs: Math.round(ffprobeDurSecsB) })
-                  .where(eq(schema.broadcastQueueTable.videoId, videoIdB))
-                  .catch(() => {});
-              }
-              // Always emit regardless of enqueued boolean — the admin UI needs
-              // to refresh whether the video was freshly queued or already present.
-              adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId: videoIdB });
-            } catch (enqErrB) {
-              capturedLogB.warn(
-                { err: enqErrB, videoId: videoIdB },
-                "[finalize:db_fallback:bg] immediate enqueueIfMissing failed (non-fatal)",
+          // IMPORTANT: enqueue BEFORE runFaststart — faststart sets
+          // transcodingStatus='processing' while swapping the blob, which
+          // temporarily blocks the item in loadActive().  Calling enqueueIfMissing
+          // here ensures the item is queued even if faststart fails.
+          try {
+            const enqueueResultB = await enqueueIfMissing({ videoId: videoIdB, reason: "upload-finalize" });
+            if (enqueueResultB.enqueued) {
+              capturedLogB.info(
+                { videoId: videoIdB, queueItemId: enqueueResultB.queueItemId },
+                "[finalize:db_fallback:bg] video auto-queued for broadcast immediately after assembly",
               );
-              // Emit even on failure so clients reload the queue.
-              adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize-enqueue-failed", videoId: videoIdB });
+            } else {
+              capturedLogB.info(
+                { videoId: videoIdB, queueItemId: enqueueResultB.queueItemId },
+                "[finalize:db_fallback:bg] video already in broadcast queue — skipping duplicate insert",
+              );
             }
+            if (ffprobeDurSecsB !== null) {
+              await db
+                .update(schema.broadcastQueueTable)
+                .set({ durationSecs: Math.round(ffprobeDurSecsB) })
+                .where(eq(schema.broadcastQueueTable.videoId, videoIdB))
+                .catch(() => {});
+            }
+            adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId: videoIdB });
+          } catch (enqErrB) {
+            capturedLogB.warn(
+              { err: enqErrB, videoId: videoIdB },
+              "[finalize:db_fallback:bg] immediate enqueueIfMissing failed (non-fatal)",
+            );
+            adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize-enqueue-failed", videoId: videoIdB });
           }
 
-          // Faststart MUST complete before enqueueTranscode (see Path A rationale).
-          // CORRUPT_UPLOAD errors are handled the same way as Path A: mark failed,
-          // deactivate the broadcast-queue entry, and skip transcode enqueue to
-          // avoid pointless retry cycles. Without the queue deactivation the item
-          // stays is_active=true and the orchestrator keeps trying to play it.
           try {
             await runFaststart(videoIdB, result.objectKey, { skipStatusUpdate: false });
             capturedLogB.info({ sessionId, videoId: videoIdB }, "[finalize:db_fallback:bg] faststart done");
           } catch (err) {
-            const isCorruptB = (err as { code?: string })?.code === "CORRUPT_UPLOAD";
-            if (isCorruptB) {
-              capturedLogB.error(
-                { err, videoId: videoIdB, objectKey: result.objectKey },
-                "[finalize:db_fallback:bg] CORRUPT UPLOAD — container structurally damaged and unrepairable. " +
-                "Marking video failed. Operator must re-upload the file.",
-              );
-              skipTranscodeEnqueueB = true;
-              await db
-                .update(videos)
-                .set({
-                  transcodingStatus: "failed",
-                  transcodingErrorCode: "CORRUPT_SOURCE",
-                  transcodingErrorMessage:
-                    "Upload failed: the video container is structurally damaged and cannot be repaired " +
-                    "(faststart failed — moov atom missing or all remux strategies exhausted). " +
-                    "Please re-upload from the original source file.",
-                })
-                .where(eq(videos.id, videoIdB))
-                .catch(() => {});
-              // Immediately deactivate the broadcast queue entry created by
-              // enqueueIfMissing above so the orchestrator stops trying to play
-              // this corrupt item on the next reload cycle. Without this step
-              // the row stays is_active=true and the orchestrator keeps loading
-              // it — burning skip budget every cycle — until the queue-integrity-
-              // validator runs (up to 3 min). This mirrors Path A's identical fix.
-              await db
-                .update(schema.broadcastQueueTable)
-                .set({ isActive: false })
-                .where(eq(schema.broadcastQueueTable.videoId, videoIdB))
-                .catch(() => {});
-              adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "corrupt-upload-failed" });
-              adminEventBus.push("broadcast-queue-updated", { reason: "corrupt-upload-faststart-cleanup", videoId: videoIdB });
-            } else {
-              capturedLogB.warn({ err, videoId: videoIdB }, "[finalize:db_fallback:bg] faststart failed (non-fatal)");
-            }
+            capturedLogB.warn({ err, videoId: videoIdB }, "[finalize:db_fallback:bg] faststart failed (non-fatal) — broadcasting as raw MP4");
           }
 
-          if (!skipTranscodeEnqueueB) {
-            try {
-              await enqueueTranscode({ videoId: videoIdB, videoPath: result.objectKey });
-              if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
-              capturedLogB.info({ sessionId, videoId: videoIdB }, "[finalize:db_fallback:bg] HLS transcode job queued");
-            } catch (err) {
-              capturedLogB.warn(
-                { err, videoId: videoIdB },
-                "[finalize:db_fallback:bg] enqueueTranscode failed (non-fatal)",
-              );
-            }
+          try {
+            await enqueueTranscode({ videoId: videoIdB, videoPath: result.objectKey });
+            if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
+            capturedLogB.info({ sessionId, videoId: videoIdB }, "[finalize:db_fallback:bg] HLS transcode job queued");
+          } catch (err) {
+            capturedLogB.warn(
+              { err, videoId: videoIdB },
+              "[finalize:db_fallback:bg] enqueueTranscode failed (non-fatal)",
+            );
           }
 
           capturedLogB.info(
