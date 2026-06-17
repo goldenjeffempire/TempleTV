@@ -36,6 +36,7 @@ import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { normalizeQueueUrl } from "../repository/queue.repo.js";
 import { enqueueTranscode } from "../../transcoder/transcoder.queue.js";
 import { withHlsToken } from "../../../shared/hls-token.js";
+import { storageBlobRecoveryService } from "./storage-blob-recovery.service.js";
 
 // ── Duration probe helper ─────────────────────────────────────────────────────
 //
@@ -788,9 +789,13 @@ class QueueIntegrityValidatorImpl {
       // auto-skip them, burning the 5-skip budget. Deactivating stops the skip spiral
       // and surfaces a clear "re-upload required" message in diagnostics.
       //
-      // Only two conditions warrant deactivation (source truly absent):
-      //   CORRUPT_SOURCE — moov atom absent; file cannot be decoded at all.
-      //   SOURCE_MISSING — storage blob was deleted; no bytes to serve.
+      // Policy split (by error code):
+      //   CORRUPT_SOURCE — moov atom absent; unrecoverable. Hard-deactivate + quarantine
+      //                    immediately (no recovery waterfall can help).
+      //   SOURCE_MISSING — storage blob deleted; may be recoverable if HLS blobs still
+      //                    exist. Route through storageBlobRecoveryService.runWaterfall()
+      //                    first. Waterfall handles quarantine + deactivation on Tier-3.
+      //                    Only items the waterfall cannot recover reach hard-deactivate.
       //
       // NOT deactivated (source file exists — admitted to broadcast):
       //   DISK_FULL          — transcoding failed due to disk space; source intact.
@@ -798,22 +803,36 @@ class QueueIntegrityValidatorImpl {
       //                        worker actively retries moov relocation.
       //   ASSEMBLY_FAILED    — recoverable; operator can retry finalization.
       //
-      // These non-deactivation cases are surfaced as warnings in the diagnostics
-      // issue list above. The faststart-recovery worker and the player watchdog +
-      // bad-URL cache + auto-skip handle them without operator action.
-      //
       // Reverse pass below re-activates when HLS becomes available (re-transcode).
+      const baseFilter = (r: typeof rows[number]) => {
+        if (!r.videoId || r.videoId2 === null) return false;
+        if (r.qHlsUrl || r.vHlsUrl) return false; // HLS available — safe
+        if (r.vStatus !== "failed") return false;  // still transcoding — leave active
+        return true;
+      };
+
+      // SOURCE_MISSING: run waterfall first — waterfall handles its own deactivation
+      // if all tiers fail (tier3_quarantine). Fire-and-forget; non-blocking for this pass.
+      const sourceMissingRows = rows.filter(
+        (r) => baseFilter(r) && r.vErrCode === "SOURCE_MISSING",
+      );
+      for (const r of sourceMissingRows) {
+        void storageBlobRecoveryService.runWaterfall({
+          videoId: r.videoId as string,
+          queueId: r.id,
+          title: r.title ?? r.videoId ?? "unknown",
+          objectPath: r.vObjectPath ?? null,
+          hlsUrl: r.vHlsUrl ?? r.qHlsUrl ?? null,
+          triggeredBy: "queue-integrity-validator",
+        }).catch((err) => {
+          logger.warn({ err, videoId: r.videoId, queueId: r.id },
+            "[queue-validator] SOURCE_MISSING waterfall failed (non-fatal)");
+        });
+      }
+
+      // CORRUPT_SOURCE: hard-deactivate + quarantine immediately (unrecoverable).
       const corruptUploadItemIds = rows
-        .filter((r) => {
-          if (!r.videoId || r.videoId2 === null) return false;
-          if (r.qHlsUrl || r.vHlsUrl) return false; // HLS available — safe
-          if (r.vStatus !== "failed") return false;  // still transcoding — leave active
-          // Only deactivate when the source is truly absent — no URL can be served.
-          return (
-            r.vErrCode === "CORRUPT_SOURCE" ||
-            r.vErrCode === "SOURCE_MISSING"
-          );
-        })
+        .filter((r) => baseFilter(r) && r.vErrCode === "CORRUPT_SOURCE")
         .map((r) => r.id);
 
       if (corruptUploadItemIds.length > 0) {
@@ -828,8 +847,8 @@ class QueueIntegrityValidatorImpl {
           logger.error(
             { count: corruptUploadItemIds.length, itemIds: corruptUploadItemIds },
             "[queue-validator] AUTO-FIX: deactivated UNPLAYABLE_CORRUPT_UPLOAD items " +
-            "(transcodingStatus=failed + CORRUPT_SOURCE or SOURCE_MISSING error + no HLS) — " +
-            "source file is absent; removed from broadcast rotation; re-upload the source file to restore",
+            "(transcodingStatus=failed + CORRUPT_SOURCE + no HLS) — " +
+            "moov atom absent; file undecodable; removed from broadcast rotation; re-upload to restore",
           );
           adminEventBus.push("broadcast-queue-updated", {
             reason: "integrity-fix-corrupt-upload",

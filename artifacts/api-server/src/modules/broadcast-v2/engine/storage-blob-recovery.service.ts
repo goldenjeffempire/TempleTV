@@ -33,7 +33,20 @@ import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { quarantineVideo } from "../../broadcast/quarantine.service.js";
 import { enqueueTranscode } from "../../transcoder/transcoder.queue.js";
 
-export type RecoveryTier = "healthy" | "tier1_retranscode" | "tier1_alert_only" | "tier2_retranscode" | "tier3_quarantine" | "error";
+export type RecoveryTier = "healthy" | "tier1_promoted" | "tier1_retranscode" | "tier1_alert_only" | "tier2_retranscode" | "tier3_quarantine" | "error";
+
+/**
+ * Known HLS tier metadata keyed by rendition name (e.g. "360p").
+ * Values match the HLS_TIERS constants in transcoder.service.ts.
+ * Used by the Tier-1b promote path to reconstruct a master.m3u8 from
+ * existing variant playlists when the MP4 source has been deleted.
+ */
+const HLS_TIER_META: Readonly<Record<string, { bandwidth: number; resolution: string; codecs: string }>> = {
+  "240p": { bandwidth:   364_000, resolution: "426x240",  codecs: "avc1.4d4015,mp4a.40.2" },
+  "360p": { bandwidth:   596_000, resolution: "640x360",  codecs: "avc1.4d401e,mp4a.40.2" },
+  "480p": { bandwidth: 1_128_000, resolution: "854x480",  codecs: "avc1.4d401f,mp4a.40.2" },
+  "720p": { bandwidth: 2_660_000, resolution: "1280x720", codecs: "avc1.64001f,mp4a.40.2" },
+} as const;
 
 export interface RecoveryResult {
   tier: RecoveryTier;
@@ -127,17 +140,20 @@ class StorageBlobRecoveryServiceImpl {
       const masterKey = `transcoded/${videoId}/master.m3u8`;
       const masterHead = await storage().headObject(masterKey);
       if (masterHead.exists) {
-        // HLS master blob is present — item is healthy.  If hlsUrl is unset
-        // on the video row, restore it so the orchestrator can serve it.
-        if (!hlsUrl) {
-          const restoredUrl = `/api/hls/${videoId}/master.m3u8`;
+        // HLS master blob is confirmed present — always promote to HLS.
+        // Set hlsMasterUrl and hls_ready status unconditionally: this clears any
+        // stale MP4-URL-only state left from a failed faststart or partial recovery,
+        // and ensures the orchestrator snapshot picks up the correct source.
+        const restoredUrl = `/api/hls/${videoId}/master.m3u8`;
+        const needsUpdate = !hlsUrl || hlsUrl !== restoredUrl;
+        if (needsUpdate) {
           await db.update(schema.videosTable)
             .set({ hlsMasterUrl: restoredUrl, transcodingStatus: "hls_ready" })
             .where(eq(schema.videosTable.id, videoId))
             .catch((err) => {
-              logger.warn({ err, videoId }, `[storage-blob-recovery] failed to restore hlsMasterUrl on healthy item (non-fatal)`);
+              logger.warn({ err, videoId }, `[storage-blob-recovery] failed to promote hlsMasterUrl on healthy item (non-fatal)`);
             });
-          adminEventBus.push("broadcast-queue-updated", { reason: "storage-blob-recovery-restored-hls", videoId });
+          adminEventBus.push("broadcast-queue-updated", { reason: "storage-blob-recovery-hls-promoted", videoId });
         }
         this._healthy += 1;
         this.stats.consecutiveErrors = 0;
@@ -182,10 +198,72 @@ class StorageBlobRecoveryServiceImpl {
           this.stats.consecutiveErrors = 0;
           return { tier: "tier1_retranscode", videoId, message: `${segmentCount} HLS segment blob(s) found, MP4 present — re-transcoding` };
         } else {
-          // Tier 1b: No MP4 source — segments exist but we can't re-transcode.
-          // The item is permanently unplayable (no source to rebuild from).
-          // Deactivate the queue item to stop dead-air cycles and quarantine the
-          // video so operators are informed and the item no longer airs.
+          // Tier 1b: No MP4 source — but segment blobs exist. Before quarantining,
+          // try to promote existing HLS output by synthesizing a master.m3u8 from
+          // any variant playlists (e.g. transcoded/{id}/360p/playlist.m3u8) that
+          // are already in storage. This path recovers items whose transcoding
+          // finished successfully but whose master.m3u8 was lost (e.g. a partial
+          // storage delete) while the actual per-segment data survived intact.
+          const variantResult = await db.execute<{ key: string }>(sql`
+            SELECT key FROM storage_blobs
+            WHERE key LIKE ${"transcoded/" + videoId + "/%/playlist.m3u8"}
+            ORDER BY key
+          `).catch(() => ({ rows: [] as { key: string }[] }));
+
+          // Build master.m3u8 content from found variant playlists.
+          const variantLines: string[] = [];
+          for (const row of variantResult.rows) {
+            // key = transcoded/{videoId}/{tierName}/playlist.m3u8
+            const tierName = row.key.split("/")[2];
+            const meta = tierName ? HLS_TIER_META[tierName] : undefined;
+            if (!meta) continue; // skip unrecognised tier names
+            variantLines.push(
+              `#EXT-X-STREAM-INF:BANDWIDTH=${meta.bandwidth},RESOLUTION=${meta.resolution},CODECS="${meta.codecs}"`,
+              `${tierName}/playlist.m3u8`,
+            );
+          }
+
+          if (variantLines.length > 0) {
+            // Synthesise and upload a minimal master.m3u8 pointing to the survivors.
+            const masterContent = [
+              "#EXTM3U",
+              "#EXT-X-VERSION:3",
+              "#EXT-X-INDEPENDENT-SEGMENTS",
+              ...variantLines,
+            ].join("\n") + "\n";
+
+            await storage().putObject({
+              key: masterKey,
+              body: Buffer.from(masterContent, "utf-8"),
+              contentType: "application/vnd.apple.mpegurl",
+            });
+
+            const restoredUrl = `/api/hls/${videoId}/master.m3u8`;
+            await db.update(schema.videosTable)
+              .set({ hlsMasterUrl: restoredUrl, transcodingStatus: "hls_ready" })
+              .where(eq(schema.videosTable.id, videoId))
+              .catch((err) => {
+                logger.warn({ err, videoId }, "[storage-blob-recovery] tier1b-promote: failed to set hlsMasterUrl (non-fatal)");
+              });
+            adminEventBus.push("broadcast-queue-updated", { reason: "storage-blob-recovery-tier1b-promoted", videoId });
+            adminEventBus.push("ops-alert", {
+              level: "warn",
+              component: triggeredBy,
+              message:
+                `"${title}" (videoId: ${videoId}): HLS master.m3u8 was missing but ` +
+                `${variantResult.rows.length} variant playlist(s) survived in storage. ` +
+                "Synthesised and uploaded a new master.m3u8 — item promoted back to broadcast.",
+              videoId,
+              queueId,
+              variantCount: variantResult.rows.length,
+            });
+            this._tier1Retranscode += 1;
+            this.stats.consecutiveErrors = 0;
+            return { tier: "tier1_promoted", videoId, message: `master.m3u8 synthesised from ${variantResult.rows.length} variant playlist(s)` };
+          }
+
+          // No recoverable variant playlists — permanently unplayable.
+          // Deactivate the queue item and quarantine the video.
           if (queueId) {
             await db.update(schema.broadcastQueueTable)
               .set({ isActive: false, validatorDeactivatedReason: "hls_master_missing_no_source" })
@@ -197,7 +275,7 @@ class StorageBlobRecoveryServiceImpl {
           await quarantineVideo(videoId, {
             errorCode: "SOURCE_MISSING",
             reason:
-              `HLS master.m3u8 missing and ${segmentCount} orphaned segment blob(s) found with no MP4 source blob. ` +
+              `HLS master.m3u8 and all variant playlists missing; ${segmentCount} orphaned segment blob(s) found with no MP4 source. ` +
               "Re-upload the source video to restore.",
             triggeredBy,
             metadata: { segmentCount, hlsUrl, objectPath, detectedAtMs: Date.now() },
@@ -209,7 +287,7 @@ class StorageBlobRecoveryServiceImpl {
             level: "error",
             component: triggeredBy,
             message:
-              `"${title}" (videoId: ${videoId}) is missing HLS master.m3u8 ` +
+              `"${title}" (videoId: ${videoId}) is missing HLS master.m3u8 and all variant playlists ` +
               `but has ${segmentCount} segment blob(s) in storage and no MP4 source blob. ` +
               "Video deactivated from broadcast queue. Operator action required: re-upload the source video.",
             videoId,
@@ -218,7 +296,7 @@ class StorageBlobRecoveryServiceImpl {
           });
           this._tier1Alert += 1;
           this.stats.consecutiveErrors = 0;
-          return { tier: "tier1_alert_only", videoId, message: `${segmentCount} HLS segment blob(s) found but no MP4 source — deactivated, operator action required` };
+          return { tier: "tier1_alert_only", videoId, message: `${segmentCount} HLS segment blob(s) found but no variant playlists or MP4 source — deactivated` };
         }
       }
 
