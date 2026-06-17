@@ -4,6 +4,7 @@ import { db, schema } from "../../../infrastructure/db.js";
 import { resolveSource } from "../resolver/universal-source-resolver.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
+import { storage } from "../../../infrastructure/storage.js";
 import type { V2Item, V2Source } from "../domain/types.js";
 import { isUndefinedColumnError } from "../../../infrastructure/db-schema-guard.js";
 import { runtimeRepo } from "./runtime.repo.js";
@@ -267,6 +268,81 @@ function proxyExternalSource<T extends Pick<V2Source, "kind" | "url">>(
 // future work.
 
 export const BAD_URL_TTL_MS = 90_000; // 90 seconds — base TTL for persistent failures
+
+// ── Storage blob verification TTL cache ──────────────────────────────────────
+// Admission fast-path: for queue items that use a local upload blob as their
+// primary source (no hlsMasterUrl), we verify the blob exists at most once
+// every STORAGE_VERIFY_TTL_MS.  This prevents the orchestrator from serving
+// 404 sources for items whose upload blob was deleted.
+//
+// On a CACHE MISS the item is ADMITTED immediately (fast-path — no I/O on the
+// hot orchestrator reload path) and a background headObject check is scheduled.
+// The NEXT reload uses the cached result; items found missing are excluded and
+// the storage recovery waterfall is triggered automatically.
+//
+// Items with hlsMasterUrl are covered by the queue-integrity-validator
+// HLS_STORAGE_MISSING check — no redundant admission check needed here.
+
+const STORAGE_VERIFY_TTL_MS = 5 * 60_000; // 5 minutes
+interface StorageVerifyEntry { ok: boolean; expiresMs: number; }
+const storageVerifyCache = new Map<string, StorageVerifyEntry>();
+const storageVerifyInFlight = new Set<string>(); // prevent concurrent headObject for same id
+
+/** Derive the bare storage key from a localVideoUrl value. */
+function deriveStorageKey(localVideoUrl: string): string {
+  if (/^https?:\/\//i.test(localVideoUrl)) {
+    // Absolute URL (e.g. https://…/api/v1/uploads/uploads/abc.mp4)
+    const marker = "/api/v1/uploads/";
+    const idx = localVideoUrl.indexOf(marker);
+    if (idx === -1) return "";
+    return localVideoUrl.slice(idx + marker.length);
+  }
+  // Relative path: /api/v1/uploads/abc.mp4 → abc.mp4  (or uploads/abc.mp4 → abc.mp4)
+  return localVideoUrl.replace(/^\/(?:api\/(?:v\d+\/)?)?/, "");
+}
+
+/**
+ * Schedule a background storage blob verification for a queue item.
+ * Non-blocking — caller continues immediately; result is cached for the next
+ * loadActive() call (within STORAGE_VERIFY_TTL_MS).
+ */
+function scheduleStorageVerify(videoId: string, localVideoUrl: string, title: string): void {
+  if (storageVerifyInFlight.has(videoId)) return;
+  storageVerifyInFlight.add(videoId);
+  void (async () => {
+    try {
+      const key = deriveStorageKey(localVideoUrl);
+      if (!key) {
+        // Cannot derive a key — assume ok (external URL / unrecognised format)
+        storageVerifyCache.set(videoId, { ok: true, expiresMs: Date.now() + STORAGE_VERIFY_TTL_MS });
+        return;
+      }
+      const { exists } = await storage().headObject(key);
+      storageVerifyCache.set(videoId, { ok: exists, expiresMs: Date.now() + STORAGE_VERIFY_TTL_MS });
+      if (!exists) {
+        logger.warn(
+          { videoId, key, title },
+          "[broadcast-v2] storage-verify: source blob missing — triggering recovery waterfall (non-blocking)",
+        );
+        // Dynamic import to avoid circular-dependency at module init time.
+        const { storageBlobRecoveryService } = await import("../engine/storage-blob-recovery.service.js");
+        await storageBlobRecoveryService.runWaterfall({
+          videoId,
+          queueId: "",
+          title,
+          objectPath: localVideoUrl,
+          hlsUrl: null,
+          triggeredBy: "queue-admission-verify",
+        }).catch(() => { /* non-fatal */ });
+      }
+    } catch {
+      // Transient storage error — use a short TTL so we retry on the next reload.
+      storageVerifyCache.set(videoId, { ok: true, expiresMs: Date.now() + 30_000 });
+    } finally {
+      storageVerifyInFlight.delete(videoId);
+    }
+  })();
+}
 
 // ── Exponential backoff TTL schedule ────────────────────────────────────────
 // First failure: 20 s — brief window that allows a transient stall (network
@@ -977,7 +1053,66 @@ export const queueRepo = {
         "[broadcast-v2] loadActive: some queue items failed validation — they will not air",
       );
     }
-    return validated.map((r) => ({ ...r, durationSecs: Math.max(1, r.durationSecs) }));
+
+    // ── Storage blob admission fast-path ──────────────────────────────────────
+    // For items that rely on a local upload blob as their primary source
+    // (no hlsMasterUrl), check the 5-min TTL storage-verify cache.
+    //
+    //  • Cache HIT "ok=false" → exclude the item immediately.  Recovery waterfall
+    //    was already triggered when the cache entry was written; item re-enters
+    //    rotation automatically after the waterfall heals it and the cache TTL expires.
+    //  • Cache MISS or expired → admit the item (fast-path — no I/O here) and
+    //    schedule a non-blocking background headObject check whose result will be
+    //    cached for the next call.
+    //
+    // Items with hlsMasterUrl are handled by the queue-integrity-validator's
+    // HLS_STORAGE_MISSING check and do not need this additional admission gate.
+    const admissionNow = Date.now();
+    const admissionVerified: typeof validated = [];
+    for (const r of validated) {
+      // Items with HLS master URL are out-of-scope for this check.
+      if (r.hlsMasterUrl) {
+        admissionVerified.push(r);
+        continue;
+      }
+      // Items with no local source URL (YouTube, external MP4 by queue row) skip check.
+      if (!r.localVideoUrl) {
+        admissionVerified.push(r);
+        continue;
+      }
+      // External URLs (not a local upload) — skip blob check.
+      const lv = r.localVideoUrl;
+      const isExternal = /^https?:\/\//i.test(lv) && !lv.includes("/api/v1/uploads/") && !lv.includes("/api/uploads/");
+      if (isExternal) {
+        admissionVerified.push(r);
+        continue;
+      }
+
+      const vId = r.videoId ?? "";
+      if (!vId) {
+        admissionVerified.push(r);
+        continue;
+      }
+
+      const cached = storageVerifyCache.get(vId);
+      if (cached && cached.expiresMs > admissionNow) {
+        if (!cached.ok) {
+          logger.warn(
+            { itemId: r.id, videoId: vId, title: r.title },
+            "[broadcast-v2] loadActive: excluding item — storage blob verified missing (recovery in progress)",
+          );
+          continue; // Exclude from this cycle
+        }
+        admissionVerified.push(r);
+        continue;
+      }
+
+      // Cache miss or expired: admit immediately (fast-path) + schedule background check.
+      admissionVerified.push(r);
+      scheduleStorageVerify(vId, lv, r.title ?? vId);
+    }
+
+    return admissionVerified.map((r) => ({ ...r, durationSecs: Math.max(1, r.durationSecs) }));
   },
 
   /**

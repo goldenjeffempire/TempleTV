@@ -28,30 +28,10 @@ import { storageBlobRecoveryService } from "./storage-blob-recovery.service.js";
 
 const MODULE = "[storage-reconciliation]";
 
-/** Maximum items to reconcile per pass (prevents runaway scans on huge queues). */
-const MAX_ITEMS_PER_PASS = 500;
-
-/** Per-video cooldown: don't re-run recovery for the same videoId within this window. */
-const RECOVERY_COOLDOWN_MS = 30 * 60_000; // 30 minutes
-
-/** In-memory cooldown map: videoId → last-recovery wall-clock ms. */
-const recoveryCooldown = new Map<string, number>();
-
-function isOnCooldown(videoId: string): boolean {
-  const last = recoveryCooldown.get(videoId);
-  if (!last) return false;
-  return Date.now() - last < RECOVERY_COOLDOWN_MS;
-}
-
-function markRecovered(videoId: string): void {
-  recoveryCooldown.set(videoId, Date.now());
-  if (recoveryCooldown.size > 2000) {
-    const cutoff = Date.now() - RECOVERY_COOLDOWN_MS;
-    for (const [id, ts] of recoveryCooldown.entries()) {
-      if (ts < cutoff) recoveryCooldown.delete(id);
-    }
-  }
-}
+// No per-item cap — every active queue item is checked each pass.
+// The worker interval itself (STORAGE_RECONCILIATION_INTERVAL_MS, default 10 min)
+// is the throttle: running exhaustively once per interval is correct behaviour.
+// A per-item cooldown would allow large queues to permanently skip items.
 
 interface ReconciliationRow {
   queueId: string;
@@ -90,8 +70,7 @@ async function runReconciliationPass(): Promise<void> {
           isNotNull(q.videoId),
         ),
       )
-      .orderBy(q.sortOrder)
-      .limit(MAX_ITEMS_PER_PASS) as ReconciliationRow[];
+      .orderBy(q.sortOrder) as ReconciliationRow[];
     rows = raw;
   } catch (err) {
     logger.warn({ err }, `${MODULE} DB query failed — skipping pass (non-fatal)`);
@@ -121,11 +100,6 @@ async function runReconciliationPass(): Promise<void> {
       continue;
     }
 
-    if (isOnCooldown(videoId)) {
-      skipped += 1;
-      continue;
-    }
-
     const result = await storageBlobRecoveryService.runWaterfall({
       videoId,
       queueId: row.queueId,
@@ -136,13 +110,12 @@ async function runReconciliationPass(): Promise<void> {
     });
 
     if (result.tier !== "healthy") {
-      markRecovered(videoId);
       logger.warn({ videoId, queueId: row.queueId, tier: result.tier, message: result.message }, `${MODULE} recovery action taken`);
     }
   }
 
   // Orphaned blob scan: blobs in storage_blobs with no managed_videos row.
-  await storageBlobRecoveryService.scanOrphanedBlobs(200);
+  await storageBlobRecoveryService.scanOrphanedBlobs();
 
   const elapsedMs = Date.now() - startMs;
   const stats = storageBlobRecoveryService.getStats();

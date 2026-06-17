@@ -1452,27 +1452,33 @@ class QueueIntegrityValidatorImpl {
                     // Step 2b: No source URL, OR the source blob was already
                     // cleaned up after a previous successful transcode
                     // (sourceCleanupStatus='deleted'). The HLS blob is gone
-                    // and the source is unavailable — there is nothing to
-                    // transcode from. Reset transcodingStatus to 'none' and
-                    // clear hls_master_url so the video is not stuck in a
-                    // limbo hls_ready state. The operator must re-upload the
-                    // source file to restore this item.
-                    await db
-                      .update(schema.videosTable)
-                      .set({ hlsMasterUrl: null, transcodingStatus: "none" })
-                      .where(eq(schema.videosTable.id, row.videoId2));
-                    logger.warn(
-                      {
-                        videoId: row.videoId2,
-                        itemId: row.id,
-                        sourceCleanupStatus: row.vSourceCleanup,
-                        hasLocalUrl: !!row.vLocalUrl,
-                      },
-                      "[queue-validator] AUTO-FIX: HLS_STORAGE_MISSING — source unavailable " +
-                      "(no localVideoUrl or sourceCleanupStatus='deleted'); " +
-                      "cleared hls_master_url and reset transcodingStatus to 'none'. " +
-                      "Operator must re-upload the source file to restore this item.",
-                    );
+                    // and the source URL is unavailable.
+                    //
+                    // Delegate to the storage blob recovery waterfall rather than
+                    // silently resetting to 'none'.  The waterfall will:
+                    //   Tier 1/2: re-transcode if segment blobs or MP4 exists in storage
+                    //   Tier 3:   quarantine as SOURCE_MISSING if zero blobs found
+                    // This closes the autonomous recovery loop for items where the
+                    // previous "reset to none" left the video in limbo indefinitely.
+                    const capturedRow = row;
+                    void (async () => {
+                      try {
+                        const { storageBlobRecoveryService } = await import("./storage-blob-recovery.service.js");
+                        await storageBlobRecoveryService.runWaterfall({
+                          videoId: capturedRow.videoId2!,
+                          queueId: capturedRow.id,
+                          title: capturedRow.title ?? capturedRow.videoId2 ?? "(unknown)",
+                          objectPath: capturedRow.vLocalUrl ?? null,
+                          hlsUrl: null,
+                          triggeredBy: "queue-validator-HLS_STORAGE_MISSING",
+                        });
+                      } catch (wfErr) {
+                        logger.warn(
+                          { err: wfErr, videoId: capturedRow.videoId2 },
+                          "[queue-validator] HLS_STORAGE_MISSING recovery waterfall failed (non-fatal)",
+                        );
+                      }
+                    })();
                   }
                 }
 

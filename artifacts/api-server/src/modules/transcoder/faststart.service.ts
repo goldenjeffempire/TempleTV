@@ -291,12 +291,35 @@ export async function runFaststart(
     log.info("faststart: validating source metadata before download");
     const fsHead = await storage().headObject(objectKey).catch(() => null);
     if (fsHead?.exists === false) {
+      // Trigger the storage blob recovery waterfall non-blockingly.  The waterfall
+      // checks whether HLS blobs already exist (healthy), can re-transcode (tier1/2),
+      // or must quarantine (tier3 SOURCE_MISSING).  This closes the autonomous
+      // recovery loop for blobs discovered missing during the faststart path.
+      void (async () => {
+        try {
+          const { storageBlobRecoveryService } = await import("../broadcast-v2/engine/storage-blob-recovery.service.js");
+          await storageBlobRecoveryService.runWaterfall({
+            videoId,
+            queueId: "",
+            title: videoId,
+            objectPath: objectKey,
+            hlsUrl: null,
+            triggeredBy: "faststart",
+          });
+        } catch (recErr) {
+          log.warn({ err: recErr }, "faststart: post-missing-blob recovery trigger failed (non-fatal)");
+        }
+      })();
       throw Object.assign(
         new Error(
           `faststart: source object not found in storage (key="${objectKey}"). ` +
           `The upload blob may have been deleted. Re-upload to recover.`,
         ),
-        { code: "CORRUPT_UPLOAD" },
+        // SOURCE_MISSING (not CORRUPT_UPLOAD): the file was deleted, not corrupt.
+        // This distinction matters in the transcoder dispatcher: CORRUPT_UPLOAD is
+        // treated as a permanent structural failure; SOURCE_MISSING triggers the
+        // storage recovery waterfall on the dispatcher side as well.
+        { code: "SOURCE_MISSING" },
       );
     }
     if (fsHead?.contentLength != null && fsHead.contentLength <= 0) {

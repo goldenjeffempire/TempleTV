@@ -171,21 +171,42 @@ class StorageBlobRecoveryServiceImpl {
           return { tier: "tier1_retranscode", videoId, message: `${segmentCount} HLS segment blob(s) found, MP4 present — re-transcoding` };
         } else {
           // Tier 1b: No MP4 source — segments exist but we can't re-transcode.
-          // Surface to operators; let media integrity scanner probe the segments.
+          // The item is permanently unplayable (no source to rebuild from).
+          // Deactivate the queue item to stop dead-air cycles and quarantine the
+          // video so operators are informed and the item no longer airs.
+          if (queueId) {
+            await db.update(schema.broadcastQueueTable)
+              .set({ isActive: false, validatorDeactivatedReason: "hls_master_missing_no_source" })
+              .where(eq(schema.broadcastQueueTable.id, queueId))
+              .catch((err) => {
+                logger.warn({ err, videoId, queueId }, "[storage-blob-recovery] tier1b: failed to deactivate queue item (non-fatal)");
+              });
+          }
+          await quarantineVideo(videoId, {
+            errorCode: "SOURCE_MISSING",
+            reason:
+              `HLS master.m3u8 missing and ${segmentCount} orphaned segment blob(s) found with no MP4 source blob. ` +
+              "Re-upload the source video to restore.",
+            triggeredBy,
+            metadata: { segmentCount, hlsUrl, objectPath, detectedAtMs: Date.now() },
+          }).catch((err) => {
+            logger.warn({ err, videoId }, "[storage-blob-recovery] tier1b: quarantine call failed (non-fatal)");
+          });
+          adminEventBus.push("broadcast-queue-updated", { reason: "storage-blob-recovery-tier1b-deactivated", videoId, queueId });
           adminEventBus.push("ops-alert", {
-            level: "warn",
+            level: "error",
             component: triggeredBy,
             message:
               `"${title}" (videoId: ${videoId}) is missing HLS master.m3u8 ` +
               `but has ${segmentCount} segment blob(s) in storage and no MP4 source blob. ` +
-              "Manual recovery required: re-upload the source video.",
+              "Video deactivated from broadcast queue. Operator action required: re-upload the source video.",
             videoId,
             queueId,
             segmentCount,
           });
           this.stats.tier1AlertTotal += 1;
           this.stats.consecutiveErrors = 0;
-          return { tier: "tier1_alert_only", videoId, message: `${segmentCount} HLS segment blob(s) found but no MP4 source — operator action required` };
+          return { tier: "tier1_alert_only", videoId, message: `${segmentCount} HLS segment blob(s) found but no MP4 source — deactivated, operator action required` };
         }
       }
 
@@ -250,24 +271,27 @@ class StorageBlobRecoveryServiceImpl {
 
   /**
    * Scan storage_blobs for orphaned entries — blobs whose prefix matches
-   * `transcoded/{videoId}/` but whose videoId has no corresponding
-   * managed_videos row.  These accumulate after hard-deletes or failed imports.
+   * `transcoded/{videoId}/` or `uploads/{key}` but whose videoId / upload
+   * has no corresponding managed_videos row.  These accumulate after hard-
+   * deletes, failed imports, or abandoned upload sessions.
    *
-   * Returns the count of orphaned blob prefixes found and pushes an ops-alert
-   * if any are detected.  Does NOT delete blobs — deletion is left to the
-   * storage cleanup worker; this pass only surfaces them.
+   * Scans both prefixes (transcoded/ AND uploads/) so operators get a
+   * complete picture of orphaned storage consumption.
    *
-   * @param limit Maximum distinct videoId prefixes to scan per call (default 200)
+   * Returns the total count of orphaned blob prefixes detected and pushes an
+   * ops-alert if any are found.  Does NOT delete blobs — this is a detect-
+   * and-alert-only pass.  Operator action required to clean up manually
+   * or via the admin storage cleanup tool.
    */
-  async scanOrphanedBlobs(limit = 200): Promise<number> {
+  async scanOrphanedBlobs(): Promise<number> {
     try {
-      const result = await db.execute<{ orphaned_prefix_count: number }>(sql`
+      // Scan transcoded/ prefix: blobs for videos that no longer exist in managed_videos.
+      const transcodedResult = await db.execute<{ orphaned_prefix_count: number }>(sql`
         WITH distinct_prefixes AS (
           SELECT DISTINCT
             regexp_replace(key, '^transcoded/([^/]+)/.*$', '\\1') AS video_id
           FROM storage_blobs
           WHERE key LIKE 'transcoded/%'
-          LIMIT ${limit}
         )
         SELECT COUNT(*)::int AS orphaned_prefix_count
         FROM distinct_prefixes dp
@@ -275,23 +299,45 @@ class StorageBlobRecoveryServiceImpl {
           SELECT 1 FROM managed_videos mv WHERE mv.id = dp.video_id
         )
       `);
-      const count = Number(result.rows[0]?.orphaned_prefix_count ?? 0);
-      this.stats.orphanedBlobsTotal = count;
-      if (count > 0) {
+
+      // Scan uploads/ prefix: blobs where no managed_videos row claims that objectPath.
+      // Uses a conservative LIKE match to find keys that no row references.
+      const uploadsResult = await db.execute<{ orphaned_count: number }>(sql`
+        SELECT COUNT(*)::int AS orphaned_count
+        FROM storage_blobs sb
+        WHERE sb.key LIKE 'uploads/%'
+          AND NOT EXISTS (
+            SELECT 1 FROM managed_videos mv
+            WHERE mv.object_path = sb.key
+               OR mv.local_video_url LIKE '%' || sb.key
+          )
+      `);
+
+      const transcodedCount = Number(transcodedResult.rows[0]?.orphaned_prefix_count ?? 0);
+      const uploadsCount = Number(uploadsResult.rows[0]?.orphaned_count ?? 0);
+      const total = transcodedCount + uploadsCount;
+
+      this.stats.orphanedBlobsTotal = total;
+
+      if (total > 0) {
         logger.warn(
-          { orphanedPrefixCount: count },
-          "[storage-blob-recovery] orphaned HLS blob prefixes detected (no managed_videos row) — storage cleanup worker will GC these",
+          { orphanedTranscodedPrefixes: transcodedCount, orphanedUploadBlobs: uploadsCount, total },
+          "[storage-blob-recovery] orphaned blob entries detected — operator action required",
         );
         adminEventBus.push("ops-alert", {
           level: "warn",
           component: "storage-blob-recovery",
           message:
-            `${count} orphaned HLS blob prefix(es) found in storage_blobs with no corresponding managed_videos row. ` +
-            "The storage cleanup worker will garbage-collect these on its next pass.",
-          orphanedCount: count,
+            `${total} orphaned blob entries detected in storage_blobs ` +
+            `(${transcodedCount} transcoded HLS prefix(es), ${uploadsCount} upload blob(s)) ` +
+            "with no corresponding managed_videos row. " +
+            "Operator action required: review and clean up via the admin storage cleanup tool.",
+          orphanedTranscodedPrefixes: transcodedCount,
+          orphanedUploadBlobs: uploadsCount,
+          total,
         });
       }
-      return count;
+      return total;
     } catch (err) {
       logger.warn({ err }, "[storage-blob-recovery] orphaned blob scan failed (non-fatal)");
       return 0;
