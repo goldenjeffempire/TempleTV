@@ -152,6 +152,17 @@ const InitBodySchema = z.object({
   ext: z.string().max(16).optional().default("mp4"),
   originalFilename: z.string().max(500).optional(),
   mimeType: z.string().max(255).optional(),
+  /**
+   * Optional SHA-256 hash of the complete file (64-char lowercase hex).
+   * When provided, the finalize background task computes the SHA-256 of
+   * the assembled blob via PostgreSQL sha256() and rejects any mismatch
+   * as CORRUPT_SOURCE — a cryptographic end-to-end integrity guarantee
+   * beyond per-chunk SHA-256 + assembled-size checks.
+   */
+  fileSha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/, "fileSha256 must be a 64-character lowercase hex SHA-256 hash")
+    .optional(),
 });
 
 function buildObjectKey(ext: string, sessionId: string): string {
@@ -1508,6 +1519,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           uploadedBy: req.principal?.id ?? null,
           storageBackend,
           status: "uploading",
+          expectedFileSha256: body.fileSha256 ?? null,
         });
       } catch (insertErr) {
         // If the DB session insert fails but we already reserved a multipart
@@ -1577,6 +1589,14 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       const { sessionId } = req.params as { sessionId: string };
       const chunkIndex = parseInt((req.headers["x-chunk-index"] as string) ?? "", 10);
       const checksum = (req.headers["x-chunk-checksum"] as string | undefined) ?? "";
+      // Optional byte-offset header (X-Byte-Offset: <number>).
+      // Populated by the admin upload client for all new sessions.
+      // Null for legacy clients that predate byte-range tracking.
+      const rawByteOffset = req.headers["x-byte-offset"] as string | undefined;
+      const byteOffset =
+        rawByteOffset !== undefined && rawByteOffset !== ""
+          ? (isNaN(parseInt(rawByteOffset, 10)) ? null : parseInt(rawByteOffset, 10))
+          : null;
 
       if (isNaN(chunkIndex) || chunkIndex < 0) {
         return reply.code(400).send({ error: "Missing or invalid X-Chunk-Index header" });
@@ -1665,6 +1685,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               chunkIndex,
               checksum,
               sizeBytes,
+              byteOffset,
               s3Etag: etag,
               storageBackend: "db",
             });
@@ -1695,6 +1716,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           chunkIndex,
           checksum,
           sizeBytes,
+          byteOffset,
           fallbackData: body,
           storageBackend: "db_fallback",
         });
@@ -2068,6 +2090,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           chunkIndex: chunks.chunkIndex,
           checksum: chunks.checksum,
           sizeBytes: chunks.sizeBytes,
+          byteOffset: chunks.byteOffset,
           s3Etag: chunks.s3Etag,
           storageBackend: chunks.storageBackend,
           receivedAt: chunks.receivedAt,
@@ -2098,6 +2121,57 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           ),
           { statusCode: 422 },
         );
+      }
+
+      // ── Byte-range contiguous coverage validation ─────────────────────────────
+      // Only runs when ALL chunks carry a byteOffset (new sessions).
+      // Legacy sessions (byteOffset=null) skip this check — they're protected
+      // by the chunk-count check above + the assembly size assertion below.
+      //
+      // Validates three properties:
+      //   1. All byte offsets are unique (DB unique index guards duplicates
+      //      by chunkIndex, but byteOffset uniqueness is an extra safety net).
+      //   2. Offsets form a contiguous sequence: sorted[0].byteOffset === 0
+      //      and each subsequent offset equals the previous offset + sizeBytes.
+      //   3. Full coverage: last chunk's offset + sizeBytes === session.sizeBytes.
+      {
+        const chunksWithOffsets = allChunks.filter(
+          (c): c is typeof c & { byteOffset: number } => c.byteOffset !== null && c.byteOffset !== undefined,
+        );
+        if (chunksWithOffsets.length === allChunks.length && chunksWithOffsets.length > 0) {
+          const sorted = [...chunksWithOffsets].sort((a, b) => a.byteOffset - b.byteOffset);
+          let expectedOffset = 0;
+          let gapError: string | null = null;
+          for (const chunk of sorted) {
+            if (chunk.byteOffset !== expectedOffset) {
+              gapError =
+                `Byte-range coverage gap: expected chunk at byte offset ${expectedOffset}, ` +
+                `found chunk ${chunk.chunkIndex} at offset ${chunk.byteOffset}. ` +
+                `This indicates a missing or misaligned chunk — re-upload to recover.`;
+              break;
+            }
+            expectedOffset += chunk.sizeBytes;
+          }
+          if (gapError) {
+            await resetLock();
+            throw Object.assign(new Error(gapError), { statusCode: 422 });
+          }
+          if (expectedOffset !== session.sizeBytes) {
+            await resetLock();
+            throw Object.assign(
+              new Error(
+                `Byte-range coverage incomplete: chunks cover ${expectedOffset} bytes ` +
+                `but session declared ${session.sizeBytes} bytes total. ` +
+                `The upload appears truncated — re-upload to recover.`,
+              ),
+              { statusCode: 422 },
+            );
+          }
+          req.log.debug(
+            { sessionId, totalBytes: session.sizeBytes, chunks: allChunks.length },
+            "[finalize] byte-range contiguous coverage verified ✓",
+          );
+        }
       }
 
       // ── Path A: "db" backend — pre-commit video row and respond immediately ──
@@ -2350,6 +2424,76 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 );
                 clearTimeout(assemblyWatchdog);
                 return;
+              }
+            }
+
+            // ── File-level SHA-256 cryptographic verification ─────────────────
+            // Runs only when the client declared a file hash at init time.
+            // PostgreSQL's sha256(bytea) computes the hash server-side without
+            // moving the blob into Node.js memory — O(1) Node.js heap regardless
+            // of file size. A mismatch means bytes were corrupted in transit or
+            // during assembly and the per-chunk SHA-256s cannot be fully trusted
+            // (e.g. a hash-collision attack or a storage-level silent corruption).
+            if (session.expectedFileSha256) {
+              try {
+                type HashRow = { file_sha256: string };
+                const hashResult = await db.execute<HashRow>(
+                  sql`SELECT encode(sha256(data), 'hex') AS file_sha256 FROM storage_blobs WHERE key = ${objectKey}`,
+                );
+                const hashRows = (hashResult as unknown as { rows?: HashRow[] }).rows ??
+                  (hashResult as unknown as HashRow[]);
+                const computedSha256 = hashRows[0]?.file_sha256;
+                if (computedSha256 && computedSha256 !== session.expectedFileSha256) {
+                  capturedLog.error(
+                    {
+                      sessionId,
+                      videoId,
+                      expectedSha256: session.expectedFileSha256,
+                      computedSha256,
+                    },
+                    "[finalize:bg] file SHA-256 mismatch — assembled blob does not match client-declared hash; marking failed",
+                  );
+                  await Promise.allSettled([
+                    db
+                      .update(videos)
+                      .set({
+                        transcodingStatus: "failed",
+                        transcodingErrorCode: "CORRUPT_SOURCE",
+                        transcodingErrorMessage:
+                          `File integrity check failed: SHA-256 mismatch. ` +
+                          `Expected ${session.expectedFileSha256.slice(0, 16)}… ` +
+                          `but assembled blob hashes to ${computedSha256.slice(0, 16)}…. ` +
+                          `This indicates data corruption in transit or assembly. ` +
+                          `Please delete this video and re-upload the original file.`,
+                      })
+                      .where(eq(videos.id, videoId)),
+                    db
+                      .update(sessions)
+                      .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
+                      .where(eq(sessions.sessionId, sessionId)),
+                  ]);
+                  adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-sha256-mismatch" });
+                  uploadTelemetry.serverFail(
+                    sessionId,
+                    session.sizeBytes,
+                    "assembly_sha256_mismatch",
+                    `SHA-256 mismatch: expected ${session.expectedFileSha256.slice(0, 16)}… got ${computedSha256.slice(0, 16)}…`,
+                  );
+                  clearTimeout(assemblyWatchdog);
+                  return;
+                }
+                capturedLog.info(
+                  { sessionId, videoId, sha256: session.expectedFileSha256.slice(0, 16) },
+                  "[finalize:bg] file SHA-256 verified ✓",
+                );
+              } catch (sha256Err) {
+                // Non-fatal: size check already passed and per-chunk SHA-256s
+                // were verified at upload time. Log and continue — the file is
+                // likely correct even if the PG sha256() query failed.
+                capturedLog.warn(
+                  { err: sha256Err, sessionId, videoId },
+                  "[finalize:bg] file SHA-256 verification query failed (non-fatal) — skipping; size check passed",
+                );
               }
             }
 

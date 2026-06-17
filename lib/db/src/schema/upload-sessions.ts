@@ -70,6 +70,14 @@ export const uploadSessionsTable = pgTable(
      * before starting a fresh attempt.  Cleared after successful assembly.
      */
     assemblyUploadId: text("assembly_upload_id"),
+    /**
+     * Optional client-declared SHA-256 hash of the complete file (64-char hex).
+     * When present, the finalize background task computes the SHA-256 of the
+     * assembled blob via PostgreSQL sha256() and rejects any mismatch as
+     * CORRUPT_SOURCE — providing a cryptographic end-to-end integrity guarantee
+     * beyond the per-chunk SHA-256 + assembled-size checks.
+     */
+    expectedFileSha256: text("expected_file_sha256"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     // $onUpdateFn ensures the column is refreshed on every Drizzle-driven UPDATE,
     // not just on INSERT (defaultNow() only fires at INSERT time).
@@ -101,6 +109,19 @@ export const uploadChunksTable = pgTable(
     chunkIndex: integer("chunk_index").notNull(),
     checksum: text("checksum").notNull(),
     sizeBytes: integer("size_bytes").notNull(),
+    /**
+     * Byte offset of this chunk within the complete file (0-based).
+     * Populated from the X-Byte-Offset request header.
+     * Null for sessions created before this column was added.
+     * At finalize time, if all chunks have byteOffset set, contiguous
+     * coverage is validated before assembly begins.
+     */
+    byteOffset: bigint("byte_offset", { mode: "number" }),
+    /**
+     * Real MD5 ETag of the chunk bytes — matches S3 ETag semantics.
+     * Populated by DatabaseObjectStorage.uploadPart() since the real-ETag fix.
+     * Legacy sessions (before the fix) hold the part number as a string (e.g. "1").
+     */
     s3Etag: text("s3_etag"),
     fallbackData: bytea("fallback_data"),
     storageBackend: text("storage_backend").notNull().default("db"),

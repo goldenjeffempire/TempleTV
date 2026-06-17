@@ -966,6 +966,7 @@ class UploadQueueEngine {
               "Content-Type": "application/octet-stream",
               "X-Chunk-Index": String(chunkIndex),
               "X-Chunk-Checksum": checksum,
+              "X-Byte-Offset": String(start),
             };
             for (const [k, v] of Object.entries(hdrs)) xhr.setRequestHeader(k, v);
 
@@ -1146,6 +1147,22 @@ class UploadQueueEngine {
       // with no recovery path.
       await ensureFreshToken().catch(() => {});
 
+      // File-level SHA-256 for assembly integrity verification.
+      // Only computed for files ≤ 200 MiB — SubtleCrypto.digest() requires
+      // the full ArrayBuffer in one shot, which would OOM the browser tab for
+      // very large files (1 GB+). For larger files, per-chunk SHA-256 checks
+      // plus byte-range offset validation are the primary integrity guarantees.
+      let fileSha256: string | undefined;
+      const SHA256_SIZE_LIMIT = 200 * 1024 * 1024; // 200 MiB
+      if (file.size <= SHA256_SIZE_LIMIT) {
+        try {
+          const fileBuffer = await file.arrayBuffer();
+          fileSha256 = await sha256Hex(fileBuffer);
+        } catch {
+          // Non-fatal — proceed without file hash
+        }
+      }
+
       const initBody = JSON.stringify({
         sessionId,
         title: item.title,
@@ -1159,6 +1176,7 @@ class UploadQueueEngine {
         ext,
         originalFilename: file.name,
         mimeType: file.type || "video/mp4",
+        ...(fileSha256 ? { fileSha256 } : {}),
       });
 
       // Race the init fetch against a 30-second timeout so a slow server never

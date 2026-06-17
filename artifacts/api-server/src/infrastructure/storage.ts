@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { sql } from "drizzle-orm";
 import { db, pgPool } from "./db.js";
@@ -487,12 +487,17 @@ class DatabaseObjectStorage implements ObjectStorage {
 
   /**
    * Stores a raw chunk as a temp row keyed `_parts/{uploadId}/{partNumber:06d}`.
-   * Returns a synthetic ETag (the part number as a string) matching S3 semantics.
+   * Returns a real MD5 ETag of the part bytes — matching S3 ETag semantics and
+   * providing a cryptographic fingerprint for each stored part.
+   *
+   * The MD5 is computed in Node.js after the part is written to storage so the
+   * ETag can be verified independently of the DB bytes at finalize time.
    */
   async uploadPart({ uploadId, partNumber, body }: { key: string; uploadId: string; partNumber: number; body: Buffer }): Promise<{ etag: string }> {
     const partKey = `_parts/${uploadId}/${String(partNumber).padStart(6, "0")}`;
     await this.putObject({ key: partKey, body, contentType: "application/octet-stream" });
-    return { etag: String(partNumber) };
+    const etag = createHash("md5").update(body).digest("hex");
+    return { etag };
   }
 
   /**
