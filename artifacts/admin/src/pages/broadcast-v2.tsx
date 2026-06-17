@@ -752,10 +752,10 @@ const SortableQueueItem = memo(function SortableQueueItem({
               <Badge
                 variant="secondary"
                 className="gap-1 shrink-0 text-[10px] text-amber-600 border-amber-200 dark:border-amber-800"
-                title="Faststart optimisation running — item held out of queue until ready."
+                title="Faststart running in background — moov atom is being relocated to byte 0. Item is already airing on the raw upload; streaming quality improves once faststart completes."
               >
                 <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                Preparing…
+                Optimising…
               </Badge>
             );
           if (item.transcodingStatus === "encoding")
@@ -3334,8 +3334,9 @@ function BroadcastV2PageInner() {
             </strong>{" "}
             The moov atom is being relocated to byte 0 (faststart) so the video can stream
             instantly without an HTTP Range pre-flight.{" "}
-            {processingCount !== 1 ? "These items will air" : "This item will air"} automatically
-            once optimisation completes — no operator action needed.
+            {processingCount !== 1 ? "These items are already airing" : "This item is already airing"} on
+            the raw upload — faststart improves initial buffering for new viewers without
+            interrupting the live broadcast. No operator action needed.
           </div>
           <button
             type="button"
