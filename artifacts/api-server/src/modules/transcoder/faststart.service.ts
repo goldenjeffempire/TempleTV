@@ -434,33 +434,39 @@ export async function runFaststart(
     log.info("faststart: probing container validity");
     const containerValid = await probeContainerIsValid(inputPath);
     if (!containerValid) {
-      // Detect the specific case of mdat-present-but-no-moov immediately to avoid
-      // running all three remux strategies on an unrecoverable file.
+      // Detect mdat-present-but-no-moov so we can log a targeted warning,
+      // but do NOT bail immediately — always attempt all remux strategies.
+      // Strategies 1-4 each fail quickly (<5 s) for a truly moov-absent file,
+      // and Strategy 5 (extended analyzeduration probe) occasionally succeeds
+      // on files that were incorrectly flagged as moov-absent by the standard
+      // 5-second ffprobe scan (large-moov, unusual structure, fMP4 variants).
       const mdatNoMoov = await detectMdatWithoutMoov(inputPath);
       if (mdatNoMoov) {
-        throw Object.assign(
-          new Error(
-            "faststart: source MP4 has media data (mdat) but NO moov atom — the recording or export " +
-            "was interrupted before the moov could be written. The codec configuration (SPS/PPS) " +
-            "stored in the moov is permanently lost. Re-upload from the original source file.",
-          ),
-          { code: "CORRUPT_UPLOAD", kind: "moov_absent" },
+        log.warn(
+          { videoId, objectKey },
+          "faststart: moov atom appears absent — attempting all remux strategies as last-resort " +
+          "recovery (truly moov-absent files fail quickly; fMP4/unusual-format files may succeed)",
+        );
+      } else {
+        log.warn(
+          { videoId, objectKey },
+          "faststart: container probe failed — attempting stream-copy remux recovery " +
+          "(normal for uploads with moov atom at EOF or mild container damage)",
         );
       }
-      log.warn(
-        { videoId, objectKey },
-        "faststart: container probe failed — attempting stream-copy remux recovery " +
-        "(normal for uploads with moov atom at EOF or mild container damage)",
-      );
       const recovered = await remuxForFaststart(inputPath, outputPath, videoId);
       if (!recovered) {
         throw Object.assign(
           new Error(
-            "faststart: MP4 container is unrepairable — ffprobe detected structural damage " +
-            "(moov atom missing, partial/truncated file, or invalid container data) and the " +
-            "stream-copy remux recovery also failed. Re-upload the video file to recover.",
+            mdatNoMoov
+              ? "faststart: source MP4 has media data (mdat) but NO moov atom — all remux recovery " +
+                "strategies (including extended-probe and fMP4 output) were exhausted. The recording " +
+                "was likely interrupted before the moov could be written. Re-upload from the " +
+                "original source file."
+              : "faststart: MP4 container is unrepairable — ffprobe detected structural damage " +
+                "and all stream-copy remux strategies failed. Re-upload the video file to recover.",
           ),
-          { code: "CORRUPT_UPLOAD", kind: "structure_invalid" },
+          { code: "CORRUPT_UPLOAD", kind: mdatNoMoov ? "moov_absent" : "structure_invalid" },
         );
       }
       // Repair succeeded: outputPath already has -movflags +faststart applied.

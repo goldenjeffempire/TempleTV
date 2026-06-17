@@ -1613,6 +1613,27 @@ export async function remuxForFaststart(
   ], "s4-fragmented-mp4", REMUX_TIMEOUT);
   if (s4) return outputPath;
 
+  // Strategy 5: extended analyzeduration + probesize scan for files where the
+  // standard 5-second ffprobe scan incorrectly reports moov as absent.  This
+  // happens when the moov atom is unusually large (> ~2 MiB for long recordings)
+  // or positioned after a large mdat that pushes it beyond the default probe
+  // window.  We allow ffprobe/ffmpeg up to 500 MB of I/O to find the moov before
+  // falling back.  Error-tolerant flags are left on so the muxer can recover
+  // partial PTS gaps introduced by interrupted recordings.
+  const s5 = await tryFfmpeg([
+    "-y", "-hide_banner", "-loglevel", "error",
+    "-analyzeduration", "500M",
+    "-probesize", "500M",
+    "-fflags", "+genpts+discardcorrupt",
+    "-err_detect", "ignore_err",
+    "-i", inputPath,
+    "-c", "copy",
+    "-movflags", "+faststart",
+    "-ignore_unknown",
+    outputPath,
+  ], "s5-extended-probe", REMUX_TIMEOUT);
+  if (s5) return outputPath;
+
   logger.warn({ videoId }, "transcoder: all remux-recovery strategies exhausted — container is unrepairable");
   return null;
 }
@@ -1893,34 +1914,35 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
     let activeSourcePath = sourceTempPath;
     const containerValid = await probeContainerIsValid(sourceTempPath);
     if (!containerValid) {
-      // Fast-path: detect the specific case of mdat-present-but-no-moov. This is an
-      // unrecoverable condition (the codec configuration stored in the moov avcC box
-      // is permanently lost) and no remux strategy can reconstruct it. Surface a clear
-      // operator-facing error immediately instead of burning through remux attempts.
+      // Detect mdat-present-but-no-moov so we can log a targeted message,
+      // but do NOT bail immediately — always attempt all remux strategies.
+      // Strategies 1-4 each fail in <5 s on a truly moov-absent file, and
+      // Strategy 5 (extended analyzeduration) occasionally recovers files
+      // incorrectly flagged as moov-absent by a standard ffprobe scan.
       const mdatNoMoov = await detectMdatWithoutMoov(sourceTempPath);
       if (mdatNoMoov) {
-        throw Object.assign(
-          new Error(
-            "Video file is unrecoverable: the recording was interrupted before the moov atom " +
-            "(codec configuration) could be written. The file has media data but no moov — " +
-            "no repair is possible. Please re-upload from the original source.",
-          ),
-          { code: "CORRUPT_SOURCE" },
+        logger.warn(
+          { videoId: req.videoId, jobId: req.jobId },
+          "transcoder: moov atom appears absent — attempting all remux strategies as last-resort recovery",
+        );
+      } else {
+        logger.warn(
+          { videoId: req.videoId, jobId: req.jobId, sourceObjectKey: req.sourceObjectKey },
+          "transcoder: source container appears damaged (likely moov-at-EOF or truncated) — attempting remux recovery",
         );
       }
-
-      logger.warn(
-        { videoId: req.videoId, jobId: req.jobId, sourceObjectKey: req.sourceObjectKey },
-        "transcoder: source container appears damaged (likely moov-at-EOF or truncated) — attempting remux recovery",
-      );
       const remuxedPath = path.join(scratchDir, "source.remuxed.mp4");
       const recovered = await remuxForFaststart(sourceTempPath, remuxedPath, req.videoId);
       if (!recovered) {
         throw Object.assign(
           new Error(
-            "Video container is unrepairable: all remux recovery strategies failed. " +
-            "The file is structurally corrupt (missing or damaged moov atom). " +
-            "Please re-upload from the original source.",
+            mdatNoMoov
+              ? "Video file is unrecoverable: the recording was interrupted before the moov atom " +
+                "(codec configuration) could be written. All remux recovery strategies (including " +
+                "extended-probe and fMP4 output) were exhausted. Please re-upload from the original source."
+              : "Video container is unrepairable: all remux recovery strategies failed. " +
+                "The file is structurally corrupt (missing or damaged moov atom). " +
+                "Please re-upload from the original source.",
           ),
           { code: "CORRUPT_SOURCE" },
         );
@@ -2768,20 +2790,29 @@ export async function probeUploadedContainerValidity(
       // Distinguish: moov is truly absent (recording cut off mid-write) vs.
       // moov is present but in an unusual location or mildly damaged.
       //
-      // When moov is completely absent the codec configuration (SPS/PPS stored
-      // in the moov's avcC box) is permanently lost — no remux can reconstruct
-      // it.  When moov exists but is hard to find, faststart's remux strategies
-      // (error-tolerant stream-copy, fMP4 output) may recover the file.
+      // Even when moov appears absent, we return unrecoverable: false so that
+      // remuxForFaststart can attempt all 5 strategies.  Strategies 1-4 fail
+      // quickly (<5 s) for a truly moov-absent file, but Strategy 5's extended
+      // analyzeduration probe occasionally locates a moov atom that the default
+      // 5-second ffprobe scan missed (very large moov, fMP4 init segment hidden
+      // beyond the default probesize window, or unusual container structure).
       const mdatNoMoov = await detectMdatWithoutMoov(tmpPath);
       if (mdatNoMoov) {
+        // Mark as recoverable (unrecoverable: false) so the faststart + HLS
+        // transcoder pipeline still runs.  remuxForFaststart Strategies 1-4 each
+        // fail quickly (<5 s) on a truly moov-absent file, and Strategy 5 uses an
+        // extended analyzeduration probe that occasionally recovers files flagged
+        // as moov-absent by a standard 5-second ffprobe scan.  Only when all
+        // strategies are exhausted does the caller promote the result to a
+        // permanent CORRUPT_SOURCE failure.
         return {
           valid: false,
-          unrecoverable: true,
+          unrecoverable: false,
           kind: "moov_absent",
           error:
-            "moov atom is completely absent — the recording was interrupted before the " +
-            "codec configuration (moov/avcC) could be written; no remux or repair is possible. " +
-            "Please re-export or re-record from the original source.",
+            "moov atom appears absent — the recording may have been interrupted before the " +
+            "moov/avcC could be written. faststart remux strategies will attempt recovery; " +
+            "if all fail the video will be marked failed and a re-upload will be required.",
         };
       }
       // moov is not confirmed absent — container may be mildly damaged,

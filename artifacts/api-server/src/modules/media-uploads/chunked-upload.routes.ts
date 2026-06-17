@@ -2628,10 +2628,14 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             // retries against an unreadable file.
             //
             // EARLY GATE: probeUploadedContainerValidity runs before faststart
-            // so that files with missing moov atoms are caught here rather than
-            // falling through the DOWNLOAD_TRUNCATED bypass in faststart.service.ts
-            // (which previously let corrupt uploads reach the HLS transcoder and
-            // fail there after 3 expensive retry cycles).
+            // to detect clear non-video uploads (HTML pages, images, etc.) via
+            // the pre-flight validation stage.  A moov_absent result is now
+            // treated as a SOFT FAIL (unrecoverable: false) so the full
+            // faststart → HLS transcoder pipeline runs.  remuxForFaststart has
+            // 5 strategies (including extended-probe) that recover some files
+            // incorrectly flagged as moov-absent by the default ffprobe scan.
+            // Only a clear non-video pre-flight failure (kind "preflight_failed")
+            // triggers an immediate permanent failure here.
             let skipTranscodeEnqueue = false;
             try {
               const containerProbe = await probeUploadedContainerValidity(objectKey);
@@ -2738,47 +2742,41 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               } catch (err) {
                 const isCorrupt = (err as { code?: string })?.code === "CORRUPT_UPLOAD";
                 if (isCorrupt) {
+                  // faststart exhausted all 5 remux strategies and gave up.
+                  // Do NOT mark as permanently failed and do NOT block the HLS
+                  // transcoder.  The transcoder uses a completely independent
+                  // download path (downloadSourceToTempFile with stricter byte
+                  // verification) and now also runs all 5 remux strategies.
+                  // A transient faststart download issue or a file format that
+                  // only the transcoder's ffmpeg flags can handle may succeed.
+                  // If the transcoder ALSO fails, its dispatcher will permanently
+                  // mark the video failed with a clear CORRUPT_SOURCE error.
+                  //
+                  // What we DO here:
+                  //   • Reset transcodingStatus to "none" so the admin panel
+                  //     doesn't show a stale "processing" indicator.
+                  //   • Deactivate the broadcast queue entry — raw MP4 without
+                  //     faststart may stall playback on some devices.  The
+                  //     transcoder re-activates the entry on HLS success.
+                  //   • Log at ERROR level so operators can track the failure.
                   capturedLog.error(
                     { err, videoId, objectKey },
-                    "[finalize:bg] CORRUPT UPLOAD — container structurally damaged and unrepairable. " +
-                    "Marking video failed. Operator must re-upload the file.",
+                    "[finalize:bg] faststart exhausted all remux strategies — HLS transcoder will " +
+                    "attempt independent recovery with fresh download and extended probe",
                   );
-                  skipTranscodeEnqueue = true;
                   await db
                     .update(videos)
-                    .set({
-                      transcodingStatus: "failed",
-                      transcodingErrorCode: "CORRUPT_SOURCE",
-                      transcodingErrorMessage:
-                        "Upload failed: the video container is structurally damaged and cannot be repaired " +
-                        "(faststart failed — moov atom missing or all remux strategies exhausted). " +
-                        "Please re-upload from the original source file.",
-                    })
+                    .set({ transcodingStatus: "none" })
                     .where(eq(videos.id, videoId))
                     .catch(() => {});
-                  // Immediately deactivate the broadcast queue entry created by
-                  // enqueueIfMissing above.  Without this the row stays is_active=true
-                  // (but excluded by loadActive's transcodingStatus filter) until the
-                  // queue-integrity-validator runs (up to 3 min), leaving a zombie
-                  // entry visible in the admin queue panel and keeping it in the
-                  // orchestrator's in-memory set until the next reload.
                   await db
                     .update(schema.broadcastQueueTable)
                     .set({ isActive: false })
                     .where(eq(schema.broadcastQueueTable.videoId, videoId))
                     .catch(() => {});
-                  adminEventBus.push("videos-library-updated", { videoId, reason: "corrupt-upload-failed" });
-                  // Reload the orchestrator immediately so the dead item is evicted
-                  // from the active set rather than waiting for an unrelated event.
-                  adminEventBus.push("broadcast-queue-updated", { reason: "corrupt-upload-faststart-cleanup", videoId });
-                  void quarantineVideo(videoId, {
-                    errorCode: "CORRUPT_SOURCE",
-                    reason:
-                      "Faststart failed: video container is structurally damaged and unrepairable " +
-                      "(moov atom missing or all remux strategies exhausted). Re-upload required.",
-                    triggeredBy: "faststart-failure",
-                    metadata: { objectKey, sessionId },
-                  });
+                  adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-failed-transcoder-recovery" });
+                  adminEventBus.push("broadcast-queue-updated", { reason: "faststart-corrupt-dequeue", videoId });
+                  // skipTranscodeEnqueue intentionally NOT set — HLS transcoder runs next.
                 } else {
                   capturedLog.warn({ err, videoId }, "[finalize:bg] faststart failed (non-fatal)");
                 }
