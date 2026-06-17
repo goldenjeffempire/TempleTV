@@ -731,10 +731,7 @@ const Env = z.object({
   // Interval (ms) between full storage→DB reconciliation passes.
   // Each pass checks every active broadcast queue item's referenced blobs
   // (HLS master.m3u8 + MP4 objectPath) against storage_blobs and runs a
-  // recovery waterfall for any missing blobs:
-  //   1. HLS blobs present despite missing master → promote HLS, clear MP4 URL
-  //   2. MP4 objectPath blob present → re-enqueue for transcoding
-  //   3. No blobs at all → quarantine + SOURCE_MISSING + ops-alert
+  // 6-stage recovery waterfall for any missing or degraded blobs.
   // Default 600 000 ms (10 min). Set to 0 to disable.
   STORAGE_RECONCILIATION_INTERVAL_MS: z.coerce.number().int().nonnegative().default(600_000),
 
@@ -755,6 +752,38 @@ const Env = z.object({
   // library-wide pass (Phase 2 — non-queued items).  Keeps individual pass
   // duration bounded on large libraries.  Default 200.
   STORAGE_RECON_LIBRARY_BATCH: z.coerce.number().int().positive().default(200),
+
+  // ── Storage reconciliation recovery policy ────────────────────────────────
+  // Minimum number of consecutive reconciliation passes where a video's blobs
+  // are confirmed missing before the video is permanently quarantined.
+  // This prevents a single transient DB/storage inconsistency from causing a
+  // false-positive SOURCE_MISSING quarantine.  Between passes the reconciliation
+  // worker emits a warn-level ops-alert and records the gap without deactivating
+  // the queue item.  The orchestrator's own bad-URL tracking handles temporary
+  // playback failures during this window.
+  // Set to 1 to quarantine immediately on first confirmed gap (legacy behaviour).
+  // Default 3 (30 min with the default 10-min reconciliation interval).
+  STORAGE_RECON_QUARANTINE_MIN_FAILURES: z.coerce.number().int().positive().default(3),
+
+  // When true (default), never permanently quarantine a video whose queue item
+  // is currently designated as the ON_AIR item in broadcast_runtime_state.
+  // Instead the quarantine is deferred and an ops-alert is emitted so operators
+  // can investigate without interrupting the live broadcast.
+  // Set to false to disable this guard (not recommended in production).
+  STORAGE_RECON_BROADCAST_SAFE: z.coerce.boolean().default(true),
+
+  // When true (default), the blob presence check requires size_bytes > 0 in
+  // addition to key existence.  This catches zero-byte blobs written by
+  // interrupted putObject calls — rows that appear present in storage_blobs but
+  // contain no actual data and will cause 404/empty responses on playback.
+  // Set to false only for debugging (disables the size integrity gate).
+  STORAGE_RECON_SIZE_CHECK: z.coerce.boolean().default(true),
+
+  // When true (default), the reconciliation worker attempts to recover missing
+  // blobs from surviving upload_sessions + upload_chunks rows before quarantining.
+  // Applies only to db_fallback sessions whose chunks are still in upload_chunks.
+  // Set to false to disable this recovery path.
+  STORAGE_RECON_SESSION_REPAIR: z.coerce.boolean().default(true),
 });
 
 export type AppEnv = z.infer<typeof Env>;

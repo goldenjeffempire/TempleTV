@@ -49,6 +49,8 @@ import { runFaststart } from "../../transcoder/faststart.service.js";
 import { driftAggregator } from "../engine/drift-aggregator.js";
 import { getCorruptMediaHealthSummary } from "../../broadcast/quarantine.service.js";
 import { ytShuffleFallback } from "../engine/youtube-shuffle-fallback.js";
+import { storageBlobRecoveryService } from "../engine/storage-blob-recovery.service.js";
+import { storageReconciliationWorker } from "../engine/storage-reconciliation-worker.js";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
 const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
@@ -554,9 +556,7 @@ export async function restRoutes(app: FastifyInstance) {
        * Exposes: lastRunAt, itemsChecked, blobsVerified, gapsFound, recoveries,
        * orphanedBlobCount, consecutiveErrors.
        */
-      storageReconciliation: await import("../engine/storage-blob-recovery.service.js")
-        .then(({ storageBlobRecoveryService }) => storageBlobRecoveryService.getStats())
-        .catch(() => null),
+      storageReconciliation: storageBlobRecoveryService.getStats(),
     };
   });
 
@@ -1210,6 +1210,179 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       }).catch((err: unknown) => logger.debug({ err }, "[audit] revalidate-sources log failed (non-fatal)"));
 
       return { ok: true, sequence: broadcastOrchestrator.getSequence(), reEnabledItems };
+    },
+  );
+
+  // ── GET /broadcast-v2/storage-diagnostics ────────────────────────────────
+  //
+  // Per-video storage gap registry and reconciliation statistics.  Returns:
+  //   • stats        — cumulative reconciliation pass metrics
+  //   • gapRegistry  — per-videoId consecutive gap records (current session)
+  //   • recentEvents — last 20 QUARANTINE / STORAGE_GAP entries from audit log
+  //   • config       — active reconciliation policy env-var values
+  //
+  // Requires editor auth.  Rate-limited to 20 req/min.
+  app.get(
+    "/storage-diagnostics",
+    {
+      ...adminGuard,
+      schema: { response: { 429: _429err } },
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+    },
+    async (_req, reply) => {
+      reply.header("Cache-Control", "no-store, max-age=0");
+
+      const stats = storageBlobRecoveryService.getStats();
+      const registryMap = storageBlobRecoveryService.getFailureRegistry();
+      const gapRegistry = Object.fromEntries(
+        [...registryMap.entries()].map(([videoId, rec]) => [videoId, rec]),
+      );
+
+      const recentEvents = await db.execute<{
+        id: string; videoId: string | null; action: string;
+        reason: string | null; error_code: string | null;
+        triggered_by: string; metadata: unknown; created_at: string;
+      }>(sql`
+        SELECT id, video_id AS "videoId", action, reason, error_code, triggered_by, metadata, created_at
+        FROM media_audit_log
+        WHERE action IN ('QUARANTINE', 'STORAGE_GAP_DETECTED')
+        ORDER BY created_at DESC
+        LIMIT 20
+      `).then((r) => r.rows).catch(() => []);
+
+      return {
+        generatedAtMs: Date.now(),
+        stats,
+        gapRegistry,
+        gapRegistrySize: registryMap.size,
+        recentEvents,
+        config: {
+          quarantineMinFailures: env.STORAGE_RECON_QUARANTINE_MIN_FAILURES,
+          broadcastSafe: env.STORAGE_RECON_BROADCAST_SAFE,
+          sizeCheck: env.STORAGE_RECON_SIZE_CHECK,
+          sessionRepair: env.STORAGE_RECON_SESSION_REPAIR,
+          reconciliationIntervalMs: env.STORAGE_RECONCILIATION_INTERVAL_MS,
+          libraryBatch: env.STORAGE_RECON_LIBRARY_BATCH,
+          orphanAutoDelete: env.ORPHAN_BLOB_AUTO_DELETE,
+          orphanMinAgeHours: env.ORPHAN_BLOB_MIN_AGE_HOURS,
+        },
+      };
+    },
+  );
+
+  // ── POST /broadcast-v2/storage-repair/:videoId ───────────────────────────
+  //
+  // Manually trigger the storage recovery waterfall for a specific video.
+  // Useful for operator-initiated recovery after a re-upload or storage fix.
+  // Does NOT bypass the retry threshold — it increments the consecutive gap
+  // counter just like a scheduled pass so the operator can force quarantine
+  // after their own investigation by calling this endpoint repeatedly.
+  //
+  // Requires admin auth.  Rate-limited to 10 req/min.
+  app.post(
+    "/storage-repair/:videoId",
+    {
+      preHandler: requireAuth("admin"),
+      schema: {
+        params: z.object({ videoId: z.string().min(1) }),
+        response: {
+          200: z.object({
+            ok: z.boolean(),
+            tier: z.string(),
+            message: z.string(),
+          }),
+          404: z.object({ error: z.string() }),
+          429: _429err,
+        },
+      },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (req, reply) => {
+      const { videoId } = req.params as { videoId: string };
+
+      // Fetch the video + its active queue item
+      const videoRow = await db
+        .select({
+          id: schema.videosTable.id,
+          title: schema.videosTable.title,
+          objectPath: schema.videosTable.objectPath,
+          hlsMasterUrl: schema.videosTable.hlsMasterUrl,
+          videoSource: schema.videosTable.videoSource,
+          sourceCleanupStatus: schema.videosTable.sourceCleanupStatus,
+        })
+        .from(schema.videosTable)
+        .where(eq(schema.videosTable.id, videoId))
+        .limit(1)
+        .then((r) => r[0] ?? null)
+        .catch(() => null);
+
+      if (!videoRow) {
+        return reply.code(404).send({ error: `Video ${videoId} not found` });
+      }
+
+      const queueRow = await db
+        .select({ id: schema.broadcastQueueTable.id })
+        .from(schema.broadcastQueueTable)
+        .where(
+          and(
+            eq(schema.broadcastQueueTable.videoId, videoId),
+            eq(schema.broadcastQueueTable.isActive, true),
+          ),
+        )
+        .limit(1)
+        .then((r) => r[0] ?? null)
+        .catch(() => null);
+
+      const result = await storageBlobRecoveryService.runWaterfall({
+        videoId,
+        queueId: queueRow?.id ?? "",
+        title: videoRow.title,
+        objectPath: videoRow.objectPath,
+        hlsUrl: videoRow.hlsMasterUrl,
+        videoSource: videoRow.videoSource,
+        sourceCleanupStatus: videoRow.sourceCleanupStatus,
+        triggeredBy: `manual:${req.principal?.email ?? "operator"}`,
+      });
+
+      logger.info(
+        { videoId, tier: result.tier, message: result.message, operator: req.principal?.email },
+        "[broadcast-v2] manual storage-repair triggered",
+      );
+
+      return { ok: true, tier: result.tier, message: result.message };
+    },
+  );
+
+  // ── POST /broadcast-v2/storage-reconcile ─────────────────────────────────
+  //
+  // Trigger an immediate storage reconciliation pass outside of the normal
+  // 10-minute schedule.  Useful after a re-upload, migration, or any event
+  // where operators want instant confirmation that all blobs are present.
+  // Non-blocking — runs in the background; returns immediately.
+  //
+  // Requires admin auth.  Rate-limited to 5 req/min.
+  app.post(
+    "/storage-reconcile",
+    {
+      preHandler: requireAuth("admin"),
+      schema: {
+        response: {
+          200: z.object({ ok: z.boolean(), message: z.string() }),
+          429: _429err,
+        },
+      },
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+    },
+    async (req, reply) => {
+      void storageReconciliationWorker.run().catch((err: unknown) => {
+        logger.warn({ err }, "[broadcast-v2] manual storage-reconcile: pass failed (non-fatal)");
+      });
+      logger.info(
+        { operator: req.principal?.email },
+        "[broadcast-v2] manual storage reconciliation pass triggered",
+      );
+      reply.header("Cache-Control", "no-store, max-age=0");
+      return { ok: true, message: "Storage reconciliation pass started in background" };
     },
   );
 
