@@ -163,13 +163,24 @@ const Env = z.object({
   MEMORY_RESTART_RSS_MB: z.coerce.number().int().positive().default(1536),
 
   // pg connection pool maximum. Each replica holds at most this many live
-  // connections to Postgres/Neon. 25 is safe for a 2 GiB / 1-vCPU container.
-  // Raised from 20 → 25 to provide headroom for concurrent HLS_MAX_CONCURRENT
-  // requests each holding a pool connection during BYTEA streaming, plus
-  // concurrent chunk uploads (up to 6 via semaphore) + background workers.
-  // Each connection costs ~5–10 MB RSS on pg side; 25 ≈ 125–250 MB.
+  // connections to Postgres/Neon. Raised from 25 → 40 after pool saturation
+  // alerts (25/25 active + 11 waiting) revealed the fleet has grown past the
+  // original sizing.
+  //
+  // Theoretical peak concurrent demand:
+  //   HLS streaming       up to 10  (1 connection per active 8-MiB chunk query)
+  //   Transcoder          up to 3   (2 concurrent jobs + 1 dispatcher poll)
+  //   Background workers  up to 16  (14 supervised + YouTube sync + scheduled-
+  //                                   notifications dispatcher; each holds 1
+  //                                   connection during its brief DB sweep)
+  //   HTTP / SSE / WS     up to 5   (admin API calls, SSE reconnect replays)
+  //   Orchestrator checkpoint  1    (5 s interval, pinned connect → release)
+  //   Total worst-case    ≈ 35–40
+  //
+  // Each connection costs ~5–10 MB RSS on pg side; 40 ≈ 200–400 MB.
+  // Replit's managed PostgreSQL default max_connections is 100, so 40 is safe.
   // On memory-constrained hosts lower DB_POOL_MAX proportionally.
-  DB_POOL_MAX: z.coerce.number().int().positive().default(25),
+  DB_POOL_MAX: z.coerce.number().int().positive().default(40),
 
   // How long (ms) a pool connection may sit idle before it is evicted.
   // Default 30 s keeps Replit's managed PostgreSQL happy — connections that
@@ -188,9 +199,12 @@ const Env = z.object({
   // unindexed joins, and stalled transactions that would otherwise hold a
   // connection indefinitely and exhaust the pool under concurrent load.
   // 0 = disabled (not recommended in production).
-  // 30 000 ms (30 s) is well above the 99th-percentile of expected queries
-  // (FTS, large metadata joins) while catching genuine runaway cases.
-  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(30_000),
+  // Tightened from 30 s → 20 s: reduces the maximum time a stuck query
+  // blocks a pool slot, helping the pool recover faster under saturation.
+  // 20 s is still well above the 99th-percentile of expected queries
+  // (FTS, large metadata joins, BYTEA streaming) while catching genuine
+  // runaway cases faster.
+  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().int().nonnegative().default(20_000),
 
   SENTRY_DSN: z.string().optional(),
 
