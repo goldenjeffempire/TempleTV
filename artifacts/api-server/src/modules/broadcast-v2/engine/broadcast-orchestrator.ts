@@ -8,7 +8,7 @@ import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, broadcastS
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
 import { checkpointRepo } from "../repository/checkpoint.repo.js";
-import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, getBadUrlCacheSize, getBadUrlStats, type RawQueueRow } from "../repository/queue.repo.js";
+import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, getBadUrlCacheSize, getBadUrlStats, markUrlBadBySource, getUrlConfidenceState, type RawQueueRow } from "../repository/queue.repo.js";
 import { faststartRecoveryWorker } from "./faststart-recovery.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { ytShuffleFallback } from "./youtube-shuffle-fallback.js";
@@ -3628,12 +3628,45 @@ class BroadcastOrchestrator extends EventEmitter {
       // Probe the raw origin URL rather than the media-proxy wrapper.
       // See extractRawProbeUrl() for the full rationale.
       const reachable = await this.probeUrlReachability(this.extractRawProbeUrl(url));
-      if (reachable !== false) return; // ok or ambiguous — leave rotation unchanged
-      markBadUrl(url);
+
+      // ── Confidence-gated bad-URL marking ──────────────────────────────────
+      // A single 4xx from one probe is not sufficient evidence to block playback:
+      // CDNs return transient 4xx on auth races, edge-cache misses, and health-check
+      // artefacts that self-resolve within seconds.  Route through markUrlBadBySource
+      // so the URL only enters the bad-URL cache when a SECOND independent source
+      // (scanner, storage-recon, or a prior proactive probe) also confirms it broken.
+      if (reachable === true) {
+        // Source confirmed reachable — clear any prior confidence flags so a
+        // future failure cycle starts fresh.  clearBadUrl also removes the
+        // bad-URL cache entry and confidence source-set in one call.
+        if (getUrlConfidenceState(url) !== "healthy") {
+          clearBadUrl(url);
+          logger.info(
+            { itemId: item.id, title: item.title, url },
+            "[broadcast-v2] proactive probe: URL reachable — cleared prior confidence flags",
+          );
+        }
+        return;
+      }
+      if (reachable !== false) return; // null = ambiguous (5xx/timeout) — do nothing
+
+      const confState = markUrlBadBySource(url, "orchestrator-probe");
+      if (confState === "gap1") {
+        // Only one source so far — log and wait for a second confirmation before
+        // removing this item from rotation.  The scanner will confirm within
+        // ≤2 min if the source is genuinely broken.
+        logger.warn(
+          { itemId: item.id, title: item.title, url, sequence: this.sequence },
+          "[broadcast-v2] proactive probe: URL returned 4xx (gap1 — awaiting second confirmation before blocking)",
+        );
+        return;
+      }
+
+      // gap2 or gap3: two or more independent sources agree — block the URL.
       if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
       logger.warn(
-        { itemId: item.id, title: item.title, url, sequence: this.sequence },
-        "[broadcast-v2] proactive probe: next item URL unreachable — pre-marking bad before any viewer stalls",
+        { itemId: item.id, title: item.title, url, sequence: this.sequence, confState },
+        "[broadcast-v2] proactive probe: URL confirmed broken by multiple sources — pre-marking bad before any viewer stalls",
       );
       this.emitSnapshot(); // push new state to all clients immediately
       // Increment the per-item failure counter. If it reaches the threshold,
@@ -3738,6 +3771,11 @@ class BroadcastOrchestrator extends EventEmitter {
             },
             "[broadcast-v2] current-item probe: URL reachable again — resetting failure counters",
           );
+        }
+        // Also clear any confidence evidence accumulated by prior failed probes
+        // so the next failure cycle starts completely fresh.
+        if (getUrlConfidenceState(url) !== "healthy") {
+          clearBadUrl(url);
         }
         this.currentItemProbeFailures = 0;
         this.currentItemProbeAmbiguousFailures = 0;

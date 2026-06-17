@@ -439,17 +439,20 @@ export function markBadUrlWithTtl(url: string, ttlMs: number): void {
 }
 
 /** Clear a URL from the bad cache (e.g. after a queue reload with new sources).
- * Also resets the per-URL failure count so the next failure starts fresh at 90 s TTL. */
+ * Also resets the per-URL failure count and confidence source-set so the next
+ * failure cycle starts completely fresh. */
 export function clearBadUrl(url: string): void {
   badUrlCache.delete(url);
   badUrlFailureCounts.delete(url);
+  urlBadSourceSets.delete(url);
 }
 
 /** Flush the entire bad-URL cache (e.g. operator-triggered "clear blocks").
- * Also resets all per-URL failure counts so every URL gets a clean slate. */
+ * Also resets all per-URL failure counts and all confidence source-sets. */
 export function clearAllBadUrls(): void {
   badUrlCache.clear();
   badUrlFailureCounts.clear();
+  urlBadSourceSets.clear();
 }
 
 /** True if the URL is currently blacklisted and should not be served. */
@@ -461,6 +464,101 @@ export function isKnownBadUrl(url: string): boolean {
     return false;
   }
   return true;
+}
+
+// ── Three-source confidence system ────────────────────────────────────────────
+//
+// A single HTTP probe failure is not sufficient evidence to block playback:
+// CDNs return transient 4xx for auth races, edge-cache misses, and health-check
+// artefacts that self-resolve within seconds.  Blocking on the first failure
+// drops healthy content from rotation for 20 s – 10 min.
+//
+// The confidence system requires at least TWO INDEPENDENT sources to confirm a
+// URL is broken before it enters the bad-URL cache (which removes it from the
+// broadcast rotation).  Sources are named strings — each source can only
+// contribute once per URL (Set deduplication), preventing a single noisy probe
+// from inflating the count.
+//
+// Confidence states (gap count = distinct sources that reported failure):
+//   gap1 — 1 source: warning only; URL stays in rotation; await confirmation.
+//   gap2 — 2 sources: URL blocked (short TTL via markBadUrl); limited fallback.
+//   gap3 — 3+ sources: URL blocked with full TTL escalation; quarantine candidate.
+//
+// Recovery: when any source confirms the URL is reachable, clearBadUrl() now
+// also wipes the confidence source-set so the next failure cycle starts fresh.
+//
+// Source names used across the codebase:
+//   "orchestrator-probe"   — scheduleProactiveProbe() single-shot next-item check
+//   "orchestrator-current" — probeCurrentItem() 3-consecutive-4xx gate
+//   "scanner"              — MediaIntegrityScanner periodic 2-minute scan
+//   "storage-recon"        — StorageReconciliationWorker DB + blob-store gap check
+
+// url → Set of independent source names that have reported this URL as broken.
+const urlBadSourceSets = new Map<string, Set<string>>();
+
+export type UrlConfidenceState = "healthy" | "gap1" | "gap2" | "gap3";
+
+/** Return the current confidence state for a URL without side-effects. */
+export function getUrlConfidenceState(url: string): UrlConfidenceState {
+  const sources = urlBadSourceSets.get(url);
+  if (!sources || sources.size === 0) return "healthy";
+  if (sources.size === 1) return "gap1";
+  if (sources.size === 2) return "gap2";
+  return "gap3";
+}
+
+/**
+ * Mark a URL as suspected bad from a named independent source.
+ *
+ * Confidence-based degradation (see module comment above):
+ *   • gap1 (1 source)  — logs a warning; URL stays in rotation; returns "gap1".
+ *   • gap2 (2 sources) — writes to bad-URL cache (exponential-backoff TTL);
+ *                        URL leaves rotation; returns "gap2".
+ *   • gap3 (3+ sources) — same as gap2 but a quarantine candidate; returns "gap3".
+ *
+ * Callers MUST check the return value and only take action (snapshot push,
+ * skip-counter increment, auto-suspend) when state !== "gap1".
+ *
+ * @param url    Client-visible source URL (before proxy-stripping).
+ * @param source Caller identifier — must be unique per independent subsystem.
+ */
+export function markUrlBadBySource(url: string, source: string): UrlConfidenceState {
+  // Lazy GC: evict entries that are neither bad-cached nor have any sources.
+  if (urlBadSourceSets.size > 500) {
+    for (const [u, srcs] of urlBadSourceSets) {
+      if (srcs.size === 0 || !isKnownBadUrl(u)) {
+        urlBadSourceSets.delete(u);
+      }
+    }
+  }
+
+  if (!urlBadSourceSets.has(url)) urlBadSourceSets.set(url, new Set());
+  const sources = urlBadSourceSets.get(url)!;
+  sources.add(source);
+
+  const state: UrlConfidenceState =
+    sources.size === 1 ? "gap1" : sources.size === 2 ? "gap2" : "gap3";
+
+  if (state === "gap1") {
+    logger.warn(
+      { url, source, confidence: sources.size, state },
+      "[broadcast-v2] URL confidence gap1 — single source failure, not blocking (awaiting second confirmation)",
+    );
+    return "gap1";
+  }
+
+  // gap2 or gap3: two or more independent sources confirmed — write to bad-URL cache.
+  markBadUrl(url);
+  logger.warn(
+    { url, sources: [...sources], confidence: sources.size, state },
+    `[broadcast-v2] URL confidence ${state} — ${sources.size} independent sources confirmed broken, blocking URL`,
+  );
+  return state;
+}
+
+/** Returns the size of the confidence source-set map (for memory diagnostics). */
+export function getUrlBadSourceSetsSize(): number {
+  return urlBadSourceSets.size;
 }
 
 // ── Per-item URL-failure skip counter ────────────────────────────────────

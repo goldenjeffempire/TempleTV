@@ -67,6 +67,7 @@ import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
 import { storageBlobRecoveryService } from "./storage-blob-recovery.service.js";
+import { normalizeQueueUrl, markUrlBadBySource } from "../repository/queue.repo.js";
 
 const MODULE = "[storage-reconciliation]";
 
@@ -259,6 +260,26 @@ async function runReconciliationPass(): Promise<void> {
     gapsFound += 1;
 
     const hlsUrl = row.qHlsUrl || row.vHlsUrl;
+
+    // ── Confidence system: storage-recon is the third independent source ──────
+    // Register this storage gap with the confidence system using the resolved
+    // HLS URL.  The orchestrator probe and scanner are sources 1 and 2;
+    // storage-recon as source 3 pushes the confidence to gap3 (quarantine
+    // candidate) when all three agree.  If we are the first or second source to
+    // flag this URL, the confidence gate prevents premature bad-URL blocking.
+    if (hlsUrl) {
+      const resolvedUrl = normalizeQueueUrl(hlsUrl);
+      if (resolvedUrl) {
+        const confState = markUrlBadBySource(resolvedUrl, "storage-recon");
+        if (confState !== "gap1") {
+          logger.warn(
+            { videoId: row.videoId, queueId: row.queueId, resolvedUrl, confState },
+            `${MODULE} HLS gap confirmed by storage-recon — URL blocked at confidence ${confState}`,
+          );
+        }
+      }
+    }
+
     const result = await storageBlobRecoveryService.runWaterfall({
       videoId: row.videoId,
       queueId: row.queueId,
@@ -288,6 +309,23 @@ async function runReconciliationPass(): Promise<void> {
     gapsFound += 1;
 
     const hlsUrl = row.qHlsUrl || row.vHlsUrl;
+
+    // ── Confidence system: storage-recon as third source (MP4 path) ───────────
+    // Use the MP4's objectPath-derived URL when no HLS URL is available.
+    const mp4Url = hlsUrl
+      ? null // HLS already handled above
+      : normalizeQueueUrl(row.vObjectPath);
+    const probeUrl = mp4Url;
+    if (probeUrl) {
+      const confState = markUrlBadBySource(probeUrl, "storage-recon");
+      if (confState !== "gap1") {
+        logger.warn(
+          { videoId: row.videoId, queueId: row.queueId, probeUrl, confState },
+          `${MODULE} MP4 gap confirmed by storage-recon — URL blocked at confidence ${confState}`,
+        );
+      }
+    }
+
     const result = await storageBlobRecoveryService.runWaterfall({
       videoId: row.videoId,
       queueId: row.queueId,

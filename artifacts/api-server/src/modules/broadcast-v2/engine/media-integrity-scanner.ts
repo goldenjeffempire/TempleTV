@@ -26,6 +26,8 @@ import {
   clearBadUrl,
   isKnownBadUrl,
   resetBadUrlSkipCount,
+  markUrlBadBySource,
+  getUrlConfidenceState,
 } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { playbackAnalytics } from "./playback-analytics.js";
@@ -682,16 +684,22 @@ class MediaIntegrityScannerImpl {
           // naturally.  Without this, a 5-min suspension keeps an item off-air
           // even after the CDN / HLS server recovers seconds later.
           //
+          // Also clear the confidence source-set so that the orchestrator's
+          // prior "gap1" evidence (a single proactive probe failure that hadn't
+          // yet reached the blocking threshold) is wiped.  Without this wipe, a
+          // recovered URL could reach gap2 on its next proactive probe failure
+          // combined with the stale "orchestrator-probe" evidence left behind.
+          //
           // After clearing the block we push `broadcast-queue-updated` so the
           // orchestrator reloads on the next self-heal tick (≤ 30 s) and the
           // recovered item enters rotation immediately.
-          if (ok && prev.count > 0 && url && isKnownBadUrl(url)) {
-            clearBadUrl(url);
+          if (ok && prev.count > 0 && url && (isKnownBadUrl(url) || getUrlConfidenceState(url) !== "healthy")) {
+            clearBadUrl(url); // clears bad-URL cache, failure count, AND confidence source-set
             resetBadUrlSkipCount(row.id);
             recoveredItemIds.add(row.id);
             logger.info(
               { itemId: row.id, title: row.title, url, previousFailures: prev.count },
-              "[media-scanner] source recovered — cleared bad-URL block and reset skip counter",
+              "[media-scanner] source recovered — cleared bad-URL block, confidence state, and skip counter",
             );
           }
 
@@ -716,26 +724,35 @@ class MediaIntegrityScannerImpl {
 
           // ── Proactive bad-URL circuit breaker ─────────────────────────────
           // After SCANNER_BAD_URL_THRESHOLD consecutive scanner failures, add
-          // the URL to the bad-URL cache (90 s TTL). On the next orchestrator
-          // tick (≤ 2 s) isKnownBadUrl() will skip this item, preventing
-          // viewers from continuing to receive a broken source.
+          // this source's evidence to the confidence system.  If a second
+          // independent source (e.g. orchestrator-probe) has already flagged
+          // this URL, the confidence state becomes gap2 and the URL enters the
+          // bad-URL cache.  If we are the only source so far, the state is gap1
+          // (logged warning only) — a second system must confirm before blocking.
           //
-          // After BAD_URL_SKIP_THRESHOLD total increments, auto-suspend for
-          // 5 minutes — same escalation the stall-report path uses, so both
-          // paths converge to the same recovery mechanism.
+          // After BAD_URL_SKIP_THRESHOLD total increments the item is
+          // auto-suspended (5-min in-memory TTL) — same escalation the
+          // stall-report path uses, so all paths converge to the same recovery.
           if (!ok && url && newCount === SCANNER_BAD_URL_THRESHOLD) {
-            markBadUrl(url);
+            const confState = markUrlBadBySource(url, "scanner");
             logger.warn(
-              { itemId: row.id, title: row.title, consecutiveFailures: newCount, url },
-              "[media-scanner] proactively marking URL bad after repeated scan failures",
+              { itemId: row.id, title: row.title, consecutiveFailures: newCount, url, confState },
+              "[media-scanner] URL flagged by scanner after repeated failures",
             );
-            // Increment the per-item skip counter; escalate to suspension if threshold reached.
-            const skipCount = incrementBadUrlSkipCount(row.id);
-            if (skipCount >= BAD_URL_SKIP_THRESHOLD) {
-              autoSuspendQueueItem(row.id, row.title, skipCount, url);
+            // Only increment the skip counter and auto-suspend when the URL is
+            // actually blocked (gap2+).  In gap1 the URL is still in rotation —
+            // incrementing the skip counter pre-emptively would push the item
+            // towards suspension before it is even known to be broken.
+            if (confState !== "gap1") {
+              const skipCount = incrementBadUrlSkipCount(row.id);
+              if (skipCount >= BAD_URL_SKIP_THRESHOLD) {
+                autoSuspendQueueItem(row.id, row.title, skipCount, url);
+              }
             }
           } else if (!ok && url && newCount > SCANNER_BAD_URL_THRESHOLD) {
-            // Re-mark on every scan after threshold to keep TTL fresh.
+            // Re-mark on every scan after threshold to keep the bad-URL cache
+            // TTL fresh (the source-set already contains "scanner" from the
+            // first threshold hit, so markUrlBadBySource is idempotent here).
             markBadUrl(url);
           }
 
@@ -845,3 +862,9 @@ export const mediaIntegrityScanner = new MediaIntegrityScannerImpl();
 // The Map is properly pruned on every scan cycle (items removed from the
 // queue are evicted), so this is purely for observability, not eviction.
 registerNamedStore("media-scanner-failure-counts", () => mediaIntegrityScanner.failureCountsSize());
+
+// Register the three-source confidence source-set Map so operators can see
+// how many URLs are currently accumulating evidence across independent systems.
+// Entries are evicted lazily on writes and on clearBadUrl() calls, so the
+// size is bounded.
+registerNamedStore("url-bad-source-sets", () => getUrlBadSourceSetsSize());
