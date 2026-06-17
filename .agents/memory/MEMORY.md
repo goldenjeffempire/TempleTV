@@ -1,3 +1,4 @@
+- [Broadcast-first upload pipeline](broadcast-first-upload.md) — never deactivate queue items that have localVideoUrl; CORRUPT_SOURCE+localVideoUrl → warn+MP4 fallback; corruptSourcePattern removed from dispatcher; validator reverse pass allows CORRUPT_SOURCE revival.
 - [Admin accessibility audit](admin-accessibility-audit.md) — all icon-only buttons need aria-label; use 20-line windowed Python scan (not same-line grep); skip shadcn vendored calendar.tsx/sidebar.tsx.
 - [Schedule-bridge catch-up window](schedule-bridge-catchup-window.md) — never use exact-minute match; use ±2-min trailing window + firedSlots Map dedup; clear at midnight; mark slot fired BEFORE handleEntry.
 - [HLS never-started sweep](hls-never-started-sweep.md) — Gap 2c in validator: transcodingStatus='none'+no hlsMasterUrl+objectPath IS NOT NULL on active queue items never caught by STUCK_HLS_FAILED/STUCK_ENCODING_NO_JOB; every 20 cycles.

@@ -277,28 +277,27 @@ class QueueIntegrityValidatorImpl {
         }
 
         // UNPLAYABLE_CORRUPT_UPLOAD: video transcoding permanently failed AND
-        // the source file is known-absent — no URL exists anywhere.
+        // there is genuinely no playable URL — neither HLS nor raw MP4.
         //
-        // Only two error codes indicate a truly absent/corrupt source:
-        //   CORRUPT_SOURCE  — moov atom is absent; the file cannot be decoded
-        //                     at all. Re-upload required.
-        //   SOURCE_MISSING  — storage blob was deleted; no bytes to serve.
-        //                     Re-upload required.
+        // Broadcast-first policy: an item is only deactivated when the playback
+        // engine has nothing to serve.  If a localVideoUrl exists the player
+        // can always fall back to progressive MP4 playback, so we admit the
+        // item to rotation even when HLS transcoding failed or the container
+        // was tagged CORRUPT_SOURCE by the transcoder.
         //
-        // These are the ONLY cases where we surface "error" severity and the
-        // auto-fix pass (below) deactivates the queue item. Without HLS there
-        // is genuinely no fallback; every orchestrator tick will auto-skip the
-        // item, burning the skip budget.
+        // Deactivation triggers only for:
+        //   SOURCE_MISSING  — storage blob was deleted; no bytes to serve
+        //                     regardless of what the URL column says.
+        //   CORRUPT_SOURCE  — HLS transcoding failed AND no raw MP4 URL exists
+        //                     at all (never uploaded or was purged).
         //
-        // NOT treated as errors (admitted to broadcast, shown as warnings):
-        //   DISK_FULL — transcoding failed due to disk space. The SOURCE FILE
-        //               still exists at localVideoUrl. Faststart-recovery runs
-        //               in the background; player + auto-skip handles failures.
-        //   faststartApplied=false — moov is at EOF but the file exists. The
-        //               faststart-recovery worker actively retries relocation.
-        //               Admitted to queue; player buffers or skips gracefully.
-        //   ASSEMBLY_FAILED — blob assembly interrupted (recoverable; operator
-        //               can retry finalization). Surfaced as a separate warn.
+        // NOT deactivated (admitted to broadcast, shown as warnings):
+        //   CORRUPT_SOURCE + localVideoUrl present — HLS failed but raw MP4
+        //               exists; orchestrator falls back to progressive playback.
+        //   DISK_FULL — transcoding failed due to disk space; source intact.
+        //   faststartApplied=false — moov at EOF; faststart-recovery retries.
+        //   ASSEMBLY_FAILED — blob assembly interrupted; recoverable.
+        //   Any other transient failure code — retry/DLQ handles recovery.
         //
         // IMPORTANT: noFaststart uses === false (NOT the ! operator).
         // faststartApplied is a nullable boolean: NULL = never attempted (may
@@ -316,9 +315,14 @@ class QueueIntegrityValidatorImpl {
           const isDiskFull = row.vErrCode === "DISK_FULL";
           const isAssemblyFailed = row.vErrCode === "ASSEMBLY_FAILED";
           const noFaststart = row.vFaststart === false;
+          // A raw MP4 URL means progressive playback is available — only flag
+          // unplayable when no URL exists anywhere on the queue or video row.
+          const hasAnyLocalUrl = !!(row.qLocalUrl || row.vLocalUrl);
 
-          // Truly absent source — item is unplayable and will be deactivated.
-          if (isCorrupt || isSourceMissing) {
+          // SOURCE_MISSING is always unplayable (blob is gone regardless of URL).
+          // CORRUPT_SOURCE is unplayable only if there is also no raw MP4 URL —
+          // if localVideoUrl exists the player can fall back to progressive MP4.
+          if (isSourceMissing || (isCorrupt && !hasAnyLocalUrl)) {
             issues.push({
               severity: "error",
               itemId: row.id,
@@ -326,10 +330,26 @@ class QueueIntegrityValidatorImpl {
               code: "UNPLAYABLE_CORRUPT_UPLOAD",
               message:
                 `Video '${row.videoId}' has transcodingStatus='failed' with ` +
-                (isCorrupt
-                  ? "CORRUPT_SOURCE error — moov atom absent; file cannot be decoded. Re-upload the source file to restore."
-                  : "SOURCE_MISSING error — source blob deleted from storage. Re-upload the source file to restore.") +
-                " No HLS fallback. Item is deactivated from broadcast until re-uploaded.",
+                (isSourceMissing
+                  ? "SOURCE_MISSING error — source blob deleted from storage. Re-upload the source file to restore."
+                  : "CORRUPT_SOURCE error — HLS transcoding failed and no raw MP4 URL exists. Re-upload the source file to restore.") +
+                " No HLS or MP4 fallback. Item is deactivated from broadcast until re-uploaded.",
+            });
+          }
+
+          // CORRUPT_SOURCE but raw MP4 exists — admit to broadcast as warning.
+          // The orchestrator will fall back to progressive MP4 playback.
+          if (isCorrupt && hasAnyLocalUrl) {
+            issues.push({
+              severity: "warn",
+              itemId: row.id,
+              itemTitle: row.title,
+              code: "HLS_TRANSCODE_FAILED_MP4_FALLBACK",
+              message:
+                `Video '${row.videoId}' has transcodingStatus='failed' with CORRUPT_SOURCE — ` +
+                "HLS transcoding failed but a raw MP4 source is available. " +
+                "The item is admitted to broadcast using progressive MP4 playback. " +
+                "Re-upload for a clean HLS encode.",
             });
           }
 
@@ -830,9 +850,19 @@ class QueueIntegrityValidatorImpl {
         });
       }
 
-      // CORRUPT_SOURCE: hard-deactivate + quarantine immediately (unrecoverable).
+      // CORRUPT_SOURCE: deactivate only when NO raw MP4 URL exists anywhere.
+      // Broadcast-first policy: if a localVideoUrl is present the player can
+      // fall back to progressive MP4 playback — keep those items in rotation.
+      // Only truly URL-less items (source was never stored or was purged) are
+      // deactivated here.
       const corruptUploadItemIds = rows
-        .filter((r) => baseFilter(r) && r.vErrCode === "CORRUPT_SOURCE")
+        .filter(
+          (r) =>
+            baseFilter(r) &&
+            r.vErrCode === "CORRUPT_SOURCE" &&
+            !r.vLocalUrl &&
+            !r.qLocalUrl,
+        )
         .map((r) => r.id);
 
       if (corruptUploadItemIds.length > 0) {
@@ -895,22 +925,21 @@ class QueueIntegrityValidatorImpl {
 
       // ── Auto-fix (reverse): re-activate corrupt_upload items that are now playable ──
       // Re-activates items previously deactivated as 'corrupt_upload' once any
-      // playable URL is present AND the source is no longer absent/corrupt.
+      // playable URL is present.
       //
-      // Admission criteria mirrors the policy in isPlayableForBroadcast():
-      //   • ANY localVideoUrl OR hlsMasterUrl → source is available and the item
-      //     can be played. This covers all faststart states (null, true, false) and
-      //     all transcodingStatus values — the only gate is source availability.
-      //   • transcodingErrorCode NOT IN (CORRUPT_SOURCE, SOURCE_MISSING) → the
-      //     source is not structurally absent. Without this guard a CORRUPT_SOURCE
-      //     video with a stale localVideoUrl (set before transcoding ran) would be
-      //     re-activated here and immediately re-deactivated by the forward pass,
-      //     creating an oscillation cycle.
+      // Admission criteria (broadcast-first policy):
+      //   • ANY localVideoUrl OR hlsMasterUrl → source is available; admitted to
+      //     broadcast regardless of transcodingErrorCode.  CORRUPT_SOURCE items
+      //     with a localVideoUrl play as progressive MP4 — the forward pass no
+      //     longer deactivates them, so no oscillation cycle exists.
+      //   • SOURCE_MISSING is excluded: even if localVideoUrl column has a value
+      //     the storage blob is gone so the URL would 404.  These items stay
+      //     deactivated until the operator re-uploads.
       //
-      // Historical note: the old condition required faststart_applied = true OR
-      // faststart_applied IS NULL — which permanently blocked items deactivated
-      // under the prior policy for faststartApplied=false. The new policy admits
-      // those videos, so the revival condition is correspondingly broadened.
+      // Historical note: the old condition required transcodingErrorCode NOT IN
+      // (CORRUPT_SOURCE, SOURCE_MISSING) — CORRUPT_SOURCE has been removed from
+      // that exclusion list because it is no longer terminal when localVideoUrl
+      // exists.  SOURCE_MISSING remains excluded for the reason above.
       {
         type RevivedRow = { id: string; title: string };
         let revivedCorruptRows: RevivedRow[] = [];
@@ -922,10 +951,7 @@ class QueueIntegrityValidatorImpl {
             WHERE bq.is_active = false
               AND bq.validator_deactivated_reason = 'corrupt_upload'
               AND (mv.hls_master_url IS NOT NULL OR mv.local_video_url IS NOT NULL)
-              AND (
-                mv.transcoding_error_code IS NULL
-                OR mv.transcoding_error_code NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING')
-              )
+              AND mv.transcoding_error_code IS DISTINCT FROM 'SOURCE_MISSING'
           `);
           revivedCorruptRows = (result.rows as RevivedRow[]) ?? [];
         } catch (qErr) {

@@ -1806,16 +1806,16 @@ class TranscoderDispatcher {
         // the operator must re-upload from the original source. Like ENOSPC, we
         // immediately mark the job failed without burning any retry slots.
         //
-        // Detection layers (in order of reliability):
-        //   1. error.code === "CORRUPT_SOURCE" — set by runTranscode when
-        //      detectMdatWithoutMoov() returns true or all remux strategies fail.
-        //   2. Message pattern match — catch corruption errors that propagate
-        //      without a typed code (e.g. from FFmpeg stderr via the remux path,
-        //      or from the early-gate probe running inside the transcoder).
-        const corruptSourcePattern =
-          /moov atom not found|NO moov atom|unrecoverable|unrepairable|structurally corrupt|corrupt.*re-upload|re-upload.*corrupt|invalid data found when processing|output file is empty.*encoded|no streams were found/i;
-        const isCorruptSource =
-          errCode === "CORRUPT_SOURCE" || corruptSourcePattern.test(message);
+        // Broadcast-first policy: only our own code that explicitly sets
+        // error.code = "CORRUPT_SOURCE" triggers an immediate terminal fail.
+        // FFmpeg stderr patterns (e.g. "moov atom not found") are intentionally
+        // NOT matched here — those messages appear for files with moov at EOF
+        // (not absent), which are still playable as progressive MP4.  Matching
+        // them would permanently deactivate broadcast items that have a valid
+        // raw MP4 fallback.  Let these jobs exhaust their retry budget normally
+        // and route to dead_letter; the broadcast queue item stays active and
+        // the orchestrator falls back to progressive MP4 playback.
+        const isCorruptSource = errCode === "CORRUPT_SOURCE";
 
         // SOURCE_MISSING: the source blob no longer exists in storage (deleted,
         // orphaned, or GC'd). storage().getObject() throws "Object not found in
