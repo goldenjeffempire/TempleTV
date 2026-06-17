@@ -48,6 +48,7 @@ const HealthSchema = z.object({
     gapsFound: z.number().int(),
     recoveries: z.number().int(),
     orphanedBlobCount: z.number().int(),
+    deletedOrphanBlobCount: z.number().int(),
     consecutiveErrors: z.number().int(),
   }).optional(),
 });

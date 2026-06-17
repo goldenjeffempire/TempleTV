@@ -29,6 +29,7 @@ import { eq, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { storage } from "../../../infrastructure/storage.js";
 import { logger } from "../../../infrastructure/logger.js";
+import { env } from "../../../config/env.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { quarantineVideo } from "../../broadcast/quarantine.service.js";
 import { enqueueTranscode } from "../../transcoder/transcoder.queue.js";
@@ -62,6 +63,7 @@ export interface RecoveryStats {
   gapsFound: number;
   recoveries: number;
   orphanedBlobCount: number;
+  deletedOrphanBlobCount: number;
   consecutiveErrors: number;
 }
 
@@ -83,6 +85,7 @@ class StorageBlobRecoveryServiceImpl {
     gapsFound: 0,
     recoveries: 0,
     orphanedBlobCount: 0,
+    deletedOrphanBlobCount: 0,
     consecutiveErrors: 0,
   };
 
@@ -365,34 +368,85 @@ class StorageBlobRecoveryServiceImpl {
    * has no corresponding managed_videos row.  These accumulate after hard-
    * deletes, failed imports, or abandoned upload sessions.
    *
-   * Scans both prefixes (transcoded/ AND uploads/) so operators get a
-   * complete picture of orphaned storage consumption.
+   * When ORPHAN_BLOB_AUTO_DELETE=true (default) blobs older than
+   * ORPHAN_BLOB_MIN_AGE_HOURS (default 168 h = 7 days) are automatically
+   * deleted in batches.  The age guard prevents accidental deletion of blobs
+   * belonging to in-progress uploads or recently removed videos whose row
+   * deletion has not yet propagated through all caches.
    *
-   * Returns the total count of orphaned blob prefixes detected and pushes an
-   * ops-alert if any are found.  Does NOT delete blobs — this is a detect-
-   * and-alert-only pass.  Operator action required to clean up manually
-   * or via the admin storage cleanup tool.
+   * Returns the total count of orphaned blob prefixes detected.
    */
   async scanOrphanedBlobs(): Promise<number> {
+    const autoDelete = env.ORPHAN_BLOB_AUTO_DELETE;
+    const minAgeHours = env.ORPHAN_BLOB_MIN_AGE_HOURS;
+    const cutoff = new Date(Date.now() - minAgeHours * 60 * 60_000);
+
     try {
-      // Scan transcoded/ prefix: blobs for videos that no longer exist in managed_videos.
-      const transcodedResult = await db.execute<{ orphaned_prefix_count: number }>(sql`
+      // ── Phase 1: Scan transcoded/ orphaned prefixes ────────────────────────
+      // Each distinct video_id under transcoded/ that has no managed_videos row
+      // is an orphaned HLS output set (typically from a hard-deleted video).
+      // We fetch each orphan's newest blob timestamp so the age gate can apply
+      // per-prefix rather than per-blob, avoiding partial-deletion of a prefix
+      // that just received a new segment during an in-progress transcode.
+      const transcodedOrphansResult = await db.execute<{
+        video_id: string;
+        newest_blob_at: string;
+        blob_count: number;
+      }>(sql`
         WITH distinct_prefixes AS (
-          SELECT DISTINCT
-            regexp_replace(key, '^transcoded/([^/]+)/.*$', '\\1') AS video_id
+          SELECT
+            regexp_replace(key, '^transcoded/([^/]+)/.*$', '\\1') AS video_id,
+            MAX(updated_at) AS newest_blob_at,
+            COUNT(*)::int   AS blob_count
           FROM storage_blobs
           WHERE key LIKE 'transcoded/%'
+          GROUP BY 1
         )
-        SELECT COUNT(*)::int AS orphaned_prefix_count
+        SELECT video_id, newest_blob_at::text AS newest_blob_at, blob_count
         FROM distinct_prefixes dp
         WHERE NOT EXISTS (
           SELECT 1 FROM managed_videos mv WHERE mv.id = dp.video_id
         )
+        ORDER BY newest_blob_at
+        LIMIT 200
       `);
 
-      // Scan uploads/ prefix: blobs where no managed_videos row claims that objectPath.
-      // Uses a conservative LIKE match to find keys that no row references.
-      const uploadsResult = await db.execute<{ orphaned_count: number }>(sql`
+      const allOrphanedTranscoded = transcodedOrphansResult.rows;
+      const transcodedCount = allOrphanedTranscoded.length;
+
+      // Age-gate: only delete prefixes whose NEWEST blob is older than the
+      // threshold (i.e. no blob has been written recently, so the prefix is
+      // genuinely abandoned — not an in-progress transcode).
+      const deletableTranscoded = autoDelete
+        ? allOrphanedTranscoded.filter((r) => new Date(r.newest_blob_at) < cutoff)
+        : [];
+
+      let deletedTranscoded = 0;
+      for (const row of deletableTranscoded) {
+        try {
+          const del = await db.execute(sql`
+            DELETE FROM storage_blobs
+            WHERE key LIKE ${"transcoded/" + row.video_id + "/%"}
+          `);
+          const affected = (del as unknown as { rowCount?: number }).rowCount ?? 0;
+          deletedTranscoded += affected;
+          logger.debug(
+            { videoId: row.video_id, blobs: affected, newestAt: row.newest_blob_at },
+            "[storage-blob-recovery] deleted orphaned transcoded HLS blobs",
+          );
+        } catch (delErr) {
+          logger.warn(
+            { err: delErr, videoId: row.video_id },
+            "[storage-blob-recovery] failed to delete orphaned transcoded prefix (non-fatal)",
+          );
+        }
+      }
+
+      // ── Phase 2: Scan uploads/ orphaned blobs ─────────────────────────────
+      // Blobs in uploads/ not referenced by any managed_videos objectPath or
+      // localVideoUrl accumulate from failed imports, test uploads, and
+      // sessions that were initiated but never finalized.
+      const uploadsOrphansResult = await db.execute<{ orphaned_count: number }>(sql`
         SELECT COUNT(*)::int AS orphaned_count
         FROM storage_blobs sb
         WHERE sb.key LIKE 'uploads/%'
@@ -402,32 +456,99 @@ class StorageBlobRecoveryServiceImpl {
                OR mv.local_video_url LIKE '%' || sb.key
           )
       `);
+      const uploadsCount = Number(uploadsOrphansResult.rows[0]?.orphaned_count ?? 0);
 
-      const transcodedCount = Number(transcodedResult.rows[0]?.orphaned_prefix_count ?? 0);
-      const uploadsCount = Number(uploadsResult.rows[0]?.orphaned_count ?? 0);
-      const total = transcodedCount + uploadsCount;
+      let deletedUploads = 0;
+      if (autoDelete && uploadsCount > 0) {
+        try {
+          const delResult = await db.execute(sql`
+            DELETE FROM storage_blobs
+            WHERE key IN (
+              SELECT sb.key FROM storage_blobs sb
+              WHERE sb.key LIKE 'uploads/%'
+                AND sb.updated_at < ${cutoff}
+                AND NOT EXISTS (
+                  SELECT 1 FROM managed_videos mv
+                  WHERE mv.object_path = sb.key
+                     OR mv.local_video_url LIKE '%' || sb.key
+                )
+              ORDER BY sb.updated_at
+              LIMIT 500
+            )
+          `);
+          deletedUploads = (delResult as unknown as { rowCount?: number }).rowCount ?? 0;
+          if (deletedUploads > 0) {
+            logger.info(
+              { deletedUploads, minAgeHours },
+              "[storage-blob-recovery] auto-deleted orphaned upload blobs",
+            );
+          }
+        } catch (delErr) {
+          logger.warn(
+            { err: delErr },
+            "[storage-blob-recovery] failed to delete orphaned upload blobs (non-fatal)",
+          );
+        }
+      }
 
-      this.stats.orphanedBlobCount = total;
+      // ── Metrics + alerting ─────────────────────────────────────────────────
+      const totalOrphaned = transcodedCount + uploadsCount;
+      const totalDeleted = deletedTranscoded + deletedUploads;
+      const belowAgeThreshold = transcodedCount - deletableTranscoded.length;
 
-      if (total > 0) {
+      this.stats.orphanedBlobCount = totalOrphaned;
+      this.stats.deletedOrphanBlobCount += totalDeleted;
+
+      if (totalOrphaned > 0) {
         logger.warn(
-          { orphanedTranscodedPrefixes: transcodedCount, orphanedUploadBlobs: uploadsCount, total },
-          "[storage-blob-recovery] orphaned blob entries detected — operator action required",
+          {
+            orphanedTranscodedPrefixes: transcodedCount,
+            orphanedUploadBlobs: uploadsCount,
+            deletedTranscoded,
+            deletedUploads,
+            belowAgeThresholdPrefixes: belowAgeThreshold,
+            minAgeHours,
+            autoDelete,
+          },
+          "[storage-blob-recovery] orphaned blob scan complete",
         );
+      }
+
+      if (totalDeleted > 0) {
+        adminEventBus.push("ops-alert", {
+          level: "info",
+          component: "storage-blob-recovery",
+          message:
+            `Auto-deleted ${totalDeleted} orphaned storage blob(s): ` +
+            `${deletedTranscoded} HLS segment blob(s) from ${deletableTranscoded.length} abandoned video prefix(es), ` +
+            `${deletedUploads} orphaned upload blob(s). ` +
+            `All deleted blobs had no managed_videos row and were older than ${minAgeHours} h.` +
+            (belowAgeThreshold > 0
+              ? ` ${belowAgeThreshold} transcoded prefix(es) are still within the age quarantine window — they will be deleted on the next pass once they age out.`
+              : ""),
+          deletedTranscoded,
+          deletedUploads,
+          retainedBelowAgeThreshold: belowAgeThreshold,
+          minAgeHours,
+        });
+      } else if (totalOrphaned > 0 && !autoDelete) {
         adminEventBus.push("ops-alert", {
           level: "warn",
           component: "storage-blob-recovery",
           message:
-            `${total} orphaned blob entries detected in storage_blobs ` +
+            `${totalOrphaned} orphaned blob entries detected in storage_blobs ` +
             `(${transcodedCount} transcoded HLS prefix(es), ${uploadsCount} upload blob(s)) ` +
             "with no corresponding managed_videos row. " +
-            "Operator action required: review and clean up via the admin storage cleanup tool.",
+            "Set ORPHAN_BLOB_AUTO_DELETE=true to enable automatic cleanup " +
+            "(default: enabled; blobs are only deleted after ORPHAN_BLOB_MIN_AGE_HOURS = " +
+            `${minAgeHours} h).`,
           orphanedTranscodedPrefixes: transcodedCount,
           orphanedUploadBlobs: uploadsCount,
-          total,
+          total: totalOrphaned,
         });
       }
-      return total;
+
+      return totalOrphaned;
     } catch (err) {
       logger.warn({ err }, "[storage-blob-recovery] orphaned blob scan failed (non-fatal)");
       return 0;

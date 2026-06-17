@@ -737,6 +737,24 @@ const Env = z.object({
   //   3. No blobs at all → quarantine + SOURCE_MISSING + ops-alert
   // Default 600 000 ms (10 min). Set to 0 to disable.
   STORAGE_RECONCILIATION_INTERVAL_MS: z.coerce.number().int().nonnegative().default(600_000),
+
+  // ── Orphaned blob auto-remediation ────────────────────────────────────────
+  // When true (default), orphaned storage_blobs rows (transcoded HLS + upload
+  // blobs with no managed_videos reference) older than ORPHAN_BLOB_MIN_AGE_HOURS
+  // are automatically deleted each reconciliation pass.
+  // Set false to revert to detect-and-alert-only behaviour.
+  ORPHAN_BLOB_AUTO_DELETE: z.coerce.boolean().default(true),
+
+  // Minimum age in hours before an orphaned blob is eligible for auto-deletion.
+  // Default 168 h (7 days) provides a safety buffer so blobs from recently-
+  // deleted videos or in-progress uploads are never prematurely removed.
+  // Must be a positive integer.
+  ORPHAN_BLOB_MIN_AGE_HOURS: z.coerce.number().int().positive().default(168),
+
+  // Maximum number of managed_videos rows checked per storage-reconciliation
+  // library-wide pass (Phase 2 — non-queued items).  Keeps individual pass
+  // duration bounded on large libraries.  Default 200.
+  STORAGE_RECON_LIBRARY_BATCH: z.coerce.number().int().positive().default(200),
 });
 
 export type AppEnv = z.infer<typeof Env>;

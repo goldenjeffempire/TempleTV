@@ -463,12 +463,16 @@ function sample() {
   // faster than the alert threshold. Previously this only triggered on RSS
   // pressure; adding the heapUsed guard lets the GC reclaim leaked JS objects
   // before they push RSS past the restart threshold, buying recovery time.
-  if (rssAlertActive || heapUsedAlertActive) {
+  if (rssAlertActive || heapUsedAlertActive || arrayBuffersAlertActive) {
     // First, flush expired in-process cache entries so the GC has smaller
     // live-set to scan. This reliably reclaims catalog/broadcast JSON objects
     // that are past their TTL but haven't been touched (lazy eviction would
     // leave them in the Map until their key is accessed, which may be never
     // on a 24/7 server after a video rotation).
+    // Also runs under arrayBuffers pressure: expired catalog/broadcast entries
+    // in the LRU hold live Buffer references that prevent GC from reclaiming
+    // the underlying ArrayBuffer memory even after the segment is no longer
+    // being served.
     const purged = purgeExpiredCacheEntries();
     if (purged > 0) {
       logger.info({ purged }, "[memory-watchdog] flushed expired cache entries during pressure");
@@ -477,6 +481,35 @@ function sample() {
   const gcFn = (global as { gc?: () => void }).gc;
   if ((rssAlertActive || heapUsedAlertActive) && gcFn) {
     gcFn();
+  }
+
+  // ── Pre-exit emergency cache drain ───────────────────────────────────────
+  // Two samples before CRITICAL_SAMPLES_FOR_EXIT is reached, attempt an
+  // aggressive multi-cache drain + GC to give the process a final opportunity
+  // to recover without a restart.  If RSS falls back below restartThresholdMb
+  // before the critical threshold is hit, the consecutive counter resets and
+  // the exit is avoided entirely.
+  if (
+    env.NODE_ENV === "production" &&
+    consecutiveRssOverRestart === CRITICAL_SAMPLES_FOR_EXIT - 2 &&
+    !criticalExitInFlight
+  ) {
+    const purgedEmergency = purgeExpiredCacheEntries();
+    // Trim HLS segment cache to zero — maximum reclaim under critical pressure.
+    void import("../modules/video-serve/video-serve.routes.js")
+      .then(({ trimHlsSegmentCache }) => trimHlsSegmentCache(0))
+      .catch(() => {/* non-fatal — module may not be initialised */});
+    if (gcFn) gcFn();
+    logger.warn(
+      {
+        rssMb,
+        restartThresholdMb,
+        consecutiveRssOverRestart,
+        purgedCacheEntries: purgedEmergency,
+        samplesUntilExit: 2,
+      },
+      "[memory-watchdog] pre-exit emergency drain: flushed all expired cache entries + trimmed HLS segment cache — 2 samples until restart if RSS does not recover",
+    );
   }
 
   // ── Critical escalation (production only) ────────────────────────────────

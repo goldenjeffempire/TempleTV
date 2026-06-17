@@ -150,6 +150,14 @@ export interface QueueHealthGuardStatus {
  */
 const OPS_ALERT_COOLDOWN_MS = 30 * 60_000; // 30 minutes
 
+/**
+ * When the queue is below threshold after a reconciliation pass, schedule a
+ * follow-up scan after this delay (in addition to the regular workerSupervisor
+ * interval).  This provides faster queue recovery without over-scanning on a
+ * healthy library.
+ */
+const ADAPTIVE_RETRY_MS = 2 * 60_000; // 2 minutes
+
 class QueueHealthGuardImpl {
   private lastCheckAtMs: number | null = null;
   private lastActiveCount: number | null = null;
@@ -158,6 +166,7 @@ class QueueHealthGuardImpl {
   private lastRebuildAdded = 0;
   private belowThreshold = false;
   private lastOpsAlertAtMs = 0;
+  private adaptiveTimer: NodeJS.Timeout | null = null;
 
   getStatus(): QueueHealthGuardStatus {
     return {
@@ -240,6 +249,11 @@ class QueueHealthGuardImpl {
       // Queue is healthy — reset the ops-alert cooldown so the next below-
       // threshold event fires immediately rather than being suppressed.
       this.lastOpsAlertAtMs = 0;
+      // Cancel any pending adaptive follow-up — the queue is healthy.
+      if (this.adaptiveTimer) {
+        clearTimeout(this.adaptiveTimer);
+        this.adaptiveTimer = null;
+      }
       logger.debug(
         { activeCount, threshold },
         "[queue-reconcile] queue size OK",
@@ -251,6 +265,25 @@ class QueueHealthGuardImpl {
       { activeCount, threshold, added },
       "[queue-reconcile] queue still below threshold after reconciliation — library may have too few eligible videos",
     );
+
+    // ── Adaptive follow-up scan ─────────────────────────────────────────────
+    // Schedule a faster follow-up scan when the queue is below threshold so
+    // any newly-uploaded or re-activated videos are admitted within 2 minutes
+    // rather than waiting the full workerSupervisor interval.
+    // The timer is not re-armed if one is already pending (dedup guard).
+    if (!this.adaptiveTimer) {
+      this.adaptiveTimer = setTimeout(() => {
+        this.adaptiveTimer = null;
+        void this.scan().catch((err) =>
+          logger.warn({ err }, "[queue-reconcile] adaptive follow-up scan error (non-fatal)"),
+        );
+      }, ADAPTIVE_RETRY_MS);
+      this.adaptiveTimer.unref?.();
+      logger.info(
+        { retryMs: ADAPTIVE_RETRY_MS, activeCount, threshold },
+        "[queue-reconcile] queue below threshold — scheduled adaptive follow-up scan",
+      );
+    }
 
     const nowMs = Date.now();
     const msSinceLastAlert = nowMs - this.lastOpsAlertAtMs;

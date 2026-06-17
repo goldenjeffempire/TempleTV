@@ -25,6 +25,7 @@
 import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
+import { env } from "../../../config/env.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 
@@ -41,6 +42,7 @@ export interface CleanupStats {
   lastStaleSessiosClosed: number;
   lastPrunedStalePushTokens: number;
   lastPrunedStaleWebPushSubs: number;
+  lastPrunedTerminalVideoBlobs: number;
   lastError: string | null;
   nextRunAtMs: number | null;
 }
@@ -62,6 +64,7 @@ class OrphanCleanupWorkerImpl {
     lastStaleSessiosClosed: 0,
     lastPrunedStalePushTokens: 0,
     lastPrunedStaleWebPushSubs: 0,
+    lastPrunedTerminalVideoBlobs: 0,
     lastError: null,
     nextRunAtMs: null,
   };
@@ -95,11 +98,7 @@ class OrphanCleanupWorkerImpl {
 
   stop(): void {
     if (this.timer) {
-      if (this.timer instanceof (globalThis as any).Timeout || (typeof this.timer === 'object' && this.timer !== null && 'unref' in this.timer)) {
-        clearTimeout(this.timer as any);
-      } else {
-        clearInterval(this.timer as any);
-      }
+      clearTimeout(this.timer);
       this.timer = null;
     }
   }
@@ -348,6 +347,88 @@ class OrphanCleanupWorkerImpl {
         );
       }
 
+      // ── 7. Terminal-error video blob GC ────────────────────────────────────
+      // Videos quarantined with SOURCE_MISSING or CORRUPT_SOURCE are permanently
+      // unplayable until re-uploaded.  Their transcoded HLS blobs and source
+      // upload blobs in storage_blobs serve no purpose and accumulate over time.
+      // We GC them here when:
+      //   • transcodingErrorCode is SOURCE_MISSING or CORRUPT_SOURCE
+      //   • No active broadcast_queue row references the video (safety guard)
+      //   • All blobs are older than ORPHAN_BLOB_MIN_AGE_HOURS (default 7 days)
+      // Capped at 50 video IDs per sweep to bound per-sweep DB lock time.
+      let prunedTerminalVideoBlobs = 0;
+      const terminalBlobCutoff = new Date(
+        Date.now() - env.ORPHAN_BLOB_MIN_AGE_HOURS * 60 * 60_000,
+      );
+      try {
+        const terminalResult = await db.execute<{
+          videoId: string;
+          objectPath: string | null;
+        }>(sql`
+          SELECT mv.id AS "videoId", mv.object_path AS "objectPath"
+          FROM managed_videos mv
+          WHERE mv.transcoding_error_code IN ('SOURCE_MISSING', 'CORRUPT_SOURCE')
+            AND NOT EXISTS (
+              SELECT 1 FROM broadcast_queue bq
+              WHERE bq.video_id = mv.id
+                AND bq.is_active = true
+            )
+          ORDER BY mv.updated_at
+          LIMIT 50
+        `);
+
+        for (const row of terminalResult.rows) {
+          const { videoId, objectPath } = row;
+
+          // Delete all transcoded/ blobs for this video ID (age-gated)
+          const transcodedDel = await db.execute(sql`
+            DELETE FROM storage_blobs
+            WHERE key LIKE ${"transcoded/" + videoId + "/%"}
+              AND updated_at < ${terminalBlobCutoff}
+          `).catch(() => ({ rowCount: 0 }));
+          prunedTerminalVideoBlobs += (transcodedDel as unknown as { rowCount?: number }).rowCount ?? 0;
+
+          // Delete source upload blob only if no other video row references it
+          if (objectPath && !/^https?:\/\//i.test(objectPath)) {
+            const uploadKey = objectPath.startsWith("uploads/")
+              ? objectPath
+              : objectPath.replace(/^\/(?:api\/(?:v\d+\/)?)?(?:uploads\/)?/, "uploads/");
+            const otherRefResult = await db.execute<{ cnt: number }>(sql`
+              SELECT COUNT(*)::int AS cnt FROM managed_videos
+              WHERE (object_path = ${objectPath} OR object_path = ${uploadKey})
+                AND id != ${videoId}
+            `).catch(() => ({ rows: [{ cnt: 1 }] }));
+            const otherRefs = Number(
+              (otherRefResult as unknown as { rows: Array<{ cnt: number }> }).rows[0]?.cnt ?? 1,
+            );
+            if (otherRefs === 0) {
+              const uploadDel = await db.execute(sql`
+                DELETE FROM storage_blobs
+                WHERE key = ${uploadKey}
+                  AND updated_at < ${terminalBlobCutoff}
+              `).catch(() => ({ rowCount: 0 }));
+              prunedTerminalVideoBlobs += (uploadDel as unknown as { rowCount?: number }).rowCount ?? 0;
+            }
+          }
+        }
+
+        if (prunedTerminalVideoBlobs > 0) {
+          logger.info(
+            {
+              pruned: prunedTerminalVideoBlobs,
+              videoCount: terminalResult.rows.length,
+              minAgeHours: env.ORPHAN_BLOB_MIN_AGE_HOURS,
+            },
+            "[orphan-cleanup] pruned storage blobs for terminal-error (SOURCE_MISSING/CORRUPT_SOURCE) videos",
+          );
+        }
+      } catch (terminalBlobErr) {
+        logger.warn(
+          { err: terminalBlobErr },
+          "[orphan-cleanup] terminal video blob GC failed (non-fatal)",
+        );
+      }
+
       this.stats.lastRunAtMs = start;
       this.stats.lastRunDurationMs = Date.now() - start;
       this.stats.lastOrphanedRefCount = candidates.length;
@@ -356,6 +437,7 @@ class OrphanCleanupWorkerImpl {
       this.stats.lastStaleSessiosClosed = staleSessionsClosed;
       this.stats.lastPrunedStalePushTokens = prunedStalePushTokens;
       this.stats.lastPrunedStaleWebPushSubs = prunedStaleWebPushSubs;
+      this.stats.lastPrunedTerminalVideoBlobs = prunedTerminalVideoBlobs;
       this.stats.lastError = null;
       logger.info(
         {
@@ -367,6 +449,7 @@ class OrphanCleanupWorkerImpl {
           prunedStalePushTokens,
           prunedStaleWebPushSubs,
           prunedStorageParts,
+          prunedTerminalVideoBlobs,
           durationMs: this.stats.lastRunDurationMs,
         },
         "[orphan-cleanup] sweep complete",

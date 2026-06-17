@@ -23,6 +23,7 @@
 import { inArray, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
+import { env } from "../../../config/env.js";
 import { storageBlobRecoveryService } from "./storage-blob-recovery.service.js";
 
 const MODULE = "[storage-reconciliation]";
@@ -188,10 +189,92 @@ async function runReconciliationPass(): Promise<void> {
     }
   }
 
-  // ── Step 5: Orphaned blob scan ─────────────────────────────────────────────
+  // ── Step 5: Library-wide HLS integrity check (non-queued videos) ──────────
+  // Checks managed_videos rows with hls_master_url set and hls_ready status
+  // that are NOT currently in the active queue.  If their master.m3u8 blob is
+  // missing, runs the recovery waterfall proactively — before these videos
+  // enter the queue and cause broadcast failures.  This closes the window
+  // where a video could sit in the library with a stale hlsMasterUrl and
+  // zero blobs, undetected until the queue-health-guard admits it.
+  //
+  // Capped at STORAGE_RECON_LIBRARY_BATCH rows per pass (default 200) to
+  // bound per-pass duration on large libraries.  Active queue items (already
+  // checked in Steps 3–4 above) are excluded via the NOT IN guard so there
+  // is no double-processing.
+  const activeVideoIdSet = new Set(rows.map((r) => r.videoId).filter(Boolean));
+  let libraryItemsChecked = 0;
+  let libraryGapsFound = 0;
+  let libraryRecoveries = 0;
+
+  try {
+    const libraryBatch = env.STORAGE_RECON_LIBRARY_BATCH;
+
+    const libraryResult = await db.execute<{
+      videoId: string;
+      title: string;
+      objectPath: string | null;
+      hlsUrl: string | null;
+    }>(sql`
+      SELECT
+        mv.id             AS "videoId",
+        mv.title          AS "title",
+        mv.object_path    AS "objectPath",
+        mv.hls_master_url AS "hlsUrl"
+      FROM managed_videos mv
+      WHERE mv.hls_master_url IS NOT NULL
+        AND mv.transcoding_status = 'hls_ready'
+        AND mv.s3_mirrored_at IS NOT NULL
+        AND mv.video_source != 'youtube'
+        AND mv.transcoding_error_code IS NULL
+      ORDER BY mv.updated_at DESC NULLS LAST
+      LIMIT ${libraryBatch}
+    `);
+
+    type LibRow = { videoId: string; title: string; objectPath: string | null; hlsUrl: string | null };
+    const nonQueuedRows = (libraryResult.rows as LibRow[]).filter(
+      (r) => !activeVideoIdSet.has(r.videoId),
+    );
+    libraryItemsChecked = nonQueuedRows.length;
+
+    if (nonQueuedRows.length > 0) {
+      // Batch presence check for master.m3u8 keys
+      const masterKeys = nonQueuedRows.map((r) => `transcoded/${r.videoId}/master.m3u8`);
+      const presentMasters = await db
+        .select({ key: schema.storageBlobsTable.key })
+        .from(schema.storageBlobsTable)
+        .where(inArray(schema.storageBlobsTable.key, masterKeys))
+        .catch(() => [] as { key: string }[]);
+      const presentMasterSet = new Set(presentMasters.map((r) => r.key));
+
+      for (const libRow of nonQueuedRows) {
+        const masterKey = `transcoded/${libRow.videoId}/master.m3u8`;
+        if (presentMasterSet.has(masterKey)) continue;
+
+        // Non-queued library video has hls_ready status but no master.m3u8 blob.
+        libraryGapsFound += 1;
+        const result = await storageBlobRecoveryService.runWaterfall({
+          videoId: libRow.videoId,
+          queueId: "",
+          title: libRow.title,
+          objectPath: libRow.objectPath,
+          hlsUrl: libRow.hlsUrl,
+          triggeredBy: `${MODULE}:library-pass`,
+        });
+        if (result.tier !== "error") libraryRecoveries += 1;
+        logger.warn(
+          { videoId: libRow.videoId, tier: result.tier, message: result.message },
+          `${MODULE} library-wide HLS gap — recovery action taken`,
+        );
+      }
+    }
+  } catch (libErr) {
+    logger.warn({ err: libErr }, `${MODULE} library-wide HLS integrity pass failed (non-fatal)`);
+  }
+
+  // ── Step 6: Orphaned blob scan ─────────────────────────────────────────────
   await storageBlobRecoveryService.scanOrphanedBlobs();
 
-  // ── Step 6: Record and log pass metrics ────────────────────────────────────
+  // ── Step 7: Record and log pass metrics ────────────────────────────────────
   const elapsedMs = Date.now() - startMs;
   storageBlobRecoveryService.recordPassEnd(elapsedMs, rows.length, blobsVerified, gapsFound, recoveries);
 
@@ -203,8 +286,12 @@ async function runReconciliationPass(): Promise<void> {
       gapsFound: stats.gapsFound,
       recoveries: stats.recoveries,
       orphanedBlobCount: stats.orphanedBlobCount,
+      deletedOrphanBlobCount: stats.deletedOrphanBlobCount,
       hlsItems: hlsItems.length,
       mp4Items: mp4Items.length,
+      libraryItemsChecked,
+      libraryGapsFound,
+      libraryRecoveries,
       elapsedMs,
     },
     `${MODULE} reconciliation pass complete`,
