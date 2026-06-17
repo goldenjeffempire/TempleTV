@@ -438,10 +438,52 @@ function dispatchOne(
       const msg = err instanceof Error ? err.message : String(err);
       stats.lastError = msg;
       stats.lastErrorAt = Date.now();
-      logger.warn(
-        { err, videoId: c.videoId, title: c.title, attempt: prev + 1, elapsedMs: Date.now() - jobStart },
-        "faststart-recovery: runFaststart failed (will retry up to MAX_ATTEMPTS)",
-      );
+
+      // ── Permanent-failure fast-path ──────────────────────────────────────
+      // CORRUPT_UPLOAD (moov_absent, structure_invalid, etc.) and
+      // SOURCE_MISSING are unrecoverable — no amount of retrying will fix a
+      // file with no moov atom or a blob that no longer exists in storage.
+      // Skip all remaining attempts immediately, mark the video record so
+      // the operator sees a clear error, and add to givenUpIds so this video
+      // never enters the candidate set again.
+      const errCode = (err as { code?: string } | null)?.code;
+      const isUnrecoverable = errCode === "CORRUPT_UPLOAD" || errCode === "SOURCE_MISSING";
+
+      if (isUnrecoverable) {
+        givenUpIds.add(c.videoId);
+        attemptCounts.delete(c.videoId);
+        stats.totalGivenUp += 1;
+        logger.error(
+          { err, videoId: c.videoId, title: c.title, errCode, attempt: prev + 1, elapsedMs: Date.now() - jobStart },
+          "faststart-recovery: unrecoverable container error — marking CORRUPT_SOURCE and skipping all future attempts",
+        );
+        // Write the permanent failure to the DB so the admin panel shows a
+        // clear error and the queue-integrity-validator deactivates the
+        // broadcast queue item on its next cycle.
+        void db
+          .update(v)
+          .set({
+            transcodingStatus: "failed",
+            transcodingErrorCode: "CORRUPT_SOURCE",
+            transcodingErrorMessage: msg.slice(0, 2048),
+          })
+          .where(eq(v.id, c.videoId))
+          .catch((dbErr: unknown) =>
+            logger.warn(
+              { err: dbErr, videoId: c.videoId },
+              "faststart-recovery: failed to write CORRUPT_SOURCE to DB (non-fatal)",
+            ),
+          );
+        adminEventBus.push("videos-library-updated", {
+          videoId: c.videoId,
+          reason: "faststart-unrecoverable",
+        });
+      } else {
+        logger.warn(
+          { err, videoId: c.videoId, title: c.title, attempt: prev + 1, elapsedMs: Date.now() - jobStart },
+          "faststart-recovery: runFaststart failed (will retry up to MAX_ATTEMPTS)",
+        );
+      }
     } finally {
       inFlight.delete(c.videoId);
       inFlightSince.delete(c.videoId);
