@@ -76,6 +76,11 @@ const shared = {
     // nodemailer v8 uses CJS-only internal requires that esbuild cannot
     // resolve through pnpm's virtual store when bundling. Externalise it.
     "nodemailer",
+    // asn1.js (transitive dep) requires minimalistic-assert which esbuild
+    // cannot resolve through pnpm's virtual store symlinks. Externalise both.
+    "asn1.js",
+    "minimalistic-assert",
+    "minimalistic-crypto-utils",
   ],
 };
 
