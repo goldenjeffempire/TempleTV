@@ -56,7 +56,7 @@ export function useWatchProgress() {
           } catch (e) {
             // Corrupted storage — start with empty progress map.
             if (process.env.NODE_ENV !== "production") {
-              console.error("[useWatchProgress] Failed to parse progress map:", e);
+              if (__DEV__) console.error("[useWatchProgress] Failed to parse progress map:", e);
             }
             void AsyncStorage.removeItem(STORAGE_KEY);
           }
@@ -64,7 +64,7 @@ export function useWatchProgress() {
       })
       .catch((e) => {
         if (process.env.NODE_ENV !== "production") {
-          console.error("[useWatchProgress] Failed to read from storage:", e);
+          if (__DEV__) console.error("[useWatchProgress] Failed to read from storage:", e);
         }
       });
   }, []);
@@ -134,7 +134,7 @@ export function useWatchProgress() {
         await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
       } catch (e) {
         if (process.env.NODE_ENV !== "production") {
-          console.error("[useWatchProgress] Failed to save progress:", e);
+          if (__DEV__) console.error("[useWatchProgress] Failed to save progress:", e);
         }
       }
     },
@@ -160,7 +160,7 @@ export function useWatchProgress() {
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(rest));
     } catch (e) {
       if (process.env.NODE_ENV !== "production") {
-        console.error("[useWatchProgress] Failed to clear entry:", e);
+        if (__DEV__) console.error("[useWatchProgress] Failed to clear entry:", e);
       }
     }
   }, []);
@@ -172,7 +172,7 @@ export function useWatchProgress() {
       await AsyncStorage.removeItem(STORAGE_KEY);
     } catch (e) {
       if (process.env.NODE_ENV !== "production") {
-        console.error("[useWatchProgress] Failed to remove all progress:", e);
+        if (__DEV__) console.error("[useWatchProgress] Failed to remove all progress:", e);
       }
     }
   }, []);

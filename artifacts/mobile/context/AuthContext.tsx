@@ -8,6 +8,7 @@ import {
   apiGetMe,
   apiLogout,
   ensureFreshAccessToken,
+  normalizeAuthUser,
   setOnSessionExpired,
   UserNotFoundError,
   type AuthUser,
@@ -252,13 +253,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // `user.emailVerified` checks behave inconsistently across sessions.
     // Match the defaults apiGetMe applies so all entry points produce
     // identical state.
-    const normalizedUser: AuthUser = {
-      id: newUser.id,
-      email: newUser.email,
-      displayName: newUser.displayName ?? "",
-      avatarUrl: newUser.avatarUrl ?? null,
-      emailVerified: newUser.emailVerified ?? false,
-    };
+    const normalizedUser = normalizeAuthUser(newUser);
     await secureStorage.setItem(SECURE_KEYS.authUser, JSON.stringify(normalizedUser));
     setToken(accessToken);
     setUser(normalizedUser);

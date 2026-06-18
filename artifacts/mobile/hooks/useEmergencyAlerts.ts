@@ -43,7 +43,7 @@ export function useEmergencyAlerts() {
 
     let active = true;
     let retryTimeout: ReturnType<typeof setTimeout> | null = null;
-    let es: any = null;
+    let es: { addEventListener(type: string, handler: (evt: { data: string }) => void): void; close?(): void } | null = null;
 
     const connect = () => {
       if (!active) return;

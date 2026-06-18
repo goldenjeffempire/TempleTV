@@ -58,9 +58,11 @@ function NativeTabLayout() {
   // Lazy require — only runs on iOS 18+ when this component is rendered.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { NativeTabs, Icon, Label } = require("expo-router/unstable-native-tabs") as {
-    NativeTabs: any;
-    Icon: React.ComponentType<any>;
-    Label: React.ComponentType<any>;
+    NativeTabs: React.ComponentType<{ children: React.ReactNode }> & {
+      Trigger: React.ComponentType<{ name: string; children: React.ReactNode }>;
+    };
+    Icon: React.ComponentType<{ sf?: { default: string; selected?: string } }>;
+    Label: React.ComponentType<{ children: React.ReactNode }>;
   };
 
   return (

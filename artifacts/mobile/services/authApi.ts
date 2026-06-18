@@ -140,6 +140,31 @@ export interface AuthResponse extends AuthTokens {
   user: AuthUser;
 }
 
+/** Raw shape returned by /login, /signup, /me, and /profile endpoints. */
+interface RawAuthUser {
+  id: string;
+  email: string;
+  displayName: string;
+  avatarUrl?: string | null;
+  emailVerified?: boolean;
+}
+
+/**
+ * Normalize a raw API user object into a stable {@link AuthUser}.
+ * Exported so every entry point (login, signup, /me, profile update,
+ * and AuthContext.signIn) produces the EXACT same shape — no undefined
+ * fields that flip between sessions, no rerender flicker.
+ */
+export function normalizeAuthUser(raw: RawAuthUser): AuthUser {
+  return {
+    id: raw.id,
+    email: raw.email,
+    displayName: raw.displayName ?? "",
+    avatarUrl: raw.avatarUrl ?? null,
+    emailVerified: raw.emailVerified ?? false,
+  };
+}
+
 // ── Refresh-token coordination ───────────────────────────────────────────
 // Multiple in-flight requests may simultaneously hit a 401. We dedupe the
 // refresh into a single network call and let everyone await the same result.
@@ -393,14 +418,7 @@ export async function apiGetMe(): Promise<AuthUser> {
     throw new UserNotFoundError();
   }
   if (!res.ok) throw new Error(await extractApiError(res, "Failed to fetch user"));
-  const data = (await res.json()) as { id: string; email: string; displayName: string; avatarUrl?: string | null; emailVerified?: boolean };
-  return {
-    id: data.id,
-    email: data.email,
-    displayName: data.displayName ?? "",
-    avatarUrl: data.avatarUrl ?? null,
-    emailVerified: data.emailVerified ?? false,
-  };
+  return normalizeAuthUser((await res.json()) as RawAuthUser);
 }
 
 export async function apiUpdateProfile(displayName: string): Promise<AuthUser> {
@@ -409,14 +427,7 @@ export async function apiUpdateProfile(displayName: string): Promise<AuthUser> {
     body: JSON.stringify({ displayName }),
   });
   if (!res.ok) throw new Error(await extractApiError(res, "Failed to update profile"));
-  const data = (await res.json()) as { id: string; email: string; displayName: string; avatarUrl?: string | null; emailVerified?: boolean };
-  return {
-    id: data.id,
-    email: data.email,
-    displayName: data.displayName ?? "",
-    avatarUrl: data.avatarUrl ?? null,
-    emailVerified: data.emailVerified ?? false,
-  };
+  return normalizeAuthUser((await res.json()) as RawAuthUser);
 }
 
 export async function apiSyncFavorite(action: "add" | "remove", video: {

@@ -198,7 +198,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     };
     AsyncStorage.setItem(STORAGE_KEYS.playbackSettings, JSON.stringify(payload)).catch((e) => {
       if (process.env.NODE_ENV !== "production") {
-        console.error("[PlayerContext] Failed to persist playback settings:", e);
+        if (__DEV__) console.error("[PlayerContext] Failed to persist playback settings:", e);
       }
     });
   }, [dataSaver, isRadioMode, shuffleMode, loopMode, volume]);

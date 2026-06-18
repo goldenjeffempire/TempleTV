@@ -15,6 +15,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  type TextInputProps,
   View,
   ActivityIndicator,
 } from "react-native";
@@ -46,10 +47,10 @@ function AnimatedInput({
   onChangeText: (v: string) => void;
   secureTextEntry?: boolean;
   rightElement?: React.ReactNode;
-  keyboardType?: any;
-  autoCapitalize?: any;
-  autoComplete?: any;
-  returnKeyType?: any;
+  keyboardType?: TextInputProps["keyboardType"];
+  autoCapitalize?: TextInputProps["autoCapitalize"];
+  autoComplete?: TextInputProps["autoComplete"];
+  returnKeyType?: TextInputProps["returnKeyType"];
   onSubmitEditing?: () => void;
 }) {
   const [focused, setFocused] = useState(false);

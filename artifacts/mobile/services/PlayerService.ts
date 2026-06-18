@@ -51,8 +51,15 @@ export async function PlaybackService() {
   // Using require() (synchronous) rather than dynamic import() because this
   // function is called synchronously from native and must register all listeners
   // before returning.
-  let TrackPlayer: any;
-  let Event: any;
+  interface RNTrackPlayerModule {
+    addEventListener(event: string, listener: () => Promise<void> | void): void;
+    play(): Promise<void>;
+    pause(): Promise<void>;
+    stop(): Promise<void>;
+    seekTo(seconds: number): Promise<void>;
+  }
+  let TrackPlayer: RNTrackPlayerModule | undefined;
+  let Event: Record<string, string> | undefined;
   try {
     const mod = require("react-native-track-player");
     TrackPlayer = mod.default ?? mod;

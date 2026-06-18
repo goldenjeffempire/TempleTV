@@ -57,7 +57,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       await AsyncStorage.setItem(THEME_KEY, t);
     } catch (e) {
       if (process.env.NODE_ENV !== "production") {
-        console.error("[ThemeContext] Failed to persist theme:", e);
+        if (__DEV__) console.error("[ThemeContext] Failed to persist theme:", e);
       }
     }
   }, []);

@@ -88,14 +88,14 @@ async function apiFetch<T>(path: string): Promise<T | null> {
     );
     if (!res.ok) {
       if (__DEV__) {
-        console.warn(`[broadcast] apiFetch ${path} → HTTP ${res.status}`);
+        if (__DEV__) console.warn(`[broadcast] apiFetch ${path} → HTTP ${res.status}`);
       }
       return null;
     }
     return await res.json() as T;
   } catch (err) {
     if (__DEV__) {
-      console.warn(`[broadcast] apiFetch ${path} failed:`, err);
+      if (__DEV__) console.warn(`[broadcast] apiFetch ${path} failed:`, err);
     }
     return null;
   }

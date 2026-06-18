@@ -72,7 +72,7 @@ export function useWatchHistory() {
             // Corrupted AsyncStorage data — clear and start fresh so the app
             // doesn't crash on every launch until the user reinstalls.
             if (process.env.NODE_ENV !== "production") {
-              console.error("[useWatchHistory] Failed to parse history:", e);
+              if (__DEV__) console.error("[useWatchHistory] Failed to parse history:", e);
             }
             void AsyncStorage.removeItem(STORAGE_KEYS.watchHistory);
           }
@@ -80,7 +80,7 @@ export function useWatchHistory() {
       })
       .catch((e) => {
         if (process.env.NODE_ENV !== "production") {
-          console.error("[useWatchHistory] Failed to read history from storage:", e);
+          if (__DEV__) console.error("[useWatchHistory] Failed to read history from storage:", e);
         }
       })
       .finally(() => setLoaded(true));
@@ -136,13 +136,13 @@ export function useWatchHistory() {
         await AsyncStorage.setItem(STORAGE_KEYS.watchHistory, JSON.stringify(merged));
       } catch (e) {
         if (process.env.NODE_ENV !== "production") {
-          console.error("[useWatchHistory] Failed to persist merged history:", e);
+          if (__DEV__) console.error("[useWatchHistory] Failed to persist merged history:", e);
         }
       }
     })
     .catch((e) => {
       if (process.env.NODE_ENV !== "production") {
-        console.error("[useWatchHistory] Cloud sync failed:", e);
+        if (__DEV__) console.error("[useWatchHistory] Cloud sync failed:", e);
       }
     });
   }, [token, loaded]);
@@ -165,7 +165,7 @@ export function useWatchHistory() {
         await AsyncStorage.setItem(STORAGE_KEYS.watchHistory, JSON.stringify(updated));
       } catch (e) {
         if (process.env.NODE_ENV !== "production") {
-          console.error("[useWatchHistory] Failed to save entry:", e);
+          if (__DEV__) console.error("[useWatchHistory] Failed to save entry:", e);
         }
       }
       hasAuthToken().then((loggedIn) => {

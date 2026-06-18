@@ -163,7 +163,7 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
         }
         // All retries exhausted — leave defaults in place; app remains usable
         if (process.env.NODE_ENV !== "production") {
-          console.warn("[RadioStreamContext] Failed to fetch radio config:", err);
+          if (__DEV__) console.warn("[RadioStreamContext] Failed to fetch radio config:", err);
         }
       } finally {
         if (!cancelled && mountedRef.current) setConfigLoading(false);
@@ -407,7 +407,7 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
     setIsConnecting(false);
     AsyncStorage.setItem(RADIO_MODE_KEY, "false").catch((e) => {
       if (process.env.NODE_ENV !== "production") {
-        console.error("[RadioStreamContext] Failed to persist radio stop:", e);
+        if (__DEV__) console.error("[RadioStreamContext] Failed to persist radio stop:", e);
       }
     });
   }, []);
@@ -439,7 +439,7 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
     // Persist toggle state (for within-session navigation — not cold start)
     AsyncStorage.setItem(RADIO_MODE_KEY, String(next)).catch((e) => {
       if (process.env.NODE_ENV !== "production") {
-        console.error("[RadioStreamContext] Failed to persist radio toggle:", e);
+        if (__DEV__) console.error("[RadioStreamContext] Failed to persist radio toggle:", e);
       }
     });
   }, [isRadioOn]);
