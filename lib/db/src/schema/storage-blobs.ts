@@ -5,17 +5,25 @@ import {
   boolean,
   timestamp,
   index,
+  customType,
 } from "drizzle-orm/pg-core";
 
 /**
- * MinIO object storage metadata index.
+ * Custom bytea column type for Drizzle ORM (node-postgres driver).
+ * The pg driver automatically decodes BYTEA values to Node.js Buffer objects.
+ */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() { return "bytea"; },
+});
+
+/**
+ * PostgreSQL BYTEA object storage index.
  *
- * Tracks every object stored in MinIO (the self-hosted S3-compatible backend).
- * The binary data lives in MinIO; this table is a lightweight metadata index
- * that allows batch SQL presence checks and prefix scans without issuing
- * per-key MinIO HeadObject calls during large sweeps.
+ * Stores every blob (source videos, HLS segments, playlists, thumbnails,
+ * and custom thumbnails) as BYTEA in the `data` column.
+ * This is the sole storage backend — no MinIO/S3 required.
  *
- * Storage key conventions (same as before — no path logic changes needed):
+ * Storage key conventions:
  *   uploads/{yyyy}/{mm}/{dd}/{sessionId}.{ext}   — assembled source video
  *   transcoded/{videoId}/master.m3u8             — HLS master playlist
  *   transcoded/{videoId}/v0/playlist.m3u8        — rendition playlist
@@ -23,15 +31,15 @@ import {
  *   transcoded/{videoId}/thumbnail.jpg           — auto-generated thumbnail
  *   thumbnails/{sessionId}.{ext}                 — custom uploaded thumbnail
  *
- * Rows are written by S3ObjectStorage.putObject / completeMultipartUpload
- * and deleted by S3ObjectStorage.deleteObject / deleteByPrefix.  All writes
- * are fire-and-forget (non-fatal) so a transient DB error never blocks
- * the actual MinIO operation.
- *
  * Indexes:
  *   - Primary key on `key` for O(1) exact-match lookups.
  *   - btree index for efficient prefix scans (used by deleteByPrefix and
- *     bulk-delete operations on `transcoded/{videoId}/*`).
+ *     bulk-delete operations on `transcoded/{videoId}/`).
+ *
+ * Memory note:
+ *   The pg driver decodes BYTEA via hex representation internally before
+ *   converting to Buffer. An 8 MiB HLS segment uses ~16 MiB RSS during the
+ *   fetch + decode cycle. Budget accordingly for HLS_MAX_CONCURRENT.
  */
 export const storageBlobsTable = pgTable(
   "storage_blobs",
@@ -40,15 +48,16 @@ export const storageBlobsTable = pgTable(
     contentType: text("content_type").notNull().default("application/octet-stream"),
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull().default(0),
     /**
+     * Binary blob data stored as PostgreSQL BYTEA.
+     * NULL only for legacy rows inserted before the DB-BYTEA migration.
+     * All new rows written by PostgresObjectStorage will have data set.
+     */
+    data: bytea("data"),
+    /**
      * Set to true by faststart.service.ts just before it starts the multipart
      * re-upload that atomically replaces the raw upload blob with the
      * moov-at-byte-0 version. Cleared in a `finally` block once the swap
-     * completes (or fails).
-     *
-     * With MinIO native multipart, the swap is atomic — the old blob remains
-     * fully readable until completeMultipartUpload succeeds — so this flag is
-     * informational only (no correctness impact).  It is retained for operator
-     * visibility and monitoring tooling compatibility.
+     * completes (or fails). Informational only — no correctness impact.
      */
     faststartLocked: boolean("faststart_locked").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

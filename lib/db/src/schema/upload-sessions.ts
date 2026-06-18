@@ -14,16 +14,17 @@ import {
  * One row per chunked-upload session initiated by the admin VideoUploadModal.
  *
  * storageBackend:
- *   'minio' — chunks are stored as native S3 multipart parts in MinIO.
- *             This is the only supported backend. Legacy rows with 'db' value
- *             are treated identically (both use the multipart assembly path).
+ *   'db' — chunks are stored as BYTEA in storage_upload_parts (PostgreSQL
+ *           backend). completeMultipartUpload() concatenates them into
+ *           storage_blobs. This is the only supported backend.
+ *           Legacy rows with 'minio' value are treated identically.
  */
 export const uploadSessionsTable = pgTable(
   "upload_sessions",
   {
     sessionId: text("session_id").primaryKey(),
-    uploadId: text("upload_id"),           // MinIO multipart UploadId
-    objectKey: text("object_key"),         // MinIO storage key
+    uploadId: text("upload_id"),           // PostgreSQL multipart UploadId (UUID)
+    objectKey: text("object_key"),         // storage key
     title: text("title").notNull(),
     description: text("description").notNull().default(""),
     category: text("category").notNull().default("sermon"),
@@ -38,7 +39,7 @@ export const uploadSessionsTable = pgTable(
     mimeType: text("mime_type"),
     durationSecs: integer("duration_secs"),
     uploadedBy: text("uploaded_by"),
-    storageBackend: text("storage_backend").notNull().default("minio"),
+    storageBackend: text("storage_backend").notNull().default("db"),
     status: text("status").notNull().default("uploading"),
     completedVideoId: text("completed_video_id"),
     /**
@@ -82,8 +83,8 @@ export const uploadSessionsTable = pgTable(
 /**
  * Per-chunk tracking record.
  *
- * s3Etag holds the MinIO/S3 ETag returned by uploadPart().
- * All chunks use native MinIO multipart — no BYTEA fallback path.
+ * s3Etag holds the MD5 ETag returned by PostgresObjectStorage.uploadPart().
+ * Parts are staged in storage_upload_parts (BYTEA) until assembly.
  */
 export const uploadChunksTable = pgTable(
   "upload_chunks",
@@ -106,7 +107,7 @@ export const uploadChunksTable = pgTable(
      * Populated by uploadPart().
      */
     s3Etag: text("s3_etag"),
-    storageBackend: text("storage_backend").notNull().default("minio"),
+    storageBackend: text("storage_backend").notNull().default("db"),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

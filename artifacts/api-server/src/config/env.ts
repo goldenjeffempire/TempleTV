@@ -504,27 +504,11 @@ const Env = z.object({
   // Example: https://cdn.templetv.org.ng
   CDN_BASE_URL: z.string().optional(),
 
-  // ── MinIO / S3-compatible Object Storage ──────────────────────────────────
+  // ── PostgreSQL BYTEA Object Storage ──────────────────────────────────────
   // All video assets (source uploads, HLS segments, playlists, thumbnails) are
-  // stored in a MinIO bucket. MinIO is the sole storage backend — PostgreSQL
-  // BYTEA storage has been removed.
-  //
-  // Required for uploads to work:
-  //   S3_BUCKET         — bucket name (e.g. "temple-tv")
-  //   AWS_ENDPOINT_URL  — MinIO API endpoint (e.g. "http://localhost:9000")
-  //   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY — MinIO root credentials
-  //
-  // For cloud S3 (AWS, Cloudflare R2, etc.): set S3_BUCKET + S3_REGION and
-  // leave AWS_ENDPOINT_URL unset. Credentials are auto-discovered from the
-  // standard AWS_* environment variables.
-  S3_BUCKET: z.string().optional(),
-  // AWS region for the bucket. Falls back to AWS_REGION env var if not set.
-  // MinIO ignores the region; it can be any string (e.g. "us-east-1").
-  S3_REGION: z.string().optional(),
-  // Custom endpoint URL for MinIO or other S3-compatible services.
-  // Example: "http://localhost:9000"  (local MinIO)
-  // Leave unset for standard AWS S3.
-  AWS_ENDPOINT_URL: z.string().url().optional(),
+  // stored directly in PostgreSQL as BYTEA blobs (storage_blobs table).
+  // No S3/MinIO dependency. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are
+  // retained here for optional CDN or external integrations only.
 
   // ── A3: Security — HLS streaming token ───────────────────────────────────
   // When REQUIRE_HLS_TOKEN=true, the /api/hls/* proxy validates a short-lived
