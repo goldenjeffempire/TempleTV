@@ -1,16 +1,16 @@
 {
   "name": "@workspace/mobile",
-  "version": "1.0.28",
+  "version": "1.0.29",
   "private": true,
   "main": "./index.ts",
   "scripts": {
     "dev": "CI=1 NODE_OPTIONS=--max-old-space-size=8192 EXPO_BASE_URL=/mobile pnpm exec expo start --port 18115",
     "build": "node scripts/build.js",
-    "build:web": "NODE_OPTIONS=--max-old-space-size=4096 expo export --platform web --output-dir web-dist",
-    "export:embed:android": "NODE_OPTIONS=--max-old-space-size=4096 expo export:embed --eager --platform android --dev false",
-    "export:embed:ios": "NODE_OPTIONS=--max-old-space-size=4096 expo export:embed --eager --platform ios --dev false",
+    "build:web": "NODE_OPTIONS=--max-old-space-size=8192 expo export --platform web --output-dir web-dist",
+    "export:embed:android": "NODE_OPTIONS=--max-old-space-size=8192 expo export:embed --eager --platform android --dev false",
+    "export:embed:ios": "NODE_OPTIONS=--max-old-space-size=8192 expo export:embed --eager --platform ios --dev false",
     "serve": "node server/serve.js",
-    "typecheck": "NODE_OPTIONS='--max-old-space-size=4096' tsc -p tsconfig.json --noEmit",
+    "typecheck": "NODE_OPTIONS='--max-old-space-size=8192' tsc -p tsconfig.json --noEmit",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "android:prebuild": "expo prebuild --platform android --no-install",
@@ -94,8 +94,7 @@
     "react-native": "0.81.5",
     "react-native-track-player": "^4.1.2",
     "react-native-webview": "13.15.0",
-    "react-native-youtube-iframe": "^2.4.1",
-    "shaka-player": "^4.16.26"
+    "react-native-youtube-iframe": "^2.4.1"
   },
   "expo": {
     "install": {

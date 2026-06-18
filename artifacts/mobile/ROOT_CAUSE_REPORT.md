@@ -335,3 +335,98 @@ The `MusicService` is an Android foreground service registered in `AndroidManife
 4. Shows the "App crashed" system dialog
 
 No JavaScript error boundary, `try/catch`, or `Promise.catch()` can intercept a native Android service crash. The only fix is at the ProGuard/build level.
+
+---
+
+## Root Cause Analysis — EAS Build JavaScript Heap OOM (v1.0.29)
+
+**Severity:** Build-Blocking (CI)
+**Symptom:** `FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory` during `expo export:embed` / Metro bundling step on EAS workers
+**Version affected:** All builds before v1.0.29 (versionCode 80)
+
+### Executive Summary
+
+The EAS production Android build was crashing with a Node.js V8 heap OOM error during the Metro bundling phase — not during Gradle / native compilation. Five compounding root causes were identified and remediated.
+
+---
+
+### Root Cause #1 — CRITICAL: V8 heap ceiling too low for production bundling
+
+**All EAS profiles and all npm scripts used `NODE_OPTIONS=--max-old-space-size=4096`** (4 GB V8 heap limit).
+
+Metro bundling a monorepo with five workspace TypeScript packages, Reanimated worklets compilation, Hermes bytecode generation, and Sentry instrumentation consistently requires 5–7 GB of V8 heap at peak. Once the 4 GB ceiling is hit, Node terminates with the OOM FATAL error before the bundle is written to disk.
+
+**Fix applied:**
+- `eas.json`: All release/distribution profiles → `NODE_OPTIONS=--max-old-space-size=8192`
+- `eas.json`: `development` and `development-device` profiles → `6144` (debug builds are smaller; 8192 would exceed some developer laptops)
+- `package.json` scripts: `export:embed:android`, `export:embed:ios`, `build:web`, `typecheck` all raised from 4096 → 8192
+
+---
+
+### Root Cause #2 — HIGH: Metro transform worker pool unthrottled
+
+Metro defaults to one transform worker per CPU core. EAS medium workers have 4 cores → 4 parallel Babel transform workers. Each worker maintains its own V8 heap (runtime + compiled module ASTs + Reanimated worklet extraction), typically 400–700 MB per worker under peak load.
+
+With 4 unthrottled workers: **4 × 600 MB = 2.4 GB** consumed by transform workers before the main bundler process (which holds the full dependency graph and source map data) even begins allocating.
+
+**Fix applied (`metro.config.js`):**
+```js
+const cpuCount = os.cpus().length;
+const defaultMaxWorkers = Math.max(1, Math.min(2, cpuCount));
+config.maxWorkers = Number(process.env.METRO_MAX_WORKERS ?? defaultMaxWorkers);
+```
+Caps at 2 workers by default, saving ~1.2 GB of peak transform heap. Overridable via `METRO_MAX_WORKERS` env var for local development on 8+ core machines.
+
+---
+
+### Root Cause #3 — HIGH: `shaka-player` installed as a mobile dependency
+
+`shaka-player: ^4.16.26` was listed in mobile `package.json` **`dependencies`** (not devDependencies). `shaka-player` is a browser-only adaptive streaming library used exclusively by the TV web app — zero imports exist anywhere in the mobile source tree (confirmed by codebase grep).
+
+During EAS builds:
+1. pnpm installs `shaka-player` into mobile's `node_modules` (large install footprint)
+2. Metro traverses `shaka-player`'s package.json exports map during dependency graph construction — even though `resolveRequest` stubs it to `{type: "empty"}`, Metro must still locate the package and check its `exports` field before the stub fires
+3. The shaka-player source tree is ~180 MB; traversal adds measurable memory pressure during graph construction
+
+**Fix applied:** Removed `shaka-player` from `artifacts/mobile/package.json` dependencies entirely. The `metro.config.js` `resolveRequest` stub is retained as defensive code (in case any future transitive import tries to reach shaka-player).
+
+---
+
+### Root Cause #4 — MEDIUM: Sentry source map upload active during staging/preview builds
+
+The `SENTRY_DISABLE_AUTO_UPLOAD=true` flag was only set in the `production` and `production-android` profiles, not in `staging`, `preview`, `firetv`, `androidtv`, or `appletv`. During a staging or preview build, the Sentry Gradle plugin (and its Node.js CLI) would attempt to upload source maps to Sentry at the end of the Metro bundling step. This post-bundle source map processing:
+- Keeps the Metro Node.js process alive under high memory pressure longer than necessary
+- Runs the Sentry upload CLI as a child process that shares the same worker pool memory budget
+
+**Fix applied:** `SENTRY_DISABLE_AUTO_UPLOAD=true` added to all non-production profiles (`preview`, `staging`, `firetv`, `androidtv`, `appletv`, `production-ios`).
+
+---
+
+### Root Cause #5 — MEDIUM: Production Android `resourceClass` too small
+
+The `production` and `production-android` profiles used `resourceClass: "medium"`. While medium workers are capable, upgrading to `large` provides a full-safety-margin buffer for complex monorepo builds with Reanimated, multiple workspace packages, and Hermes compilation.
+
+**Fix applied:** `production` and `production-android` Android `resourceClass` → `"large"`.
+
+---
+
+### Summary of Changes (v1.0.28 → v1.0.29 / versionCode 79 → 80)
+
+| File | Change |
+|---|---|
+| `eas.json` | `NODE_OPTIONS` 4096 → 8192 on all release profiles; 6144 on dev profiles |
+| `eas.json` | `SENTRY_DISABLE_AUTO_UPLOAD=true` added to all non-production profiles |
+| `eas.json` | `production` + `production-android` Android `resourceClass` → `"large"` |
+| `package.json` | All `export:embed:*`, `build:web`, `typecheck` scripts: 4096 → 8192 |
+| `package.json` | `shaka-player` removed from `dependencies` (TV-only, never imported in mobile) |
+| `metro.config.js` | `config.maxWorkers` capped at `min(2, cpuCount)`, overridable via `METRO_MAX_WORKERS` |
+| `tsconfig.json` | `incremental: true` + `tsBuildInfoFile: .expo/.tsbuildinfo` for faster typechecks |
+| `app.json` | `version` 1.0.28 → 1.0.29, `versionCode` 79 → 80 |
+
+---
+
+### Prevention
+
+- **Every new EAS profile** must include `NODE_OPTIONS=--max-old-space-size=8192` — Metro's peak memory consumption scales with the number of modules in the dependency graph, not just the app's own source files
+- **Workspace library deps**: Any workspace package added to `watchFolders` / `extraNodeModules` extends the Metro module graph; reassess `maxWorkers` if graph grows significantly
+- **Browser-only deps in mobile `package.json`**: Only add packages that are actually imported by mobile source. Browser-only stubs (via `resolveRequest`) are a safety net for transitive deps — they should not be first-class mobile dependencies

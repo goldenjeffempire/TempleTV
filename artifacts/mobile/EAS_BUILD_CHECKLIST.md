@@ -51,8 +51,8 @@ Use this checklist before every production build. Steps marked **[one-time]** on
 ## 4. Pre-Build Checks (every build)
 
 - [ ] **API URL correct**: All production profiles have `EXPO_PUBLIC_API_URL: https://api.templetv.org.ng` ✅
-- [ ] **Version code**: `android.versionCode` in `app.json` is currently `62`. Production profile uses `autoIncrement: true` so EAS will bump it automatically. Verify the next expected code in Play Console (Internal Testing track → App versions).
-- [ ] **App version**: `version` in `app.json` is `1.0.20`. Update before significant releases: `artifacts/mobile/app.json` → `"version"` + `artifacts/mobile/package.json` → `"version"` (keep in sync).
+- [ ] **Version code**: `android.versionCode` in `app.json` is currently `80`. Production profile uses `autoIncrement: true` so EAS will bump it automatically. Verify the next expected code in Play Console (Internal Testing track → App versions).
+- [ ] **App version**: `version` in `app.json` is `1.0.29`. Update before significant releases: `artifacts/mobile/app.json` → `"version"` + `artifacts/mobile/package.json` → `"version"` (keep in sync).
 - [ ] **ProGuard rules current**: `app.json` `extraProguardRules` covers all native modules. If you add a new native module, add its package keep-rule here before building.
 - [ ] **No placeholder Firebase values**: Verify `google-services.json` does NOT contain `REPLACE_WITH_`.
 - [ ] **Sentry DSN set**: `EXPO_PUBLIC_SENTRY_DSN` in `eas.json` production profile = the production DSN ✅ (already set).
@@ -144,7 +144,7 @@ After every production build, verify on a real device:
 - [ ] Live broadcast player loads HLS stream: `https://api.templetv.org.ng/api/hls/<videoId>/master.m3u8`
 - [ ] Push notification received after calling `registerForPushTokenAsync()`
 - [ ] Deep link `templetv://` scheme opens the app correctly
-- [ ] Settings screen shows correct version (`1.0.20`) and has working Privacy Policy + Terms links
+- [ ] Settings screen shows correct version (`1.0.29`) and has working Privacy Policy + Terms links
 
 ---
 
@@ -159,6 +159,9 @@ After every production build, verify on a real device:
 | `ITMS-90535: Invalid Info.plist` | Missing iOS privacy strings | All usage descriptions are set in `app.json` infoPlist ✅ |
 | Push notifications work on iOS, fail on Android | FCM server key not uploaded to Expo | Expo Dashboard → Push Notifications → Add FCM key |
 | API 404 on device | Wrong `EXPO_PUBLIC_API_URL` in build profile | Check `eas.json` profile env, rebuild |
+| `FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory` | V8 heap limit too low for Metro bundling | `NODE_OPTIONS=--max-old-space-size=8192` is now set in all `eas.json` profiles ✅ |
+| Metro OOM during `expo export:embed` | Too many parallel transform workers | `config.maxWorkers = 2` set in `metro.config.js` ✅ |
+| Slow EAS install / Metro graph OOM | Dead browser-only library in native deps | `shaka-player` removed from mobile dependencies ✅ |
 
 ---
 

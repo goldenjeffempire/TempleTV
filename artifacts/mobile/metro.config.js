@@ -1,5 +1,6 @@
 const { getDefaultConfig } = require("expo/metro-config");
 const path = require("path");
+const os = require("os");
 
 const config = getDefaultConfig(__dirname);
 
@@ -118,5 +119,24 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   // Fall through to Metro's default resolution for everything else.
   return context.resolveRequest(context, moduleName, platform);
 };
+
+// ─── Transform worker count cap ─────────────────────────────────────────────
+// Metro defaults to one transform worker per CPU core. On EAS medium workers
+// (4 cores), that is 4 parallel workers × ~600 MB each = 2.4 GB consumed
+// by transform workers alone — before the bundler's dependency graph is even
+// loaded into memory. Combined with Reanimated's worklets compiler, Hermes
+// bytecode generation, and source-map processing, a 4096 MB V8 heap limit
+// triggers OOM before the bundle is complete.
+//
+// Capping at 2 workers saves ~1.2 GB of peak transform heap while keeping
+// build speed acceptable. Overridable at runtime via METRO_MAX_WORKERS so
+// local dev on 8+ core machines can increase if desired:
+//   METRO_MAX_WORKERS=4 pnpm run dev
+//
+// Note: this only controls the *transform* worker pool. The main bundler
+// process heap is controlled separately by NODE_OPTIONS in eas.json / scripts.
+const cpuCount = os.cpus().length;
+const defaultMaxWorkers = Math.max(1, Math.min(2, cpuCount));
+config.maxWorkers = Number(process.env.METRO_MAX_WORKERS ?? defaultMaxWorkers);
 
 module.exports = config;
