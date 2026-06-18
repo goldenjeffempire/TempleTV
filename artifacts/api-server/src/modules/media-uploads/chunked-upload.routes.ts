@@ -2520,6 +2520,19 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   ),
                 ),
             ]);
+            // Notify all connected admin tabs that this upload is fully assembled
+            // and in storage.  Tabs that did NOT initiate the upload (i.e. editors
+            // with the admin open in a background tab) will display a toast so they
+            // know new content is available without polling.
+            // NOTE: fires BEFORE thumbnail/faststart/HLS so editors get the
+            // "upload done" signal as soon as possible; source upgrades arrive
+            // via separate broadcast-source-upgraded / transcoding-update events.
+            adminEventBus.push("upload-assembly-complete", {
+              videoId,
+              title: row.title ?? "",
+              sessionId,
+            });
+
             // Wrap telemetry write: a DB failure here must not propagate to
             // the outer catch and trigger blob deletion — the blob is already
             // committed and the video row is valid.

@@ -168,6 +168,11 @@ const KNOWN_EVENTS = [
   // Real-time viewer count broken down by surface (web / tv / mobile).
   // Emitted on SSE connect and every 15 s thereafter by the admin SSE handler.
   "viewer-platform-breakdown",
+  // Fired once per upload when server-side blob assembly is fully committed to
+  // storage and the video is enqueued for broadcast.  Admin tabs that did NOT
+  // initiate the upload display a toast notification so editors working in
+  // background tabs are informed without polling.
+  "upload-assembly-complete",
 ];
 
 function summarize(event: string, data: unknown): string | null {
@@ -191,6 +196,10 @@ function summarize(event: string, data: unknown): string | null {
       return `Transcoding ${s}`;
     }
     case "videos-library-updated": return "Video library updated";
+    case "upload-assembly-complete": {
+      const t = String(d.title ?? "").trim();
+      return t ? `Upload complete: "${t}"` : "Upload assembly complete";
+    }
     case "corrupt-media-detected": {
       const code = String(d.errorCode ?? "CORRUPT_SOURCE");
       return `Corrupt upload detected: ${code} — video quarantined`;

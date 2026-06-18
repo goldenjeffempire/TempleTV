@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, Component, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useCallback, Component, type ReactNode } from "react";
 import { Router as WouterRouter, Route, Switch, useLocation, Redirect } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -397,6 +397,41 @@ function DeadAirMonitor() {
   return null;
 }
 
+// ── UploadCompleteNotifier ────────────────────────────────────────────────────
+// Listens for the "upload-assembly-complete" SSE event and shows a sonner toast
+// so editors working in a background tab know when a new video is ready to
+// broadcast without having to switch back to the upload tab.
+//
+// Suppression rule: if the upload was initiated from THIS browser tab the
+// UploadQueuePanel already shows the completion state, so we skip the toast.
+// We detect this by checking whether the server-generated sessionId is present
+// in the current tab's upload queue — each tab maintains its own in-memory
+// queue, so a session from another tab will never appear here.
+function UploadCompleteNotifier() {
+  const [, navigate] = useLocation();
+  useSSEEvent(
+    "upload-assembly-complete",
+    useCallback(
+      (data: unknown) => {
+        const d = (data ?? {}) as { videoId?: string; title?: string; sessionId?: string };
+        // Skip if this tab owns the session — the upload panel already reflects it.
+        if (d.sessionId && uploadQueue.getItems().some((i) => i.sessionId === d.sessionId)) return;
+        const title = d.title?.trim() || "Video";
+        const videoId = d.videoId;
+        toast.success(`"${title}" is ready to broadcast`, {
+          description: "Upload assembly complete — the video has been added to the broadcast queue.",
+          action: videoId
+            ? { label: "View in Library", onClick: () => navigate("/library") }
+            : undefined,
+          duration: 10_000,
+        });
+      },
+      [navigate],
+    ),
+  );
+  return null;
+}
+
 // ── Admin-only route guard ────────────────────────────────────────────────────
 // Wraps admin-only pages so that editors / moderators who navigate directly
 // to a protected URL (e.g. by bookmarking /users) are redirected to the
@@ -436,6 +471,7 @@ function AuthenticatedApp() {
       <OpsAlertMonitor />
       <StreamHealthMonitor />
       <DeadAirMonitor />
+      <UploadCompleteNotifier />
       <AppLayout>
         <PanelErrorBoundary>
           <UploadQueuePanel />
