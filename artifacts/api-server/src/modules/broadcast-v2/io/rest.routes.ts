@@ -53,6 +53,9 @@ import { storageBlobRecoveryService } from "../engine/storage-blob-recovery.serv
 import { storageReconciliationWorker } from "../engine/storage-reconciliation-worker.js";
 import { getBroadcastV2WsViewerCount } from "./ws.gateway.js";
 import { getBroadcastV2SseViewerCount } from "./sse.gateway.js";
+import { getExhaustionStatus } from "../engine/queue-exhaustion-monitor.js";
+import { getAutoRefillStatus } from "../engine/auto-queue-refill.js";
+import { getStorageStats } from "../../../infrastructure/storage.js";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
 const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
@@ -546,6 +549,14 @@ export async function restRoutes(app: FastifyInstance) {
       storageHealth: getStorageHealthStatus(),
       /** Queue health guard — active item count vs. minimum threshold. */
       queueHealthGuard: getQueueHealthGuardStatus(),
+      /** Predictive queue exhaustion monitor — estimated time to empty + alert level. */
+      queueExhaustion: getExhaustionStatus(),
+      /** Auto queue-refill worker status — tracks automatic library activations. */
+      autoRefill: getAutoRefillStatus(),
+      /** Object storage capacity projection — total bytes + blob count from storage_blobs. */
+      storageCapacity: getStorageStats(),
+      /** Worker aggregate health — running/circuit-open/stopped counts + per-worker state. */
+      workerAggregate: workerSupervisor.getWorkerStatuses().summary,
       /** Recovery eligibility — true when a full recovery could improve the situation. */
       recovery: {
         eligible: (stuck || sequenceStale) && !hmStatus.recoveryInFlight,
@@ -571,6 +582,30 @@ export async function restRoutes(app: FastifyInstance) {
        */
       storageReconciliation: storageBlobRecoveryService.getStats(),
     };
+  });
+
+  // ── Worker aggregate health endpoint ─────────────────────────────────
+  // Returns the state of every supervised background worker — running,
+  // circuit_open, or stopped — plus aggregate counts and Prometheus gauge
+  // values. Also exposes queue exhaustion, auto-refill, and storage capacity
+  // status for operational dashboards. Requires editor+ auth. Rate-limited
+  // to 30 req/min to prevent polling abuse.
+  app.get("/worker-health", {
+    ...adminGuard,
+    schema: { response: { 429: _429err } },
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+  }, async (_req, reply) => {
+    reply.header("Cache-Control", "no-store, max-age=0");
+    const { workers, summary } = workerSupervisor.getWorkerStatuses();
+    return reply.send({
+      ok: summary.circuitOpen === 0 && summary.stopped === 0,
+      summary,
+      workers,
+      queueExhaustion: getExhaustionStatus(),
+      autoRefill: getAutoRefillStatus(),
+      storageCapacity: getStorageStats(),
+      serverTimeMs: Date.now(),
+    });
   });
 
   // ── Admin: autonomous operation report ───────────────────────────────

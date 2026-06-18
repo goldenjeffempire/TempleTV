@@ -422,6 +422,51 @@ class DisabledObjectStorage implements ObjectStorage {
   async abortMultipartUpload(_args: { key: string; uploadId: string }): Promise<void> { /* no-op */ }
 }
 
+// ── Storage capacity stats ────────────────────────────────────────────────────
+
+export interface StorageStats {
+  totalBytes: number;
+  totalBlobCount: number;
+  lastRefreshedAtMs: number | null;
+}
+
+let _storageStats: StorageStats = {
+  totalBytes: 0,
+  totalBlobCount: 0,
+  lastRefreshedAtMs: null,
+};
+
+export function getStorageStats(): StorageStats {
+  return { ..._storageStats };
+}
+
+/**
+ * Refresh storage capacity stats from the storage_blobs DB index.
+ * Fire-and-forget safe — failures are logged as warn only.
+ * Call periodically (e.g. every 5 min) from a supervised background worker.
+ */
+export async function refreshStorageStats(): Promise<StorageStats> {
+  try {
+    const { db } = await import("./db.js");
+    const { sql } = await import("drizzle-orm");
+    const rows = await db.execute<{ total_bytes: string; blob_count: string }>(sql`
+      SELECT
+        COALESCE(SUM(size_bytes), 0)::text AS total_bytes,
+        COUNT(*)::text AS blob_count
+      FROM storage_blobs
+    `);
+    const row = rows.rows?.[0] ?? rows[0];
+    const totalBytes = parseInt(String(row?.total_bytes ?? "0"), 10);
+    const totalBlobCount = parseInt(String(row?.blob_count ?? "0"), 10);
+    _storageStats = { totalBytes, totalBlobCount, lastRefreshedAtMs: Date.now() };
+    return _storageStats;
+  } catch (err) {
+    const { logger } = await import("./logger.js");
+    logger.warn({ err }, "[storage-stats] refresh failed (non-fatal)");
+    return _storageStats;
+  }
+}
+
 // ── Factory ───────────────────────────────────────────────────────────────────
 
 let _storage: ObjectStorage | null = null;

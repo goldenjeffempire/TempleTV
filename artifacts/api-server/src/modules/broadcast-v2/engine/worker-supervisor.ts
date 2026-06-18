@@ -16,6 +16,7 @@
  */
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
+import { workerRunningCount, workerCircuitOpenCount, workerCircuitResetTotal, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
 
 export interface WorkerConfig {
   name: string;
@@ -122,6 +123,12 @@ class SupervisedWorker {
     this.consecutiveFailures = 0;
     if (this.running) this.schedule(0);
     logger.info({ worker: this.cfg.name }, "[worker-supervisor] circuit breaker reset");
+    workerCircuitResetTotal.inc({ worker: this.cfg.name, ...SERVICE_LABELS });
+    adminEventBus.push("ops-alert", {
+      level: "info",
+      message: `Worker circuit breaker reset: "${this.cfg.name}" is resuming after being suspended.`,
+      context: { worker: this.cfg.name },
+    });
   }
 
   health(): WorkerHealth {
@@ -290,6 +297,27 @@ export class WorkerSupervisor {
 
   getHealth(): WorkerHealth[] {
     return Array.from(this.workers.values()).map((w) => w.health());
+  }
+
+  /**
+   * Returns aggregate worker health with Prometheus gauge update.
+   * Exposes a `state` string ("running"|"circuit_open"|"stopped") for each
+   * worker — more human-readable than the raw running/circuitOpen booleans.
+   */
+  getWorkerStatuses(): {
+    workers: Array<WorkerHealth & { state: string }>;
+    summary: { total: number; running: number; circuitOpen: number; stopped: number };
+  } {
+    const all = this.getHealth().map((w) => ({
+      ...w,
+      state: w.circuitOpen ? "circuit_open" : (w.running ? "running" : "stopped"),
+    }));
+    const running = all.filter((w) => w.state === "running").length;
+    const circuitOpen = all.filter((w) => w.state === "circuit_open").length;
+    const stopped = all.filter((w) => w.state === "stopped").length;
+    workerRunningCount.set(SERVICE_LABELS, running);
+    workerCircuitOpenCount.set(SERVICE_LABELS, circuitOpen);
+    return { workers: all, summary: { total: all.length, running, circuitOpen, stopped } };
   }
 
   /**

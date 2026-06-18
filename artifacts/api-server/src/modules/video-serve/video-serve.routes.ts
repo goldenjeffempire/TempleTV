@@ -1035,9 +1035,19 @@ export async function videoServeRoutes(app: FastifyInstance) {
           decrementConcurrent();
           return reply.code(304).send();
         }
+        // CDN-compatible cache headers for HLS manifests.
+        // Surrogate-Key (Fastly/Varnish) and Cache-Tag (Cloudflare) enable
+        // tag-based purging — invalidate all manifests for a video with a
+        // single API call to the CDN rather than purging individual URLs.
+        const isMasterManifest = wildcard === "master.m3u8";
+        const manifestMaxAge = isMasterManifest ? 10 : 4;
         return reply
           .header("Content-Type", "application/vnd.apple.mpegurl")
-          .header("Cache-Control", "public, max-age=2, s-maxage=2, stale-while-revalidate=1, stale-if-error=60")
+          .header("Cache-Control", `public, max-age=${manifestMaxAge}, s-maxage=${manifestMaxAge}, stale-while-revalidate=1, stale-if-error=60`)
+          .header("CDN-Cache-Control", `max-age=${manifestMaxAge}`)
+          .header("Surrogate-Key", `hls hls-${videoId}`)
+          .header("Cache-Tag", `hls,hls-${videoId}`)
+          .header("Vary", "Accept-Encoding")
           .header("ETag", manifestEtag)
           .header("Content-Length", String(manifestBuf.byteLength))
           .header("Accept-Ranges", "bytes")
@@ -1100,6 +1110,9 @@ export async function videoServeRoutes(app: FastifyInstance) {
         .header("Content-Type", contentType)
         .header("Content-Length", String(segBuf.length))
         .header("Cache-Control", "public, max-age=604800, immutable")
+        .header("CDN-Cache-Control", "max-age=604800, immutable")
+        .header("Surrogate-Key", `hls hls-${videoId}`)
+        .header("Cache-Tag", `hls,hls-${videoId}`)
         .header("Accept-Ranges", "bytes")
         .header("Access-Control-Allow-Origin", "*")
         .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")

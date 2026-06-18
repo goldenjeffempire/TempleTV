@@ -272,3 +272,93 @@ export const transcoderJobDurationSeconds = new Histogram({
   buckets: [30, 60, 120, 300, 600, 900, 1800, 3600, 7200],
   registers: [promRegistry],
 });
+
+// ── Queue exhaustion + auto-refill metrics ────────────────────────────────────
+
+/**
+ * Estimated seconds of content remaining in the active broadcast queue.
+ * Sum of duration_secs across all is_active=true rows.
+ * Alert when this drops below your SLO threshold (e.g. < 3600 s = 1 h warn).
+ */
+export const queueTimeToEmptySeconds = new Gauge({
+  name: "broadcast_queue_time_to_empty_seconds",
+  help: "Estimated seconds of content remaining in the active broadcast queue (sum of active item durations)",
+  labelNames: ["channel", "service", "env"] as const,
+  registers: [promRegistry],
+});
+
+/**
+ * Total number of exhaustion-level ops-alerts emitted (by severity level).
+ * Monotonically increasing; a rising rate indicates chronic queue under-supply.
+ */
+export const queueExhaustionWarnTotal = new Counter({
+  name: "broadcast_queue_exhaustion_warn_total",
+  help: "Total number of queue exhaustion ops-alerts emitted, labeled by level (warn|critical)",
+  labelNames: ["level", "service", "env"] as const,
+  registers: [promRegistry],
+});
+
+/**
+ * Total number of videos automatically added to the broadcast queue by the
+ * auto-refill worker. Monotonically increasing.
+ */
+export const queueAutoRefillTotal = new Counter({
+  name: "broadcast_queue_auto_refill_total",
+  help: "Total number of videos automatically added to the broadcast queue by the auto-refill worker",
+  labelNames: ["service", "env"] as const,
+  registers: [promRegistry],
+});
+
+// ── Storage capacity metrics ──────────────────────────────────────────────────
+
+/**
+ * Total bytes stored in the object storage bucket (from storage_blobs index).
+ */
+export const storageTotalBytes = new Gauge({
+  name: "storage_total_bytes",
+  help: "Total bytes stored across all objects tracked in storage_blobs",
+  labelNames: ["service", "env"] as const,
+  registers: [promRegistry],
+});
+
+/**
+ * Number of blobs tracked in storage_blobs.
+ */
+export const storageBlobCount = new Gauge({
+  name: "storage_blob_count",
+  help: "Number of object blobs tracked in storage_blobs",
+  labelNames: ["service", "env"] as const,
+  registers: [promRegistry],
+});
+
+// ── Worker aggregate health metrics ──────────────────────────────────────────
+
+/**
+ * Number of supervised workers currently running (circuit closed).
+ */
+export const workerRunningCount = new Gauge({
+  name: "worker_running_count",
+  help: "Number of supervised background workers currently running (circuit closed)",
+  labelNames: ["service", "env"] as const,
+  registers: [promRegistry],
+});
+
+/**
+ * Number of supervised workers with circuit breaker open (suspended due to failures).
+ */
+export const workerCircuitOpenCount = new Gauge({
+  name: "worker_circuit_open_count",
+  help: "Number of supervised background workers with circuit breaker open (suspended)",
+  labelNames: ["service", "env"] as const,
+  registers: [promRegistry],
+});
+
+/**
+ * Total number of times any worker's circuit breaker was manually reset by an operator.
+ */
+export const workerCircuitResetTotal = new Counter({
+  name: "worker_circuit_reset_total",
+  help: "Total number of manual worker circuit breaker resets",
+  labelNames: ["worker", "service", "env"] as const,
+  registers: [promRegistry],
+});

@@ -820,6 +820,29 @@ const Env = z.object({
   // blobs from surviving upload_sessions + upload_chunks rows before quarantining.
   // Set to false to disable this recovery path.
   STORAGE_RECON_SESSION_REPAIR: z.coerce.boolean().default(true),
+
+  // ── Queue exhaustion monitor thresholds ───────────────────────────────────
+  // Milliseconds of remaining queue content below which a WARN ops-alert fires.
+  // Default: 2 hours.
+  QUEUE_WARN_MS: z.coerce.number().int().positive().default(2 * 60 * 60 * 1000),
+  // Milliseconds of remaining queue content below which a CRITICAL ops-alert fires.
+  // Default: 15 minutes.
+  QUEUE_CRIT_MS: z.coerce.number().int().positive().default(15 * 60 * 1000),
+
+  // ── Auto queue-refill ─────────────────────────────────────────────────────
+  // Milliseconds of remaining queue content below which the auto-refill worker
+  // activates inactive library videos. Default: 30 minutes.
+  QUEUE_REFILL_TRIGGER_MS: z.coerce.number().int().positive().default(30 * 60 * 1000),
+  // Maximum number of videos added per auto-refill cycle. Default: 5.
+  QUEUE_REFILL_BATCH: z.coerce.number().int().positive().default(5),
+  // Set to any truthy string to disable auto-refill entirely.
+  QUEUE_REFILL_DISABLE: z.string().optional(),
+
+  // ── Disk-level broadcast state backup ────────────────────────────────────
+  // Directory to write the tertiary disk-state backup JSON file.
+  // Default: /tmp (always writable in Node.js containers).
+  // The file is named broadcast-state-<channelId>.json.
+  BROADCAST_STATE_BACKUP_PATH: z.string().default("/tmp"),
 });
 
 export type AppEnv = z.infer<typeof Env>;

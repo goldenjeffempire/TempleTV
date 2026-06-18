@@ -11,6 +11,7 @@ import { checkpointRepo } from "../repository/checkpoint.repo.js";
 import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, getBadUrlCacheSize, getBadUrlStats, markUrlBadBySource, getUrlConfidenceState, type RawQueueRow } from "../repository/queue.repo.js";
 import { faststartRecoveryWorker } from "./faststart-recovery.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
+import { saveDiskBackup, loadDiskBackup } from "../repository/disk-state-backup.js";
 import { ytShuffleFallback } from "./youtube-shuffle-fallback.js";
 import { playbackAnalytics } from "./playback-analytics.js";
 import { scanLibraryAndEnqueue } from "../../broadcast/auto-enqueue.service.js";
@@ -1069,6 +1070,27 @@ class BroadcastOrchestrator extends EventEmitter {
       }
     } catch (err) {
       logger.warn({ err }, "[broadcast-v2] hydrate: checkpoint read failed (non-fatal)");
+    }
+
+    // 4. Tertiary fallback: disk-state backup.
+    // Only consulted when the DB hydrate produced sequence=0 and no cycle anchor.
+    // This recovers the broadcast position after a full DB outage at restart time.
+    if (this.sequence === 0 && this.restoredCycleAnchor === null && this.queueCheckpoint === null) {
+      const diskSnap = await loadDiskBackup(this.channelId).catch(() => null);
+      if (diskSnap) {
+        if (diskSnap.sequence > this.sequence) this.sequence = diskSnap.sequence;
+        if (diskSnap.startedAtMs) this.restoredCycleAnchor = diskSnap.startedAtMs;
+        if (diskSnap.currentItemId) {
+          this.queueCheckpoint = { itemId: diskSnap.currentItemId, positionMs: diskSnap.positionMs };
+        }
+        if (diskSnap.failoverActive && !this.failover.active) {
+          this.failover = { active: true, reason: diskSnap.failoverReason ?? undefined };
+        }
+        logger.warn(
+          { channelId: this.channelId, diskSnap },
+          "[broadcast-v2] hydrate: restored from disk backup (DB was unavailable or empty)",
+        );
+      }
     }
 
     // Architect-flagged: persisted mode may be `override` but the override
@@ -3854,6 +3876,19 @@ class BroadcastOrchestrator extends EventEmitter {
     this.lastCpItemId = snap.current.id;
     this.lastCpPositionMs = positionMs;
     this.lastCpWallMs = now;
+    // Tertiary disk backup — fire-and-forget, non-fatal. Provides a last-resort
+    // restore path if the DB is unavailable at restart time.
+    void saveDiskBackup({
+      channelId: this.channelId,
+      savedAtMs: now,
+      sequence: this.sequence,
+      mode: this.mode,
+      currentItemId: snap.current.id,
+      startedAtMs: snap.current.startsAtMs,
+      positionMs,
+      failoverActive: this.failover.active,
+      failoverReason: this.failover.reason ?? null,
+    });
     this.checkpointWriting = true;
     try {
       // Race the DB write against a hard 10-second timeout.

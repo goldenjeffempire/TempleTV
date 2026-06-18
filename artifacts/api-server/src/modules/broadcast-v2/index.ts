@@ -19,8 +19,13 @@ import { contentRotationScan, getContentRotationStatus } from "./engine/content-
 import { queueHealthGuard, getQueueHealthGuardStatus } from "./engine/queue-health-guard.js";
 import { scheduleBridgeScan } from "./engine/schedule-bridge.js";
 import { storageReconciliationWorker } from "./engine/storage-reconciliation-worker.js";
+import { startExhaustionMonitor, stopExhaustionMonitor, getExhaustionStatus } from "./engine/queue-exhaustion-monitor.js";
+import { startAutoQueueRefill, stopAutoQueueRefill, getAutoRefillStatus } from "./engine/auto-queue-refill.js";
+import { refreshStorageStats, getStorageStats } from "../../infrastructure/storage.js";
 import { env } from "../../config/env.js";
 import { sendAdminAlert } from "../mail/mail.service.js";
+
+export { getExhaustionStatus, getAutoRefillStatus, getStorageStats };
 
 export { getQueueHealthGuardStatus };
 
@@ -420,6 +425,23 @@ function startSupervisedWorkers(): void {
     onCircuitOpen: makeCircuitOpenCallback("storage-reconciliation"),
   });
 
+  // Storage capacity stats: refreshes total storage bytes + blob count from
+  // storage_blobs every 5 minutes and exposes them via getStorageStats() +
+  // the /health endpoint. Initial delay of 30 s ensures DB is warm.
+  workerSupervisor.spawn({
+    name: "storage-capacity-stats",
+    fn: () => refreshStorageStats(),
+    intervalMs: 5 * 60_000,
+    initialDelayMs: 30_000,
+    backoffMs: [60_000, 5 * 60_000],
+  });
+
+  // Queue exhaustion monitor + auto-refill run as lightweight interval-based
+  // processes (not supervised workers) since they are computation-light and
+  // must not count against the worker circuit-breaker budget.
+  startExhaustionMonitor();
+  startAutoQueueRefill();
+
   logger.info("[broadcast-v2] supervised workers registered");
 }
 
@@ -578,6 +600,8 @@ export async function stopBroadcastV2(): Promise<void> {
   // 3b. Stop supervised workers (clears their internal timers + circuit-reset timers).
   workerSupervisor.stopAll();
   supervisedWorkersStarted = false;
+  stopExhaustionMonitor();
+  stopAutoQueueRefill();
 
   // 4. Stop the orchestrator — clears 7 internal setInterval timers.
   broadcastOrchestrator.stop();
