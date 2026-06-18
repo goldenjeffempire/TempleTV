@@ -1,22 +1,10 @@
 /**
  * Faststart recovery worker.
  *
- * Closes the v1/v2 admission gap that produces "Off Air" even though the
- * v1 `/broadcast/guide` reports a currently-playing local MP4.
- *
- * Root cause:
- *   `queueRepo.loadActive()` (broadcast-v2/repository/queue.repo.ts) enforces
- *   STRICT BROADCAST POLICY — for managed_videos rows where
- *   `transcoding_status ∈ (none, queued, encoding)` it admits the row ONLY
- *   when `faststart_applied = true`. Un-faststarted MP4s have the moov atom
- *   at EOF and trigger SKIP_PENDING dead-air loops on every player surface
- *   that binds them.
- *
- *   When faststart did not run during the upload-finalize chain (network
- *   blip, ffmpeg crash, restart between finalize and the void runFaststart
- *   call, etc.) the row sits in the broadcast_queue forever, invisible to
- *   v2, and the channel reports Off Air despite a perfectly good source
- *   blob in object storage.
+ * Opportunistically applies MP4 faststart (moov-atom relocation) to local
+ * uploads that skipped it during the finalize chain (network blip, ffmpeg
+ * crash, server restart, etc.).  Faststart is a BEST-EFFORT OPTIMIZATION
+ * only — it is never a gate for broadcast admission or queue eligibility.
  *
  * Architecture:
  *   Each sweep() is non-blocking end-to-end:
@@ -32,6 +20,15 @@
  *       faststart will update the duration itself.
  *     • A storage-probe circuit breaker prevents cascading DB saturation
  *       when storage is degraded.
+ *
+ * Failure handling:
+ *   • Transient failures (ffmpeg error, download blip): retry up to
+ *     MAX_ATTEMPTS; video airs as raw MP4 throughout.
+ *   • Unrecoverable failures (CORRUPT_UPLOAD / SOURCE_MISSING): marked in
+ *     DB, ops-alert fired, admin email sent; queue item STAYS ACTIVE and
+ *     is auto-skipped at runtime by the orchestrator bad-URL cache.
+ *   • Queue item deactivation: NEVER performed by this worker — deactivation
+ *     is an operator action.  The runtime auto-skip handles all bad sources.
  */
 
 import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
@@ -482,27 +479,18 @@ function dispatchOne(
             ),
           );
 
-        // ── 2. Proactively deactivate the broadcast queue item ──────────────
-        // Don't wait for the queue-integrity-validator's next cycle — deactivate
-        // immediately so the orchestrator stops trying to play an undecodable
-        // file. validatorDeactivatedReason is set so the UI shows a clear
-        // reason and the item can be re-activated if the user re-uploads.
-        void db
-          .update(q)
-          .set({
-            isActive: false,
-            validatorDeactivatedReason:
-              errKind === "moov_absent"
-                ? "moov_absent — recording interrupted before moov was written; re-upload required"
-                : "CORRUPT_SOURCE — container unrepairable after all remux strategies; re-upload required",
-          })
-          .where(and(eq(q.videoId, c.videoId), eq(q.isActive, true)))
-          .catch((dbErr: unknown) =>
-            logger.warn(
-              { err: dbErr, videoId: c.videoId },
-              "faststart-recovery: failed to deactivate broadcast queue item (non-fatal — validator will catch on next cycle)",
-            ),
-          );
+        // ── 2. Broadcast queue item STAYS ACTIVE ───────────────────────────
+        // Per the no-blocking-gates architecture the queue item is NOT
+        // deactivated here.  The orchestrator's bad-URL cache and runtime
+        // auto-skip advance past unresolvable sources cleanly — deactivation
+        // is an operator action, not a worker action.  This preserves the
+        // 24/7 broadcast SLA: other items in the queue continue to air while
+        // the operator decides whether to re-upload this file.
+        logger.warn(
+          { videoId: c.videoId, errCode, errKind, attempt: prev + 1 },
+          "faststart-recovery: unrecoverable container — queue item remains active; " +
+          "orchestrator will auto-skip this source at runtime; re-upload to fully restore",
+        );
 
         // ── 3. SSE ops-alert — surfaces a dashboard banner immediately ──────
         const alertTitle =
@@ -511,8 +499,8 @@ function dispatchOne(
             : "Video container corrupt — re-upload required";
         const alertMessage =
           errKind === "moov_absent"
-            ? `"${c.title ?? c.videoId}" has media data but no moov atom. The recording was interrupted before it could finish writing. The file cannot be decoded by any player. The broadcast queue item has been deactivated — re-upload the original source file to restore it.`
-            : `"${c.title ?? c.videoId}" has a permanently corrupt container — all five remux recovery strategies were exhausted. The broadcast queue item has been deactivated — re-upload the original source file.`;
+            ? `"${c.title ?? c.videoId}" has media data but no moov atom. The recording was interrupted before it could finish writing. The file cannot be decoded by any player. The broadcast queue item remains active and will be auto-skipped at runtime — re-upload the original source file to fully restore it.`
+            : `"${c.title ?? c.videoId}" has a permanently corrupt container — all five remux recovery strategies were exhausted. The broadcast queue item remains active and will be auto-skipped at runtime — re-upload the original source file.`;
         adminEventBus.push("ops-alert", {
           code: "FASTSTART_UNRECOVERABLE",
           severity: "error",

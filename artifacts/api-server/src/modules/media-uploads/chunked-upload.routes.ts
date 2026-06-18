@@ -1024,11 +1024,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   adminEventBus.push("broadcast-queue-updated", { reason: "upload-recovery-enqueue", videoId });
                 }
 
-                // Step 5: Faststart — moves the moov atom to the front of the
-                // MP4 so the file is streamable via HTTP range requests.
-                // Also required for midnight-prayers videos to enter rotation
-                // (midnight-prayers service gates on faststartApplied=true for
-                // raw MP4 playback).
+                // Step 5: Faststart — BEST-EFFORT OPTIMIZATION ONLY.
+                // Moves the moov atom to the front of the MP4 for better
+                // HTTP range-request performance.  The video is already in
+                // the broadcast queue (Step 4 above) and will air as raw MP4
+                // if faststart fails.  midnight-prayers no longer gates on
+                // faststartApplied — raw MP4 is fully admitted.
                 if (!vRow.faststartApplied) {
                   try {
                     await runFaststart(videoId, vRow.objectPath, { skipStatusUpdate: false });
@@ -1036,7 +1037,8 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   } catch (fsErr) {
                     app.log.warn(
                       { err: fsErr, videoId },
-                      "[upload] recovery: faststart failed for recovered video (non-fatal) — video is still broadcast-ready but not midnight-prayers eligible",
+                      "[FASTSTART OPTIMIZATION SKIPPED] recovery faststart failed (non-fatal) — " +
+                      "video remains in broadcast queue as raw MP4; HLS transcoding will follow",
                     );
                   }
                 }

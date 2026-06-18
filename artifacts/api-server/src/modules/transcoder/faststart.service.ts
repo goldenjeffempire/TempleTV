@@ -420,10 +420,44 @@ export async function runFaststart(
     try {
       await spawnFfmpegFaststart(inputPath, outputPath, log);
     } catch (ffmpegErr) {
+      // ── FASTSTART OPTIMIZATION SKIPPED — not an upload or playback failure ──
+      // ffmpeg could not relocate the moov atom (e.g. unsupported container,
+      // damaged intermediate data, timeout).  The original blob in storage is
+      // completely intact and the video is already in the broadcast queue as a
+      // raw MP4 (enqueueIfMissing was called before faststart ran).  The HLS
+      // transcoder will be triggered by the caller after this function returns,
+      // so the video will eventually serve HLS regardless.
+      // This is NOT an upload failure and NOT a playback failure — it is an
+      // optional optimization step that failed gracefully.
       log.warn(
         { videoId, objectKey, err: ffmpegErr },
-        "faststart: ffmpeg failed — video will broadcast as raw uploaded MP4",
+        "[FASTSTART OPTIMIZATION SKIPPED] ffmpeg moov-relocation failed — " +
+        "video remains in broadcast queue as raw MP4; HLS transcoding will follow; " +
+        "this is NOT an upload or playback failure",
       );
+      // Persist a 'FASTSTART_SKIPPED' marker so the admin UI can distinguish
+      // "never attempted" (null) from "attempted but failed" (FASTSTART_SKIPPED).
+      // Only write when the video is not already in a terminal HLS state.
+      await db
+        .update(videos)
+        .set({ transcodingErrorCode: "FASTSTART_SKIPPED" })
+        .where(
+          and(
+            eq(videos.id, videoId),
+            ne(videos.transcodingStatus, "hls_ready"),
+            ne(videos.transcodingStatus, "encoding"),
+          ),
+        )
+        .catch((dbErr) =>
+          log.warn({ dbErr, videoId }, "faststart: FASTSTART_SKIPPED marker write failed (non-fatal)"),
+        );
+      // Belt-and-suspenders: ensure the video is in the broadcast queue even if
+      // the caller did not enqueue it before calling runFaststart.
+      void enqueueIfMissing({ videoId, reason: "faststart-skipped" }).catch(() => {});
+      // Signal the orchestrator and admin UI so the raw-MP4 source is used
+      // immediately without waiting for the next poll cycle.
+      adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-skipped" });
+      adminEventBus.push("broadcast-queue-updated", { videoId, reason: "faststart-skipped" });
       return;
     }
 
@@ -609,7 +643,35 @@ export async function runFaststart(
     return { elapsedMs, outputSizeBytes, durationSecs };
 
   } catch (err) {
-    log.error({ err }, "faststart: failed");
+    // ── FASTSTART OPTIMIZATION SKIPPED — not an upload or playback failure ──
+    // Errors that reach here are pipeline failures AFTER ffmpeg succeeded:
+    //   DOWNLOAD_TRUNCATED — storage download was incomplete (transient I/O issue)
+    //   SOURCE_MISSING     — source blob was deleted from storage (recovery needed)
+    //   CORRUPT_UPLOAD     — storage record is zero bytes (malformed session)
+    //   upload failure     — multipart re-upload failed after faststart completed
+    //
+    // In every case the ORIGINAL source blob at objectKey is intact or already
+    // gone — the multipart re-upload is copy-on-write, so the original is never
+    // deleted before completeMultipartUpload succeeds.
+    // The video is already (or will be) in the broadcast queue and the HLS
+    // transcoder will run from the original asset — this is NOT an upload or
+    // playback failure; it is a failed optimization step.
+    const errCode = (err as { code?: string } | null)?.code;
+    const isTerminal = errCode === "CORRUPT_UPLOAD" || errCode === "SOURCE_MISSING";
+
+    log.warn(
+      { err, videoId, objectKey, errCode },
+      isTerminal
+        ? "[FASTSTART OPTIMIZATION SKIPPED] source blob unavailable or zero-size — " +
+          "video will broadcast as raw MP4 or via HLS once transcoding completes; " +
+          "this is NOT an upload or playback failure (original blob state: " +
+          (errCode === "SOURCE_MISSING" ? "deleted from storage" : "zero bytes in storage") + ")"
+        : "[FASTSTART OPTIMIZATION SKIPPED] post-ffmpeg pipeline step failed — " +
+          "original source blob is intact; video remains in broadcast queue as raw MP4; " +
+          "HLS transcoding will be attempted from the original asset; " +
+          "this is NOT an upload or playback failure",
+    );
+
     // Only touch transcodingStatus when the HLS transcoder is not running.
     // When skipStatusUpdate=true the transcoder owns this field.
     if (!options.skipStatusUpdate) {
@@ -632,20 +694,31 @@ export async function runFaststart(
         ) as "none" | "queued" | "encoding" | "ready" | "hls_ready" | "failed";
         await db
           .update(videos)
-          .set({ transcodingStatus: safeRestoreStatus })
+          .set({
+            transcodingStatus: safeRestoreStatus,
+            // Persist the skip marker unless the error is a real terminal source
+            // failure (CORRUPT_UPLOAD / SOURCE_MISSING) — those get their own codes.
+            ...(!isTerminal ? { transcodingErrorCode: "FASTSTART_SKIPPED" } : {}),
+          })
           // Same dual guard as the success path: don't clobber "encoding"
           // (HLS transcoder may have started while faststart was running).
           .where(and(eq(videos.id, videoId), ne(videos.transcodingStatus, "hls_ready"), ne(videos.transcodingStatus, "encoding")));
       } catch (dbErr) {
-        log.error({ dbErr }, "faststart: could not restore transcodingStatus");
+        log.warn({ dbErr }, "faststart: could not restore transcodingStatus (non-fatal)");
       }
     }
+
+    // Belt-and-suspenders: ensure the video is in the broadcast queue so it
+    // can air as raw MP4 immediately while HLS transcoding runs in the background.
+    // This is idempotent — enqueueIfMissing no-ops if the slot already exists.
+    void enqueueIfMissing({ videoId, reason: "faststart-failed" }).catch(() => {});
+
     // Notify the admin UI that the video's status changed after the failure so
     // the library / broadcast-queue panels refresh without waiting for the next
     // poll interval. The transcodingStatus was already restored above; these
     // events trigger a React Query refetch to surface the restored state.
-    adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-failed" });
-    adminEventBus.push("broadcast-queue-updated", { videoId, reason: "faststart-failed" });
+    adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-skipped" });
+    adminEventBus.push("broadcast-queue-updated", { videoId, reason: "faststart-skipped" });
     throw err;
   } finally {
     await rm(scratchDir, { recursive: true, force: true }).catch(() => { /* noop */ });

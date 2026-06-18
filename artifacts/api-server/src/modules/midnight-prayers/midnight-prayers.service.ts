@@ -308,13 +308,14 @@ class MidnightPrayersService {
         .where(
           and(
             eq(schema.videosTable.category, CHANNEL_ID),
-            // Playable videos: HLS manifest, faststart MP4, or YouTube video
+            // Playable videos: HLS manifest, any locally-uploaded MP4 (raw or
+            // faststart — both are playable; raw MP4 will get HLS shortly),
+            // or YouTube video.  faststartApplied is no longer a prerequisite:
+            // raw MP4 (moov at EOF) plays fine in modern browsers and the HLS
+            // transcoder will upgrade the source asynchronously.
             or(
               isNotNull(schema.videosTable.hlsMasterUrl),
-              and(
-                isNotNull(schema.videosTable.localVideoUrl),
-                eq(schema.videosTable.faststartApplied, true),
-              ),
+              isNotNull(schema.videosTable.localVideoUrl),
               and(
                 isNotNull(schema.videosTable.youtubeId),
                 eq(schema.videosTable.videoSource, "youtube"),
