@@ -10,7 +10,14 @@
  * Selection criteria (in order of preference):
  *   1. Videos with hlsMasterUrl (HLS transcoded) — best quality
  *   2. Videos with localVideoUrl (raw MP4 upload) — acceptable fallback
- *   3. Ordered by created_at DESC — newest content first
+ *   3. Ordered by imported_at DESC — newest content first
+ *
+ * YouTube-only library handling: when all library videos are YouTube-sourced,
+ * the refill query returns no candidates (YouTube videos are served via the
+ * ytShuffleFallback override mechanism and must NOT be inserted directly into
+ * broadcast_queue).  In this case the worker logs an INFO-level explanation
+ * and does NOT emit a warn/critical ops-alert — the channel is ON AIR via the
+ * YouTube shuffle fallback.
  *
  * Disabled via QUEUE_REFILL_DISABLE=1 env var.
  */
@@ -31,6 +38,10 @@ export interface AutoRefillStatus {
   lastRefillAtMs: number | null;
   lastRefillCount: number;
   totalRefilled: number;
+  /** Populated when all library videos are YouTube-sourced (no local candidates). */
+  libraryIsYouTubeOnly: boolean;
+  libraryYouTubeCount: number;
+  libraryLocalCount: number;
 }
 
 let _status: AutoRefillStatus = {
@@ -39,12 +50,28 @@ let _status: AutoRefillStatus = {
   lastRefillAtMs: null,
   lastRefillCount: 0,
   totalRefilled: 0,
+  libraryIsYouTubeOnly: false,
+  libraryYouTubeCount: 0,
+  libraryLocalCount: 0,
 };
 let _timer: NodeJS.Timeout | null = null;
 let _lastRefillAtMs = 0;
 
 export function getAutoRefillStatus(): AutoRefillStatus {
   return { ..._status };
+}
+
+/**
+ * Lazily queries the orchestrator for the current override state.
+ * Used to suppress false-positive ops-alerts when broadcast is ON AIR via override.
+ */
+async function getActiveOverride(): Promise<{ kind: string; title: string; isYtShuffle: boolean } | null> {
+  try {
+    const { broadcastOrchestrator } = await import("../index.js");
+    return broadcastOrchestrator.getOverrideState();
+  } catch {
+    return null;
+  }
 }
 
 async function run(): Promise<void> {
@@ -96,9 +123,62 @@ async function run(): Promise<void> {
       : (candidates as unknown as { id: string; title: string }[]);
 
     if (!rows.length) {
-      logger.warn("[auto-refill] no eligible library videos to add — queue may go empty");
+      // Before logging an alert, determine WHY there are no candidates.
+      // If every video in the library is YouTube-sourced, this is expected behaviour
+      // — the ytShuffleFallback handles broadcast continuity automatically.
+      const libraryRows = await db.execute<{ youtube_cnt: string; local_cnt: string }>(sql`
+        SELECT
+          COUNT(*) FILTER (WHERE video_source = 'youtube')::text  AS youtube_cnt,
+          COUNT(*) FILTER (WHERE video_source != 'youtube')::text AS local_cnt
+        FROM managed_videos
+      `);
+      const libRow = libraryRows.rows?.[0] ?? libraryRows[0] as { youtube_cnt: string; local_cnt: string } | undefined;
+      const youtubeCount = parseInt(String(libRow?.youtube_cnt ?? "0"), 10);
+      const localCount   = parseInt(String(libRow?.local_cnt  ?? "0"), 10);
+
+      _status.libraryYouTubeCount = youtubeCount;
+      _status.libraryLocalCount   = localCount;
+      _status.libraryIsYouTubeOnly = localCount === 0 && youtubeCount > 0;
+
+      if (_status.libraryIsYouTubeOnly) {
+        // All videos are YouTube-sourced.  The ytShuffleFallback override
+        // (activated by the orchestrator's self-heal loop) will handle broadcast
+        // continuity.  No ops-alert — this is normal operation for a YouTube-only
+        // deployment.
+        const override = await getActiveOverride();
+        logger.info(
+          {
+            youtubeCount,
+            localCount,
+            overrideActive: override !== null,
+            overrideKind: override?.kind ?? null,
+            overrideTitle: override?.title ?? null,
+            overrideIsYtShuffle: override?.isYtShuffle ?? false,
+          },
+          "[auto-refill] library contains only YouTube videos — ytShuffleFallback handles broadcast continuity; no local videos to add to queue",
+        );
+      } else {
+        // There are some local videos but none are eligible (all may be in the
+        // queue already or have missing source URLs).
+        logger.warn(
+          { youtubeCount, localCount },
+          "[auto-refill] no eligible local library videos to add — queue may go empty",
+        );
+        const override = await getActiveOverride();
+        if (!override) {
+          adminEventBus.push("ops-alert", {
+            level: "warn",
+            code: "auto-refill-no-candidates",
+            message: `Auto-refill found no eligible library videos (${localCount} local, ${youtubeCount} YouTube). Queue may go empty.`,
+            context: { youtubeCount, localCount },
+          });
+        }
+      }
       return;
     }
+
+    // Reset YouTube-only flag since we found candidates.
+    _status.libraryIsYouTubeOnly = false;
 
     let added = 0;
     for (const row of rows) {

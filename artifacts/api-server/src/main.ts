@@ -949,13 +949,49 @@ async function main() {
         const rot = getContentRotationStatus();
         const qhg = getQueueHealthGuardStatus();
         const sth = getStorageHealthStatus();
+        // Library composition snapshot — used to surface YouTube-only deployments
+        // so operators understand why the queue is empty and no auto-refill occurs.
+        let libraryComposition: {
+          total: number;
+          youtubeCount: number;
+          localCount: number;
+          isYouTubeOnly: boolean;
+        } | null = null;
+        try {
+          const [{ db: dbInst }, { sql: sqlFn }] = await Promise.all([
+            import("./infrastructure/db.js"),
+            import("drizzle-orm"),
+          ]);
+          const libRows = await dbInst.execute<{ youtube_cnt: string; local_cnt: string }>(
+            sqlFn`SELECT
+              COUNT(*) FILTER (WHERE video_source = 'youtube')::text AS youtube_cnt,
+              COUNT(*) FILTER (WHERE video_source != 'youtube')::text AS local_cnt
+            FROM managed_videos`
+          );
+          const libRow = libRows.rows?.[0] ?? libRows[0] as { youtube_cnt: string; local_cnt: string } | undefined;
+          const youtubeCount = parseInt(String(libRow?.youtube_cnt ?? "0"), 10);
+          const localCount   = parseInt(String(libRow?.local_cnt  ?? "0"), 10);
+          libraryComposition = {
+            total: youtubeCount + localCount,
+            youtubeCount,
+            localCount,
+            isYouTubeOnly: localCount === 0 && youtubeCount > 0,
+          };
+        } catch { /* non-fatal */ }
+
+        const overrideState = broadcastOrchestrator.getOverrideState();
         logger.info(
           {
             broadcast: {
               started: broadcastOrchestrator.isStarted(),
               sequence: broadcastOrchestrator.getSequence(),
               itemCount: broadcastOrchestrator.getItemCount(),
+              overrideActive: overrideState !== null,
+              overrideKind: overrideState?.kind ?? null,
+              overrideTitle: overrideState?.title ?? null,
+              isYtShuffleFallback: overrideState?.isYtShuffle ?? false,
             },
+            library: libraryComposition,
             healthMonitor: {
               staleThresholdMs: hm.staleThresholdMs,
               recoveryThresholdMs: hm.recoveryThresholdMs,
@@ -985,6 +1021,12 @@ async function main() {
           },
           "[startup-verification] 30s post-boot autonomous component check",
         );
+        if (libraryComposition?.isYouTubeOnly) {
+          logger.info(
+            { youtubeCount: libraryComposition.youtubeCount },
+            "[startup-verification] library is YouTube-only — local broadcast queue will stay empty; ytShuffleFallback or manual override provides broadcast continuity",
+          );
+        }
       } catch (err) {
         logger.warn({ err }, "[startup-verification] post-boot health check failed (non-fatal)");
       }

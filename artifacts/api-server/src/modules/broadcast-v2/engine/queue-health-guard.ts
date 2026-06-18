@@ -291,14 +291,39 @@ class QueueHealthGuardImpl {
       this.lastOpsAlertAtMs = nowMs;
       try {
         const { adminEventBus } = await import("../../admin-ops/admin-event-bus.js");
-        adminEventBus.push("ops-alert", {
-          level: "warn",
-          title: "Broadcast queue below minimum size",
-          message: `Active queue has ${activeCount} item(s) — below the minimum of ${threshold}. The video library may have too few eligible videos for broadcast.`,
-          detail: `Active items: ${activeCount} / threshold: ${threshold}. Added in reconciliation: ${added}.`,
-          timestamp: new Date().toISOString(),
-          source: "queue-health-guard",
-        });
+
+        // Suppress the ops-alert when an override is active — the channel is ON AIR
+        // via a manual or shuffle override even though the local queue is below the
+        // minimum threshold.  Log at INFO instead to preserve visibility without
+        // flooding the ops inbox with false-positive below-threshold alerts.
+        let overrideState: { kind: string; title: string; isYtShuffle: boolean } | null = null;
+        try {
+          const { broadcastOrchestrator } = await import("../index.js");
+          overrideState = broadcastOrchestrator.getOverrideState();
+        } catch { /* non-fatal — orchestrator may not be initialised yet */ }
+
+        if (overrideState) {
+          logger.info(
+            {
+              activeCount,
+              threshold,
+              overrideKind: overrideState.kind,
+              overrideTitle: overrideState.title,
+              isYtShuffle: overrideState.isYtShuffle,
+            },
+            "[queue-reconcile] queue below threshold but broadcast is ON AIR via override — ops-alert suppressed",
+          );
+        } else {
+          adminEventBus.push("ops-alert", {
+            level: "warn",
+            code: "queue-health-below-threshold",
+            title: "Broadcast queue below minimum size",
+            message: `Active queue has ${activeCount} item(s) — below the minimum of ${threshold}. The video library may have too few eligible videos for broadcast.`,
+            detail: `Active items: ${activeCount} / threshold: ${threshold}. Added in reconciliation: ${added}.`,
+            timestamp: new Date().toISOString(),
+            source: "queue-health-guard",
+          });
+        }
       } catch {
         // non-fatal
       }

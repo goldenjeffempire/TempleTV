@@ -4174,6 +4174,30 @@ class BroadcastOrchestrator extends EventEmitter {
   }
 
   /**
+   * Returns the current override state for monitoring consumers (e.g. the
+   * queue-exhaustion monitor and auto-refill) so they can avoid false-positive
+   * alerts when the broadcast is ON AIR via a manual or shuffle override
+   * even though the local queue is empty.
+   *
+   * Returns null when no override is active.
+   */
+  getOverrideState(): {
+    kind: V2Override["kind"];
+    title: string;
+    endsAtMs: number | null;
+    isYtShuffle: boolean;
+  } | null {
+    if (!this.override) return null;
+    return {
+      kind: this.override.kind,
+      title: this.override.title,
+      endsAtMs: this.override.endsAtMs ?? null,
+      isYtShuffle: ytShuffleFallback.isActive &&
+        ytShuffleFallback.activeOverrideId === this.override.id,
+    };
+  }
+
+  /**
    * Performs an optimistic in-place source quality upgrade for a queue item.
    *
    * Called when the bus bridge receives `broadcast-source-upgraded` (fired by

@@ -25,6 +25,7 @@
  * GET /admin/diagnostics/memory endpoint.
  */
 
+import v8 from "node:v8";
 import { logger } from "./logger.js";
 import { env } from "../config/env.js";
 import { processRssGauge, SERVICE_LABELS } from "./metrics.js";
@@ -32,9 +33,32 @@ import { sampleNamedStorePeaks, getRegisteredCacheStats, purgeExpiredCacheEntrie
 import { getEventLoopLagMs, isEventLoopLagAlertActive } from "./event-loop-lag.js";
 import { adminEventBus } from "../modules/admin-ops/admin-event-bus.js";
 
-const SAMPLE_INTERVAL_MS = 30_000;
-const SUSTAIN_SAMPLES = 3;
-const CRITICAL_SAMPLES_FOR_EXIT = 10;
+/**
+ * Reduced from 30 s → 10 s for faster Exit-Code-134 (V8 OOM abort) prevention.
+ *
+ * At 30 s, CRITICAL_SAMPLES_FOR_EXIT × 30 s = 5 min of sustained over-threshold
+ * RSS before a graceful restart was triggered — long enough for V8 to exhaust
+ * its old-space limit and SIGABRT the process with code 134 before the watchdog
+ * could act.  At 10 s the detection window shrinks to ~3 min, giving the
+ * watchdog a realistic chance to SIGTERM cleanly before V8 aborts.
+ *
+ * Slope-window samples are scaled up proportionally (60 → 180) so the rolling
+ * 30-minute history is preserved.  All SUSTAIN_SAMPLES and CRITICAL_SAMPLES
+ * thresholds are recalibrated to maintain the same real-time durations.
+ */
+const SAMPLE_INTERVAL_MS = 10_000;
+/**
+ * Consecutive over-threshold samples before a warn alert fires.
+ * 6 × 10 s = 60 s (same 60 s wall-clock as the old 2 × 30 s).
+ */
+const SUSTAIN_SAMPLES = 6;
+/**
+ * Consecutive RESTART-threshold samples before a graceful exit is triggered.
+ * 18 × 10 s = 3 min (down from 5 min at 30 s × 10).  3 min is still long
+ * enough to distinguish a transient load spike from a genuine leak, while
+ * giving the process 3+ minutes less runway to hit the V8 hard limit.
+ */
+const CRITICAL_SAMPLES_FOR_EXIT = 18;
 // Grace period between process.kill(SIGTERM) and the hard process.exit(1)
 // fallback. Must exceed the longest realistic shutdown drain sequence:
 //   • SSE force-close + drain   ≈ 0-2 s
@@ -49,10 +73,27 @@ const FORCE_EXIT_GRACE_MS = 60_000;
 
 /**
  * Rolling window size (samples) for slope calculations AND the in-UI sparkline.
- * 60 samples × 30 s = 30 minutes of data.  A larger window reduces false
- * positives from momentary GC spikes and gives a useful sparkline history.
+ * 180 samples × 10 s = 30 minutes of data (same wall-clock as the old 60 × 30 s).
+ * A larger window reduces false positives from momentary GC spikes and gives a
+ * useful sparkline history.
  */
-const SLOPE_WINDOW_SAMPLES = 60;
+const SLOPE_WINDOW_SAMPLES = 180;
+
+/**
+ * V8 heap utilisation above which a proactive GC nudge fires even when RSS is
+ * still below the warn threshold.  V8 aborts with SIGABRT (Exit Code 134) when
+ * heapUsed approaches heap_size_limit — catching this BEFORE RSS crosses the
+ * MEMORY_RESTART threshold is the primary defence against code-134 crashes.
+ *
+ * At 88 % utilisation we run a full GC + cache purge; if heapUsed stays ≥ 93 %
+ * for V8_HEAP_CRITICAL_SAMPLES consecutive ticks we trigger a graceful SIGTERM
+ * restart before V8 can abort.
+ */
+const V8_HEAP_WARN_PCT = 0.88;
+const V8_HEAP_CRITICAL_PCT = 0.93;
+const V8_HEAP_CRITICAL_SAMPLES = 6; // 6 × 10 s = 60 s before graceful restart
+let consecutiveV8HeapCritical = 0;
+let v8HeapAlertActive = false;
 /** Alert when external memory is growing faster than this (MB / min). */
 const EXTERNAL_GROWTH_ALERT_MB_PER_MIN = 50;
 /** Recovery threshold (MB / min) — external slope must fall below this to clear alert. */
@@ -428,50 +469,117 @@ function sample() {
     consecutiveArrayBuffersOver = 0;
   }
 
+  // ── V8 heap-limit guard (Exit Code 134 / SIGABRT prevention) ────────────
+  // V8 aborts with SIGABRT (exit code 134) when heapUsed approaches the hard
+  // --max-old-space-size limit — this can happen BEFORE RSS crosses the RSS
+  // restart threshold, leaving the watchdog unable to SIGTERM in time.
+  //
+  // This block reads the real V8 heap statistics on every sample tick and:
+  //   ≥ 88 %: proactive GC + cache purge  (warn zone)
+  //   ≥ 93 % for V8_HEAP_CRITICAL_SAMPLES consecutive ticks: graceful SIGTERM
+  //     before V8 can abort — ensuring a clean restart over a hard crash.
+  const heapStats = v8.getHeapStatistics();
+  const heapUsedPct = heapStats.used_heap_size / Math.max(heapStats.heap_size_limit, 1);
+  const gcFn = (global as { gc?: () => void }).gc;
+
+  if (heapUsedPct >= V8_HEAP_WARN_PCT && !criticalExitInFlight) {
+    const heapUsedMbNow  = Math.round(heapStats.used_heap_size / (1024 * 1024));
+    const heapLimitMbNow = Math.round(heapStats.heap_size_limit / (1024 * 1024));
+    // Flush caches + run GC immediately to try to reclaim heap space.
+    const purgedV8 = purgeExpiredCacheEntries();
+    void import("../modules/video-serve/video-serve.routes.js")
+      .then(({ trimHlsSegmentCache }) => {
+        const hlsCacheMb = Number(process.env.HLS_SEGMENT_CACHE_MB ?? 64);
+        trimHlsSegmentCache(heapUsedPct >= V8_HEAP_CRITICAL_PCT ? 0 : hlsCacheMb / 2);
+      })
+      .catch(() => {});
+    if (gcFn) gcFn();
+
+    if (heapUsedPct >= V8_HEAP_CRITICAL_PCT) {
+      consecutiveV8HeapCritical++;
+      if (!v8HeapAlertActive) {
+        v8HeapAlertActive = true;
+        logger.error(
+          { heapUsedMb: heapUsedMbNow, heapLimitMb: heapLimitMbNow, heapUsedPct: Math.round(heapUsedPct * 100) },
+          "[memory-watchdog] V8 heap CRITICAL — approaching abort threshold (Exit Code 134 risk)",
+        );
+        adminEventBus.push("ops-alert", {
+          level: "critical",
+          code: "v8-heap-critical",
+          message: `V8 heap at ${Math.round(heapUsedPct * 100)}% of limit (${heapUsedMbNow}/${heapLimitMbNow} MB) — Exit Code 134 risk. Auto-restart in ${V8_HEAP_CRITICAL_SAMPLES - consecutiveV8HeapCritical} ticks if heap does not recover.`,
+          heapUsedMb: heapUsedMbNow,
+          heapLimitMb: heapLimitMbNow,
+          heapUsedPct: Math.round(heapUsedPct * 100),
+        });
+      }
+      if (consecutiveV8HeapCritical >= V8_HEAP_CRITICAL_SAMPLES && !criticalExitInFlight) {
+        criticalExitInFlight = true;
+        logger.fatal(
+          { heapUsedMb: heapUsedMbNow, heapLimitMb: heapLimitMbNow, consecutiveV8HeapCritical },
+          "[memory-watchdog] V8 heap sustained above critical threshold — SIGTERM to prevent Exit Code 134",
+        );
+        void import("./sentry.js").then(({ captureEvent }) =>
+          captureEvent(
+            `[memory-watchdog] V8 heap at ${Math.round(heapUsedPct * 100)}% for ${consecutiveV8HeapCritical} ticks — SIGTERM to prevent Exit Code 134`,
+            "fatal",
+            { heapUsedMb: heapUsedMbNow, heapLimitMb: heapLimitMbNow },
+          ),
+        ).catch(() => {});
+        process.kill(process.pid, "SIGTERM");
+        const v8ForceExitTimer = setTimeout(() => { process.exit(1); }, FORCE_EXIT_GRACE_MS);
+        v8ForceExitTimer.unref();
+      }
+    } else {
+      // Heap is in warn zone (88–93%) but not critical — log periodically.
+      if (!v8HeapAlertActive) {
+        v8HeapAlertActive = true;
+        logger.warn(
+          { heapUsedMb: heapUsedMbNow, heapLimitMb: heapLimitMbNow, heapUsedPct: Math.round(heapUsedPct * 100), purgedCacheEntries: purgedV8 },
+          "[memory-watchdog] V8 heap warn threshold exceeded — proactive GC + cache purge applied",
+        );
+      }
+      consecutiveV8HeapCritical = 0;
+    }
+  } else {
+    // Heap has recovered
+    if (v8HeapAlertActive) {
+      v8HeapAlertActive = false;
+      consecutiveV8HeapCritical = 0;
+      logger.info(
+        { heapUsedPct: Math.round(heapUsedPct * 100) },
+        "[memory-watchdog] V8 heap pressure recovered",
+      );
+    }
+  }
+
   // ── Proactive GC nudge ───────────────────────────────────────────────────
   // When RSS is in the warn zone, nudge V8's garbage collector to free
   // unreferenced Buffer memory (e.g. completed HLS segment responses waiting
-  // for collection). This can reduce RSS enough to avoid crossing the restart
-  // threshold and triggering a full restart cycle.
-  //
-  // Only runs when Node.js is started with --expose-gc (production start:prod
-  // script does NOT include it by default, so gcFn will be undefined in most
-  // environments and this becomes a no-op).  Set EXPOSE_GC=1 in your process
-  // manager / Render env and add --expose-gc to the start:prod node flags to
-  // enable this safety valve.
-  // Nudge V8's GC when RSS is in the warn zone OR when heapUsed is growing
-  // faster than the alert threshold. Previously this only triggered on RSS
-  // pressure; adding the heapUsed guard lets the GC reclaim leaked JS objects
-  // before they push RSS past the restart threshold, buying recovery time.
+  // for collection). gcFn is already defined above (after the V8 heap guard).
   if (rssAlertActive || heapUsedAlertActive || arrayBuffersAlertActive) {
     // First, flush expired in-process cache entries so the GC has smaller
     // live-set to scan. This reliably reclaims catalog/broadcast JSON objects
     // that are past their TTL but haven't been touched (lazy eviction would
     // leave them in the Map until their key is accessed, which may be never
     // on a 24/7 server after a video rotation).
-    // Also runs under arrayBuffers pressure: expired catalog/broadcast entries
-    // in the LRU hold live Buffer references that prevent GC from reclaiming
-    // the underlying ArrayBuffer memory even after the segment is no longer
-    // being served.
     const purged = purgeExpiredCacheEntries();
     if (purged > 0) {
       logger.info({ purged }, "[memory-watchdog] flushed expired cache entries during pressure");
     }
   }
-  const gcFn = (global as { gc?: () => void }).gc;
   if ((rssAlertActive || heapUsedAlertActive) && gcFn) {
     gcFn();
   }
 
   // ── Pre-exit emergency cache drain ───────────────────────────────────────
-  // Two samples before CRITICAL_SAMPLES_FOR_EXIT is reached, attempt an
+  // Three samples before CRITICAL_SAMPLES_FOR_EXIT is reached, attempt an
   // aggressive multi-cache drain + GC to give the process a final opportunity
   // to recover without a restart.  If RSS falls back below restartThresholdMb
   // before the critical threshold is hit, the consecutive counter resets and
   // the exit is avoided entirely.
   if (
     env.NODE_ENV === "production" &&
-    consecutiveRssOverRestart === CRITICAL_SAMPLES_FOR_EXIT - 2 &&
+    consecutiveRssOverRestart === CRITICAL_SAMPLES_FOR_EXIT - 3 &&
     !criticalExitInFlight
   ) {
     const purgedEmergency = purgeExpiredCacheEntries();
@@ -486,9 +594,9 @@ function sample() {
         restartThresholdMb,
         consecutiveRssOverRestart,
         purgedCacheEntries: purgedEmergency,
-        samplesUntilExit: 2,
+        samplesUntilExit: 3,
       },
-      "[memory-watchdog] pre-exit emergency drain: flushed all expired cache entries + trimmed HLS segment cache — 2 samples until restart if RSS does not recover",
+      "[memory-watchdog] pre-exit emergency drain: flushed all expired cache entries + trimmed HLS segment cache — 3 samples until restart if RSS does not recover",
     );
   }
 
@@ -573,7 +681,7 @@ function sample() {
 /**
  * Returns the rolling memory sample window as MB-valued objects for sparkline
  * rendering.  The window holds up to SLOPE_WINDOW_SAMPLES entries at
- * SAMPLE_INTERVAL_MS cadence (default: 6 × 30 s = last 3 minutes).
+ * SAMPLE_INTERVAL_MS cadence (180 × 10 s = last 30 minutes).
  */
 export function getMemoryHistory(): Array<{ ts: number; heapUsedMb: number; externalMb: number; arrayBuffersMb: number }> {
   const MiB = 1024 * 1024;
