@@ -1142,7 +1142,11 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       try {
         const cutoff = new Date(Date.now() - ABANDONED_AGE_MS);
         const abandoned = await db
-          .select({ sessionId: sessions.sessionId, uploadId: sessions.uploadId })
+          .select({
+            sessionId: sessions.sessionId,
+            uploadId: sessions.uploadId,
+            assemblyUploadId: sessions.assemblyUploadId,
+          })
           .from(sessions)
           .where(
             and(
@@ -1161,7 +1165,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           // Delete chunks first (FK dependency), then the session rows.
           await db.delete(chunks).where(inArray(chunks.sessionId, ids));
 
-          // Also clean up orphaned _parts/{uploadId}/... rows in storage_blobs.
+          // Clean up orphaned _parts/{uploadId}/... rows in storage_blobs.
           // These are created during the db-mode upload path and are normally
           // cleaned up by completeMultipartUpload, but abandoned sessions leave
           // them orphaned, causing unbounded storage growth.
@@ -1177,9 +1181,38 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               );
           }
 
+          // Also clean up orphaned _parts/{assemblyUploadId}/... rows.
+          // assemblyUploadId is written by finalizeFromDbFallback during
+          // reassembly and is a DIFFERENT ID from the session's original
+          // uploadId. Sessions permanently failed (ASSEMBLY_FAILED) or timed-out
+          // that were reset via _markAssemblyPermanentlyFailed() may retain a
+          // non-null assemblyUploadId pointing to stale _parts rows that the
+          // uploadId sweep above never touches.
+          const assemblyUploadIds = abandoned
+            .map((r) => r.assemblyUploadId)
+            .filter((id): id is string => id != null && id !== "");
+          for (const assemblyUploadId of assemblyUploadIds) {
+            const partPrefix = `_parts/${assemblyUploadId}/`;
+            await db
+              .execute(sql`DELETE FROM storage_blobs WHERE starts_with(key, ${partPrefix})`)
+              .catch((err: unknown) =>
+                app.log.warn({ err, assemblyUploadId }, "[upload] stale assemblyUploadId _parts cleanup failed (non-fatal)"),
+              );
+            // Also delete the _meta row if it was persisted.
+            const metaKey = `_meta/${assemblyUploadId}`;
+            await db
+              .execute(sql`DELETE FROM storage_blobs WHERE key = ${metaKey}`)
+              .catch(() => {});
+          }
+
           await db.delete(sessions).where(inArray(sessions.sessionId, ids));
           app.log.info(
-            { count: abandoned.length, ids, uploadIdsCleared: uploadIds.length },
+            {
+              count: abandoned.length,
+              ids,
+              uploadIdsCleared: uploadIds.length,
+              assemblyUploadIdsCleared: assemblyUploadIds.length,
+            },
             "[upload] cleaned up abandoned upload sessions, chunks, and orphaned storage parts",
           );
         }
@@ -1547,6 +1580,20 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       if (session.status === "completed") {
         return reply.code(409).send({ error: "Session already completed" });
       }
+      // Block uploads to sessions that are actively being assembled.
+      // Allowing chunks into an in-flight assembly is unsafe: the assembly
+      // reads exactly totalChunks rows in order — a new chunk arriving
+      // mid-assembly would either be silently ignored (if its index was
+      // already past the current part counter) or corrupt the assembled
+      // blob (if the assembly races the DB insert). Return 409 with a
+      // message that tells the client to wait and re-check status.
+      if (session.status === "assembling") {
+        return reply.code(409).send({
+          error:
+            "Upload session is currently being assembled — cannot accept new chunks. " +
+            "Poll /status to wait for assembly to complete or fail.",
+        });
+      }
 
       // Reject out-of-range chunk indices to prevent phantom chunk accumulation.
       if (chunkIndex >= session.totalChunks) {
@@ -1572,9 +1619,28 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "Empty chunk body" });
       }
 
-      // Verify SHA-256 integrity before acquiring the DB slot so we don't
-      // hold a semaphore permit while doing CPU work.
+      // Reject chunks that would overshoot the declared total file size.
+      // Without this guard a buggy or malicious client could send overlapping
+      // or extended-range chunks that inflate the assembled blob beyond the
+      // size declared at /init, silently corrupting the final file.
+      //
+      // Use session.sizeBytes (the total declared size) as the ceiling.
+      // byteOffset is the 0-based start position; body.length is the chunk
+      // size in bytes. A valid chunk satisfies: byteOffset + chunkSize ≤ totalBytes.
       const sizeBytes = body.length;
+      if (
+        byteOffset !== null &&
+        session.sizeBytes != null &&
+        session.sizeBytes > 0 &&
+        byteOffset + sizeBytes > session.sizeBytes
+      ) {
+        return reply.code(400).send({
+          error:
+            `Chunk at offset ${byteOffset} with size ${sizeBytes} B would exceed ` +
+            `the declared file size of ${session.sizeBytes} B. Re-check your chunk ` +
+            `boundaries and resend.`,
+        });
+      }
       const actualChecksum = createHash("sha256").update(body).digest("hex");
       if (actualChecksum !== checksum) {
         return reply.code(422).send({

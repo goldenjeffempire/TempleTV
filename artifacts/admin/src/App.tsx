@@ -16,16 +16,27 @@ function lazyPage<T extends React.ComponentType<object>>(
   factory: () => Promise<{ default: T }>,
 ): React.LazyExoticComponent<T> {
   return lazy(() =>
-    factory().catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      const isChunk = msg.includes("dynamically imported") || msg.includes("Loading chunk") || msg.includes("Failed to fetch");
-      if (isChunk && !sessionStorage.getItem(CHUNK_KEY)) {
-        sessionStorage.setItem(CHUNK_KEY, "1");
-        window.location.reload();
-        return new Promise<{ default: T }>(() => {});
-      }
-      throw err;
-    }),
+    factory()
+      .then((mod) => {
+        // A successful dynamic import means the chunk is now in the browser's
+        // module registry. Clear the one-shot reload sentinel so that if a
+        // DIFFERENT page's chunk subsequently fails to load it still gets its
+        // own reload attempt. Without this clear, the sentinel set by page A's
+        // failure permanently blocks any future reload for page B's failure in
+        // the same browser session.
+        sessionStorage.removeItem(CHUNK_KEY);
+        return mod;
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        const isChunk = msg.includes("dynamically imported") || msg.includes("Loading chunk") || msg.includes("Failed to fetch");
+        if (isChunk && !sessionStorage.getItem(CHUNK_KEY)) {
+          sessionStorage.setItem(CHUNK_KEY, "1");
+          window.location.reload();
+          return new Promise<{ default: T }>(() => {});
+        }
+        throw err;
+      }),
   );
 }
 

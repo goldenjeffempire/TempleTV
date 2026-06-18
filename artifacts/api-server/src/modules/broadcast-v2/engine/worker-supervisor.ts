@@ -216,7 +216,17 @@ class SupervisedWorker {
           "[worker-supervisor] worker run failed",
         );
       }
-      const max = this.cfg.maxConsecutiveFailures ?? Infinity;
+      // Default circuit-breaker threshold: 10 consecutive failures.
+      // Without a finite default every worker that omits maxConsecutiveFailures
+      // runs forever without ever opening its circuit, meaning:
+      //   - No ops-alert SSE fires for a persistently broken worker
+      //   - onCircuitOpen callback is never invoked
+      //   - The error log grows without bound, making genuine issues invisible
+      // 10 failures at the typical 60–120 s interval = 10–20 min of sustained
+      // failure before the circuit opens; the 10-min auto-reset then gives it
+      // one more chance to self-heal. Callers can override with a smaller number
+      // (e.g. maxConsecutiveFailures: 3) for latency-sensitive workers.
+      const max = this.cfg.maxConsecutiveFailures ?? 10;
       if (this.consecutiveFailures >= max) {
         this.circuitOpen = true;
         logger.error(
