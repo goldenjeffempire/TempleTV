@@ -86,6 +86,9 @@ export function useNotificationPreferences() {
         newSermonAlerts: true,
         emergencyAlerts: true,
       };
+      // Update the ref FIRST so any concurrent save() call merges from the
+      // already-granted state rather than the old all-false prefsRef snapshot.
+      prefsRef.current = next;
       setPrefs(next);
       try {
         await AsyncStorage.setItem(KEY, JSON.stringify(next));

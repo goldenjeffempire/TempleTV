@@ -117,6 +117,16 @@ export function BroadcastLiveSheet({
   // The drag-during-open offset; reset on release.
   const dragY = useRef(new Animated.Value(0)).current;
 
+  // Refs so the PanResponder (created once via useRef) always reads the
+  // current values without being recreated. Without this, both `sheetHeight`
+  // and `onClose` are frozen at their initial-render values inside the
+  // responder's closures — rotation changes `sheetHeight` (wrong dismiss
+  // threshold) and any prop-identity change to `onClose` goes unnoticed.
+  const onCloseRef = useRef(onClose);
+  const sheetHeightRef = useRef(sheetHeight);
+  onCloseRef.current = onClose;
+  sheetHeightRef.current = sheetHeight;
+
   // ── Open / close animation ──
   useEffect(() => {
     Animated.parallel([
@@ -143,10 +153,12 @@ export function BroadcastLiveSheet({
       },
       onPanResponderRelease: (_e, g) => {
         // Release threshold: dragged > 25% of sheet OR fast flick down.
-        if (g.dy > sheetHeight * 0.25 || g.vy > 1.2) {
+        // Use sheetHeightRef so a device rotation updates the threshold
+        // without recreating the entire PanResponder.
+        if (g.dy > sheetHeightRef.current * 0.25 || g.vy > 1.2) {
           Animated.timing(dragY, { toValue: 0, duration: 0, useNativeDriver: true }).start();
           if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          onClose();
+          onCloseRef.current();
         } else {
           Animated.spring(dragY, { toValue: 0, friction: 7, useNativeDriver: true }).start();
         }

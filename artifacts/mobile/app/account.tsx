@@ -78,15 +78,20 @@ export default function AccountScreen() {
     setSaving(true);
     try {
       await updateProfile({ displayName: name });
+      // Guard: the user may have navigated away while the save was in flight.
+      // Calling setState or Alert on an unmounted component produces warnings
+      // and surfaces an alert on a screen the user has already left.
+      if (!mountedRef.current) return;
       if (user) {
         updateUser({ ...user, displayName: name });
       }
       setDirty(false);
       Alert.alert("Saved", "Your profile has been updated.");
     } catch (err) {
+      if (!mountedRef.current) return;
       Alert.alert("Error", err instanceof Error ? err.message : "Failed to save profile.");
     } finally {
-      setSaving(false);
+      if (mountedRef.current) setSaving(false);
     }
   }, [displayName, user, updateUser]);
 

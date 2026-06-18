@@ -130,6 +130,9 @@ export default function SignupScreen() {
   const slideAnim = useRef(new Animated.Value(32)).current;
   const btnScale = useRef(new Animated.Value(1)).current;
 
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   useEffect(() => {
     Animated.parallel([
       Animated.timing(fadeAnim, { toValue: 1, duration: 520, useNativeDriver: true }),
@@ -173,6 +176,10 @@ export default function SignupScreen() {
     try {
       const resp = await apiSignup(trimmedEmail, password, trimmedName);
       await signIn(resp, resp.user);
+      // Guard: the user may have swiped back while the network call was in
+      // flight. Calling router.replace() on an unmounted screen causes a
+      // stale navigation push that can corrupt the navigator stack.
+      if (!mountedRef.current) return;
       const pending = consumePendingPlayback();
       if (pending?.pathname) {
         router.replace({ pathname: pending.pathname, params: pending.params } as never);
@@ -180,13 +187,14 @@ export default function SignupScreen() {
         router.replace("/(tabs)");
       }
     } catch (err) {
+      if (!mountedRef.current) return;
       if (err instanceof Error && /network|timed?\s*out|fetch/i.test(err.message)) {
         setError("Couldn't reach the server. Check your connection and try again.");
       } else {
         setError(err instanceof Error ? err.message : "Sign up failed. Please try again.");
       }
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   };
 

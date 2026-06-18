@@ -129,6 +129,9 @@ export default function LoginScreen() {
   const mfaTokenRef = useRef<string>("");
   const [totpCode, setTotpCode] = useState("");
 
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(32)).current;
   const btnScale = useRef(new Animated.Value(1)).current;
@@ -161,6 +164,10 @@ export default function LoginScreen() {
     try {
       const resp = await apiLogin(trimmedEmail, password);
       await signIn(resp, resp.user);
+      // Guard: the user may have swiped back while the network call was in
+      // flight. Calling router.replace() on an unmounted screen causes a
+      // stale navigation push that can corrupt the navigator stack.
+      if (!mountedRef.current) return;
       // If the user was gated into login while trying to play something,
       // restore that target instead of dumping them on the home tab.
       const pending = consumePendingPlayback();
@@ -170,6 +177,7 @@ export default function LoginScreen() {
         router.replace("/(tabs)");
       }
     } catch (err) {
+      if (!mountedRef.current) return;
       if (err instanceof MfaRequiredError) {
         // Server returned mfaRequired — switch to the TOTP challenge phase.
         mfaTokenRef.current = err.mfaToken;
@@ -182,7 +190,7 @@ export default function LoginScreen() {
         setError(err instanceof Error ? err.message : "Sign in failed. Please try again.");
       }
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   };
 
@@ -203,6 +211,7 @@ export default function LoginScreen() {
     try {
       const resp = await apiLoginVerifyMfa(mfaTokenRef.current, code);
       await signIn(resp, resp.user);
+      if (!mountedRef.current) return;
       const pending = consumePendingPlayback();
       if (pending?.pathname) {
         router.replace({ pathname: pending.pathname, params: pending.params } as never);
@@ -210,13 +219,14 @@ export default function LoginScreen() {
         router.replace("/(tabs)");
       }
     } catch (err) {
+      if (!mountedRef.current) return;
       if (err instanceof Error && /network|timed?\s*out|fetch/i.test(err.message)) {
         setError("Couldn't reach the server. Check your connection and try again.");
       } else {
         setError(err instanceof Error ? err.message : "Verification failed. Please try again.");
       }
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   };
 

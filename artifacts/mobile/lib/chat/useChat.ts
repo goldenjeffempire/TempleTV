@@ -38,10 +38,15 @@ export function useChat(options: ChatClientOptions = {}): UseChatResult {
   }, [client]);
 
   useEffect(() => {
+    // Use clientRef (not the closed-over `client`) so that if options change
+    // during the component's lifetime — e.g. token goes null→JWT after login —
+    // useMemo creates a new ChatClient (stopping the old one itself), and this
+    // unmount cleanup correctly stops whichever client is current at that time.
+    // Closing over the initial `client` value would leave the newer WebSocket
+    // open indefinitely after unmount.
     return () => {
-      client.stop();
+      clientRef.current?.client.stop();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const subscribe = useMemo(() => (cb: () => void) => client.subscribe(cb), [client]);

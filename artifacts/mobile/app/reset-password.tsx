@@ -42,7 +42,9 @@ export default function ResetPasswordScreen() {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
+  const mountedRef = useRef(true);
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => () => { mountedRef.current = false; }, []);
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 420, useNativeDriver: true }).start();
   }, []);
@@ -60,11 +62,11 @@ export default function ResetPasswordScreen() {
     setLoading(true);
     try {
       await apiResetPassword(token, password);
-      setDone(true);
+      if (mountedRef.current) setDone(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't reset your password. Please try again.");
+      if (mountedRef.current) setError(err instanceof Error ? err.message : "Couldn't reset your password. Please try again.");
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   };
 

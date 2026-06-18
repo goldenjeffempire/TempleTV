@@ -5,7 +5,7 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   return <ErrorFallback error={error} resetError={retry} />;
 }
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -35,6 +35,9 @@ export default function ChangePasswordScreen() {
   const [showConfirm, setShowConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
 
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   async function handleSubmit() {
     if (!currentPassword || !newPassword || !confirmPassword) {
       Alert.alert("Missing Fields", "Please fill in all fields.");
@@ -51,14 +54,16 @@ export default function ChangePasswordScreen() {
     setLoading(true);
     try {
       await apiChangePassword(currentPassword, newPassword);
+      if (!mountedRef.current) return;
       Alert.alert("Password Updated", "Your password has been changed successfully.", [
         { text: "OK", onPress: () => router.back() },
       ]);
     } catch (err: unknown) {
+      if (!mountedRef.current) return;
       const message = err instanceof Error ? err.message : "Failed to change password.";
       Alert.alert("Error", message);
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   }
 

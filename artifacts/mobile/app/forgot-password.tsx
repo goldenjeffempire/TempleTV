@@ -32,7 +32,9 @@ export default function ForgotPasswordScreen() {
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
 
+  const mountedRef = useRef(true);
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => () => { mountedRef.current = false; }, []);
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 420, useNativeDriver: true }).start();
   }, []);
@@ -47,11 +49,11 @@ export default function ForgotPasswordScreen() {
     setLoading(true);
     try {
       await apiForgotPassword(trimmed);
-      setSent(true);
+      if (mountedRef.current) setSent(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't send the reset email. Please try again.");
+      if (mountedRef.current) setError(err instanceof Error ? err.message : "Couldn't send the reset email. Please try again.");
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
   };
 
