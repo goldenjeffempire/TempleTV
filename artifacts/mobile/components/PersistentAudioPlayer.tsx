@@ -61,7 +61,7 @@ export function PersistentAudioPlayer() {
               height: 180,
               opacity: 0,
               overflow: "hidden",
-            } as any)
+            } as Record<string, unknown>)
           : {
               position: "absolute",
               left: -10000,

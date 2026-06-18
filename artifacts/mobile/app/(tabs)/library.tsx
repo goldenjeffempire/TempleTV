@@ -208,7 +208,7 @@ const ContinueWatchingRow = React.memo(function ContinueWatchingRow({ items }: {
                 <View
                   style={[
                     cwStyles.progressFill,
-                    { backgroundColor: c.primary, width: `${Math.round(item.pct * 100)}%` as any },
+                    { backgroundColor: c.primary, width: `${Math.round(item.pct * 100)}%` as `${number}%` },
                   ]}
                 />
               </View>

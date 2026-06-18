@@ -100,7 +100,7 @@ export function MiniPlayer() {
           <View
             style={[
               styles.progressFill,
-              { backgroundColor: c.primary, width: `${Math.round(progress * 100)}%` as any },
+              { backgroundColor: c.primary, width: `${Math.round(progress * 100)}%` as `${number}%` },
             ]}
           />
         </View>
