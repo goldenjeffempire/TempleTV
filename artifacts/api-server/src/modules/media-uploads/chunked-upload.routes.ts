@@ -1184,27 +1184,55 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           ? Math.ceil(body.totalBytes / body.totalChunks)
           : 8 * 1024 * 1024;
 
-      // MinIO is the sole storage backend — fail-fast if unavailable.
+      // Open a multipart upload slot in object storage.
+      // Retry with exponential backoff + jitter so transient storage restarts
+      // don't fail the entire upload init — the client would have to re-init.
       let uploadId: string;
-      try {
-        const mpPromise = storage().createMultipartUpload({ key: objectKey, contentType });
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error("createMultipartUpload timed out after 5 s")), 5_000).unref();
-        });
-        const mp = await Promise.race([mpPromise, timeoutPromise]);
-        uploadId = mp.uploadId;
-      } catch (err) {
-        req.log.error(
-          { err, sessionId: body.sessionId },
-          "[chunked-init] MinIO createMultipartUpload failed — upload cannot proceed",
-        );
-        throw Object.assign(
-          new Error(
-            "Object storage (MinIO) is temporarily unavailable. Unable to initialize upload. " +
-            "Please verify MinIO is running and retry.",
-          ),
-          { statusCode: 503 },
-        );
+      {
+        const INIT_MAX_ATTEMPTS = 4;
+        const INIT_BASE_DELAY_MS = 500;
+        const INIT_TIMEOUT_MS = 8_000;
+        let initErr: unknown;
+        let initiated = false;
+        for (let attempt = 1; attempt <= INIT_MAX_ATTEMPTS; attempt++) {
+          try {
+            const mpPromise = storage().createMultipartUpload({ key: objectKey, contentType });
+            const timeoutPromise = new Promise<never>((_, reject) => {
+              setTimeout(
+                () => reject(new Error(`createMultipartUpload timed out after ${INIT_TIMEOUT_MS / 1000} s`)),
+                INIT_TIMEOUT_MS,
+              ).unref();
+            });
+            const mp = await Promise.race([mpPromise, timeoutPromise]);
+            uploadId = mp.uploadId;
+            initiated = true;
+            break;
+          } catch (err) {
+            initErr = err;
+            if (attempt < INIT_MAX_ATTEMPTS) {
+              const delay = INIT_BASE_DELAY_MS * (2 ** (attempt - 1)) +
+                Math.floor(Math.random() * 300);
+              req.log.warn(
+                { err, sessionId: body.sessionId, attempt, retryInMs: delay },
+                "[chunked-init] createMultipartUpload transient failure — retrying",
+              );
+              await new Promise<void>((r) => setTimeout(r, delay).unref());
+            }
+          }
+        }
+        if (!initiated) {
+          req.log.error(
+            { err: initErr, sessionId: body.sessionId, attempts: INIT_MAX_ATTEMPTS },
+            "[chunked-init] object storage createMultipartUpload failed after all retries",
+          );
+          throw Object.assign(
+            new Error(
+              "Object storage is temporarily unavailable. Unable to initialize upload. " +
+              "Please wait a moment and retry — the upload queue will resume automatically.",
+            ),
+            { statusCode: 503 },
+          );
+        }
       }
 
       try {
@@ -1412,15 +1440,53 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         }
 
         // Upload directly to MinIO as a multipart part (1-based partNumber).
+        // Server-side retry with exponential backoff + jitter covers transient
+        // MinIO restarts so the client never sees a 503 for a brief hiccup.
         const partNumber = chunkIndex + 1;
-        try {
-          const { etag } = await storage().uploadPart({
-            key: session.objectKey,
-            uploadId: session.uploadId,
-            partNumber,
-            body,
-          });
+        const UPLOAD_PART_MAX_ATTEMPTS = 4;
+        const UPLOAD_PART_BASE_DELAY_MS = 400;
 
+        let etag = "";
+        let lastUploadErr: unknown;
+        let uploaded = false;
+        for (let attempt = 1; attempt <= UPLOAD_PART_MAX_ATTEMPTS; attempt++) {
+          try {
+            const result = await storage().uploadPart({
+              key: session.objectKey,
+              uploadId: session.uploadId,
+              partNumber,
+              body,
+            });
+            etag = result.etag;
+            uploaded = true;
+            break;
+          } catch (err) {
+            lastUploadErr = err;
+            if (attempt < UPLOAD_PART_MAX_ATTEMPTS) {
+              const delay = UPLOAD_PART_BASE_DELAY_MS * (2 ** (attempt - 1)) +
+                Math.floor(Math.random() * 200);
+              req.log.warn(
+                { err, sessionId, chunkIndex, partNumber, attempt, retryInMs: delay },
+                "[chunk] uploadPart transient failure — retrying",
+              );
+              await new Promise<void>((r) => setTimeout(r, delay).unref());
+            }
+          }
+        }
+
+        if (!uploaded) {
+          req.log.error(
+            { err: lastUploadErr, sessionId, chunkIndex, partNumber, attempts: UPLOAD_PART_MAX_ATTEMPTS },
+            "[chunk] uploadPart failed after all retries — chunk NOT saved; client will retry",
+          );
+          return reply.code(503).send({
+            error:
+              "Object storage is temporarily unavailable after retries. The chunk was not saved. " +
+              "It will be retried automatically with exponential backoff.",
+          });
+        }
+
+        try {
           // body is no longer needed — release the 8 MiB buffer for GC
           // before the next await (the chunks INSERT) so it isn't kept alive
           // across the full ~13-15 s DB write.
@@ -1442,12 +1508,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         } catch (err) {
           req.log.warn(
             { err, sessionId, chunkIndex, partNumber },
-            "[chunk] uploadPart failed — chunk NOT saved; client will retry",
+            "[chunk] DB insert failed after successful uploadPart — chunk NOT saved; client will retry",
           );
           return reply.code(503).send({
             error:
-              "Object storage is temporarily unavailable. The chunk was not saved. " +
-              "It will be retried automatically with exponential backoff.",
+              "Storage write succeeded but metadata could not be saved. " +
+              "The chunk will be retried automatically.",
           });
         }
       } finally {

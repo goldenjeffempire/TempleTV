@@ -475,25 +475,34 @@ export function storage(): ObjectStorage {
   if (_storage) return _storage;
   const bucket = env.S3_BUCKET;
   if (bucket) {
-    _storage = new S3ObjectStorage(
-      bucket,
-      env.S3_REGION ?? process.env.AWS_REGION,
-      env.AWS_ENDPOINT_URL,
+    const endpoint = env.AWS_ENDPOINT_URL;
+    const region = env.S3_REGION ?? process.env.AWS_REGION;
+    const isMinIO = typeof endpoint === "string" && (
+      endpoint.includes("localhost") || endpoint.includes("127.0.0.1")
     );
-    logger.info(
-      {
-        bucket,
-        region: env.S3_REGION ?? process.env.AWS_REGION ?? "sdk-auto-discovery",
-        endpoint: env.AWS_ENDPOINT_URL ?? "aws-default",
-      },
-      "[storage] MinIO/S3 object storage ready",
-    );
+    _storage = new S3ObjectStorage(bucket, region, endpoint);
+    if (isMinIO) {
+      logger.info(
+        { bucket, endpoint, region: region ?? "sdk-auto-discovery", backend: "minio" },
+        "[storage] MinIO (local dev) object storage ready",
+      );
+    } else if (endpoint) {
+      logger.info(
+        { bucket, endpoint, region: region ?? "sdk-auto-discovery", backend: "s3-compatible" },
+        "[storage] S3-compatible object storage ready",
+      );
+    } else {
+      logger.info(
+        { bucket, region: region ?? "sdk-auto-discovery", backend: "aws-s3" },
+        "[storage] AWS S3 (production) object storage ready — uploads go to real S3 bucket",
+      );
+    }
     return _storage;
   }
   _storage = new DisabledObjectStorage();
   logger.warn(
     "[storage] S3_BUCKET is not configured — object storage disabled. " +
-    "Set S3_BUCKET + AWS_ENDPOINT_URL to enable MinIO.",
+    "Set S3_BUCKET + S3_REGION + AWS credentials to enable production S3 uploads.",
   );
   return _storage;
 }
