@@ -36,6 +36,7 @@ interface Episode {
   duration: string;
   youtubeId: string;
   hlsMasterUrl: string | null;
+  localVideoUrl: string | null;
   category: string;
   preacher: string;
   publishedAt: string;
@@ -69,6 +70,7 @@ function episodeToSermon(ep: Episode): Sermon {
     date: ep.publishedAt?.slice(0, 10) ?? "",
     videoSource: (ep.videoSource === "local" || ep.videoSource === "upload") ? "local" : "youtube",
     hlsMasterUrl: ep.hlsMasterUrl ?? undefined,
+    localVideoUrl: ep.localVideoUrl ?? undefined,
     youtubeLiveStatus: ep.youtubeLiveStatus ?? null,
   };
 }
@@ -81,6 +83,7 @@ function navigateToSermon(episode: Episode) {
       title: episode.title,
       youtubeId: episode.videoSource === "youtube" ? episode.youtubeId : "",
       hlsUrl: episode.hlsMasterUrl ?? "",
+      localVideoUrl: episode.localVideoUrl ?? "",
       thumbnailUrl: episode.thumbnailUrl,
       preacher: episode.preacher,
       duration: episode.duration,

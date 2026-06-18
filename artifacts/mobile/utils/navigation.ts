@@ -23,10 +23,13 @@ export function navigateToSermon(
     ...extraParams,
   };
 
-  const bestUrl = sermon.hlsMasterUrl ?? sermon.localVideoUrl;
   const params: Record<string, string> =
-    sermon.videoSource === "local" && bestUrl
-      ? { ...baseParams, hlsUrl: bestUrl }
+    sermon.videoSource === "local"
+      ? {
+          ...baseParams,
+          hlsUrl: sermon.hlsMasterUrl ?? "",
+          localVideoUrl: sermon.localVideoUrl ?? "",
+        }
       : { ...baseParams, youtubeId: sermon.youtubeId };
 
   router.push({ pathname: "/player", params });

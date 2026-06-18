@@ -209,7 +209,11 @@ export default function PlayerScreen() {
   const videoId      = params.id ?? "live";
   const title        = params.title ?? "Now Playing";
   const youtubeId    = params.youtubeId ?? params.videoId ?? "";
-  const hlsUrl       = params.hlsUrl ?? params.hlsMasterUrl ?? params.localVideoUrl ?? "";
+  // Use || (not ??) so an empty-string hlsUrl falls through to localVideoUrl.
+  // This enables MP4-first playback: when the caller passes localVideoUrl
+  // only (no HLS master yet), the player plays MP4 directly rather than
+  // treating "" as a set value and producing a broken source.
+  const hlsUrl       = params.hlsUrl || params.hlsMasterUrl || params.localVideoUrl || "";
   const thumbnailUrl = params.thumbnailUrl ?? params.thumbnail ?? "";
   const preacher     = params.preacher ?? "JCTM Ministries";
   const duration     = params.duration ?? "";
@@ -750,7 +754,8 @@ export default function PlayerScreen() {
         id: s.id,
         title: s.title,
         youtubeId: s.videoSource === "youtube" ? s.youtubeId : "",
-        hlsUrl: s.hlsMasterUrl ?? s.localVideoUrl ?? "",
+        hlsUrl: s.hlsMasterUrl ?? "",
+        localVideoUrl: s.localVideoUrl ?? "",
         thumbnailUrl: s.thumbnailUrl,
         preacher: s.preacher,
         duration: s.duration,
@@ -1110,18 +1115,37 @@ export default function PlayerScreen() {
                     <Text style={[styles.liveMinistry, { color: c.mutedForeground }]}>
                       JCTM Ministries
                     </Text>
-                    {/* HD badge — only shown for HLS source quality */}
-                    {isBroadcastV2 && v2SourceQuality === "hls" && (
+                    {/* Source quality badge — HLS / MP4 / SD */}
+                    {isBroadcastV2 && v2SourceQuality &&
+                      v2SourceQuality !== "youtube" &&
+                      v2SourceQuality !== "live_override" && (
                       <View
                         style={[
                           styles.qualityBadge,
                           {
-                            backgroundColor: c.primary + "18",
-                            borderColor: c.primary + "40",
+                            backgroundColor: v2SourceQuality === "hls"
+                              ? c.primary + "18"
+                              : c.card,
+                            borderColor: v2SourceQuality === "hls"
+                              ? c.primary + "40"
+                              : c.border,
                           },
                         ]}
                       >
-                        <Text style={[styles.qualityBadgeText, { color: c.primary }]}>HD</Text>
+                        <Text style={[
+                          styles.qualityBadgeText,
+                          {
+                            color: v2SourceQuality === "hls"
+                              ? c.primary
+                              : c.mutedForeground,
+                          },
+                        ]}>
+                          {v2SourceQuality === "hls"
+                            ? "HLS"
+                            : v2SourceQuality === "mp4_faststart"
+                            ? "MP4"
+                            : "SD"}
+                        </Text>
                       </View>
                     )}
                     {sync.viewerCount != null && sync.viewerCount > 0 && (

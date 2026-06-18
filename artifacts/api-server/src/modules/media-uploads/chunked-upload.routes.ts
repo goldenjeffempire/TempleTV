@@ -2155,75 +2155,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               }
             }
 
-            // ── File-level SHA-256 cryptographic verification ─────────────────
-            // Runs only when the client declared a file hash at init time.
-            // PostgreSQL's sha256(bytea) computes the hash server-side without
-            // moving the blob into Node.js memory — O(1) Node.js heap regardless
-            // of file size. A mismatch means bytes were corrupted in transit or
-            // during assembly and the per-chunk SHA-256s cannot be fully trusted
-            // (e.g. a hash-collision attack or a storage-level silent corruption).
-            if (session.expectedFileSha256) {
-              try {
-                type HashRow = { file_sha256: string };
-                const hashResult = await db.execute<HashRow>(
-                  sql`SELECT encode(sha256(data), 'hex') AS file_sha256 FROM storage_blobs WHERE key = ${objectKey}`,
-                );
-                const hashRows = (hashResult as unknown as { rows?: HashRow[] }).rows ??
-                  (hashResult as unknown as HashRow[]);
-                const computedSha256 = hashRows[0]?.file_sha256;
-                if (computedSha256 && computedSha256 !== session.expectedFileSha256) {
-                  capturedLog.error(
-                    {
-                      sessionId,
-                      videoId,
-                      expectedSha256: session.expectedFileSha256,
-                      computedSha256,
-                    },
-                    "[finalize:bg] file SHA-256 mismatch — assembled blob does not match client-declared hash; marking failed",
-                  );
-                  await Promise.allSettled([
-                    db
-                      .update(videos)
-                      .set({
-                        transcodingStatus: "failed",
-                        transcodingErrorCode: "CORRUPT_SOURCE",
-                        transcodingErrorMessage:
-                          `File integrity check failed: SHA-256 mismatch. ` +
-                          `Expected ${session.expectedFileSha256.slice(0, 16)}… ` +
-                          `but assembled blob hashes to ${computedSha256.slice(0, 16)}…. ` +
-                          `This indicates data corruption in transit or assembly. ` +
-                          `Please delete this video and re-upload the original file.`,
-                      })
-                      .where(eq(videos.id, videoId)),
-                    db
-                      .update(sessions)
-                      .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
-                      .where(eq(sessions.sessionId, sessionId)),
-                  ]);
-                  adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-sha256-mismatch" });
-                  uploadTelemetry.serverFail(
-                    sessionId,
-                    session.sizeBytes,
-                    "assembly_sha256_mismatch",
-                    `SHA-256 mismatch: expected ${session.expectedFileSha256.slice(0, 16)}… got ${computedSha256.slice(0, 16)}…`,
-                  );
-                  clearTimeout(assemblyWatchdog);
-                  return;
-                }
-                capturedLog.info(
-                  { sessionId, videoId, sha256: session.expectedFileSha256.slice(0, 16) },
-                  "[finalize:bg] file SHA-256 verified ✓",
-                );
-              } catch (sha256Err) {
-                // Non-fatal: size check already passed and per-chunk SHA-256s
-                // were verified at upload time. Log and continue — the file is
-                // likely correct even if the PG sha256() query failed.
-                capturedLog.warn(
-                  { err: sha256Err, sessionId, videoId },
-                  "[finalize:bg] file SHA-256 verification query failed (non-fatal) — skipping; size check passed",
-                );
-              }
-            }
+            // NOTE: File-level SHA-256 verification via storage_blobs.data was
+            // removed when the BYTEA storage backend was dropped (MinIO-only).
+            // Per-chunk SHA-256 is verified at upload time; the assembled-blob
+            // size check above catches truncation/corruption at assembly time.
+            // A streaming SHA-256 from MinIO would require downloading the full
+            // file through Node — prohibitively expensive for large uploads.
 
             const assemblyMs = Date.now() - assemblyStartMs;
             capturedLog.info(
@@ -2235,7 +2172,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             await Promise.all([
               db
                 .update(sessions)
-                .set({ status: "completed", storageBackend: "db", updatedAt: new Date() })
+                .set({ status: "completed", storageBackend: "minio", updatedAt: new Date() })
                 .where(eq(sessions.sessionId, sessionId))
                 .catch((err: unknown) =>
                   capturedLog.warn({ err, sessionId }, "[finalize:bg] session completed update failed (non-fatal)"),
@@ -2500,7 +2437,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
 
         return {
           ...projectRow(row),
-          storageBackend: "db" as const,
+          storageBackend: "minio" as const,
           transcodingWarning: null,
         };
       }

@@ -70,7 +70,11 @@ function navigateToSermon(sermon: Sermon) {
       id: sermon.id,
       title: sermon.title,
       youtubeId: sermon.videoSource === "youtube" ? sermon.youtubeId : "",
-      hlsUrl: sermon.hlsMasterUrl ?? sermon.localVideoUrl ?? "",
+      // Pass HLS and MP4 URLs as separate params so the player can do
+      // MP4-first selection: hlsUrl preferred when available, localVideoUrl
+      // used directly when HLS has not yet been transcoded.
+      hlsUrl: sermon.hlsMasterUrl ?? "",
+      localVideoUrl: sermon.localVideoUrl ?? "",
       thumbnailUrl: sermon.thumbnailUrl,
       preacher: sermon.preacher,
       duration: sermon.duration,

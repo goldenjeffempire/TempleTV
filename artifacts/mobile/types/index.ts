@@ -55,7 +55,10 @@ export interface PlayerNavParams {
   id: string;
   title: string;
   youtubeId?: string;
+  /** HLS master playlist URL. Preferred over localVideoUrl when both are present. */
   hlsUrl?: string;
+  /** MP4 direct-play URL (faststart applied). Used when hlsUrl is absent. */
+  localVideoUrl?: string;
   thumbnailUrl?: string;
   preacher?: string;
   duration?: string;
