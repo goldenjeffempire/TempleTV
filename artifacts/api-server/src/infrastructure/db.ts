@@ -509,15 +509,17 @@ export async function resetStuckEncodingVideos(): Promise<void> {
  * Called at boot, non-blocking (errors are logged and swallowed).
  */
 export async function deactivateUnresolvableQueueRows(): Promise<void> {
+  // Audit-only: count rows with no playable source and log a warning.
+  // Items are no longer deactivated at boot — the orchestrator's bad-URL
+  // cache and runtime auto-skip handle unresolvable items without removing
+  // them from the queue. Background workers (queue-integrity-validator,
+  // faststart-recovery, storage-reconciliation) surface diagnostics and
+  // trigger recovery asynchronously.
   const client = await pool.connect();
   try {
-    // broadcast_queue only has local_video_url (no hls_master_url column —
-    // that lives on managed_videos). The join checks whether the linked video
-    // has any playable URL so we don't deactivate rows whose URL comes from
-    // the video record rather than being stored directly on the queue row.
     const result = await client.query(`
-      UPDATE broadcast_queue bq
-      SET    is_active = false
+      SELECT COUNT(*) AS cnt
+      FROM   broadcast_queue bq
       WHERE  bq.is_active = true
         AND  (bq.video_source IS NULL OR bq.video_source != 'youtube')
         AND  (bq.local_video_url IS NULL OR bq.local_video_url = '')
@@ -533,18 +535,19 @@ export async function deactivateUnresolvableQueueRows(): Promise<void> {
                  )
         )
     `);
-    const deactivated = (result as unknown as { rowCount: number | null }).rowCount ?? 0;
-    if (deactivated > 0) {
+    const rows = result as unknown as { rows: Array<{ cnt: string }> };
+    const count = parseInt(rows.rows[0]?.cnt ?? "0", 10);
+    if (count > 0) {
       logger.warn(
-        { deactivated },
-        "db: deactivated broadcast_queue rows with no playable source — " +
-          "re-upload/transcode the underlying videos and re-activate the rows to restore them",
+        { count },
+        "db: broadcast_queue source audit — items with no playable source detected; " +
+          "these will be auto-skipped at runtime; re-upload/transcode to restore them",
       );
     } else {
       logger.info("db: broadcast_queue source audit complete — no unresolvable rows found");
     }
   } catch (err) {
-    logger.warn({ err }, "db: deactivateUnresolvableQueueRows failed (non-fatal)");
+    logger.warn({ err }, "db: deactivateUnresolvableQueueRows audit failed (non-fatal)");
   } finally {
     client.release();
   }

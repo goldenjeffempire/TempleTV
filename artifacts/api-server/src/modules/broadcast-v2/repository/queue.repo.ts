@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { and, asc, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, ne, or, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { resolveSource } from "../resolver/universal-source-resolver.js";
 import { logger } from "../../../infrastructure/logger.js";
@@ -269,76 +269,16 @@ function proxyExternalSource<T extends Pick<V2Source, "kind" | "url">>(
 
 export const BAD_URL_TTL_MS = 90_000; // 90 seconds — base TTL for persistent failures
 
-// ── Storage blob verification TTL cache ──────────────────────────────────────
-// On every loadActive() call, queue items that use a local upload blob as
-// their primary source (no hlsMasterUrl) are verified against storage_blobs
-// BEFORE being admitted to the active item list.
-//
-// Verification uses a single batch query against storage_blobs (NOT headObject),
-// so there is zero storage I/O on the hot orchestrator reload path.
-//
-//  • Cache HIT "ok=true"  → admit immediately (no DB query).
-//  • Cache HIT "ok=false" → exclude immediately; recovery waterfall was already
-//      triggered when the miss was first cached (by the validator or reconciliation
-//      worker).  Item re-enters rotation once the cache TTL expires and a
-//      subsequent reload finds the blob restored.
-//  • Cache MISS or expired → include in a single batch DB query against
-//      storage_blobs for all such items; results cached for STORAGE_VERIFY_TTL_MS.
-//      Items absent from storage_blobs are excluded on this load cycle; the
-//      validator / reconciliation worker will trigger recovery on their next pass.
-//
-// Items with hlsMasterUrl are covered by the queue-integrity-validator's
-// HLS_STORAGE_MISSING check and do NOT need this admission gate.
-//
-// Cache invalidation: the cache is purged (or per-videoId evicted) on every
-// broadcast-queue-updated event so that recovering items are re-verified on
-// the next orchestrator reload without waiting for the full 5-min TTL.
-
-const STORAGE_VERIFY_TTL_MS = 5 * 60_000; // 5 minutes
-interface StorageVerifyEntry { ok: boolean; expiresMs: number; }
-const storageVerifyCache = new Map<string, StorageVerifyEntry>();
-
-/** Derive the bare storage key from a localVideoUrl value. */
-function deriveStorageKey(localVideoUrl: string): string {
-  if (/^https?:\/\//i.test(localVideoUrl)) {
-    const marker = "/api/v1/uploads/";
-    const idx = localVideoUrl.indexOf(marker);
-    if (idx === -1) return "";
-    return localVideoUrl.slice(idx + marker.length);
-  }
-  return localVideoUrl.replace(/^\/(?:api\/(?:v\d+\/)?)?/, "");
-}
-
 /**
- * Invalidate one or all entries in the storage verify cache.
- * Called by the recovery service and reconciliation worker after a waterfall
- * completes so that re-verified items are re-admitted on the next reload.
+ * No-op stub retained for backward compatibility with callers in recovery
+ * services that may reference this export. The storage-blob admission gate
+ * has been removed — all eligible items (is_active=true with any URL) are
+ * admitted unconditionally. Playback failures are handled at runtime by the
+ * orchestrator's bad-URL cache and auto-skip logic.
  */
-export function invalidateStorageVerifyCache(videoId?: string): void {
-  if (videoId) {
-    storageVerifyCache.delete(videoId);
-  } else {
-    storageVerifyCache.clear();
-  }
+export function invalidateStorageVerifyCache(_videoId?: string): void {
+  // no-op — admission gate removed; kept for call-site compatibility
 }
-
-// Wire cache invalidation to broadcast-queue-updated events.
-// Any queue change (new item added, recovery completed, item deactivated) causes
-// the affected videoId to be evicted from the cache so the next loadActive()
-// verifies it fresh.
-adminEventBus.on("broadcast-queue-updated", (payload: unknown) => {
-  const p = payload as { videoId?: string } | undefined;
-  if (p?.videoId) {
-    // Targeted eviction: clear only the specific video so the next loadActive()
-    // re-verifies it immediately (e.g. after a recovery waterfall completes).
-    storageVerifyCache.delete(p.videoId);
-  } else {
-    // Bulk queue change (queue clear, mass recovery, prod-sync) — clear the
-    // entire cache so every item is re-verified on the next reload cycle.
-    // Stale "blob missing" decisions MUST NOT persist after a bulk recovery.
-    storageVerifyCache.clear();
-  }
-});
 
 // ── Exponential backoff TTL schedule ────────────────────────────────────────
 // First failure: 20 s — brief window that allows a transient stall (network
@@ -973,87 +913,14 @@ export const queueRepo = {
             // on upload finalize" path before the videos row is fully
             // hydrated.
             or(ne(v.videoSource, "youtube"), sql`${v.id} IS NULL`),
-            // Admit the row if ANY playable URL exists — queue-row HLS/MP4,
-            // or joined video-row HLS/MP4. Order reflects priority in toItem().
+            // Admit every active row that has at least one playable URL.
+            // Transcoding status is no longer a gate — any item with a URL
+            // is scheduled unconditionally and playback failures (moov-at-EOF,
+            // 404 HLS, missing blob) are handled at runtime by the orchestrator's
+            // bad-URL cache and auto-skip logic. Background workers (faststart-
+            // recovery, HLS transcoder, storage-reconciliation) upgrade quality
+            // asynchronously without ever blocking admission.
             or(isNotNull(q.hlsMasterUrl), isNotNull(v.hlsMasterUrl), isNotNull(v.localVideoUrl), isNotNull(q.localVideoUrl)),
-            // Only admit items whose video asset is confirmed safe to stream.
-            //
-            // Allowed states (item is safe to serve via localVideoUrl):
-            //   'none'       — no transcoding requested; raw upload is the final
-            //                  artifact. Legacy / externally-created rows with no
-            //                  transcoding history.
-            //   'queued'     — transcoding job created but ffmpeg has NOT yet
-            //                  started. The original upload blob at localVideoUrl
-            //                  is completely intact and readable. Blocking this
-            //                  state causes a guaranteed off-air window between
-            //                  upload and the first transcoding tick.
-            //   'encoding'   — HLS ffmpeg is running. The transcoder downloads
-            //                  the source to a temp directory and encodes there;
-            //                  the ORIGINAL localVideoUrl object in storage is
-            //                  never modified during this phase. Safe to serve.
-            //   'processing' — faststart.service.ts is re-uploading a moov-rewritten
-            //                  file to the same storage key via multipart upload.
-            //                  The ORIGINAL key is still served by storage throughout
-            //                  (multipart parts are not visible until
-            //                  completeMultipartUpload commits them atomically).
-            //                  Blocking this state was wrong: it created an off-air
-            //                  window that could last minutes for large files, even
-            //                  though the video was perfectly playable the whole
-            //                  time. Admitted on the same basis as 'queued'.
-            //   'ready'      — MP4 faststart complete; moov atom at byte 0.
-            //   'hls_ready'  — full HLS transcode done; hlsMasterUrl preferred.
-            //   'failed'     — Transcoding or faststart failed.
-            //                  Only admit when `faststart_applied = true` (moov
-            //                  atom confirmed at byte-0, safe to stream) OR when
-            //                  an HLS master URL is already available.
-            //                  Un-faststarted 'failed' files may have the moov
-            //                  atom at EOF — large uploads cause seek timeouts.
-            //                  Recovery: Videos page → Re-apply faststart, or
-            //                  convert to HLS via the transcoder.
-            //
-            // Items with hlsMasterUrl set are always admitted regardless of status:
-            // the HLS playlist is the authoritative streamable source.
-            or(
-              sql`${v.id} IS NULL`,
-              isNotNull(v.hlsMasterUrl),
-              // 'ready' and 'hls_ready' are always safe: faststart/HLS is complete.
-              inArray(v.transcodingStatus, ["ready", "hls_ready"]),
-              // 'none', 'queued', 'encoding': admit immediately — the raw upload
-              // blob is accessible at localVideoUrl. Faststart re-uploads to the
-              // same key atomically; HLS adds a separate manifest. Both upgrade
-              // in-place without a re-queue.
-              inArray(v.transcodingStatus, ["none", "queued", "encoding"]),
-              // 'processing': faststart.service is running the moov-atom relocation.
-              //
-              // Admitted unconditionally: the ORIGINAL blob at localVideoUrl is
-              // always readable during a faststart re-upload because multipart parts
-              // are not visible until completeMultipartUpload commits them atomically.
-              // Even when faststartApplied=false (prior faststart run failed), the
-              // source file still exists at localVideoUrl; faststart-recovery will
-              // retry. The player watchdog + bad-URL cache + auto-skip handle any
-              // range-streaming failure gracefully. Queue admission depends only on
-              // source availability, not on moov position.
-              eq(v.transcodingStatus, "processing"),
-              // 'failed': transcoding or faststart permanently failed.
-              // Admitted whenever ANY playable source URL exists — either an HLS
-              // master on the queue row or joined video row, OR a localVideoUrl.
-              // The faststart-recovery worker actively attempts to fix moov position
-              // for failed+faststartApplied=false items in the background; the
-              // player watchdog + bad-URL cache + auto-skip handles any unrecoverable
-              // streaming failures without operator action.
-              // Only items with truly absent sources (CORRUPT_SOURCE / SOURCE_MISSING
-              // error codes — detected by the queue-integrity-validator and deactivated
-              // there) have no URL and therefore fail this admission clause naturally.
-              and(
-                eq(v.transcodingStatus, "failed"),
-                or(
-                  isNotNull(q.hlsMasterUrl),
-                  isNotNull(v.hlsMasterUrl),
-                  isNotNull(v.localVideoUrl),
-                  isNotNull(q.localVideoUrl),
-                ),
-              ),
-            ),
           ),
         )
         .orderBy(asc(q.sortOrder), asc(q.addedAt))
@@ -1148,102 +1015,13 @@ export const queueRepo = {
       );
     }
 
-    // ── Storage blob admission check (synchronous, batch DB) ─────────────────
-    // Verifies local-upload items against storage_blobs BEFORE admitting them.
-    // Uses a 5-min TTL per-videoId cache; cache misses are resolved in a single
-    // batch SELECT against storage_blobs (zero storage I/O — DB only).
-    //
-    // First-promotion guarantee: a newly added item has no cache entry and is
-    // therefore always checked against storage_blobs before its first admission.
-    //
-    // See module-level comment for the full cache hit/miss/invalidation contract.
-
-    const admissionNow = Date.now();
-    const admissionVerified: typeof validated = [];
-
-    // ── Phase 1: split into cached (known result) vs uncached (need DB) ───────
-    type UncachedItem = { r: typeof validated[number]; vId: string; storageKey: string };
-    const uncachedItems: UncachedItem[] = [];
-
-    for (const r of validated) {
-      if (r.hlsMasterUrl) { admissionVerified.push(r); continue; }
-      if (!r.localVideoUrl) { admissionVerified.push(r); continue; }
-      const lv = r.localVideoUrl;
-      const isExternal = /^https?:\/\//i.test(lv) && !lv.includes("/api/v1/uploads/") && !lv.includes("/api/uploads/");
-      if (isExternal) { admissionVerified.push(r); continue; }
-      const vId = r.videoId ?? "";
-      if (!vId) { admissionVerified.push(r); continue; }
-
-      const cached = storageVerifyCache.get(vId);
-      if (cached && cached.expiresMs > admissionNow) {
-        if (!cached.ok) {
-          logger.warn(
-            { itemId: r.id, videoId: vId, title: r.title },
-            "[broadcast-v2] loadActive: excluding item — storage blob verified missing (recovery in progress)",
-          );
-          continue;
-        }
-        admissionVerified.push(r);
-        continue;
-      }
-
-      // Cache miss or expired — queue for batch DB check.
-      uncachedItems.push({ r, vId, storageKey: deriveStorageKey(lv) });
-    }
-
-    // ── Phase 2: batch DB check for all cache-miss items ─────────────────────
-    if (uncachedItems.length > 0) {
-      // Items with no derivable key (unrecognised URL format) are admitted and
-      // cached as "ok" so they don't block the orchestrator every reload.
-      const noKeyItems = uncachedItems.filter((i) => !i.storageKey);
-      const checkableItems = uncachedItems.filter((i) => !!i.storageKey);
-
-      for (const { r, vId } of noKeyItems) {
-        storageVerifyCache.set(vId, { ok: true, expiresMs: admissionNow + STORAGE_VERIFY_TTL_MS });
-        admissionVerified.push(r);
-      }
-
-      if (checkableItems.length > 0) {
-        const keysToCheck = checkableItems.map((i) => i.storageKey);
-        let presentKeys = new Set<string>();
-        let batchOk = true;
-
-        try {
-          const presentRows = await db
-            .select({ key: schema.storageBlobsTable.key })
-            .from(schema.storageBlobsTable)
-            .where(inArray(schema.storageBlobsTable.key, keysToCheck));
-          presentKeys = new Set(presentRows.map((row) => row.key));
-        } catch (dbErr) {
-          logger.warn(
-            { err: dbErr, count: checkableItems.length },
-            "[broadcast-v2] loadActive: storage_blobs batch check failed — admitting all uncached items with short retry TTL",
-          );
-          batchOk = false;
-        }
-
-        for (const { r, vId, storageKey } of checkableItems) {
-          if (!batchOk) {
-            // Transient DB error — admit with a short TTL so we retry shortly.
-            storageVerifyCache.set(vId, { ok: true, expiresMs: admissionNow + 30_000 });
-            admissionVerified.push(r);
-            continue;
-          }
-          const ok = presentKeys.has(storageKey);
-          storageVerifyCache.set(vId, { ok, expiresMs: admissionNow + STORAGE_VERIFY_TTL_MS });
-          if (!ok) {
-            logger.warn(
-              { itemId: r.id, videoId: vId, title: r.title, storageKey },
-              "[broadcast-v2] loadActive: excluding item on first-promotion check — blob absent from storage_blobs",
-            );
-            continue; // Exclude this cycle; validator/reconciliation will trigger recovery
-          }
-          admissionVerified.push(r);
-        }
-      }
-    }
-
-    return admissionVerified.map((r) => ({ ...r, durationSecs: Math.max(1, r.durationSecs) }));
+    // All items that passed the SQL WHERE + post-query validation pass are
+    // admitted unconditionally. Storage blob presence, transcoding status, and
+    // source integrity are validated asynchronously by background workers
+    // (storage-reconciliation, queue-integrity-validator, faststart-recovery).
+    // Playback failures on admitted items are handled at runtime by the
+    // orchestrator's bad-URL cache and auto-skip logic — no admission gate needed.
+    return validated.map((r) => ({ ...r, durationSecs: Math.max(1, r.durationSecs) }));
   },
 
   /**

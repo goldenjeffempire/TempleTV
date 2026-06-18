@@ -28,7 +28,6 @@
  */
 import { spawn } from "node:child_process";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
-import { quarantineVideo } from "../../broadcast/quarantine.service.js";
 import { sendBroadcastWebhook } from "../webhook/webhook.service.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
@@ -665,63 +664,22 @@ class QueueIntegrityValidatorImpl {
         }
       }
 
-      // ── Auto-fix: deactivate MISSING_VIDEO_JOIN items ─────────────────────
-      // Items whose referenced managed_videos row no longer exists (hard-deleted)
-      // must be removed from active broadcast rotation. Without this fix:
-      //   • The orchestrator's loadActive() LEFT JOIN returns them with null
-      //     video columns. If the queue row has its own localVideoUrl, the item
-      //     airs from a potentially stale/404 URL with no fallback.
-      //   • If the queue row has no URL, toItem() fails → auto-skip cycle fires
-      //     every tick, burning skip budget and flooding logs.
-      // Deactivating is non-destructive (is_active=false, row preserved) and
-      // immediately consistent: the next orchestrator reload won't load these
-      // items. The auto-enqueue pipeline (enqueueIfMissing) now correctly
-      // ignores inactive rows, so the video would be re-added if it were
-      // somehow re-uploaded — but that can't happen for hard-deleted videos.
+      // ── MISSING_VIDEO_JOIN — log warning; items stay active ───────────────
+      // Items whose referenced managed_videos row no longer exists are flagged
+      // here but remain in the broadcast queue. The orchestrator's toItem()
+      // will return null for a row whose video join is absent, and the
+      // bad-URL cache + runtime auto-skip will advance past it cleanly.
+      // The reverse pass below still re-activates any items previously
+      // deactivated by an older server version that wrote is_active=false.
       const missingJoinIds = issues
         .filter((i) => i.severity === "error" && i.code === "MISSING_VIDEO_JOIN" && i.itemId)
         .map((i) => i.itemId!);
       if (missingJoinIds.length > 0) {
-        try {
-          await db
-            .update(schema.broadcastQueueTable)
-            .set({
-              isActive: false,
-              // Record the specific reason for deactivation so the reverse pass
-              // below can ONLY re-activate rows this validator deactivated —
-              // never rows disabled by operators or other code paths. Without
-              // this marker, is_active=false alone is insufficient to distinguish
-              // "validator auto-deactivated" from "intentionally off by operator".
-              validatorDeactivatedReason: "missing_video_join",
-            })
-            .where(inArray(schema.broadcastQueueTable.id, missingJoinIds));
-          logger.error(
-            { count: missingJoinIds.length, itemIds: missingJoinIds },
-            "[queue-validator] AUTO-FIX: deactivated MISSING_VIDEO_JOIN items " +
-            "(referenced managed_videos rows were hard-deleted) — " +
-            "these items are removed from broadcast rotation",
-          );
-          // Trigger orchestrator reload so the engine immediately stops serving
-          // the deactivated items without waiting for the next drift-poll.
-          adminEventBus.push("broadcast-queue-updated", {
-            reason: "integrity-fix-missing-video-join",
-            count: missingJoinIds.length,
-          });
-          adminEventBus.push("videos-library-updated", {
-            reason: "integrity-fix-missing-video-join",
-            count: missingJoinIds.length,
-          });
-          sendBroadcastWebhook("item_deactivated", "main", {
-            reason: "missing_video_join",
-            count: missingJoinIds.length,
-            itemIds: missingJoinIds,
-          });
-        } catch (fixErr) {
-          logger.warn(
-            { err: fixErr, count: missingJoinIds.length },
-            "[queue-validator] AUTO-FIX: failed to deactivate MISSING_VIDEO_JOIN items (non-fatal)",
-          );
-        }
+        logger.warn(
+          { count: missingJoinIds.length, itemIds: missingJoinIds },
+          "[queue-validator] MISSING_VIDEO_JOIN detected — referenced managed_videos rows are absent; " +
+          "items remain in broadcast queue and will be auto-skipped at runtime if unresolvable",
+        );
       }
 
       // ── Auto-fix (reverse): re-activate items deactivated by MISSING_VIDEO_JOIN ──
@@ -850,11 +808,12 @@ class QueueIntegrityValidatorImpl {
         });
       }
 
-      // CORRUPT_SOURCE: deactivate only when NO raw MP4 URL exists anywhere.
-      // Broadcast-first policy: if a localVideoUrl is present the player can
-      // fall back to progressive MP4 playback — keep those items in rotation.
-      // Only truly URL-less items (source was never stored or was purged) are
-      // deactivated here.
+      // CORRUPT_SOURCE — log warning; items stay active.
+      // Items with CORRUPT_SOURCE and no URL at all will produce a null from
+      // toItem() and be auto-skipped by the orchestrator at runtime. Items that
+      // have a localVideoUrl despite CORRUPT_SOURCE may still play as progressive
+      // MP4. Neither case warrants deactivation — the runtime handles both.
+      // The reverse pass below re-activates any previously deactivated items.
       const corruptUploadItemIds = rows
         .filter(
           (r) =>
@@ -866,61 +825,11 @@ class QueueIntegrityValidatorImpl {
         .map((r) => r.id);
 
       if (corruptUploadItemIds.length > 0) {
-        try {
-          await db
-            .update(schema.broadcastQueueTable)
-            .set({
-              isActive: false,
-              validatorDeactivatedReason: "corrupt_upload",
-            })
-            .where(inArray(schema.broadcastQueueTable.id, corruptUploadItemIds));
-          logger.error(
-            { count: corruptUploadItemIds.length, itemIds: corruptUploadItemIds },
-            "[queue-validator] AUTO-FIX: deactivated UNPLAYABLE_CORRUPT_UPLOAD items " +
-            "(transcodingStatus=failed + CORRUPT_SOURCE + no HLS) — " +
-            "moov atom absent; file undecodable; removed from broadcast rotation; re-upload to restore",
-          );
-          adminEventBus.push("broadcast-queue-updated", {
-            reason: "integrity-fix-corrupt-upload",
-            count: corruptUploadItemIds.length,
-          });
-          adminEventBus.push("videos-library-updated", {
-            reason: "integrity-fix-corrupt-upload",
-            count: corruptUploadItemIds.length,
-          });
-          sendBroadcastWebhook("item_deactivated", "main", {
-            reason: "corrupt_upload",
-            count: corruptUploadItemIds.length,
-            itemIds: corruptUploadItemIds,
-          });
-
-          // Quarantine each corrupt video: writes audit log, removes from
-          // playlists, fires ops-alert. quarantineVideo is idempotent so
-          // re-running the validator on already-quarantined videos is safe.
-          const corruptVideoIds = rows
-            .filter((r) => corruptUploadItemIds.includes(r.id) && r.videoId2)
-            .map((r) => r.videoId2 as string);
-          for (const vid of corruptVideoIds) {
-            const vRow = rows.find((r) => r.videoId2 === vid);
-            void quarantineVideo(vid, {
-              errorCode: vRow?.vErrCode ?? "CORRUPT_SOURCE",
-              reason:
-                vRow?.vErrCode === "SOURCE_MISSING"
-                  ? "Source blob deleted from storage. Re-upload the source file to restore."
-                  : "Moov atom absent — file cannot be decoded. Re-upload the source file to restore.",
-              triggeredBy: "queue-integrity-validator",
-              metadata: {
-                queueItemId: vRow?.id,
-                validatorCycle: new Date().toISOString(),
-              },
-            });
-          }
-        } catch (fixErr) {
-          logger.warn(
-            { err: fixErr, count: corruptUploadItemIds.length },
-            "[queue-validator] AUTO-FIX: failed to deactivate UNPLAYABLE_CORRUPT_UPLOAD items (non-fatal)",
-          );
-        }
+        logger.warn(
+          { count: corruptUploadItemIds.length, itemIds: corruptUploadItemIds },
+          "[queue-validator] UNPLAYABLE_CORRUPT_UPLOAD detected — transcodingStatus=failed + CORRUPT_SOURCE + no HLS or MP4; " +
+          "items remain in broadcast queue and will be auto-skipped at runtime; re-upload to fully restore",
+        );
       }
 
       // ── Auto-fix (reverse): re-activate corrupt_upload items that are now playable ──
@@ -1034,44 +943,17 @@ class QueueIntegrityValidatorImpl {
       });
       const orphanedFailedIds = orphanedFailedRows.map((r) => r.id);
 
+      // ORPHANED_VIDEO_REF — log warning; items stay active.
+      // Items with a video join but no playable URL will produce null from
+      // toItem() and be auto-skipped at runtime. The auto-heal block below
+      // enqueues transcoding in the background to restore a playable URL.
+      // The reverse pass below still re-activates previously deactivated items.
       if (orphanedFailedIds.length > 0) {
-        try {
-          await db
-            .update(schema.broadcastQueueTable)
-            .set({
-              isActive: false,
-              // Tag the row so the reverse pass below can re-activate it if the
-              // video later gains playable URLs (e.g. after a successful re-transcode
-              // or re-upload), and so operators can distinguish validator-disabled
-              // rows from intentionally operator-disabled ones.
-              validatorDeactivatedReason: "orphaned_video_ref",
-            })
-            .where(inArray(schema.broadcastQueueTable.id, orphanedFailedIds));
-          logger.error(
-            { count: orphanedFailedIds.length, itemIds: orphanedFailedIds },
-            "[queue-validator] AUTO-FIX: deactivated ORPHANED_VIDEO_REF items " +
-            "(video row exists but has no playable URLs; transcodingStatus is 'failed' or null) — " +
-            "removed from broadcast rotation; re-transcode or re-upload the source file to restore",
-          );
-          sendBroadcastWebhook("item_deactivated", "main", {
-            reason: "orphaned_video_ref",
-            count: orphanedFailedIds.length,
-            itemIds: orphanedFailedIds,
-          });
-          adminEventBus.push("broadcast-queue-updated", {
-            reason: "integrity-fix-orphaned-video-ref",
-            count: orphanedFailedIds.length,
-          });
-          adminEventBus.push("videos-library-updated", {
-            reason: "integrity-fix-orphaned-video-ref",
-            count: orphanedFailedIds.length,
-          });
-        } catch (fixErr) {
-          logger.warn(
-            { err: fixErr, count: orphanedFailedIds.length },
-            "[queue-validator] AUTO-FIX: failed to deactivate ORPHANED_VIDEO_REF items (non-fatal)",
-          );
-        }
+        logger.warn(
+          { count: orphanedFailedIds.length, itemIds: orphanedFailedIds },
+          "[queue-validator] ORPHANED_VIDEO_REF detected — video row exists but has no playable URLs; " +
+          "items remain in broadcast queue; auto-heal transcoding scheduled; runtime auto-skip handles any gaps",
+        );
       }
 
       // ── Auto-heal: enqueue transcoding for recoverable ORPHANED_VIDEO_REF items ──
@@ -1457,20 +1339,22 @@ class QueueIntegrityValidatorImpl {
               code: "HLS_STORAGE_MISSING",
               message:
                 `Video '${row.videoId2}' is marked hls_ready but storage key '${hlsKey}' is absent ` +
-                `— HLS URL will 404. Item deactivated and re-enqueued for transcoding.`,
+                `— HLS URL will 404. hls_master_url cleared, re-enqueued for transcoding; item stays active.`,
             });
 
             void (async () => {
               try {
-                // Step 1: deactivate the queue item immediately so the
-                // orchestrator stops trying to serve a 404 HLS URL.
-                await db
-                  .update(schema.broadcastQueueTable)
-                  .set({ isActive: false, validatorDeactivatedReason: "hls_storage_missing" })
-                  .where(eq(schema.broadcastQueueTable.id, row.id));
+                // HLS blob is absent from storage — clear hls_master_url so the
+                // orchestrator falls back to localVideoUrl (progressive MP4) and
+                // autoEnqueueMissingHls can detect this video for re-transcoding.
+                // The queue item stays ACTIVE; the bad-URL cache + runtime auto-skip
+                // handle any player failures while recovery runs in the background.
+                // The reverse pass below re-activates items previously deactivated
+                // by an older server version that wrote is_active=false.
                 logger.error(
                   { itemId: row.id, videoId: row.videoId2, hlsKey },
-                  "[queue-validator] AUTO-FIX: HLS_STORAGE_MISSING — deactivated queue item",
+                  "[queue-validator] HLS_STORAGE_MISSING — HLS blob absent from storage; " +
+                  "clearing hls_master_url and re-enqueueing transcoding; item stays active",
                 );
 
                 if (row.videoId2) {
