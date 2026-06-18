@@ -120,6 +120,11 @@ export const videosTable = pgTable("managed_videos", {
   // Frame dimensions in pixels from the first video stream.
   videoWidth: integer("video_width"),
   videoHeight: integer("video_height"),
+  // When true the operator has explicitly uploaded a custom thumbnail for this
+  // video via POST /upload/:sessionId/thumbnail. Prevents auto-generated poster
+  // frames (generateQuickThumbnail, scheduleEarlyThumbnail) from overwriting
+  // the custom image on subsequent re-processing or assembly retries.
+  hasCustomThumbnail: boolean("has_custom_thumbnail").notNull().default(false),
 }, (table) => [
   index("idx_managed_videos_imported_at").on(table.importedAt),
   index("idx_managed_videos_category").on(table.category),

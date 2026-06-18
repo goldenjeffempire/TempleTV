@@ -125,14 +125,17 @@ function scheduleEarlyThumbnail(opts: {
     try {
       const { videoId, outputPath, durationSecs, log } = opts;
 
-      // Only extract when thumbnailUrl is empty — don't overwrite a
-      // thumbnail that already exists from a prior HLS transcode or edit.
+      // Only extract when thumbnailUrl is empty AND no custom thumbnail was
+      // explicitly uploaded by the operator. hasCustomThumbnail=true means the
+      // operator deliberately chose a specific image — overwriting it with an
+      // auto-generated poster frame would undo their intent.
       const [row] = await db
-        .select({ thumbnailUrl: videos.thumbnailUrl })
+        .select({ thumbnailUrl: videos.thumbnailUrl, hasCustomThumbnail: videos.hasCustomThumbnail })
         .from(videos)
         .where(eq(videos.id, videoId))
         .limit(1);
       if (row?.thumbnailUrl) return;
+      if (row?.hasCustomThumbnail) return;
 
       const targetSecs = Math.max(1, Math.round((durationSecs ?? 10) * 0.1));
       const thumbPath = outputPath.replace(/\.mp4$/i, ".thumb.jpg");
@@ -447,6 +450,17 @@ export async function runFaststart(
     //   • If any part upload or the final assembly fails the original key is
     //     still intact; we abort to clean up the orphaned _parts/* rows.
     log.info({ outputSizeBytes, durationSecs }, "faststart: re-uploading to storage via multipart");
+    // Set faststart_locked=true on the storage blob BEFORE starting the multipart
+    // re-upload. During the swap window the blob data is being replaced in-place
+    // via iterative bytea-concat parts. Any reader that calls headObject() at
+    // this moment receives contentLength=0 and treats the blob as transiently
+    // unavailable — preventing the orchestrator from serving a partially-assembled
+    // (corrupt) file to viewers.
+    await db.execute(sql`
+      UPDATE storage_blobs SET faststart_locked = true WHERE key = ${objectKey}
+    `).catch((lockErr) =>
+      log.warn({ lockErr, objectKey }, "faststart: failed to set faststart_locked (non-fatal — continuing)"),
+    );
     let uploadId: string | undefined;
     try {
       ({ uploadId } = await storage().createMultipartUpload({
@@ -486,6 +500,16 @@ export async function runFaststart(
           );
       }
       throw uploadErr;
+    } finally {
+      // Always clear faststart_locked regardless of success or failure so the
+      // blob becomes visible to readers again. On success the blob is fully
+      // assembled; on failure the original blob is still intact (the multipart
+      // re-upload is copy-on-write — original key is never deleted).
+      await db.execute(sql`
+        UPDATE storage_blobs SET faststart_locked = false WHERE key = ${objectKey}
+      `).catch((unlockErr) =>
+        log.warn({ unlockErr, objectKey }, "faststart: failed to clear faststart_locked — blob may remain locked"),
+      );
     }
     // ── End multipart re-upload ───────────────────────────────────────────────
 

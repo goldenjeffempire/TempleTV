@@ -354,7 +354,7 @@ class DatabaseObjectStorage implements ObjectStorage {
 
   async headObject(key: string): Promise<{ exists: boolean; contentLength?: number; contentType?: string }> {
     const result = await db.execute(sql`
-      SELECT size_bytes, content_type
+      SELECT size_bytes, content_type, faststart_locked
       FROM storage_blobs
       WHERE key = ${key}
       LIMIT 1
@@ -364,7 +364,15 @@ class DatabaseObjectStorage implements ObjectStorage {
       return { exists: false };
     }
 
-    const row = result.rows[0] as { size_bytes: number; content_type: string };
+    const row = result.rows[0] as { size_bytes: number; content_type: string; faststart_locked: boolean };
+    // While faststart is atomically replacing the blob the row is partially
+    // assembled and reading it would produce a corrupt/truncated file.
+    // Signal transient unavailability by returning contentLength=0 so the
+    // orchestrator, scanner, and any other reader skips this blob instead of
+    // serving garbage. Same treatment as size_bytes=0 (in-progress upload part).
+    if (row.faststart_locked) {
+      return { exists: true, contentLength: 0, contentType: row.content_type };
+    }
     return {
       exists: true,
       contentLength: Number(row.size_bytes),

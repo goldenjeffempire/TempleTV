@@ -2,6 +2,7 @@ import {
   pgTable,
   text,
   bigint,
+  boolean,
   timestamp,
   index,
   customType,
@@ -45,6 +46,17 @@ export const storageBlobsTable = pgTable(
     contentType: text("content_type").notNull().default("application/octet-stream"),
     data: bytea("data").notNull(),
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull().default(0),
+    /**
+     * Set to true by faststart.service.ts just before it starts the multipart
+     * re-upload that atomically replaces the raw upload blob with the moov-at-byte-0
+     * version. Cleared in a `finally` block once the swap completes (or fails).
+     *
+     * During the swap window the blob is partially assembled — reading it would
+     * produce a corrupt/truncated file. headObject() returns contentLength=0 while
+     * this flag is true so the orchestrator, scanner, and any other reader treats
+     * the blob as transiently unavailable and skips it rather than serving garbage.
+     */
+    faststartLocked: boolean("faststart_locked").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },
