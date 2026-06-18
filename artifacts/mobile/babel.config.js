@@ -4,7 +4,11 @@
  * - `babel-preset-expo` is the only preset required. It transparently includes
  *   the React Native preset, the JSX transform, and the React Compiler plugin
  *   (gated by `react-strict-dom` / experimental flags). The app uses
- *   react-native-reanimated 3.x which does not require react-native-worklets.
+ *   react-native-reanimated 4.x which requires react-native-worklets as a
+ *   peer — that package must be installed (see package.json dependencies).
+ *   babel-preset-expo auto-discovers and loads the reanimated plugin (which
+ *   internally requires react-native-worklets/plugin); no explicit plugin
+ *   entry is needed here.
  *
  * - `unstable_transformImportMeta: true` enables Babel to lower `import.meta`
  *   syntax used by some ESM-only dependencies (notably newer Expo internals
