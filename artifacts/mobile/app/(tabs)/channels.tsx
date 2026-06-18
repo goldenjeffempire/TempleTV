@@ -448,6 +448,16 @@ export default function ChannelsTab() {
   const { items: scheduleItems, loading: scheduleLoading } = useBroadcastSchedule();
   const [tuningId, setTuningId] = useState<string | null>(null);
 
+  // Reset the tuning spinner whenever this screen comes back into focus
+  // (e.g. user presses back from the player). Without this, setTuningId
+  // would remain set and `if (tuningId) return;` would block all further
+  // channel presses until the component fully unmounts.
+  useFocusEffect(
+    useCallback(() => {
+      setTuningId(null);
+    }, []),
+  );
+
   const handleChannelPress = useCallback((channel: ApiChannel) => {
     if (tuningId) return;
 

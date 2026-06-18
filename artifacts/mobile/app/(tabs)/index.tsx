@@ -168,6 +168,13 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
     return () => anim.stop();
   }, [pulseAnim]);
 
+  // Live viewer count + OMEGA emergency signal from the v1 broadcast sync heartbeat.
+  // V2Snapshot (player-core) does not carry viewer counts or OMEGA signals — those
+  // are pushed by the v1 WS gateway and surfaced via useBroadcastSync.
+  // Must be declared BEFORE the emergency-pulse useEffect so `emergencyBroadcast`
+  // is not in the Temporal Dead Zone when React evaluates the dependency array.
+  const { viewerCount, emergencyBroadcast, emergencyMessage } = useBroadcastSync();
+
   // Animated pulse for the OMEGA emergency banner — draws urgent attention.
   const emergencyPulseAnim = useRef(new Animated.Value(1)).current;
   useEffect(() => {
@@ -189,11 +196,6 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
     v2Server.current.source?.kind !== "youtube"
   );
   const hasActiveBroadcast = hasUploadedBroadcast;
-
-  // Live viewer count + OMEGA emergency signal from the v1 broadcast sync heartbeat.
-  // V2Snapshot (player-core) does not carry viewer counts or OMEGA signals — those
-  // are pushed by the v1 WS gateway and surfaced via useBroadcastSync.
-  const { viewerCount, emergencyBroadcast, emergencyMessage } = useBroadcastSync();
 
   // Thumbnail: broadcast thumbnail > fallback sermon poster > null (gradient only).
   const thumbUrl =

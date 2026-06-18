@@ -311,7 +311,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     setShuffleMode((prev) => {
       const next = !prev;
       if (next) {
-        const rebuilt = buildShuffledQueue(queueRef.current, currentSermonRef.current?.youtubeId);
+        const rebuilt = buildShuffledQueue(queueRef.current, currentSermonRef.current?.id);
         setShuffledQueue(rebuilt);
         setShufflePosition(0);
       }
