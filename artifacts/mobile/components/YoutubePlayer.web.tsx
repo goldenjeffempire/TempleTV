@@ -16,9 +16,25 @@ import { usePlayer } from "@/context/PlayerContext";
 
 const JCTM_CHANNEL_ID = "UCPFFvkE-KGpR37qJgvYriJg";
 
+interface YTPlayer {
+  getIframe?(): HTMLIFrameElement;
+  setVolume(v: number): void;
+  seekTo(t: number, allowSeekAhead: boolean): void;
+  getCurrentTime?(): number;
+  getDuration?(): number;
+  getPlayerState?(): number;
+  playVideo(): void;
+  pauseVideo(): void;
+  stopVideo(): void;
+  destroy(): void;
+}
+interface YTNamespace {
+  Player: new (id: string, opts: Record<string, unknown>) => YTPlayer;
+  PlayerState: Record<string, number>;
+}
 declare global {
   interface Window {
-    YT: any;
+    YT: YTNamespace | undefined;
     onYouTubeIframeAPIReady: (() => void) | undefined;
     __ytApiReady: boolean;
     __ytApiCallbacks: Array<() => void>;
@@ -241,7 +257,7 @@ export function YoutubePlayer({
   } = usePlayer();
 
   const containerId = useRef(`yt-player-${Math.random().toString(36).slice(2)}`);
-  const playerRef = useRef<any>(null);
+  const playerRef = useRef<YTPlayer | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isMountedRef = useRef(true);
   const currentVideoIdRef = useRef(videoId);
@@ -327,7 +343,7 @@ export function YoutubePlayer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stopTick, updatePlayback, isLive]);
 
-  const registerPlayerRefs = useCallback((p: any) => {
+  const registerPlayerRefs = useCallback((p: YTPlayer) => {
     const playFn = () => { try { p.playVideo(); } catch {} };
     const pauseFn = () => { try { p.pauseVideo(); } catch {} };
     const seekFn = (t: number) => { try { p.seekTo(t, true); } catch {} };
@@ -388,7 +404,7 @@ export function YoutubePlayer({
     }
 
     try {
-      const p = new window.YT.Player(containerId.current, {
+      const p = new window.YT!.Player(containerId.current, {
         host: "https://www.youtube-nocookie.com",
         videoId,
         playerVars: {
@@ -411,7 +427,7 @@ export function YoutubePlayer({
           start: startPositionSecs && startPositionSecs > 0 ? Math.floor(startPositionSecs) : undefined,
         },
         events: {
-          onReady: (e: any) => {
+          onReady: (e: { target: YTPlayer }) => {
             if (!isMountedRef.current) return;
             playerRef.current = e.target;
             registerPlayerRefs(e.target);
@@ -434,9 +450,10 @@ export function YoutubePlayer({
             setReconnecting(false);
             retryCountRef.current = 0;
           },
-          onStateChange: (e: any) => {
+          onStateChange: (e: { data: number }) => {
             if (!isMountedRef.current) return;
             const YT = window.YT;
+            if (!YT) return;
             if (e.data === YT.PlayerState.ENDED) {
               isLogicallyPlayingRef.current = false;
               isBufferingRef.current = false;
@@ -463,11 +480,11 @@ export function YoutubePlayer({
               lastTickAtRef.current = Date.now();
             }
           },
-          onError: (e: any) => {
+          onError: (e: { data: number }) => {
             // YT error codes: 2 invalid id, 5 HTML5, 100 not found,
             // 101/150 embedding disabled. The first three are recoverable;
             // the last two are not — surface them as playback errors.
-            const code = e?.data;
+            const code = e.data;
             const recoverable = code === 2 || code === 5 || code === 100;
             if (recoverable) {
               scheduleRetry("network");
@@ -674,8 +691,8 @@ export function YoutubePlayer({
           {videoId
             ? React.createElement("img", {
                 src: `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
-                onError: (e: any) => {
-                  if (e?.currentTarget) e.currentTarget.src = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+                onError: (e: React.SyntheticEvent<HTMLImageElement>) => {
+                  e.currentTarget.src = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
                 },
                 alt: "",
                 "aria-hidden": "true",
@@ -872,8 +889,8 @@ const styles = StyleSheet.create({
     height: 1,
     opacity: 0,
     overflow: "hidden",
-    pointerEvents: "none",
-  } as any,
+    pointerEvents: "none" as const,
+  },
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "#050505",

@@ -19,7 +19,13 @@ import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { usePlayer } from "@/context/PlayerContext";
 
-let YoutubeIframe: any = null;
+interface YoutubeIframeRef {
+  setVolume?(vol: number): void;
+  seekTo?(time: number, allowSeekAhead: boolean): void;
+  getCurrentTime?(): Promise<number>;
+  getDuration?(): Promise<number>;
+}
+let YoutubeIframe: React.ComponentType<Record<string, unknown>> | null = null;
 try {
   YoutubeIframe = require("react-native-youtube-iframe").default;
 } catch {
@@ -199,7 +205,7 @@ export function YoutubePlayer({
   const wasPlayingOnBackgroundRef = useRef<boolean>(false);
   const transitionOpacity = useRef(new Animated.Value(0)).current;
   const isMountedRef = useRef(true);
-  const playerRef = useRef<any>(null);
+  const playerRef = useRef<YoutubeIframeRef | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const hasSeededStartRef = useRef(false);
   const onProgressRef = useRef(onProgress);
@@ -321,7 +327,7 @@ export function YoutubePlayer({
     if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
   }, []);
 
-  const onPlayerReady = useCallback((ref: any) => {
+  const onPlayerReady = useCallback((ref: YoutubeIframeRef) => {
     if (!isMountedRef.current) return;
     playerRef.current = ref;
     setPlayerReady(true);

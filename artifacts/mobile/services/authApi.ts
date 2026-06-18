@@ -60,8 +60,10 @@ function decodeJwtExp(token: string): number | null {
     const part = token.split(".")[1];
     if (!part) return null;
     // RN has no atob in all engines — use Buffer/global fallback.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const g = globalThis as any;
+    const g = globalThis as typeof globalThis & {
+      atob?: (s: string) => string;
+      Buffer?: { from(s: string, enc: string): { toString(enc: string): string } };
+    };
     const base64 = part.replace(/-/g, "+").replace(/_/g, "/");
     const padded = base64 + "===".slice((base64.length + 3) % 4);
     const json = typeof g.atob === "function"

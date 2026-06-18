@@ -236,7 +236,7 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
     if (Platform.OS === "web") {
       // ── Web: HTML <audio> ─────────────────────────────────────────────────
       const audio = new window.Audio();
-      (audio as any).crossOrigin = "anonymous";
+      audio.crossOrigin = "anonymous";
       audio.preload = "none";
       audio.src = url;
 
@@ -298,7 +298,7 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
             // Frequent status updates drive the stall watchdog
             progressUpdateIntervalMillis: 250,
           },
-          (status) => {
+          (status: { isLoaded: false; error?: string } | { isLoaded: true; isPlaying: boolean; isBuffering?: boolean }) => {
             if (cancelled || !mountedRef.current) return;
             if (!status.isLoaded) {
               if (status.error) {
@@ -405,7 +405,7 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
     setIsError(false);
     setErrorMsg(null);
     setIsConnecting(false);
-    AsyncStorage.setItem(RADIO_MODE_KEY, "false").catch((e) => {
+    AsyncStorage.setItem(RADIO_MODE_KEY, "false").catch((e: unknown) => {
       if (process.env.NODE_ENV !== "production") {
         if (__DEV__) console.error("[RadioStreamContext] Failed to persist radio stop:", e);
       }
@@ -437,7 +437,7 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
       setIsConnecting(false);
     }
     // Persist toggle state (for within-session navigation — not cold start)
-    AsyncStorage.setItem(RADIO_MODE_KEY, String(next)).catch((e) => {
+    AsyncStorage.setItem(RADIO_MODE_KEY, String(next)).catch((e: unknown) => {
       if (process.env.NODE_ENV !== "production") {
         if (__DEV__) console.error("[RadioStreamContext] Failed to persist radio toggle:", e);
       }
