@@ -42,6 +42,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
+import { storage } from "../../infrastructure/storage.js";
 
 const videos = schema.videosTable;
 
@@ -95,30 +96,41 @@ interface HlsValidationResult {
 }
 
 /**
- * Validate that the HLS output for videoId is fully intact in storage_blobs.
+ * Read a storage object and return its contents as a UTF-8 string.
+ * Returns null if the key does not exist or cannot be read.
+ */
+async function getStorageObjectText(key: string): Promise<string | null> {
+  try {
+    const { body } = await storage().getObject(key);
+    const buffers: Buffer[] = [];
+    for await (const chunk of body) {
+      buffers.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+    }
+    return Buffer.concat(buffers).toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Validate that the HLS output for videoId is fully intact in object storage.
  * Returns a structured result — callers decide whether to proceed with cleanup.
  */
 async function validateHlsOutput(videoId: string): Promise<HlsValidationResult> {
   const errors: string[] = [];
   const masterKey = `transcoded/${videoId}/master.m3u8`;
 
-  // 1. Fetch master playlist bytes
-  const masterResult = await db.execute(sql`
-    SELECT data FROM storage_blobs WHERE key = ${masterKey} LIMIT 1
-  `);
-
-  if (masterResult.rows.length === 0) {
+  // 1. Fetch master playlist from MinIO
+  const masterText = await getStorageObjectText(masterKey);
+  if (masterText === null) {
     return {
       valid: false,
       masterExists: false,
       renditionCount: 0,
       segmentCount: 0,
-      errors: [`master.m3u8 not found in storage_blobs (key=${masterKey})`],
+      errors: [`master.m3u8 not found in storage (key=${masterKey})`],
     };
   }
-
-  const masterRow = masterResult.rows[0] as { data: Buffer };
-  const masterText = masterRow.data.toString("utf8");
   const renditionRelUris = parseM3u8Uris(masterText);
 
   if (renditionRelUris.length === 0) {
@@ -130,22 +142,14 @@ async function validateHlsOutput(videoId: string): Promise<HlsValidationResult> 
     return { valid: errors.length === 0, masterExists: true, renditionCount: 0, segmentCount: 0, errors };
   }
 
-  // 2. Batch-fetch ALL rendition playlists in one round-trip (replaces N serial
-  //    queries). ANY(array) leverages the B-Tree index on storage_blobs.key and
-  //    avoids N round-trips for N renditions (typical: 4 renditions = 360/540/
-  //    720/1080p). The result is stored in a Map keyed by storage key.
-  // Use sql.param() to pass the array as a single $N binding so the pg driver
-  // serialises it to {v1,v2,...}. The broken pattern ANY(${array}::text[])
-  // causes Drizzle to expand the JS array to tuple notation ($1,$2,...) which
-  // PostgreSQL rejects with ERROR 42846 (cannot cast type record to text[]).
-  const rendBatch = await db.execute(sql`
-    SELECT key, data FROM storage_blobs
-    WHERE key = ANY(${sql.param(renditionKeys)}::text[])
-  `);
+  // 2. Fetch all rendition playlists in parallel from MinIO.
   const rendMap = new Map<string, string>();
-  for (const row of rendBatch.rows as Array<{ key: string; data: Buffer }>) {
-    rendMap.set(row.key, row.data.toString("utf8"));
-  }
+  await Promise.allSettled(
+    renditionKeys.map(async (rk) => {
+      const text = await getStorageObjectText(rk);
+      if (text !== null) rendMap.set(rk, text);
+    }),
+  );
 
   // Parse each rendition playlist, accumulate expected segment counts per
   // rendition directory (e.g. "transcoded/{videoId}/v0/").
@@ -218,15 +222,14 @@ async function validateHlsOutput(videoId: string): Promise<HlsValidationResult> 
 // ─── Source deletion ───────────────────────────────────────────────────────
 
 /**
- * Delete the source blob from storage_blobs and return bytes freed.
- * Also cleans up completed upload_sessions and their associated upload_chunks
- * (these hold BYTEA fallback data that can be significant).
+ * Delete the source blob from MinIO and return bytes freed.
+ * Also cleans up completed upload_sessions and their associated upload_chunks.
  */
 async function deleteSourceBlob(
   videoId: string,
   sourceObjectKey: string,
 ): Promise<{ bytesFreed: number }> {
-  // Get size for logging before deletion.
+  // Get size for logging before deletion (from the storage_blobs metadata index).
   const sizeResult = await db.execute(sql`
     SELECT size_bytes FROM storage_blobs WHERE key = ${sourceObjectKey} LIMIT 1
   `);
@@ -235,14 +238,13 @@ async function deleteSourceBlob(
       ? ((sizeResult.rows[0] as { size_bytes: number }).size_bytes ?? 0)
       : 0;
 
-  // Delete the source blob.
-  await db.execute(sql`DELETE FROM storage_blobs WHERE key = ${sourceObjectKey}`);
+  // Delete the source blob from MinIO (also removes the storage_blobs metadata row).
+  await storage().deleteObject(sourceObjectKey);
 
   // Clean up the upload_chunks and upload_sessions rows for this video.
-  // The sessions table has a completed_video_id foreign-key-like column that
-  // lets us find and purge the session that produced this video. The chunks
-  // may contain BYTEA fallback data (db_fallback path) or just etag metadata
-  // (S3/db path) — both are safe to delete once HLS is verified.
+  // The sessions table has a completed_video_id column that lets us find and
+  // purge the session that produced this video. Chunk rows hold MinIO ETag
+  // metadata only — safe to delete once HLS is verified.
   try {
     const sessionResult = await db.execute(sql`
       SELECT session_id FROM upload_sessions
@@ -252,7 +254,7 @@ async function deleteSourceBlob(
       const sessionIds = (sessionResult.rows as Array<{ session_id: string }>).map(
         (r) => r.session_id,
       );
-      // Delete chunks first (may have large BYTEA fallback_data).
+      // Delete chunk ETag rows first.
       await db
         .delete(schema.uploadChunksTable)
         .where(inArray(schema.uploadChunksTable.sessionId, sessionIds));

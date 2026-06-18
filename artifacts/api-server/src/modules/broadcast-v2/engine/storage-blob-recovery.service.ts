@@ -58,7 +58,7 @@
  *    • Blob present AND size_bytes>0 → re-enqueue transcoding at priority 5
  *
  *  Stage 5 — Upload session re-assembly
- *    • Find upload_sessions with completedVideoId=videoId in db_fallback mode
+ *    • Find upload_sessions with completedVideoId=videoId and surviving chunks
  *    • If all chunks still in upload_chunks → reset session for re-assembly
  *
  *  Stage 6 — Retry-gated quarantine (or defer if threshold not met / ON_AIR)
@@ -219,40 +219,38 @@ async function isQueueItemOnAir(queueId: string): Promise<boolean> {
 }
 
 /**
- * Check if any upload_session in db_fallback mode has surviving chunks for
- * this videoId.  Returns the session_id + chunk count if found, or null.
+ * Check if any upload_session has surviving MinIO-multipart chunks for this
+ * videoId that can be re-assembled.  The legacy db_fallback BYTEA path has
+ * been removed — all sessions now use MinIO multipart storage.
+ * Returns the session_id + chunk count if found, or null.
  */
 async function findRecoverableSession(
   videoId: string,
   objectPath: string | null | undefined,
 ): Promise<{ sessionId: string; chunkCount: number; sizeBytes: number } | null> {
   try {
-    // Match sessions by completedVideoId (set at finalize-time) or by objectKey
-    // (the storage destination matches the managed_videos objectPath).
-    const sessions = await db.execute<{
+    const sessRows = await db.execute<{
       session_id: string;
       size_bytes: number;
       total_chunks: number;
-      storage_backend: string;
     }>(sql`
-      SELECT session_id, size_bytes::int AS size_bytes, total_chunks, storage_backend
+      SELECT session_id, size_bytes::int AS size_bytes, total_chunks
       FROM upload_sessions
       WHERE (completed_video_id = ${videoId} OR object_key = ${objectPath ?? null})
-        AND storage_backend = 'db_fallback'
+        AND storage_backend IN ('minio', 'db')
         AND status IN ('completed', 'failed', 'assembly_failed')
       ORDER BY created_at DESC
       LIMIT 3
     `);
 
-    for (const sess of sessions.rows) {
+    for (const sess of sessRows.rows) {
       const chunkCount = await db.execute<{ cnt: number }>(sql`
         SELECT COUNT(*)::int AS cnt FROM upload_chunks
         WHERE session_id = ${sess.session_id}
-          AND fallback_data IS NOT NULL
+          AND s3_etag IS NOT NULL
       `);
       const cnt = Number(chunkCount.rows[0]?.cnt ?? 0);
-      // Require at least 80% of expected chunks to be present before claiming
-      // the session is recoverable (allows for partial chunk failure tolerance).
+      // Require at least 80% of expected chunks to be present.
       if (cnt > 0 && cnt >= Math.floor(sess.total_chunks * 0.8)) {
         return { sessionId: sess.session_id, chunkCount: cnt, sizeBytes: sess.size_bytes };
       }
@@ -273,7 +271,6 @@ async function resetSessionForReassembly(sessionId: string): Promise<boolean> {
           last_assembly_error = 'Reset by storage-blob-recovery for autonomous re-assembly',
           updated_at = NOW()
       WHERE session_id = ${sessionId}
-        AND storage_backend = 'db_fallback'
     `);
     return true;
   } catch {

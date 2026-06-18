@@ -26,6 +26,7 @@ import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
+import { storage } from "../../../infrastructure/storage.js";
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 
@@ -314,38 +315,11 @@ class OrphanCleanupWorkerImpl {
       }
 
       // ── 6. Storage _parts/ / _meta/ orphan GC ──────────────────────────────
-      // completeMultipartUpload assembles temp part rows and deletes them in
-      // the same SQL transaction, so _parts/* keys should never outlive a
-      // successful assembly. Rows that persist are from interrupted assemblies
-      // (server crash mid-upload, finalize timeout, etc.) and accumulate
-      // indefinitely. We delete any _parts/ or _meta/ rows older than 24 hours
-      // — well past the longest possible successful upload window — capped at
-      // 5 000 rows per sweep to bound lock-hold time.
-      let prunedStorageParts = 0;
-      try {
-        const partsCutoff = new Date(Date.now() - 24 * 60 * 60_000);
-        const partsResult = await db.execute(
-          sql`DELETE FROM storage_blobs
-              WHERE key IN (
-                SELECT key FROM storage_blobs
-                WHERE (key LIKE '_parts/%' OR key LIKE '_meta/%')
-                  AND updated_at < ${partsCutoff}
-                LIMIT 5000
-              )`,
-        );
-        prunedStorageParts = partsResult.rowCount ?? 0;
-        if (prunedStorageParts > 0) {
-          logger.info(
-            { pruned: prunedStorageParts, cutoffHours: 24 },
-            "[orphan-cleanup] pruned orphaned storage_blobs _parts/ and _meta/ rows",
-          );
-        }
-      } catch (partsErr) {
-        logger.warn(
-          { err: partsErr },
-          "[orphan-cleanup] storage parts GC failed (non-fatal)",
-        );
-      }
+      // MinIO manages multipart upload state natively; there are no _parts/ or
+      // _meta/ rows in storage_blobs. Abandoned MinIO multipart uploads are
+      // cleaned up by the cleanup.worker.ts sweep via abortMultipartUpload.
+      // This section is intentionally a no-op.
+      const prunedStorageParts = 0;
 
       // ── 7. Terminal-error video blob GC ────────────────────────────────────
       // Videos quarantined with SOURCE_MISSING or CORRUPT_SOURCE are permanently
@@ -380,15 +354,13 @@ class OrphanCleanupWorkerImpl {
         for (const row of terminalResult.rows) {
           const { videoId, objectPath } = row;
 
-          // Delete all transcoded/ blobs for this video ID (age-gated)
-          const transcodedDel = await db.execute(sql`
-            DELETE FROM storage_blobs
-            WHERE key LIKE ${"transcoded/" + videoId + "/%"}
-              AND updated_at < ${terminalBlobCutoff}
-          `).catch(() => ({ rowCount: 0 }));
-          prunedTerminalVideoBlobs += (transcodedDel as unknown as { rowCount?: number }).rowCount ?? 0;
+          // Delete all transcoded/ objects for this video from MinIO.
+          const transcodedPrefix = `transcoded/${videoId}/`;
+          await storage().deleteByPrefix(transcodedPrefix).catch(() => {});
+          // Count as 1 per video (MinIO prefix delete is bulk; we don't get exact count).
+          prunedTerminalVideoBlobs += 1;
 
-          // Delete source upload blob only if no other video row references it
+          // Delete source upload object only if no other video row references it.
           if (objectPath && !/^https?:\/\//i.test(objectPath)) {
             const uploadKey = objectPath.startsWith("uploads/")
               ? objectPath
@@ -402,12 +374,7 @@ class OrphanCleanupWorkerImpl {
               (otherRefResult as unknown as { rows: Array<{ cnt: number }> }).rows[0]?.cnt ?? 1,
             );
             if (otherRefs === 0) {
-              const uploadDel = await db.execute(sql`
-                DELETE FROM storage_blobs
-                WHERE key = ${uploadKey}
-                  AND updated_at < ${terminalBlobCutoff}
-              `).catch(() => ({ rowCount: 0 }));
-              prunedTerminalVideoBlobs += (uploadDel as unknown as { rowCount?: number }).rowCount ?? 0;
+              await storage().deleteObject(uploadKey).catch(() => {});
             }
           }
         }

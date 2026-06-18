@@ -7,31 +7,23 @@ import {
   boolean,
   index,
   uniqueIndex,
-  customType,
 } from "drizzle-orm/pg-core";
-
-const bytea = customType<{ data: Buffer }>({
-  dataType() {
-    return "bytea";
-  },
-});
 
 /**
  * Persistent upload session — survives API-server restarts.
  * One row per chunked-upload session initiated by the admin VideoUploadModal.
  *
  * storageBackend:
- *   'db'         — chunks are stored as multipart parts in storage_blobs (normal path).
- *                  This is the default; the init route always writes "db" explicitly.
- *   'db_fallback'— createMultipartUpload failed; chunks are stored as raw BYTEA rows
- *                  in upload_chunks.fallback_data and assembled directly at finalize.
+ *   'minio' — chunks are stored as native S3 multipart parts in MinIO.
+ *             This is the only supported backend. Legacy rows with 'db' value
+ *             are treated identically (both use the multipart assembly path).
  */
 export const uploadSessionsTable = pgTable(
   "upload_sessions",
   {
     sessionId: text("session_id").primaryKey(),
-    uploadId: text("upload_id"),           // DB multipart UploadId (null in db_fallback mode)
-    objectKey: text("object_key"),         // DB storage key (null in db_fallback until finalize)
+    uploadId: text("upload_id"),           // MinIO multipart UploadId
+    objectKey: text("object_key"),         // MinIO storage key
     title: text("title").notNull(),
     description: text("description").notNull().default(""),
     category: text("category").notNull().default("sermon"),
@@ -46,7 +38,7 @@ export const uploadSessionsTable = pgTable(
     mimeType: text("mime_type"),
     durationSecs: integer("duration_secs"),
     uploadedBy: text("uploaded_by"),
-    storageBackend: text("storage_backend").notNull().default("db"),
+    storageBackend: text("storage_backend").notNull().default("minio"),
     status: text("status").notNull().default("uploading"),
     completedVideoId: text("completed_video_id"),
     /**
@@ -63,24 +55,22 @@ export const uploadSessionsTable = pgTable(
      */
     lastAssemblyError: text("last_assembly_error"),
     /**
-     * Persisted assemblyUploadId for db_fallback re-assembly.
-     * Written immediately after createMultipartUpload() succeeds inside
-     * finalizeFromDbFallback so that if the server crashes mid-assembly the
-     * onReady hook can abort the orphaned _parts/{assemblyUploadId}/... rows
-     * before starting a fresh attempt.  Cleared after successful assembly.
+     * Persisted assemblyUploadId for crash-recovery.
+     * Written immediately after createMultipartUpload() succeeds inside the
+     * background assembly so that if the server crashes mid-assembly the
+     * onReady hook can abort the orphaned MinIO multipart upload before
+     * starting a fresh attempt. Cleared after successful assembly.
      */
     assemblyUploadId: text("assembly_upload_id"),
     /**
      * Optional client-declared SHA-256 hash of the complete file (64-char hex).
      * When present, the finalize background task computes the SHA-256 of the
-     * assembled blob via PostgreSQL sha256() and rejects any mismatch as
-     * CORRUPT_SOURCE — providing a cryptographic end-to-end integrity guarantee
-     * beyond the per-chunk SHA-256 + assembled-size checks.
+     * assembled blob and rejects any mismatch as CORRUPT_SOURCE — providing a
+     * cryptographic end-to-end integrity guarantee beyond the per-chunk
+     * SHA-256 + assembled-size checks.
      */
     expectedFileSha256: text("expected_file_sha256"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    // $onUpdateFn ensures the column is refreshed on every Drizzle-driven UPDATE,
-    // not just on INSERT (defaultNow() only fires at INSERT time).
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdateFn(() => new Date()),
   },
   (t) => [
@@ -92,14 +82,8 @@ export const uploadSessionsTable = pgTable(
 /**
  * Per-chunk tracking record.
  *
- * storageBackend === 'db':          s3Etag holds the part ETag from storage().uploadPart();
- *                                   fallbackData is null (part data lives in storage_blobs).
- * storageBackend === 'db_fallback': fallbackData holds the raw chunk bytes as BYTEA;
- *                                   s3Etag is null.
- *
- * The BYTEA column is nullable so normal-path (db) sessions don't incur storage overhead.
- * During db_fallback finalization the server reads fallbackData rows in order and pipes
- * them through completeMultipartUpload via iterative PostgreSQL UPDATE concatenation.
+ * s3Etag holds the MinIO/S3 ETag returned by uploadPart().
+ * All chunks use native MinIO multipart — no BYTEA fallback path.
  */
 export const uploadChunksTable = pgTable(
   "upload_chunks",
@@ -119,21 +103,17 @@ export const uploadChunksTable = pgTable(
     byteOffset: bigint("byte_offset", { mode: "number" }),
     /**
      * Real MD5 ETag of the chunk bytes — matches S3 ETag semantics.
-     * Populated by DatabaseObjectStorage.uploadPart() since the real-ETag fix.
-     * Legacy sessions (before the fix) hold the part number as a string (e.g. "1").
+     * Populated by uploadPart().
      */
     s3Etag: text("s3_etag"),
-    fallbackData: bytea("fallback_data"),
-    storageBackend: text("storage_backend").notNull().default("db"),
+    storageBackend: text("storage_backend").notNull().default("minio"),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("idx_upload_chunks_session_id").on(t.sessionId),
     // Unique constraint prevents a TOCTOU race where two concurrent chunk
     // requests for the same (sessionId, chunkIndex) both pass the application-
-    // level idempotency check and insert duplicate rows. Duplicate chunk rows
-    // corrupt the assembly step: finalizeFromDbFallback expects exactly one
-    // BYTEA row per index; completeMultipartUpload produces a double-sized blob.
+    // level idempotency check and insert duplicate rows.
     uniqueIndex("idx_upload_chunks_session_chunk").on(t.sessionId, t.chunkIndex),
   ],
 );

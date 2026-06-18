@@ -2,32 +2,22 @@
  * Resumable chunked upload gateway (server-relay path).
  *
  * All video data flows through the server — no browser-direct or presigned
- * URL uploads. Every byte is stored in the PostgreSQL `storage_blobs` table
- * via DatabaseObjectStorage. No S3, Replit Object Storage, or any cloud
- * provider is involved.
+ * URL uploads. Every chunk is stored as a native MinIO multipart part.
+ * MinIO is the sole storage backend; there is no database BYTEA fallback.
  *
  * Wire:
  *   POST /admin/videos/upload/init
- *     → create DB session; initialise DatabaseObjectStorage multipart slot
+ *     → create DB session; open MinIO multipart upload slot
  *   POST /admin/videos/upload/:sessionId/chunk
  *     → receive raw binary chunk (application/octet-stream), verify SHA-256,
- *       store as a multipart part in storage_blobs (db mode) OR as raw BYTEA
- *       in upload_chunks.fallback_data (db_fallback mode)
+ *       store as a native MinIO multipart part (uploadPart)
  *   GET  /admin/videos/upload/:sessionId/status
  *     → return { uploadedChunkIndices } so the client can resume mid-flight
  *   POST /admin/videos/upload/:sessionId/thumbnail
- *     → accept optional custom thumbnail; store in storage_blobs
+ *     → accept optional custom thumbnail; store in MinIO
  *   POST /admin/videos/upload/:sessionId/finalize
- *     → assemble multipart parts (db mode) or BYTEA chunks (db_fallback mode)
- *       into the final storage_blobs row, insert managed_videos row, and
- *       enqueue HLS transcoding
- *
- * DB-fallback rescue layer:
- *   If DatabaseObjectStorage.createMultipartUpload fails at init time the
- *   session falls back to 'db_fallback' mode. Every chunk is stored as BYTEA
- *   in upload_chunks.fallback_data. On finalize the server reassembles them
- *   via a fresh multipart session entirely inside PostgreSQL. No video data
- *   is ever lost.
+ *     → completeMultipartUpload assembles all parts in MinIO, inserts
+ *       managed_videos row, and enqueues HLS transcoding
  */
 
 import { randomUUID, createHash } from "node:crypto";
@@ -114,12 +104,9 @@ const ASSEMBLY_BACKOFF_MS: readonly number[] = [0, 30_000, 5 * 60_000, 15 * 60_0
 // automatic re-assembly failed transiently and whose backoff window has elapsed.
 const ASSEMBLY_RECONCILIATION_INTERVAL_MS = 5 * 60_000; // 5 minutes
 
-// Minimum part size used when reassembling db_fallback chunks into a multipart
-// upload. Mirrors S3's 5 MiB floor so sessions can be migrated without changes.
-
 // ─── Schema helpers ───────────────────────────────────────────────────────────
 
-// 100 GiB hard upper limit — Postgres BYTEA can hold it, but signals misconfiguration above this.
+// 100 GiB hard upper limit — signals misconfiguration above this.
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024 * 1024;
 
 const InitBodySchema = z.object({
@@ -271,62 +258,37 @@ async function spawnAssemblyRetry(
       );
 
       // ── Step 2: Run the assembly ──────────────────────────────────────────
-      if (session.storageBackend === "db_fallback") {
-        // BYTEA chunks in upload_chunks.fallback_data.
-        // Abort any stale assemblyUploadId left over from a previous crashed
-        // attempt to prevent orphaned _parts/{staleId}/... rows accumulating.
-        if (session.assemblyUploadId) {
-          log.info(
-            { sessionId, staleUploadId: session.assemblyUploadId },
-            "[assembly-retry] aborting stale assemblyUploadId before fresh attempt",
-          );
-          await storage()
-            .abortMultipartUpload({ key: objectKey, uploadId: session.assemblyUploadId })
-            .catch((abortErr: unknown) =>
-              log.warn({ abortErr, sessionId }, "[assembly-retry] stale assemblyUploadId abort failed (non-fatal)"),
-            );
-          // Clear the stale ID — a new one will be written by finalizeFromDbFallback.
-          await db
-            .update(sessions)
-            .set({ assemblyUploadId: null, updatedAt: new Date() })
-            .where(eq(sessions.sessionId, sessionId))
-            .catch(() => {});
-        }
-        await finalizeFromDbFallback(session, session.totalChunks, log);
-      } else {
-        // DB-multipart path: assemble from existing part ETags.
-        if (!session.uploadId) {
-          throw new Error("session.uploadId is null — cannot re-assemble db-backend session");
-        }
-        const allChunks = await db
-          .select({ chunkIndex: chunks.chunkIndex, s3Etag: chunks.s3Etag })
-          .from(chunks)
-          .where(eq(chunks.sessionId, sessionId))
-          .orderBy(asc(chunks.chunkIndex));
-
-        if (allChunks.length !== session.totalChunks) {
-          throw new Error(
-            `Chunk count mismatch: expected ${session.totalChunks}, found ${allChunks.length}`,
-          );
-        }
-        const missingEtags = allChunks.filter((c) => !c.s3Etag);
-        if (missingEtags.length > 0) {
-          throw new Error(
-            `${missingEtags.length} chunk(s) are missing storage ETags — parts may have been cleaned up`,
-          );
-        }
-        // completeMultipartUpload is idempotent: the INSERT ... ON CONFLICT DO UPDATE
-        // reseeds the destination row from the first part even if a partial blob
-        // exists from a previous interrupted attempt, then appends remaining parts.
-        await storage().completeMultipartUpload({
-          key: objectKey,
-          uploadId: session.uploadId,
-          parts: allChunks.map((c) => ({
-            partNumber: c.chunkIndex + 1,
-            etag: c.s3Etag as string,
-          })),
-        });
+      // MinIO multipart path: assemble from existing part ETags.
+      if (!session.uploadId) {
+        throw new Error("session.uploadId is null — cannot re-assemble MinIO session");
       }
+      const allChunks = await db
+        .select({ chunkIndex: chunks.chunkIndex, s3Etag: chunks.s3Etag })
+        .from(chunks)
+        .where(eq(chunks.sessionId, sessionId))
+        .orderBy(asc(chunks.chunkIndex));
+
+      if (allChunks.length !== session.totalChunks) {
+        throw new Error(
+          `Chunk count mismatch: expected ${session.totalChunks}, found ${allChunks.length}`,
+        );
+      }
+      const missingEtags = allChunks.filter((c) => !c.s3Etag);
+      if (missingEtags.length > 0) {
+        throw new Error(
+          `${missingEtags.length} chunk(s) are missing MinIO ETags — parts may have been cleaned up`,
+        );
+      }
+      // completeMultipartUpload reassembles all uploaded parts into the final
+      // MinIO object. Idempotent when called again after a crash.
+      await storage().completeMultipartUpload({
+        key: objectKey,
+        uploadId: session.uploadId,
+        parts: allChunks.map((c) => ({
+          partNumber: c.chunkIndex + 1,
+          etag: c.s3Etag as string,
+        })),
+      });
 
       // ── Step 3: Verify assembled blob integrity ───────────────────────────
       const head = await storage().headObject(objectKey);
@@ -530,195 +492,9 @@ async function _markAssemblyPermanentlyFailed(
   log.error({ videoId, sessionId, attempts }, "[assembly-retry] permanently marked ASSEMBLY_FAILED");
 }
 
-// ─── DB-fallback finalization ──────────────────────────────────────────────────
+// (DB-fallback finalization removed — MinIO is the sole storage backend)
 
-async function finalizeFromDbFallback(
-  session: typeof sessions.$inferSelect,
-  totalChunks: number,
-  log: FastifyInstance["log"],
-): Promise<{ localVideoUrl: string | null; objectKey: string; storageBackend: "db" | "db_fallback" }> {
-  // Emit assembly progress SSE events every 5 s so the admin panel can show
-  // a real progress bar instead of a silent spinner for up to ~90 min on large
-  // uploads. Non-fatal: SSE emission failures are ignored to keep the assembly loop running.
-  const PROGRESS_EMIT_INTERVAL_MS = 5_000;
-  let lastProgressEmitMs = Date.now();
-  let bytesAssembled = 0;
-  const totalBytes = session.sizeBytes ?? 0;
-
-  const now = new Date();
-  // Detect the correct extension from the original filename first, then MIME type.
-  // Without this, non-MP4 uploads (WebM, MOV, MKV…) get a ".bin" extension which
-  // prevents the media player from identifying the codec on playback.
-  const safeExt = (() => {
-    const fnExt = session.originalFilename
-      ? (session.originalFilename.split(".").pop() ?? "").toLowerCase()
-      : "";
-    if (/^(mp4|mov|mkv|avi|webm|m4v|flv|wmv|ts|mts|m2ts)$/.test(fnExt)) return fnExt;
-    const mime = (session.mimeType ?? session.contentType ?? "").toLowerCase();
-    if (mime.includes("webm")) return "webm";
-    if (mime.includes("quicktime") || mime.includes("mov")) return "mov";
-    if (mime.includes("x-matroska") || mime.includes("mkv")) return "mkv";
-    if (mime.includes("x-msvideo") || mime.includes("avi")) return "avi";
-    return "mp4"; // safe fallback for all MPEG-4 and unknown types
-  })();
-  const objectKey =
-    session.objectKey ??
-    `uploads/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, "0")}/${String(now.getUTCDate()).padStart(2, "0")}/${session.sessionId}.${safeExt}`;
-
-  // Declared outside the try so the catch block can abort the multipart upload
-  // if any step fails (chunk fetch, uploadPart, completeMultipartUpload).
-  // Without this, a failed assembly leaves orphaned _parts/{uploadId}/... rows
-  // in storage_blobs forever — the stale session cleanup uses sessions.uploadId
-  // (the original db-path upload), NOT the temporary uploadId created here for
-  // reassembly, so it would never clean up these orphaned rows.
-  let assemblyUploadId: string | undefined;
-
-  try {
-    const { uploadId } = await storage().createMultipartUpload({
-      key: objectKey,
-      contentType: session.contentType,
-    });
-    assemblyUploadId = uploadId;
-
-    // Persist the assemblyUploadId immediately after creation so that
-    // if the server crashes between here and completeMultipartUpload,
-    // the next restart can abort the orphaned _parts/{uploadId}/... rows
-    // before starting a fresh attempt instead of letting them accumulate.
-    await db
-      .update(sessions)
-      .set({ assemblyUploadId: uploadId, updatedAt: new Date() })
-      .where(eq(sessions.sessionId, session.sessionId))
-      .catch((err: unknown) =>
-        log.warn({ err, sessionId: session.sessionId }, "[finalize-fallback] failed to persist assemblyUploadId (non-fatal)"),
-      );
-
-    // Assemble BYTEA chunks into multipart parts ONE AT A TIME.
-    //
-    // CRITICAL: Do NOT use a pre-loaded allChunks array with fallbackData here.
-    // Loading all chunk BYTEA at once (e.g. 30 × 8 MiB = 240 MiB) into Node.js
-    // memory in a single SELECT * causes OOM on Replit's constrained heap for
-    // any file larger than ~50 MB. Instead, each chunk's fallbackData is fetched
-    // individually, uploaded as a part, and then eligible for GC before the next
-    // chunk is fetched. Peak Node.js memory overhead is ~one chunk size (8 MiB).
-    const parts: Array<{ partNumber: number; etag: string }> = [];
-
-    for (let i = 0; i < totalChunks; i++) {
-      // Fetch only this chunk's BYTEA — prior chunks are GC-eligible after this point.
-      // Also fetch the stored checksum so we can re-verify integrity before assembling.
-      const chunkRow = await db
-        .select({ fallbackData: chunks.fallbackData, checksum: chunks.checksum })
-        .from(chunks)
-        .where(and(eq(chunks.sessionId, session.sessionId), eq(chunks.chunkIndex, i)))
-        .limit(1)
-        .then((r) => r[0]);
-
-      const buf = chunkRow?.fallbackData
-        ? (chunkRow.fallbackData as unknown as Buffer)
-        : Buffer.alloc(0);
-
-      if (buf.length === 0) {
-        // A missing chunk means the assembled file would be corrupt/truncated.
-        // Fail hard so the client sees a clear error and can re-upload rather
-        // than silently producing a broken video.
-        const msg = `[finalize-fallback] chunk ${i} has empty fallbackData — cannot assemble video (sessionId: ${session.sessionId}). Re-upload required.`;
-        log.error({ sessionId: session.sessionId, chunkIndex: i }, msg);
-        throw new Error(msg);
-      }
-
-      // Re-verify SHA-256 integrity against the stored checksum to catch any
-      // silent BYTEA corruption that may have occurred between chunk receipt and
-      // finalize time. If the hash mismatches the stored chunk is corrupt and
-      // assembling it would produce an unplayable file — fail hard here so the
-      // operator gets a clear error and can retry the upload.
-      if (chunkRow?.checksum) {
-        const actualHash = createHash("sha256").update(buf).digest("hex");
-        if (actualHash !== chunkRow.checksum) {
-          const msg =
-            `[finalize-fallback] chunk ${i} SHA-256 mismatch — expected ${chunkRow.checksum}, ` +
-            `got ${actualHash} (sessionId: ${session.sessionId}). DB row appears corrupted; re-upload required.`;
-          log.error({ sessionId: session.sessionId, chunkIndex: i, expected: chunkRow.checksum, actual: actualHash }, msg);
-          throw new Error(msg);
-        }
-      }
-
-      const { etag } = await storage().uploadPart({
-        key: objectKey,
-        uploadId,
-        partNumber: i + 1,
-        body: buf,
-      });
-      parts.push({ partNumber: i + 1, etag });
-
-      // Emit SSE progress every 5 s so the admin panel can render a progress bar.
-      // We throttle by wall-clock time rather than chunk count because chunks vary
-      // in size and upload latency. Payload uses byte-based fields so the consumer
-      // can render a standard bytes-transferred / total-bytes progress bar.
-      // Non-fatal: failures are swallowed so the loop always continues.
-      bytesAssembled += buf.length;
-      const nowMs = Date.now();
-      if (nowMs - lastProgressEmitMs >= PROGRESS_EMIT_INTERVAL_MS) {
-        lastProgressEmitMs = nowMs;
-        const pct = totalBytes > 0 ? Math.round((bytesAssembled / totalBytes) * 100) : Math.round(((i + 1) / totalChunks) * 100);
-        try {
-          adminEventBus.push("upload-assembly-progress", {
-            sessionId: session.sessionId,
-            bytesAssembled,
-            totalBytes,
-            pct,
-          });
-        } catch {
-          // non-fatal — never let SSE emission abort the assembly
-        }
-      }
-    }
-
-    if (parts.length === 0) {
-      throw new Error("No parts could be assembled from DB chunks");
-    }
-
-    await storage().completeMultipartUpload({ key: objectKey, uploadId, parts });
-    const localVideoUrl = storage().publicUrl(objectKey);
-
-    // Assembly succeeded — clear the persisted assemblyUploadId so that
-    // future crash-recovery does not try to abort a completed upload.
-    await db
-      .update(sessions)
-      .set({ assemblyUploadId: null, updatedAt: new Date() })
-      .where(eq(sessions.sessionId, session.sessionId))
-      .catch(() => {}); // non-fatal: assemblyUploadId will simply be a no-op on next abort attempt
-
-    log.info(
-      { sessionId: session.sessionId, objectKey, parts: parts.length },
-      "[finalize-fallback] successfully assembled DB chunks into database storage",
-    );
-    return { localVideoUrl, objectKey, storageBackend: "db" };
-  } catch (err) {
-    log.error(
-      { err, sessionId: session.sessionId },
-      "[finalize-fallback] database storage assembly failed — chunks remain in upload_chunks",
-    );
-    // Abort the in-progress multipart upload to clean up orphaned
-    // _parts/{assemblyUploadId}/... rows in storage_blobs. Without this call
-    // those rows accumulate permanently — the stale session cleanup uses
-    // sessions.uploadId (the original ingest upload), not this temporary
-    // reassembly upload which is never stored in the sessions table.
-    if (assemblyUploadId) {
-      await storage().abortMultipartUpload({ key: objectKey, uploadId: assemblyUploadId }).catch(
-        (abortErr: unknown) => {
-          log.warn(
-            { abortErr, sessionId: session.sessionId, uploadId: assemblyUploadId, objectKey },
-            "[finalize-fallback] failed to abort orphaned assembly multipart upload (non-fatal) — " +
-              "run the abandoned session cleanup to remove orphaned _parts rows",
-          );
-        },
-      );
-    }
-    throw new ServiceUnavailableError(
-      "Storage assembly failed. Your video chunks are safely stored in the database. " +
-        "Please retry finalizing this session.",
-    );
-  }
-}
+// ─── Route plugin ─────────────────────────────────────────────────────────────
 
 // ─── Route plugin ─────────────────────────────────────────────────────────────
 
@@ -839,9 +615,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
 
         // ── Re-classify orphaned → retriable where all chunks are still present ──
         //
-        // For sessions whose blob assembly was interrupted mid-flight, the chunks
-        // (BYTEA for db_fallback, or part-ETags for db) are still stored in
-        // upload_chunks. We can automatically re-run assembly without asking the
+        // For sessions whose blob assembly was interrupted mid-flight, the MinIO
+        // part ETags are still stored in upload_chunks. We can automatically
+        // re-run assembly without asking the
         // admin to delete and re-upload. Batch the count query to avoid N round trips.
         const retriableSessionIds: string[] = [];
         const retriableVideoIds: string[] = [];
@@ -1134,9 +910,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     // ── Stale session cleanup ─────────────────────────────────────────────
     // Sessions still in "uploading" status after 48 hours were abandoned
     // (browser closed, permanent network failure, user gave up). Their chunk
-    // rows — especially db_fallback BYTEA blobs — can hold significant data.
-    // Run once at startup and then every 6 hours so the upload_chunks table
-    // stays lean without manual DB maintenance.
+    // rows (MinIO ETag records) can accumulate. Run once at startup and then
+    // every 6 hours so the upload_chunks table stays lean without manual DB
+    // maintenance.
     const ABANDONED_AGE_MS = 48 * 60 * 60 * 1000; // 48 hours
     const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
@@ -1148,6 +924,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             sessionId: sessions.sessionId,
             uploadId: sessions.uploadId,
             assemblyUploadId: sessions.assemblyUploadId,
+            objectKey: sessions.objectKey,
           })
           .from(sessions)
           .where(
@@ -1167,44 +944,17 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           // Delete chunks first (FK dependency), then the session rows.
           await db.delete(chunks).where(inArray(chunks.sessionId, ids));
 
-          // Clean up orphaned _parts/{uploadId}/... rows in storage_blobs.
-          // These are created during the db-mode upload path and are normally
-          // cleaned up by completeMultipartUpload, but abandoned sessions leave
-          // them orphaned, causing unbounded storage growth.
-          const uploadIds = abandoned
-            .map((r) => r.uploadId)
-            .filter((id): id is string => id != null);
-          for (const uploadId of uploadIds) {
-            const partPrefix = `_parts/${uploadId}/`;
-            await db
-              .execute(sql`DELETE FROM storage_blobs WHERE starts_with(key, ${partPrefix})`)
-              .catch((err: unknown) =>
-                app.log.warn({ err, uploadId }, "[upload] _parts cleanup failed (non-fatal)"),
-              );
-          }
 
-          // Also clean up orphaned _parts/{assemblyUploadId}/... rows.
-          // assemblyUploadId is written by finalizeFromDbFallback during
-          // reassembly and is a DIFFERENT ID from the session's original
-          // uploadId. Sessions permanently failed (ASSEMBLY_FAILED) or timed-out
-          // that were reset via _markAssemblyPermanentlyFailed() may retain a
-          // non-null assemblyUploadId pointing to stale _parts rows that the
-          // uploadId sweep above never touches.
-          const assemblyUploadIds = abandoned
-            .map((r) => r.assemblyUploadId)
-            .filter((id): id is string => id != null && id !== "");
-          for (const assemblyUploadId of assemblyUploadIds) {
-            const partPrefix = `_parts/${assemblyUploadId}/`;
-            await db
-              .execute(sql`DELETE FROM storage_blobs WHERE starts_with(key, ${partPrefix})`)
-              .catch((err: unknown) =>
-                app.log.warn({ err, assemblyUploadId }, "[upload] stale assemblyUploadId _parts cleanup failed (non-fatal)"),
-              );
-            // Also delete the _meta row if it was persisted.
-            const metaKey = `_meta/${assemblyUploadId}`;
-            await db
-              .execute(sql`DELETE FROM storage_blobs WHERE key = ${metaKey}`)
-              .catch(() => {});
+          // Abort any in-progress MinIO multipart uploads for these sessions.
+          // MinIO stores part data internally until aborted or completed —
+          // aborting releases that storage for interrupted uploads.
+          for (const sess of abandoned) {
+            if (sess.uploadId && sess.objectKey) {
+              await storage().abortMultipartUpload({ key: sess.objectKey, uploadId: sess.uploadId })
+                .catch((err: unknown) =>
+                  app.log.warn({ err, sessionId: sess.sessionId, uploadId: sess.uploadId }, "[upload] abort multipart failed (non-fatal)"),
+                );
+            }
           }
 
           await db.delete(sessions).where(inArray(sessions.sessionId, ids));
@@ -1340,7 +1090,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           200: z.object({
             ok: z.literal(true),
             sessionId: z.string(),
-            storageBackend: z.enum(["db", "db_fallback"]),
+            storageBackend: z.string(),
             totalChunks: z.number().int().positive(),
             chunkSize: z.number().int().positive(),
           }),
@@ -1420,7 +1170,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         return {
           ok: true as const,
           sessionId: existing.sessionId,
-          storageBackend: existing.storageBackend as "db" | "db_fallback",
+          storageBackend: existing.storageBackend,
           totalChunks: existing.totalChunks,
           chunkSize: existing.chunkSize,
         };
@@ -1434,30 +1184,26 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           ? Math.ceil(body.totalBytes / body.totalChunks)
           : 8 * 1024 * 1024;
 
-      let uploadId: string | null = null;
-      let storageBackend: "db" | "db_fallback" = "db_fallback";
-
-      // DatabaseObjectStorage is always available — create the multipart
-      // upload slot immediately. The "db_fallback" path handles the rare case
-      // where createMultipartUpload fails (e.g. a transient DB error); chunks
-      // are then stored as raw BYTEA in upload_chunks and assembled at finalize.
-      // Wrap in a 5-second timeout so a slow DB never makes /init block long
-      // enough for the proxy to return 502 before the client even starts chunking.
+      // MinIO is the sole storage backend — fail-fast if unavailable.
+      let uploadId: string;
       try {
         const mpPromise = storage().createMultipartUpload({ key: objectKey, contentType });
         const timeoutPromise = new Promise<never>((_, reject) => {
-          const t = setTimeout(() => reject(new Error("createMultipartUpload timed out after 5 s")), 5_000).unref();
-          // .unref() so this timer does not prevent Node from exiting on SIGTERM
-          // when the race resolves via mpPromise (the common case).
-          t.unref();
+          setTimeout(() => reject(new Error("createMultipartUpload timed out after 5 s")), 5_000).unref();
         });
         const mp = await Promise.race([mpPromise, timeoutPromise]);
         uploadId = mp.uploadId;
-        storageBackend = "db";
       } catch (err) {
-        req.log.warn(
+        req.log.error(
           { err, sessionId: body.sessionId },
-          "[chunked-init] storage multipart init failed — session will use DB fallback storage",
+          "[chunked-init] MinIO createMultipartUpload failed — upload cannot proceed",
+        );
+        throw Object.assign(
+          new Error(
+            "Object storage (MinIO) is temporarily unavailable. Unable to initialize upload. " +
+            "Please verify MinIO is running and retry.",
+          ),
+          { statusCode: 503 },
         );
       }
 
@@ -1465,7 +1211,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         await db.insert(sessions).values({
           sessionId: body.sessionId,
           uploadId,
-          objectKey: storageBackend !== "db_fallback" ? objectKey : null,
+          objectKey: objectKey,
           title: body.title,
           description: body.description ?? "",
           category: body.category ?? "sermon",
@@ -1481,7 +1227,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           durationSecs:
             body.durationSecs !== undefined ? Math.round(Number(body.durationSecs)) : null,
           uploadedBy: req.principal?.id ?? null,
-          storageBackend,
+          storageBackend: "minio",
           status: "uploading",
           expectedFileSha256: body.fileSha256 ?? null,
         });
@@ -1504,7 +1250,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       req.log.info(
         {
           sessionId: body.sessionId,
-          storageBackend,
+          storageBackend: "minio",
           totalChunks: body.totalChunks,
           totalBytes: body.totalBytes,
         },
@@ -1520,7 +1266,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       return {
         ok: true as const,
         sessionId: body.sessionId,
-        storageBackend,
+        storageBackend: "minio",
         totalChunks: Number(body.totalChunks),
         chunkSize,
       };
@@ -1659,70 +1405,51 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       // under a 3-file simultaneous upload with 4 parallel chunks each.
       await acquireChunkDbSlot();
       try {
-        if (session.storageBackend !== "db_fallback" && session.uploadId && session.objectKey) {
-          // Upload directly to object storage as a multipart part (1-based partNumber)
-          const partNumber = chunkIndex + 1;
-          try {
-            const { etag } = await storage().uploadPart({
-              key: session.objectKey,
-              uploadId: session.uploadId,
-              partNumber,
-              body,
-            });
-
-            // body is no longer needed — release the 8 MiB buffer for GC
-            // before the next await (the chunks INSERT) so it isn't kept alive
-            // across the full ~13-15 s DB write.
-            body = Buffer.alloc(0);
-            (req as any).body = null;
-
-            await db.insert(chunks).values({
-              id: chunkId,
-              sessionId,
-              chunkIndex,
-              checksum,
-              sizeBytes,
-              byteOffset,
-              s3Etag: etag,
-              storageBackend: "db",
-            });
-
-            return reply.send({ ok: true, chunkIndex, storageBackend: "db" });
-          } catch (err) {
-            req.log.warn(
-              { err, sessionId, chunkIndex, partNumber },
-              "[chunk] uploadPart failed — chunk NOT saved; client will retry",
-            );
-            // Do NOT fall through to DB fallback: the session was opened in object storage
-            // mode and all previous chunks went there. Switching mid-session to db_fallback
-            // would produce an irrecoverable mixed state at finalize time. Instead return
-            // 503 so the client's retry logic backs off and re-attempts.
-            return reply.code(503).send({
-              error:
-                "Object storage is temporarily unavailable. The chunk was not saved. " +
-                "It will be retried automatically with exponential backoff.",
-            });
-          }
+        if (!session.uploadId || !session.objectKey) {
+          return reply.code(400).send({
+            error: "Upload session is missing MinIO multipart state. Re-initialize the upload to recover.",
+          });
         }
 
-        // DB fallback mode: store raw bytes as BYTEA.
-        // body is passed as fallbackData — cannot null it before the INSERT.
-        await db.insert(chunks).values({
-          id: chunkId,
-          sessionId,
-          chunkIndex,
-          checksum,
-          sizeBytes,
-          byteOffset,
-          fallbackData: body,
-          storageBackend: "db_fallback",
-        });
+        // Upload directly to MinIO as a multipart part (1-based partNumber).
+        const partNumber = chunkIndex + 1;
+        try {
+          const { etag } = await storage().uploadPart({
+            key: session.objectKey,
+            uploadId: session.uploadId,
+            partNumber,
+            body,
+          });
 
-        // Release the 8 MiB buffer now that it's persisted to the DB.
-        body = Buffer.alloc(0);
-        (req as any).body = null;
+          // body is no longer needed — release the 8 MiB buffer for GC
+          // before the next await (the chunks INSERT) so it isn't kept alive
+          // across the full ~13-15 s DB write.
+          body = Buffer.alloc(0);
+          (req as any).body = null;
 
-        return reply.send({ ok: true, chunkIndex, storageBackend: "db_fallback" });
+          await db.insert(chunks).values({
+            id: chunkId,
+            sessionId,
+            chunkIndex,
+            checksum,
+            sizeBytes,
+            byteOffset,
+            s3Etag: etag,
+            storageBackend: "minio",
+          });
+
+          return reply.send({ ok: true, chunkIndex, storageBackend: "minio" });
+        } catch (err) {
+          req.log.warn(
+            { err, sessionId, chunkIndex, partNumber },
+            "[chunk] uploadPart failed — chunk NOT saved; client will retry",
+          );
+          return reply.code(503).send({
+            error:
+              "Object storage is temporarily unavailable. The chunk was not saved. " +
+              "It will be retried automatically with exponential backoff.",
+          });
+        }
       } finally {
         releaseChunkDbSlot();
       }
@@ -2014,12 +1741,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         //      → Must NOT reset — doing so would kill the active assembler.
         //        Return 409 so the client polls finalize-status instead.
         //
-        // Threshold: 30 minutes. A 2 GiB file assembled via the db_fallback
-        // bytea-concat path can legitimately take 40+ minutes on Replit's
-        // shared Neon DB; we also respect ASSEMBLY_WATCHDOG_MS (default 90 min)
-        // as a hard upper bound. 30 minutes means: if no progress marker
-        // (completedVideoId) appears within 30 min, the assembler is assumed
-        // dead and the lock is released.
+        // Threshold: 30 minutes. We also respect ASSEMBLY_WATCHDOG_MS
+        // (default 90 min) as a hard upper bound. 30 minutes means: if no
+        // progress marker (completedVideoId) appears within 30 min, the
+        // assembler is assumed dead and the lock is released.
         if (refreshed?.status === "assembling" && !refreshed.completedVideoId) {
           const lockAgeMs = refreshed.updatedAt
             ? Date.now() - new Date(refreshed.updatedAt).getTime()
@@ -2074,12 +1799,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           .catch(() => {});
       };
 
-      // Load all received chunks, ordered by index.
-      // Deliberately exclude the fallbackData (BYTEA) column — for db-mode sessions
-      // it is always null (no overhead), but for db_fallback sessions loading all
-      // chunk BYTEA at once (e.g. 30 × 8 MiB = 240 MiB for a 240 MB file) into
-      // Node.js memory causes OOM on Replit's constrained heap. fallbackData is
-      // loaded lazily one chunk at a time inside finalizeFromDbFallback.
+      // Load all received chunks, ordered by index (ETag metadata only).
       const allChunks = await db
         .select({
           id: chunks.id,
@@ -2186,7 +1906,18 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       // Failure recovery: if background assembly throws, the video row is marked
       // transcodingStatus='failed' and the session is reset to 'uploading' so
       // the operator can retry from the upload queue panel.
-      if (session.storageBackend !== "db_fallback" && session.uploadId && session.objectKey) {
+      if (!session.uploadId || !session.objectKey) {
+        await resetLock();
+        throw Object.assign(
+          new Error(
+            "Upload session is missing required MinIO multipart state (uploadId or objectKey). " +
+            "Re-initialize the upload to recover.",
+          ),
+          { statusCode: 400 },
+        );
+      }
+
+      {
         // Validate etags now (synchronous check; must happen before we commit
         // the video row since a corrupt assembly would leave an unplayable blob).
         const missingEtags = allChunks.filter((c) => !c.s3Etag);
@@ -2774,385 +2505,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         };
       }
 
-      // ── Path B: "db_fallback" backend — async pre-commit (same pattern as Path A) ──
-      //
-      // db_fallback is active when init's createMultipartUpload failed. Chunks are
-      // stored as BYTEA in upload_chunks.fallback_data. We follow the same
-      // pre-commit → background-assembly pattern as Path A so finalize returns
-      // immediately regardless of storage backend.
-      //
-      // objectKey is null on the session row for db_fallback. Compute it now
-      // using the same deterministic formula as finalizeFromDbFallback, then
-      // persist it so the background task uses the same key even if midnight
-      // rolls over between pre-commit and assembly.
-      const now = new Date();
-      const safeExtB = (() => {
-        const fnExt = session.originalFilename
-          ? (session.originalFilename.split(".").pop() ?? "").toLowerCase()
-          : "";
-        if (/^(mp4|mov|mkv|avi|webm|m4v|flv|wmv|ts|mts|m2ts)$/.test(fnExt)) return fnExt;
-        const mime = (session.mimeType ?? session.contentType ?? "").toLowerCase();
-        if (mime.includes("webm")) return "webm";
-        if (mime.includes("quicktime") || mime.includes("mov")) return "mov";
-        if (mime.includes("x-matroska") || mime.includes("mkv")) return "mkv";
-        if (mime.includes("x-msvideo") || mime.includes("avi")) return "avi";
-        return "mp4";
-      })();
-      const fallbackObjectKey =
-        session.objectKey ??
-        `uploads/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, "0")}/${String(now.getUTCDate()).padStart(2, "0")}/${session.sessionId}.${safeExtB}`;
-      const fallbackVideoUrl = storage().publicUrl(fallbackObjectKey);
-      const durationSecsB =
-        session.durationSecs && session.durationSecs > 0
-          ? Math.round(session.durationSecs)
-          : 1800;
 
-      const videoIdB = randomUUID();
-      let insertedB: (typeof videos.$inferSelect)[];
-      try {
-        insertedB = await db
-          .insert(videos)
-          .values({
-            id: videoIdB,
-            youtubeId: null,
-            title: session.title,
-            description: session.description ?? "",
-            thumbnailUrl: "",
-            duration: String(durationSecsB),
-            category: session.category ?? "sermon",
-            preacher: session.preacher ?? "",
-            publishedAt: null,
-            videoSource: "local",
-            localVideoUrl: fallbackVideoUrl,
-            featured: session.featured,
-            originalFilename: session.originalFilename ?? null,
-            mimeType: session.mimeType ?? null,
-            sizeBytes: session.sizeBytes,
-            objectPath: fallbackObjectKey,
-            uploadedBy: session.uploadedBy ?? null,
-            s3MirroredAt: null,
-            broadcastOnly: session.broadcastOnly ?? true,
-            transcodingStatus: "none", // blob not yet committed; faststart + HLS pending
-          })
-          .returning();
-      } catch (insertErr) {
-        await resetLock();
-        req.log.error(
-          { err: insertErr, sessionId, videoId: videoIdB },
-          "[finalize:db_fallback] video INSERT failed — lock released",
-        );
-        throw Object.assign(
-          new Error("Failed to create video record. The upload is safe — please retry finalization."),
-          { statusCode: 500, cause: insertErr },
-        );
-      }
-
-      const rowB = insertedB[0];
-      if (!rowB) {
-        await resetLock();
-        throw new Error("videos insert returned no rows");
-      }
-
-      // Persist the pre-agreed objectKey + pre-committed videoId so the
-      // idempotency check and finalize-status poll work correctly during
-      // background assembly, and so the background task uses the same key
-      // even if midnight rolls over before assembly starts.
-      try {
-        await db
-          .update(sessions)
-          .set({ completedVideoId: videoIdB, objectKey: fallbackObjectKey, updatedAt: new Date() })
-          .where(eq(sessions.sessionId, sessionId));
-      } catch (updateErr) {
-        req.log.warn(
-          { err: updateErr, sessionId, videoId: videoIdB },
-          "[finalize:db_fallback] completedVideoId update failed (non-fatal)",
-        );
-      }
-
-      void invalidateVideosCatalogCache();
-      try { broadcastEngine.pushSnapshot(); } catch { /* non-fatal */ }
-      adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "upload-precommitted" });
-
-      req.log.info(
-        { sessionId, videoId: videoIdB, chunks: allChunks.length },
-        "[finalize:db_fallback] pre-committed ok — background assembly starting",
+      // Unreachable: the block above always returns when uploadId and objectKey are set.
+      throw Object.assign(
+        new Error("[finalize] internal error: assembly path not resolved"),
+        { statusCode: 500 },
       );
-
-      // ── Background db_fallback assembly + post-processing ─────────────────
-      const capturedLogB = req.log;
-      const sessionForAssembly = { ...session, objectKey: fallbackObjectKey };
-      const assemblyStartMsB = Date.now();
-
-      void (async () => {
-        // Assembly watchdog (db_fallback path) — same rationale as Path A:
-        // uses env.ASSEMBLY_WATCHDOG_MS (default 4 h) and emits ASSEMBLY_FAILED
-        // (not CORRUPT_SOURCE) because the blob state is unknown at fire time.
-        const watchdogB = setTimeout(() => {
-          void (async () => {
-            const watchdogElapsedMinB = Math.round(env.ASSEMBLY_WATCHDOG_MS / 60_000);
-            capturedLogB.error(
-              { sessionId, videoId: videoIdB, elapsed: `${watchdogElapsedMinB}min` },
-              "[finalize:db_fallback:bg] assembly watchdog fired — marking failed, resetting session",
-            );
-            await Promise.allSettled([
-              db
-                .update(videos)
-                .set({
-                  transcodingStatus: "failed",
-                  transcodingErrorCode: "ASSEMBLY_FAILED",
-                  transcodingErrorMessage:
-                    `Assembly watchdog timeout (${watchdogElapsedMinB} min) — the blob was never fully assembled. ` +
-                    "Reset the session from the upload panel and retry the upload.",
-                })
-                .where(eq(videos.id, videoIdB)),
-              db
-                .update(sessions)
-                .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
-                .where(eq(sessions.sessionId, sessionId)),
-            ]);
-            adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "assembly-watchdog-timeout" });
-            uploadTelemetry.serverFail(
-              sessionId,
-              session.sizeBytes,
-              "assembly_watchdog_timeout",
-              `Assembly watchdog timeout (${watchdogElapsedMinB} min) — blob was never fully assembled.`,
-            );
-          })();
-        }, env.ASSEMBLY_WATCHDOG_MS);
-        // .unref() so this timer does not prevent Node from exiting on SIGTERM
-        // while the watchdog is pending.
-        watchdogB.unref();
-
-        try {
-          const result = await finalizeFromDbFallback(sessionForAssembly, allChunks.length, capturedLogB);
-          clearTimeout(watchdogB);
-
-          // ── Post-assembly blob integrity check (Path B / db_fallback) ────
-          // Mirror Path A: verify the assembled blob in storage_blobs has the
-          // declared file size before allowing faststart or transcoding to run.
-          // A mismatch here means the db_fallback multipart assembly dropped one
-          // or more chunks — proceeding would produce a truncated video file.
-          {
-            const assembledHeadB = await storage().headObject(result.objectKey).catch(() => null);
-            const expectedBytesB = session.sizeBytes;
-            const actualBytesB = assembledHeadB?.contentLength ?? 0;
-            if (!assembledHeadB?.exists || actualBytesB !== expectedBytesB) {
-              capturedLogB.error(
-                { sessionId, videoId: videoIdB, expectedBytes: expectedBytesB, actualBytes: actualBytesB, blobExists: assembledHeadB?.exists ?? false },
-                "[finalize:db_fallback:bg] assembled blob size mismatch — marking video failed, resetting session for retry",
-              );
-              await Promise.allSettled([
-                db
-                  .update(videos)
-                  .set({
-                    transcodingStatus: "failed",
-                    transcodingErrorCode: "CORRUPT_SOURCE",
-                    transcodingErrorMessage:
-                      `Assembly integrity check failed: declared ${expectedBytesB} bytes but assembled blob ` +
-                      `is ${actualBytesB} bytes. The upload may be incomplete — please retry finalization.`,
-                  })
-                  .where(eq(videos.id, videoIdB)),
-                db
-                  .update(sessions)
-                  .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
-                  .where(eq(sessions.sessionId, sessionId)),
-              ]);
-              adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "assembly-size-mismatch" });
-              uploadTelemetry.serverFail(
-                sessionId,
-                actualBytesB,
-                "assembly_size_mismatch",
-                `Assembly integrity check failed: declared ${expectedBytesB} bytes but assembled blob is ${actualBytesB} bytes.`,
-              );
-              return;
-            }
-          }
-
-          const assemblyMsB = Date.now() - assemblyStartMsB;
-          capturedLogB.info(
-            { sessionId, videoId: videoIdB, assemblyMsB },
-            "[finalize:db_fallback:bg] assembly done",
-          );
-
-          await Promise.all([
-            db
-              .update(sessions)
-              .set({ status: "completed", storageBackend: result.storageBackend, updatedAt: new Date() })
-              .where(eq(sessions.sessionId, sessionId))
-              .catch((err: unknown) =>
-                capturedLogB.warn({ err, sessionId }, "[finalize:db_fallback:bg] session completed update failed (non-fatal)"),
-              ),
-            db
-              .update(videos)
-              .set({ s3MirroredAt: new Date(), localVideoUrl: result.localVideoUrl, objectPath: result.objectKey })
-              .where(eq(videos.id, videoIdB))
-              .catch((err: unknown) =>
-                capturedLogB.warn(
-                  { err, videoId: videoIdB },
-                  "[finalize:db_fallback:bg] s3MirroredAt stamp failed (non-fatal) — startup repair will recover on next boot",
-                ),
-              ),
-          ]);
-
-          // Reclaim BYTEA chunk rows now that the blob is fully assembled.
-          void db
-            .delete(chunks)
-            .where(eq(chunks.sessionId, sessionId))
-            .catch((err: unknown) =>
-              capturedLogB.warn({ err, sessionId }, "[finalize:db_fallback:bg] chunk cleanup failed (non-fatal)"),
-            );
-
-          // Post-upload probes: thumbnail + duration.
-          // Must run BEFORE faststart because faststart replaces the blob.
-          // Run SEQUENTIALLY (not in parallel) so only one source download
-          // occupies /tmp at a time — parallel downloads double peak disk
-          // usage on constrained environments. This mirrors Path A's explicit
-          // sequential design documented at the same step above.
-          const clientDurationB = Number(rowB.duration ?? "0");
-          // Hoisted so the accurate ffprobe duration is available to update
-          // broadcast_queue.duration_secs AFTER enqueueIfMissing() creates
-          // the queue row (updating before enqueue would match 0 rows).
-          let ffprobeDurSecsB: number | null = null;
-          try {
-            const thumbUrlB = await generateQuickThumbnail(result.objectKey, videoIdB);
-            // Mirror Path A: probe even when clientDurationB > 0 if it equals
-            // the 1800-second placeholder so db_fallback uploads also get
-            // a real ffprobe duration instead of a permanent placeholder.
-            const probedSecsB = (clientDurationB > 0 && clientDurationB !== 1800)
-              ? null
-              : await probeUploadedDuration(result.objectKey);
-            // Single ffprobe pass for all technical metadata (codec, bitrate, resolution).
-            const mediaMetaB = await probeVideoMetadata(result.objectKey);
-            const patchB: Partial<typeof videos.$inferInsert> = {};
-            if (thumbUrlB) patchB.thumbnailUrl = thumbUrlB;
-            const effectiveDurSecsB = probedSecsB ?? mediaMetaB.durationSecs;
-            if (effectiveDurSecsB != null) patchB.duration = String(Math.round(effectiveDurSecsB));
-            if (mediaMetaB.videoCodec != null) patchB.videoCodec = mediaMetaB.videoCodec;
-            if (mediaMetaB.audioCodec != null) patchB.audioCodec = mediaMetaB.audioCodec;
-            if (mediaMetaB.videoBitrate != null) patchB.videoBitrate = mediaMetaB.videoBitrate;
-            if (mediaMetaB.videoWidth != null) patchB.videoWidth = mediaMetaB.videoWidth;
-            if (mediaMetaB.videoHeight != null) patchB.videoHeight = mediaMetaB.videoHeight;
-            if (Object.keys(patchB).length > 0) {
-              await db.update(videos).set(patchB).where(eq(videos.id, videoIdB));
-              void invalidateVideosCatalogCache();
-              adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "thumbnail-generated" });
-            }
-            // Capture for the post-enqueue broadcast_queue update below.
-            const durSecsB = probedSecsB ?? mediaMetaB.durationSecs;
-            if (durSecsB != null && durSecsB > 10) ffprobeDurSecsB = durSecsB;
-          } catch (err) {
-            capturedLogB.warn({ err, videoId: videoIdB }, "[finalize:db_fallback:bg] post-upload probes failed (non-fatal)");
-          }
-
-          // ── Immediate broadcast queue entry (Path B) ─────────────────────
-          // Queue the video as soon as the raw blob is in storage — no validity
-          // gate.  Every upload reaches the broadcast queue and can air as raw
-          // MP4.  Faststart upgrades the source in-place; HLS adds a manifest.
-          //
-          // IMPORTANT: enqueue BEFORE runFaststart — faststart sets
-          // transcodingStatus='processing' while swapping the blob, which
-          // temporarily blocks the item in loadActive().  Calling enqueueIfMissing
-          // here ensures the item is queued even if faststart fails.
-          try {
-            const enqueueResultB = await enqueueIfMissing({ videoId: videoIdB, reason: "upload-finalize" });
-            if (enqueueResultB.enqueued) {
-              capturedLogB.info(
-                { videoId: videoIdB, queueItemId: enqueueResultB.queueItemId },
-                "[finalize:db_fallback:bg] video auto-queued for broadcast immediately after assembly",
-              );
-            } else {
-              capturedLogB.info(
-                { videoId: videoIdB, queueItemId: enqueueResultB.queueItemId },
-                "[finalize:db_fallback:bg] video already in broadcast queue — skipping duplicate insert",
-              );
-            }
-            if (ffprobeDurSecsB !== null) {
-              await db
-                .update(schema.broadcastQueueTable)
-                .set({ durationSecs: Math.round(ffprobeDurSecsB) })
-                .where(eq(schema.broadcastQueueTable.videoId, videoIdB))
-                .catch(() => {});
-            }
-            adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId: videoIdB });
-          } catch (enqErrB) {
-            capturedLogB.warn(
-              { err: enqErrB, videoId: videoIdB },
-              "[finalize:db_fallback:bg] immediate enqueueIfMissing failed (non-fatal)",
-            );
-            adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize-enqueue-failed", videoId: videoIdB });
-          }
-
-          try {
-            await runFaststart(videoIdB, result.objectKey, { skipStatusUpdate: false });
-            capturedLogB.info({ sessionId, videoId: videoIdB }, "[finalize:db_fallback:bg] faststart done");
-          } catch (err) {
-            capturedLogB.warn({ err, videoId: videoIdB }, "[finalize:db_fallback:bg] faststart failed (non-fatal) — broadcasting as raw MP4");
-          }
-
-          try {
-            await enqueueTranscode({ videoId: videoIdB, videoPath: result.objectKey });
-            if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
-            capturedLogB.info({ sessionId, videoId: videoIdB }, "[finalize:db_fallback:bg] HLS transcode job queued");
-          } catch (err) {
-            capturedLogB.warn(
-              { err, videoId: videoIdB },
-              "[finalize:db_fallback:bg] enqueueTranscode failed (non-fatal)",
-            );
-          }
-
-          capturedLogB.info(
-            { sessionId, videoId: videoIdB, totalMs: Date.now() - assemblyStartMsB },
-            "[finalize:db_fallback:bg] all post-processing complete",
-          );
-        } catch (err) {
-          clearTimeout(watchdogB);
-          const assemblyFailedMs = Date.now() - assemblyStartMsB;
-          capturedLogB.error(
-            { err, sessionId, videoId: videoIdB, assemblyMs: assemblyFailedMs },
-            "[finalize:db_fallback:bg] ASSEMBLY FAILED — resetting session, marking video failed",
-          );
-          // db_fallback path: the blob is assembled inline (not via
-          // completeMultipartUpload) so a catch here means the blob was
-          // never fully written — always use ASSEMBLY_FAILED (recoverable).
-          await Promise.allSettled([
-            db
-              .update(videos)
-              .set({
-                transcodingStatus: "failed",
-                transcodingErrorCode: "ASSEMBLY_FAILED",
-                transcodingErrorMessage:
-                  `Assembly failed after ${assemblyFailedMs} ms — ` +
-                  "the blob was not committed. Reset the session from the " +
-                  "upload panel and retry the upload to recover.",
-              })
-              .where(eq(videos.id, videoIdB)),
-            db
-              .update(sessions)
-              .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
-              .where(eq(sessions.sessionId, sessionId)),
-          ]);
-          // Record server-side telemetry for this db_fallback assembly failure so
-          // the S3 telemetry dashboard captures it alongside Path A failures.
-          // Mirrors the identical call in Path A's outer catch block.
-          uploadTelemetry.serverFail(
-            sessionId,
-            session.sizeBytes,
-            "assembly_failed",
-            err instanceof Error ? err.message : "db_fallback assembly failed",
-          );
-          // Invalidate the server-side public catalog cache so TV/mobile
-          // clients don't continue to see this video as "queued" for the
-          // full cache TTL after it has been marked "failed".
-          void invalidateVideosCatalogCache();
-          adminEventBus.push("videos-library-updated", { videoId: videoIdB, reason: "assembly-failed" });
-        }
-      })();
-
-      return {
-        ...projectRow(rowB),
-        storageBackend: "db" as const,
-        transcodingWarning: null,
-      };
     },
   );
 
@@ -3181,8 +2539,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             status: z.enum(["uploading", "assembling", "completed", "not_found"]),
             videoId: z.string().nullable(),
             /** Real assembly progress 0–99 derived from storage_blobs.size_bytes.
-             *  Null when status is not "assembling", when objectKey is unavailable
-             *  (db_fallback mode), or when the storage query fails. */
+             *  Null when status is not "assembling" or when the storage query fails. */
             assemblyPercent: z.number().nullable(),
           }),
           429: z.object({ error: z.string() }),

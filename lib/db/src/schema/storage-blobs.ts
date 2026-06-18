@@ -5,56 +5,50 @@ import {
   boolean,
   timestamp,
   index,
-  customType,
 } from "drizzle-orm/pg-core";
 
-const bytea = customType<{ data: Buffer }>({
-  dataType() {
-    return "bytea";
-  },
-});
-
 /**
- * Binary object store — database-backed replacement for external object storage.
+ * MinIO object storage metadata index.
  *
- * Every key follows the same naming conventions previously used with
- * Replit Object Storage, so no application-layer path logic changes:
+ * Tracks every object stored in MinIO (the self-hosted S3-compatible backend).
+ * The binary data lives in MinIO; this table is a lightweight metadata index
+ * that allows batch SQL presence checks and prefix scans without issuing
+ * per-key MinIO HeadObject calls during large sweeps.
  *
+ * Storage key conventions (same as before — no path logic changes needed):
  *   uploads/{yyyy}/{mm}/{dd}/{sessionId}.{ext}   — assembled source video
  *   transcoded/{videoId}/master.m3u8             — HLS master playlist
  *   transcoded/{videoId}/v0/playlist.m3u8        — rendition playlist
  *   transcoded/{videoId}/v0/seg_00001.ts         — MPEG-TS segment
  *   transcoded/{videoId}/thumbnail.jpg           — auto-generated thumbnail
  *   thumbnails/{sessionId}.{ext}                 — custom uploaded thumbnail
- *   _parts/{uploadId}/{partNumber:06d}           — multipart upload temp parts
  *
- * PostgreSQL's TOAST mechanism transparently compresses and pages large values
- * (anything > ~2 KiB) without any application-layer intervention. A single
- * getObject call returns the full Buffer; Readable wrappers are applied by
- * the storage adapter layer (infrastructure/storage.ts).
+ * Rows are written by S3ObjectStorage.putObject / completeMultipartUpload
+ * and deleted by S3ObjectStorage.deleteObject / deleteByPrefix.  All writes
+ * are fire-and-forget (non-fatal) so a transient DB error never blocks
+ * the actual MinIO operation.
  *
  * Indexes:
  *   - Primary key on `key` for O(1) exact-match lookups.
- *   - btree index using text_pattern_ops for efficient prefix scans
- *     (used by abortMultipartUpload to delete `_parts/{uploadId}/*`
- *     and by bulk-delete operations on `transcoded/{videoId}/*`).
+ *   - btree index for efficient prefix scans (used by deleteByPrefix and
+ *     bulk-delete operations on `transcoded/{videoId}/*`).
  */
 export const storageBlobsTable = pgTable(
   "storage_blobs",
   {
     key: text("key").primaryKey(),
     contentType: text("content_type").notNull().default("application/octet-stream"),
-    data: bytea("data").notNull(),
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull().default(0),
     /**
      * Set to true by faststart.service.ts just before it starts the multipart
-     * re-upload that atomically replaces the raw upload blob with the moov-at-byte-0
-     * version. Cleared in a `finally` block once the swap completes (or fails).
+     * re-upload that atomically replaces the raw upload blob with the
+     * moov-at-byte-0 version. Cleared in a `finally` block once the swap
+     * completes (or fails).
      *
-     * During the swap window the blob is partially assembled — reading it would
-     * produce a corrupt/truncated file. headObject() returns contentLength=0 while
-     * this flag is true so the orchestrator, scanner, and any other reader treats
-     * the blob as transiently unavailable and skips it rather than serving garbage.
+     * With MinIO native multipart, the swap is atomic — the old blob remains
+     * fully readable until completeMultipartUpload succeeds — so this flag is
+     * informational only (no correctness impact).  It is retained for operator
+     * visibility and monitoring tooling compatibility.
      */
     faststartLocked: boolean("faststart_locked").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

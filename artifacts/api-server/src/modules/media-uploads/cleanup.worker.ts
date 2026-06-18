@@ -4,9 +4,8 @@
  * Runs every 30 minutes and performs four sweeps:
  *
  *  (a) Orphaned upload sessions: upload_sessions rows older than 24 h with
- *      no matching managed_videos row — delete associated upload_chunks
- *      (including db_fallback BYTEA data), clean up orphaned _parts storage
- *      blobs, then delete the session row.
+ *      no matching managed_videos row — delete associated upload_chunks,
+ *      clean up orphaned _parts storage blobs, then delete the session row.
  *
  *  (b) Orphaned upload chunks: upload_chunks rows for sessions that are
  *      completed/cancelled (inline assembly cleanup is non-fatal and can be
@@ -80,10 +79,8 @@ async function sweepOrphanedSessions(stats: SweepStats): Promise<void> {
     for (const row of rows.rows) {
       if (_stopped) break;
       try {
-        // 1. Delete associated chunk rows first. For db_fallback sessions these
-        //    hold the raw BYTEA video data — skipping this causes an unbounded
-        //    storage_blobs / upload_chunks growth. For db-mode sessions the rows
-        //    are lightweight (etags only) but cleaning them keeps the table tidy.
+        // 1. Delete associated chunk rows first. Rows are lightweight MinIO
+        //    ETag records, but cleaning them keeps the upload_chunks table tidy.
         await db.execute(sql`
           DELETE FROM upload_chunks WHERE session_id = ${row.session_id}
         `).catch((err: unknown) =>
@@ -93,20 +90,16 @@ async function sweepOrphanedSessions(stats: SweepStats): Promise<void> {
           ),
         );
 
-        // 2. Clean up orphaned _parts/{uploadId}/… rows in storage_blobs.
-        //    These are created during the db-mode multipart upload path and
-        //    should be removed by completeMultipartUpload on success, but
-        //    abandoned sessions leave them behind indefinitely.
-        if (row.upload_id) {
-          const partPrefix = `_parts/${row.upload_id}/`;
-          await db.execute(sql`
-            DELETE FROM storage_blobs WHERE starts_with(key, ${partPrefix})
-          `).catch((err: unknown) =>
-            logger.warn(
-              { err, sessionId: row.session_id, uploadId: row.upload_id },
-              "[cleanup-worker] _parts cleanup failed for orphaned session (non-fatal)",
-            ),
-          );
+        // 2. Abort any in-progress MinIO multipart upload for this session.
+        //    This releases MinIO's internal part storage for interrupted uploads.
+        if (row.upload_id && row.object_key) {
+          await storage().abortMultipartUpload({ key: row.object_key, uploadId: row.upload_id })
+            .catch((err: unknown) =>
+              logger.warn(
+                { err, sessionId: row.session_id, uploadId: row.upload_id },
+                "[cleanup-worker] abortMultipartUpload failed for orphaned session (non-fatal)",
+              ),
+            );
         }
 
         // 3. Delete the assembled destination blob if one exists.

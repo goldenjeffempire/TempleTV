@@ -504,17 +504,25 @@ const Env = z.object({
   // Example: https://cdn.templetv.org.ng
   CDN_BASE_URL: z.string().optional(),
 
-  // ── S3 Object Storage ─────────────────────────────────────────────────────
-  // Bucket name for the AWS S3 (or S3-compatible) object storage backend.
-  // When set, the API uses S3 for all binary blobs instead of PostgreSQL BYTEA.
-  // Credentials are auto-discovered from the standard AWS_ACCESS_KEY_ID /
-  // AWS_SECRET_ACCESS_KEY environment variables (set them as Replit secrets).
-  // Example: "temple-tv-media-storage"
+  // ── MinIO / S3-compatible Object Storage ──────────────────────────────────
+  // All video assets (source uploads, HLS segments, playlists, thumbnails) are
+  // stored in a MinIO bucket. MinIO is the sole storage backend — PostgreSQL
+  // BYTEA storage has been removed.
+  //
+  // Required for uploads to work:
+  //   S3_BUCKET         — bucket name (e.g. "temple-tv")
+  //   AWS_ENDPOINT_URL  — MinIO API endpoint (e.g. "http://localhost:9000")
+  //   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY — MinIO root credentials
+  //
+  // For cloud S3 (AWS, Cloudflare R2, etc.): set S3_BUCKET + S3_REGION and
+  // leave AWS_ENDPOINT_URL unset. Credentials are auto-discovered from the
+  // standard AWS_* environment variables.
   S3_BUCKET: z.string().optional(),
-  // AWS region for the S3 bucket. Falls back to AWS_REGION env var if not set.
-  // Example: "eu-north-1"
+  // AWS region for the bucket. Falls back to AWS_REGION env var if not set.
+  // MinIO ignores the region; it can be any string (e.g. "us-east-1").
   S3_REGION: z.string().optional(),
-  // Optional custom endpoint URL for S3-compatible services (MinIO, R2, etc.).
+  // Custom endpoint URL for MinIO or other S3-compatible services.
+  // Example: "http://localhost:9000"  (local MinIO)
   // Leave unset for standard AWS S3.
   AWS_ENDPOINT_URL: z.string().url().optional(),
 
@@ -810,7 +818,6 @@ const Env = z.object({
 
   // When true (default), the reconciliation worker attempts to recover missing
   // blobs from surviving upload_sessions + upload_chunks rows before quarantining.
-  // Applies only to db_fallback sessions whose chunks are still in upload_chunks.
   // Set to false to disable this recovery path.
   STORAGE_RECON_SESSION_REPAIR: z.coerce.boolean().default(true),
 });

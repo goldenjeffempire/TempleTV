@@ -205,7 +205,7 @@ function deriveStorageKeyFromUrl(localVideoUrl: string): string | null {
  * confirmed match.
  *
  * WHY THIS EXISTS:
- *   Both upload finalize paths (Path A "db" and Path B "db_fallback") set
+ *   The upload finalize path sets
  *   `s3MirroredAt` inside a `Promise.all` with `.catch(() => {})` that
  *   previously swallowed errors silently. If that UPDATE ever failed (transient
  *   pool exhaustion, statement timeout), the video's `s3_mirrored_at` would
