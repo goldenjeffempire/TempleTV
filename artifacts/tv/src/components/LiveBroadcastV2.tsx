@@ -649,6 +649,101 @@ export function LiveBroadcastV2({
     return () => clearInterval(id);
   }, [snapshot.state]);
 
+  // ── Buffer stall detection (PLAYING but HLS has frozen) ──────────────────
+  // HLS.js owns internal stall recovery (nudge, ABR quality-drop) but exposes
+  // no visual indicator. This effect detects when `timeupdate` stops firing
+  // for >4 s while the video element is nominally playing and shows a subtle
+  // spinner. After 12 s of continuous stall with no HLS.js recovery, forces
+  // a full rebind — same escalation as the 22 s dead-socket watchdog but
+  // tuned for a frozen-frame scenario rather than a dead transport.
+  const [bufferStalled, setBufferStalled] = useState(false);
+  useEffect(() => {
+    const isActivePlaying =
+      snapshot.state === "PLAYING" ||
+      snapshot.state === "PREPARING_NEXT";
+    if (!isActivePlaying) {
+      setBufferStalled(false);
+      return;
+    }
+    const activeVideo =
+      snapshot.activeBufferId === "A" ? videoRefA.current : videoRefB.current;
+    if (!activeVideo) return;
+
+    const STALL_SHOW_MS   = 4_000;  // show spinner after 4 s without timeupdate
+    const STALL_REBIND_MS = 12_000; // force-rebind after 12 s of continuous stall
+
+    let lastUpdateMs = Date.now();
+    let stallEnteredMs: number | null = null;
+
+    const onTimeUpdate = () => {
+      lastUpdateMs = Date.now();
+      setBufferStalled(false);
+      stallEnteredMs = null;
+    };
+    activeVideo.addEventListener("timeupdate", onTimeUpdate);
+
+    const check = setInterval(() => {
+      if (activeVideo.paused || activeVideo.ended) return;
+      const idleMs = Date.now() - lastUpdateMs;
+      if (idleMs >= STALL_SHOW_MS) {
+        if (stallEnteredMs === null) stallEnteredMs = Date.now();
+        setBufferStalled(true);
+        // Hard recovery: rebind once after prolonged stall; reset guard to
+        // prevent continuous rapid-fire rebinds if HLS.js also retries.
+        if (stallEnteredMs !== null && Date.now() - stallEnteredMs >= STALL_REBIND_MS) {
+          stallEnteredMs = null;
+          forceRebind();
+        }
+      } else {
+        stallEnteredMs = null;
+        setBufferStalled(false);
+      }
+    }, 1_000);
+
+    return () => {
+      activeVideo.removeEventListener("timeupdate", onTimeUpdate);
+      clearInterval(check);
+      setBufferStalled(false);
+    };
+  }, [snapshot.state, snapshot.activeBufferId, forceRebind]);
+
+  // ── True network reachability probe ────────────────────────────────────────
+  // Smart TVs (Tizen 4-6, webOS 5-6, FireTV) frequently misreport
+  // `navigator.onLine` and keep the WebSocket "connected" (no close frame)
+  // even when the upstream gateway is unreachable. Periodic HEAD probes to
+  // /api/healthz provide ground truth — the same endpoint used by the server's
+  // own liveness checks. On recovery, immediately force a rebind so the stream
+  // resumes within one round-trip rather than waiting for the dead-socket
+  // watchdog (≈22 s).
+  const [networkReachable, setNetworkReachable] = useState(true);
+  const networkReachableRef = useRef(true);
+  useEffect(() => {
+    const apiOrigin = resolveApiOrigin();
+    const probe = async () => {
+      try {
+        const res = await fetch(`${apiOrigin}/api/healthz`, {
+          method: "HEAD",
+          signal: AbortSignal.timeout(5_000),
+          cache: "no-store",
+        });
+        const ok = res.ok || res.status < 500;
+        if (!networkReachableRef.current && ok) {
+          // Network just recovered — force rebind to resume the stream
+          // immediately rather than waiting for the transport watchdog.
+          forceRebind();
+        }
+        networkReachableRef.current = ok;
+        setNetworkReachable(ok);
+      } catch {
+        networkReachableRef.current = false;
+        setNetworkReachable(false);
+      }
+    };
+    probe(); // immediate baseline check
+    const id = setInterval(probe, 15_000);
+    return () => clearInterval(id);
+  }, [forceRebind]);
+
   type OverlayContent = { primary: string; secondary?: string; showRefresh?: boolean } | null;
 
   const overlay = useMemo((): OverlayContent => {
@@ -930,7 +1025,43 @@ export function LiveBroadcastV2({
         preload="auto"
       />
 
-      {/* Connection-loss strip (non-blocking) */}
+      {/* Buffer stall spinner — visible when PLAYING but HLS has frozen frames.
+          Distinct from the main overlay (which is always null during PLAYING).
+          Fades in after 4 s of detected stall so brief transient hitches don't
+          flash the spinner unnecessarily. pointerEvents:none lets underlying
+          click / remote events (focus navigation) pass through unchanged.    */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          inset: 0,
+          zIndex: 22,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "rgba(0,0,0,0.22)",
+          backdropFilter: "blur(1px)",
+          WebkitBackdropFilter: "blur(1px)",
+          opacity: bufferStalled && !overlay ? 1 : 0,
+          pointerEvents: "none",
+          transition: "opacity 600ms ease",
+        }}
+      >
+        <div
+          style={{
+            width: "clamp(32px, 3.5vw, 48px)",
+            height: "clamp(32px, 3.5vw, 48px)",
+            border: "3px solid rgba(255,255,255,0.18)",
+            borderTopColor: "rgba(255,255,255,0.88)",
+            borderRadius: "50%",
+            animation: "broadcast-spin 0.85s linear infinite",
+          }}
+        />
+      </div>
+
+      {/* Connection-loss strip (non-blocking) — shown on socket disconnect OR
+          failed network probe. Network-down shows a distinct label so viewers
+          on Smart TVs know the issue is local, not a server outage.           */}
       <div
         style={{
           position: "absolute",
@@ -938,7 +1069,9 @@ export function LiveBroadcastV2({
           left: 0,
           right: 0,
           zIndex: 30,
-          background: "linear-gradient(90deg, rgba(180,83,9,0.97) 0%, rgba(217,119,6,0.97) 50%, rgba(180,83,9,0.97) 100%)",
+          background: !networkReachable
+            ? "linear-gradient(90deg, rgba(30,58,138,0.97) 0%, rgba(37,99,235,0.97) 50%, rgba(30,58,138,0.97) 100%)"
+            : "linear-gradient(90deg, rgba(180,83,9,0.97) 0%, rgba(217,119,6,0.97) 50%, rgba(180,83,9,0.97) 100%)",
           color: "#fff",
           textAlign: "center",
           fontSize: "clamp(10px, 1.1vw, 13px)",
@@ -946,9 +1079,9 @@ export function LiveBroadcastV2({
           letterSpacing: "0.06em",
           padding: "7px 12px",
           paddingTop: "max(env(safe-area-inset-top, 0px), 7px)",
-          opacity: connected ? 0 : 1,
-          pointerEvents: connected ? "none" : "auto",
-          transition: "opacity 400ms ease",
+          opacity: (!connected || !networkReachable) ? 1 : 0,
+          pointerEvents: (!connected || !networkReachable) ? "auto" : "none",
+          transition: "opacity 400ms ease, background 300ms ease",
           boxShadow: "0 2px 12px rgba(0,0,0,0.4)",
           display: "flex",
           alignItems: "center",
@@ -957,7 +1090,7 @@ export function LiveBroadcastV2({
         }}
       >
         <span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "#fff", opacity: 0.9 }} />
-        RECONNECTING TO BROADCAST
+        {!networkReachable ? "NO NETWORK SIGNAL — WILL RECONNECT AUTOMATICALLY" : "RECONNECTING TO BROADCAST"}
       </div>
 
       {/* ON AIR badge — top-right */}

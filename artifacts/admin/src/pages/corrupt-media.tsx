@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, RefreshCcw, Trash2, Search, ChevronLeft, ChevronRight, ShieldAlert } from "lucide-react";
+import { AlertTriangle, RefreshCcw, Trash2, Search, ChevronLeft, ChevronRight } from "lucide-react";
 import { useSSEEvent } from "@/contexts/sse-context";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";

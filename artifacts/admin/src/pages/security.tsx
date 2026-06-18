@@ -29,7 +29,7 @@ import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/shared/page-header";
 import {
-  ShieldCheck, ShieldOff, KeyRound, Copy, RefreshCw,
+  ShieldCheck, ShieldOff, Copy, RefreshCw,
   AlertCircle, CheckCircle2, Smartphone, Eye, EyeOff,
 } from "lucide-react";
 

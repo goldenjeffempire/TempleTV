@@ -550,7 +550,7 @@ export default function AppVersionsPage() {
                       size="icon"
                       className="h-7 w-7"
                       title="Edit"
-                      aria-label={`Edit version ${v.version}`}
+                      aria-label={`Edit version ${v.versionString}`}
                       onClick={() => setEditTarget(v)}
                     >
                       <Edit2 size={13} />
@@ -560,7 +560,7 @@ export default function AppVersionsPage() {
                       size="icon"
                       className="h-7 w-7 text-destructive hover:text-destructive"
                       title="Delete"
-                      aria-label={`Delete version ${v.version}`}
+                      aria-label={`Delete version ${v.versionString}`}
                       onClick={() => setDeleteTarget(v)}
                     >
                       <Trash2 size={13} />

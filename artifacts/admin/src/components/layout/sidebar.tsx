@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/use-auth";
@@ -25,6 +26,129 @@ interface NavItem {
 interface NavSection {
   title: string;
   items: NavItem[];
+}
+
+// ── Persistent broadcast status strip ────────────────────────────────────────
+// Polls the v2 health endpoint every 10 s so operators always see whether the
+// broadcast is on-air, the current item title, and the live sequence number
+// without navigating to the Master Control page.
+interface BroadcastHealthData {
+  mode: string;
+  sequence: number;
+  uptimeMs: number;
+  currentTitle: string | null;
+  currentKind: string | null;
+  hasOverride: boolean;
+  hasCurrent: boolean;
+  offAirReason: string | null;
+}
+
+function parseBroadcastHealth(raw: Record<string, unknown>): BroadcastHealthData {
+  return {
+    mode:         typeof raw["mode"] === "string"        ? raw["mode"]        : "normal",
+    sequence:     typeof raw["sequence"] === "number"    ? raw["sequence"]    : 0,
+    uptimeMs:     typeof raw["uptimeMs"] === "number"    ? raw["uptimeMs"]    : 0,
+    currentTitle: typeof raw["currentTitle"] === "string" ? raw["currentTitle"] : null,
+    currentKind:  null,
+    hasOverride:  raw["hasOverride"] === true,
+    hasCurrent:   raw["hasCurrent"]  === true,
+    offAirReason: typeof raw["offAirReason"] === "string" ? raw["offAirReason"] : null,
+  };
+}
+
+function BroadcastStatusStrip() {
+  const [health, setHealth] = useState<BroadcastHealthData | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/broadcast-v2/health", { cache: "no-store" });
+        if (!res.ok) { setError(true); return; }
+        const data = await res.json() as Record<string, unknown>;
+        if (!cancelled) {
+          setHealth(parseBroadcastHealth(data));
+          setError(false);
+        }
+      } catch {
+        if (!cancelled) setError(true);
+      }
+    };
+    void poll();
+    const id = setInterval(() => { void poll(); }, 10_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  if (error || !health) return null;
+
+  const isOverride = health.hasOverride || health.mode === "override";
+  const isOnAir    = health.hasCurrent || isOverride;
+
+  return (
+    <div className="px-3 pt-0 pb-1 border-t border-sidebar-border">
+      <Link href="/broadcast-v2" className="block group">
+        <div className={cn(
+          "flex items-start gap-2 px-2.5 py-2 rounded-md text-xs transition-colors",
+          isOnAir
+            ? "bg-green-500/8 border border-green-500/15 hover:bg-green-500/12"
+            : "bg-muted/40 border border-border hover:bg-muted/60",
+        )}>
+          {/* Status dot */}
+          <span className={cn(
+            "mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0",
+            isOnAir ? "bg-green-500 animate-pulse" : "bg-muted-foreground/30",
+          )} />
+
+          <div className="flex-1 min-w-0">
+            {/* Row 1: ON AIR / OFF AIR + sequence */}
+            <div className="flex items-center gap-1">
+              <span className={cn(
+                "font-bold uppercase tracking-widest text-[9px]",
+                isOnAir
+                  ? "text-green-600 dark:text-green-400"
+                  : "text-muted-foreground/50",
+              )}>
+                {isOnAir ? "On Air" : "Off Air"}
+              </span>
+              {isOverride && (
+                <span className="text-[9px] font-semibold text-amber-500 uppercase tracking-widest">
+                  · Override
+                </span>
+              )}
+              {health.sequence > 0 && (
+                <span className="ml-auto text-[9px] text-muted-foreground/40 tabular-nums">
+                  #{health.sequence}
+                </span>
+              )}
+            </div>
+
+            {/* Row 2: Current title or off-air reason */}
+            {isOnAir && health.currentTitle && (
+              <p className="text-[10px] text-sidebar-foreground/70 truncate leading-tight mt-0.5">
+                {health.currentTitle}
+              </p>
+            )}
+            {!isOnAir && health.offAirReason && (
+              <p className="text-[10px] text-muted-foreground/45 truncate leading-tight mt-0.5">
+                {health.offAirReason}
+              </p>
+            )}
+            {!isOnAir && !health.offAirReason && (
+              <p className="text-[10px] text-muted-foreground/40 leading-tight mt-0.5">
+                No content queued
+              </p>
+            )}
+          </div>
+
+          <ChevronRight
+            size={11}
+            className="flex-shrink-0 mt-0.5 text-muted-foreground/30 group-hover:text-primary transition-colors"
+          />
+        </div>
+      </Link>
+    </div>
+  );
 }
 
 function LiveBadge() {
@@ -202,6 +326,9 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
           })}
         </nav>
       </ScrollArea>
+
+      {/* Broadcast status — always-visible on-air indicator */}
+      <BroadcastStatusStrip />
 
       {/* Connection status footer */}
       <ConnectionStatus />
