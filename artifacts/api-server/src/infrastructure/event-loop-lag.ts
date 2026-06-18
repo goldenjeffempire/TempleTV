@@ -56,19 +56,17 @@ function probeLag(): void {
           { lagMs, threshold: ALERT_THRESHOLD_MS, consecutiveOver },
           "[event-loop-lag] WARN: event loop sustained above threshold — CPU starvation or blocking I/O",
         );
-        // Lazy-import so the watchdog has no hard dep on the broadcast bus at
-        // module load time (avoids circular-import init-order races).
-        void import("../modules/broadcast/queue.engine.js")
-          .then(({ broadcastEngine }) =>
-            broadcastEngine.emit("event", {
-              type: "ops-alert",
-              data: {
-                level: "warn",
-                code: "event-loop-lag",
-                message: `Event loop lag sustained at ${lagMs} ms (threshold: ${ALERT_THRESHOLD_MS} ms) — CPU starvation risk`,
-                lagMs,
-                threshold: ALERT_THRESHOLD_MS,
-              },
+        // Lazy-import adminEventBus to avoid circular-import init-order races.
+        // Previous code used broadcastEngine.emit() (v1 bus) which is not
+        // consumed by the unacked-alert sweeper — alerts were silently lost.
+        void import("../modules/admin-ops/admin-event-bus.js")
+          .then(({ adminEventBus }) =>
+            adminEventBus.push("ops-alert", {
+              level: "warn",
+              code: "event-loop-lag",
+              message: `Event loop lag sustained at ${lagMs} ms (threshold: ${ALERT_THRESHOLD_MS} ms) — CPU starvation risk`,
+              lagMs,
+              threshold: ALERT_THRESHOLD_MS,
             }),
           )
           .catch(() => {});

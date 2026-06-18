@@ -287,6 +287,37 @@ async function stopWorkers() {
 
 async function main() {
   const mode = env.RUN_MODE;
+
+  // ── Early process crash guards ──────────────────────────────────────────
+  // Registered here, at the very top of main(), BEFORE any async I/O so the
+  // 30-60 s startup window has error coverage. Node ≥15 terminates the
+  // process with exit code 1 for unhandled rejections if no listener is
+  // attached — these handlers provide a structured exit instead of a raw
+  // "UnhandledPromiseRejection" crash that bypasses pino's JSON log format.
+  //
+  // Pre-startup (startupComplete=false): log + exit immediately (no live
+  //   broadcast state exists to checkpoint, so a drain sequence would hang).
+  // Post-startup (startupComplete=true): delegate to the full graceful-
+  //   shutdown drain declared later in this function.
+  //
+  // Forward-reference safety: `shutdown` is declared ~800 lines below after
+  // all services are wired up.  The `!startupComplete` branch returns early
+  // (never reaches `shutdown`), and the `shutdown` reference is only
+  // evaluated when startupComplete=true — by which point the const has been
+  // assigned. Zero TDZ risk.
+  let startupComplete = false;
+  let shuttingDown = false;
+  process.on("unhandledRejection", (reason) => {
+    logger.fatal({ reason }, "unhandledRejection — triggering graceful shutdown");
+    if (!startupComplete) { process.exit(1); return; }
+    void shutdown("unhandledRejection", 1);
+  });
+  process.on("uncaughtException", (err) => {
+    logger.fatal({ err }, "uncaughtException — triggering graceful shutdown");
+    if (!startupComplete) { process.exit(1); return; }
+    void shutdown("uncaughtException", 1);
+  });
+
   logger.info({ runMode: mode }, "process starting");
   // Log the effective V8 heap limit immediately so production operators can
   // confirm --max-old-space-size is active without having to parse Node flags.
@@ -1103,12 +1134,9 @@ async function main() {
     workerKeepalive = setInterval(() => undefined, 1 << 30);
   }
 
-  // Set to true once all initialisation is complete. Guards unhandledRejection
-  // and uncaughtException handlers: before startup is done there is no live
-  // broadcast state to checkpoint, so those handlers exit immediately rather
-  // than attempting a potentially half-initialised drain sequence.
-  let startupComplete = false;
-  let shuttingDown = false;
+  // Declare the full shutdown drain function. `startupComplete` and
+  // `shuttingDown` are declared at the top of main() — shared with the early
+  // crash-guard handlers registered before any async I/O starts.
   const shutdown = async (signal: string, exitCode = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -1267,7 +1295,11 @@ async function main() {
         prodQueueSync.stop();
       } catch { /* non-fatal — prod-sync may not have been started */ }
     }
-    if (mode === "worker" || mode === "all") void stopWorkers();
+    // Await stopWorkers() so transcoder/youtube-sync/cleanup workers finish
+    // their current tick and flush any in-flight DB writes before closeDb()
+    // tears down the pool. Fire-and-forget (void) was a race: stopWorkers()
+    // can issue a final DB write while the pool is already closing.
+    if (mode === "worker" || mode === "all") await stopWorkers();
     if (app) {
       // F20: wait for open SSE connections to drain before closing the server.
       // All SSE handlers have already been force-closed above, so this loop
@@ -1334,30 +1366,16 @@ async function main() {
   };
 
   // All initialisation complete — subsystems live, broadcast started,
-  // DB pool warm. Mark startup done so the error handlers below can call
-  // shutdown() safely, and so /readyz returns real dependency-check results
-  // rather than 503 (prevents load-balancer traffic before the replica is
-  // fully ready on rolling deploys).
+  // DB pool warm. Mark startup done so /readyz returns real dependency-check
+  // results rather than 503 (prevents load-balancer traffic before the
+  // replica is fully ready on rolling deploys), and so the early crash-guard
+  // handlers (registered at the top of main()) delegate to shutdown() instead
+  // of calling process.exit(1) immediately.
   markStartupComplete();
   startupComplete = true;
 
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
-  process.on("unhandledRejection", (reason) => {
-    logger.fatal({ reason }, "unhandledRejection — triggering graceful shutdown");
-    // Before startup completes there is no live broadcast state to save —
-    // exit immediately so pnpm restarts cleanly without a hung drain.
-    if (!startupComplete) { process.exit(1); return; }
-    // After startup: flush broadcast checkpoint + drain connections before
-    // exiting. The shuttingDown guard in shutdown() prevents re-entry if a
-    // second rejection fires during the drain (e.g. DB pool error on close).
-    void shutdown("unhandledRejection", 1);
-  });
-  process.on("uncaughtException", (err) => {
-    logger.fatal({ err }, "uncaughtException — triggering graceful shutdown");
-    if (!startupComplete) { process.exit(1); return; }
-    void shutdown("uncaughtException", 1);
-  });
 }
 
 main().catch((err) => {
