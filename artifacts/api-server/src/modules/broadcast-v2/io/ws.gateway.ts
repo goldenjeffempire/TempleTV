@@ -56,6 +56,10 @@ export function closeAllBroadcastV2WsSessions(): void {
   _activeSockets.clear();
 }
 
+export function getBroadcastV2WsViewerCount(): number {
+  return _activeSockets.size;
+}
+
 /**
  * Broadcast a graceful-restart hint to all currently-connected WebSocket
  * clients WITHOUT closing the connections.  Called by main.ts immediately

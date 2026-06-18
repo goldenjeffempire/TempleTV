@@ -51,6 +51,8 @@ import { getCorruptMediaHealthSummary } from "../../broadcast/quarantine.service
 import { ytShuffleFallback } from "../engine/youtube-shuffle-fallback.js";
 import { storageBlobRecoveryService } from "../engine/storage-blob-recovery.service.js";
 import { storageReconciliationWorker } from "../engine/storage-reconciliation-worker.js";
+import { getBroadcastV2WsViewerCount } from "./ws.gateway.js";
+import { getBroadcastV2SseViewerCount } from "./sse.gateway.js";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
 const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
@@ -484,6 +486,17 @@ export async function restRoutes(app: FastifyInstance) {
       continuousOnAirMs: broadcastOrchestrator.getContinuousOnAirMs(),
       /** Milliseconds since the sequence last advanced. */
       sequenceAdvanceAgeMs: now - broadcastOrchestrator.getLastSequenceAdvanceMs(),
+      /**
+       * V2-native viewer count (active WebSocket + SSE connections to the
+       * broadcast-v2 gateway). WS covers TV/mobile/admin-preview; SSE
+       * covers web players that prefer server-sent events. Both are counted
+       * from the in-process connection registries — no DB round-trip.
+       */
+      viewers: {
+        ws: getBroadcastV2WsViewerCount(),
+        sse: getBroadcastV2SseViewerCount(),
+        total: getBroadcastV2WsViewerCount() + getBroadcastV2SseViewerCount(),
+      },
     };
 
     // Authenticated operators get the full internal diagnostics payload —
@@ -557,6 +570,134 @@ export async function restRoutes(app: FastifyInstance) {
        * orphanedBlobCount, consecutiveErrors.
        */
       storageReconciliation: storageBlobRecoveryService.getStats(),
+    };
+  });
+
+  // ── Admin: autonomous operation report ───────────────────────────────
+  // Returns a structured summary of every autonomous self-healing subsystem.
+  // Designed to answer "can this server run unattended right now?" at a
+  // glance — all critical workers (health, scanner, validator, faststart,
+  // content-rotation, queue-guard, storage-reconciliation, schedule-bridge)
+  // report their running state, circuit-breaker status, and last run time
+  // in one response. Includes an overall autonomyScore (0–100) that is
+  // 100 when all critical workers are healthy and degrades proportionally
+  // for each suspended/unhealthy worker. Rate-limited: 10 req/min.
+  app.get("/autonomy-report", {
+    ...adminGuard,
+    schema: { response: { 429: _429err } },
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (_req, reply) => {
+    reply.header("Cache-Control", "no-store, max-age=0");
+    const now = Date.now();
+    const uptimeMs = now - PROCESS_BOOTED_AT_MS;
+    const boot = getBroadcastV2BootStatus();
+    const snap = broadcastOrchestrator.snapshot();
+    const workers = workerSupervisor.getHealth();
+    const hmStatus = getBroadcastHealthMonitorStatus();
+    const qhg = getQueueHealthGuardStatus();
+    const contentRot = getContentRotationStatus();
+    const badUrlStats = getBadUrlStats();
+    const storageRecon = storageBlobRecoveryService.getStats();
+    const wsViewers = getBroadcastV2WsViewerCount();
+    const sseViewers = getBroadcastV2SseViewerCount();
+
+    // Worker-level autonomy health: critical workers that must be running
+    // for 24/7 autonomous broadcast. Non-critical (viewer-count-updater)
+    // excluded from scoring.
+    const criticalWorkers = [
+      "broadcast-health-monitor",
+      "queue-integrity-validator",
+      "media-integrity-scanner",
+      "faststart-recovery",
+      "content-rotation",
+      "queue-health-guard",
+      "storage-reconciliation",
+      "schedule-bridge",
+    ];
+    const workerByName = new Map(workers.map((w) => [w.name, w]));
+    const criticalHealth = criticalWorkers.map((name) => {
+      const w = workerByName.get(name);
+      return {
+        name,
+        running: w?.running ?? false,
+        circuitOpen: w?.circuitOpen ?? false,
+        consecutiveFailures: w?.consecutiveFailures ?? 0,
+        lastRunAtMs: w?.lastRunAtMs ?? null,
+        lastSuccessAtMs: w?.lastSuccessAtMs ?? null,
+        lastErrorAtMs: w?.lastErrorAtMs ?? null,
+        lastError: w?.lastError ?? null,
+        nextRunAtMs: w?.nextRunAtMs ?? null,
+        healthy: w != null && w.running && !w.circuitOpen,
+      };
+    });
+    const healthyWorkers = criticalHealth.filter((w) => w.healthy).length;
+    const autonomyScore = Math.round((healthyWorkers / criticalWorkers.length) * 100);
+
+    // Orchestrator self-healing status.
+    const sequence = broadcastOrchestrator.getSequence();
+    const itemCount = broadcastOrchestrator.getItemCount();
+    const continuousOnAirMs = broadcastOrchestrator.getContinuousOnAirMs();
+    const reloadStats = broadcastOrchestrator.getReloadStats();
+    const lastSequenceAdvanceMs = broadcastOrchestrator.getLastSequenceAdvanceMs();
+
+    return {
+      generatedAtMs: now,
+      uptimeMs,
+      /** 0–100: 100 = fully autonomous, all critical workers healthy. */
+      autonomyScore,
+      /** True when the server can maintain 24/7 broadcast unattended. */
+      fullyAutonomous: autonomyScore === 100 && boot.started,
+      orchestrator: {
+        started: boot.started,
+        busBridgeInstalled: boot.busBridgeInstalled,
+        sequence,
+        mode: snap.mode,
+        itemCount,
+        continuousOnAirMs,
+        sequenceAdvanceAgeMs: now - lastSequenceAdvanceMs,
+        startAttempts: boot.startAttempts,
+        lastStartError: boot.lastStartError,
+        reload: reloadStats,
+      },
+      viewers: {
+        ws: wsViewers,
+        sse: sseViewers,
+        total: wsViewers + sseViewers,
+      },
+      workers: {
+        critical: criticalHealth,
+        all: workers,
+        totalHealthy: healthyWorkers,
+        totalCritical: criticalWorkers.length,
+      },
+      selfHealing: {
+        healthMonitor: {
+          staleThresholdMs: hmStatus.staleThresholdMs,
+          recoveryThresholdMs: hmStatus.recoveryThresholdMs,
+          fullRecoveryCount: hmStatus.fullRecoveryCount,
+          lastFullRecoveryAtMs: hmStatus.lastFullRecoveryAtMs,
+          recoveryInFlight: hmStatus.recoveryInFlight,
+        },
+        queueHealthGuard: {
+          threshold: qhg.threshold,
+          lastActiveCount: qhg.lastActiveCount,
+          belowThreshold: qhg.belowThreshold,
+          totalRebuilds: qhg.totalRebuilds,
+        },
+        contentRotation: {
+          strategy: contentRot.strategy,
+          intervalMs: contentRot.intervalMs,
+          lastShuffleAtMs: contentRot.lastShuffleAtMs,
+          shuffleCount: contentRot.shuffleCount,
+          lastShuffleItemCount: contentRot.lastShuffleItemCount,
+          lastShuffleError: contentRot.lastShuffleError,
+        },
+        badUrlCache: {
+          ...badUrlStats,
+          confidenceSourceSets: getUrlBadSourceSetsSize(),
+        },
+        storageReconciliation: storageRecon,
+      },
     };
   });
 

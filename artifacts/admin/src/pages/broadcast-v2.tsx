@@ -49,6 +49,9 @@ import {
   Monitor,
   Smartphone,
   TrendingUp,
+  Bot,
+  ShieldOff,
+  Wifi as WifiIcon,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
@@ -269,6 +272,16 @@ interface EngineHealth {
    * Null when the broadcast is currently off-air.
    */
   continuousOnAirMs?: number | null;
+  /**
+   * V2-native connection counts — active WebSocket and SSE connections
+   * to the broadcast-v2 gateway.  WS = TV/mobile/admin preview;
+   * SSE = web players.  Both sourced from in-process registries (zero DB).
+   */
+  viewers?: {
+    ws: number;
+    sse: number;
+    total: number;
+  };
   /**
    * Viewer-reported position drift stats from the last 90 s window.
    * All numeric fields are null when no samples have arrived yet.
@@ -1364,6 +1377,199 @@ function PlatformHealthCard({ health, error }: { health: SystemHealth | undefine
   );
 }
 
+/** Autonomy report response shape (mirrors /broadcast-v2/autonomy-report). */
+interface AutonomyReport {
+  generatedAtMs: number;
+  uptimeMs: number;
+  autonomyScore: number;
+  fullyAutonomous: boolean;
+  orchestrator: {
+    started: boolean;
+    busBridgeInstalled: boolean;
+    sequence: number;
+    mode: string;
+    itemCount: number;
+    continuousOnAirMs: number | null;
+    sequenceAdvanceAgeMs: number;
+    startAttempts: number;
+    lastStartError: string | null;
+    reload: {
+      attempts: number;
+      successes: number;
+      lastReloadOk: boolean;
+    };
+  };
+  viewers: { ws: number; sse: number; total: number };
+  workers: {
+    critical: Array<{
+      name: string;
+      running: boolean;
+      circuitOpen: boolean;
+      consecutiveFailures: number;
+      lastRunAtMs: number | null;
+      lastSuccessAtMs: number | null;
+      lastError: string | null;
+      nextRunAtMs: number | null;
+      healthy: boolean;
+    }>;
+    totalHealthy: number;
+    totalCritical: number;
+  };
+  selfHealing: {
+    healthMonitor: {
+      staleThresholdMs: number;
+      recoveryThresholdMs: number;
+      fullRecoveryCount: number;
+      lastFullRecoveryAtMs: number | null;
+      recoveryInFlight: boolean;
+    };
+    queueHealthGuard: {
+      threshold: number;
+      lastActiveCount: number;
+      belowThreshold: boolean;
+      totalRebuilds: number;
+    };
+    contentRotation: {
+      strategy: string;
+      intervalMs: number;
+      lastShuffleAtMs: number;
+      shuffleCount: number;
+    };
+    badUrlCache: {
+      blockedCount: number;
+      totalBlocked: number;
+    };
+    storageReconciliation: {
+      lastRunAtMs: number | null;
+      lastRunDurationMs: number | null;
+      lastScanCount: number;
+      lastRepairCount: number;
+      totalRepairs: number;
+      consecutiveFailures: number;
+    };
+  };
+}
+
+/**
+ * Autonomy Status card — shows the platform's self-healing score and the
+ * health of all critical background workers that keep 24/7 broadcast running.
+ */
+function AutonomyCard({ report }: { report: AutonomyReport | undefined }) {
+  if (!report) return null;
+
+  const scoreColor =
+    report.autonomyScore === 100
+      ? "text-green-600 dark:text-green-400"
+      : report.autonomyScore >= 75
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-red-600 dark:text-red-400";
+
+  const progressColor =
+    report.autonomyScore === 100
+      ? "bg-green-500"
+      : report.autonomyScore >= 75
+        ? "bg-amber-500"
+        : "bg-red-500";
+
+  const now = Date.now();
+
+  function fmtAge(ms: number | null): string {
+    if (ms === null) return "never";
+    const ago = now - ms;
+    if (ago < 60_000) return `${Math.round(ago / 1000)}s ago`;
+    if (ago < 3_600_000) return `${Math.round(ago / 60_000)}m ago`;
+    return `${Math.round(ago / 3_600_000)}h ago`;
+  }
+
+  const sr = report.selfHealing.storageReconciliation;
+  const hm = report.selfHealing.healthMonitor;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 pt-4">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Bot className="h-4 w-4 text-indigo-500" />
+            Autonomy Status
+          </CardTitle>
+          <Badge
+            variant={report.fullyAutonomous ? "default" : "destructive"}
+            className="text-[10px] py-0 h-5"
+          >
+            {report.fullyAutonomous ? "Fully autonomous" : "Degraded"}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="pb-4 space-y-3">
+        {/* Score bar */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-muted-foreground">Autonomy score</span>
+            <span className={`font-bold tabular-nums ${scoreColor}`}>
+              {report.autonomyScore}/100
+            </span>
+          </div>
+          <div className="h-2 w-full rounded-full bg-muted overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${progressColor}`}
+              style={{ width: `${report.autonomyScore}%` }}
+            />
+          </div>
+          <div className="flex items-center justify-between text-[10px] text-muted-foreground tabular-nums">
+            <span>{report.workers.totalHealthy}/{report.workers.totalCritical} critical workers healthy</span>
+            <span>uptime {Math.round(report.uptimeMs / 60_000)}m</span>
+          </div>
+        </div>
+
+        {/* Critical workers grid */}
+        <div className="divide-y">
+          {report.workers.critical.map((w) => (
+            <div key={w.name} className="flex items-center gap-2 py-1">
+              {w.healthy
+                ? <CircleCheck className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                : w.circuitOpen
+                  ? <ShieldOff className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                  : <CircleAlert className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+              }
+              <span className="text-xs font-medium flex-1 min-w-0 truncate font-mono">{w.name}</span>
+              <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
+                {w.healthy
+                  ? (w.lastSuccessAtMs ? fmtAge(w.lastSuccessAtMs) : "ok")
+                  : w.lastError
+                    ? w.lastError.slice(0, 30)
+                    : "—"
+                }
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Self-healing stats */}
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          <div className="rounded-md border bg-muted/30 px-2.5 py-2 space-y-0.5">
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Health recoveries</div>
+            <div className="text-sm font-bold tabular-nums">{hm.fullRecoveryCount}</div>
+            <div className="text-[10px] text-muted-foreground">{hm.lastFullRecoveryAtMs ? fmtAge(hm.lastFullRecoveryAtMs) : "none yet"}</div>
+          </div>
+          <div className="rounded-md border bg-muted/30 px-2.5 py-2 space-y-0.5">
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Storage repairs</div>
+            <div className="text-sm font-bold tabular-nums">{sr.totalRepairs}</div>
+            <div className="text-[10px] text-muted-foreground">last: {fmtAge(sr.lastRunAtMs)}</div>
+          </div>
+        </div>
+
+        {/* V2 native connection counts */}
+        <div className="flex items-center gap-3 pt-0.5 text-[11px] text-muted-foreground">
+          <WifiIcon className="h-3.5 w-3.5 shrink-0" />
+          <span>V2 connections:</span>
+          <span className="font-medium tabular-nums text-foreground">{report.viewers.total}</span>
+          <span className="ml-auto tabular-nums">WS {report.viewers.ws} · SSE {report.viewers.sse}</span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // V2 broadcast snapshot — local type alias matching the server wire type from
 // broadcast-v2/domain/types.ts (V2Snapshot). Defined here so BroadcastV2PageInner
 // reads live state via REST (/broadcast-v2/state) without importing
@@ -1528,6 +1734,17 @@ function BroadcastV2PageInner() {
     queryFn: () => api.get<SystemHealth>("/admin/broadcast/system-health"),
     refetchInterval: 30_000,
     staleTime: 25_000,
+  });
+
+  // Autonomy report — critical-worker health + self-healing stats.
+  // Rate-limited to 10 req/min on the server; polls every 60 s here.
+  // Tells the operator at a glance whether the platform can sustain
+  // 24/7 unattended broadcast (autonomyScore, fullyAutonomous flag).
+  const { data: autonomyReport } = useQuery({
+    queryKey: ["broadcast-v2-autonomy-report"],
+    queryFn: () => api.get<AutonomyReport>("/broadcast-v2/autonomy-report"),
+    refetchInterval: 60_000,
+    staleTime: 55_000,
   });
 
   // Diagnostics — auth-guarded deep snapshot of all engine subsystems.
@@ -3630,6 +3847,9 @@ function BroadcastV2PageInner() {
 
       {/* Platform system health — all subsystems at a glance */}
       <PlatformHealthCard health={systemHealth} error={systemHealthError} />
+
+      {/* Autonomy status — critical-worker health + self-healing score */}
+      <AutonomyCard report={autonomyReport} />
 
       {/* Engine health panel */}
       <Card>

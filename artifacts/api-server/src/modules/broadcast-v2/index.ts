@@ -18,6 +18,7 @@ import { broadcastHealthMonitorScan, getBroadcastHealthMonitorStatus } from "./e
 import { contentRotationScan, getContentRotationStatus } from "./engine/content-rotation.js";
 import { queueHealthGuard, getQueueHealthGuardStatus } from "./engine/queue-health-guard.js";
 import { scheduleBridgeScan } from "./engine/schedule-bridge.js";
+import { storageReconciliationWorker } from "./engine/storage-reconciliation-worker.js";
 import { env } from "../../config/env.js";
 import { sendAdminAlert } from "../mail/mail.service.js";
 
@@ -296,23 +297,23 @@ function startSupervisedWorkers(): void {
     onCircuitOpen: makeCircuitOpenCallback("faststart-recovery"),
   });
 
-  // Viewer-count metrics updater: mirrors the v1 broadcastEngine viewer count
-  // (sum of WS + SSE + recent REST polls) into the broadcast_viewer_count
-  // Prometheus gauge so dashboards/alerts have a single source of truth.
-  // v2 doesn't have its own viewer registry yet — the v1 engine is the
-  // canonical concurrency signal across all surfaces (admin, TV, mobile).
-  // Polled every 5 s so Prometheus scrapes never see stale data even at the
-  // most aggressive default scrape interval.
+  // Viewer-count metrics updater: uses native V2 WS+SSE connection counts from
+  // the broadcast-v2 gateways directly — no V1 broadcastEngine dependency.
+  // WS (_activeSockets) + SSE (openSseSenders) together cover every connected
+  // player surface (admin preview, TV, mobile, web). Polled every 5 s so
+  // Prometheus scrapes never see stale data at any standard scrape interval.
   workerSupervisor.spawn({
     name: "viewer-count-metrics-updater",
     fn: async () => {
-      const { broadcastEngine } = await import("../broadcast/queue.engine.js");
+      const { getBroadcastV2WsViewerCount } = await import("./io/ws.gateway.js");
+      const { getBroadcastV2SseViewerCount } = await import("./io/sse.gateway.js");
       const { broadcastViewerCount, SERVICE_LABELS } = await import(
         "../../infrastructure/metrics.js"
       );
+      const total = getBroadcastV2WsViewerCount() + getBroadcastV2SseViewerCount();
       broadcastViewerCount.set(
-        { channel: broadcastEngine.channelId, ...SERVICE_LABELS },
-        broadcastEngine.getViewerCount(),
+        { channel: broadcastOrchestrator.channelId, ...SERVICE_LABELS },
+        total,
       );
     },
     intervalMs: 5_000,
@@ -401,6 +402,22 @@ function startSupervisedWorkers(): void {
     intervalMs: 60_000,
     initialDelayMs: 65_000,
     backoffMs: [15_000, 30_000, 60_000],
+  });
+
+  // Storage Reconciliation Worker: bidirectional DB↔object-storage integrity
+  // check across all active broadcast queue items and a rolling library-wide
+  // pass. Detects zero-byte blobs, external HLS bypass, and YouTube source
+  // bypass. Only quarantines after 3+ consecutive failing passes to avoid
+  // false positives from transient storage glitches. Runs every 10 min with
+  // a 3-min initial delay (after queue-health-guard and validator warm up).
+  // Circuit-open alert fires if the reconciliation itself fails repeatedly.
+  workerSupervisor.spawn({
+    name: "storage-reconciliation",
+    fn: () => storageReconciliationWorker.run(),
+    intervalMs: 10 * 60_000,
+    initialDelayMs: 3 * 60_000,
+    backoffMs: [60_000, 5 * 60_000, 10 * 60_000],
+    onCircuitOpen: makeCircuitOpenCallback("storage-reconciliation"),
   });
 
   logger.info("[broadcast-v2] supervised workers registered");

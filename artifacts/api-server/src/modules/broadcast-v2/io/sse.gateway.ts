@@ -72,6 +72,10 @@ export function broadcastReconnectHint(retryAfterMs: number): void {
   }
 }
 
+export function getBroadcastV2SseViewerCount(): number {
+  return openSseSenders.size;
+}
+
 function getSseLimit(): number {
   const val = process.env["MAX_SSE_PER_IP"];
   if (val === undefined || val === "") return 8;
