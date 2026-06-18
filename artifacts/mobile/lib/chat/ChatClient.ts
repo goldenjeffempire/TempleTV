@@ -282,7 +282,7 @@ export class ChatClient {
         this.lastError = { code: frame.code, message: frame.message, atMs: Date.now() };
         if (this.pending.length > 0) {
           const last = this.pending[this.pending.length - 1];
-          this.markPendingError(last.clientMsgId, frame.message, frame.retryAtMs);
+          if (last) this.markPendingError(last.clientMsgId, frame.message, frame.retryAtMs);
         } else {
           this.emit();
         }

@@ -74,7 +74,7 @@ const USER_SCOPED_STORAGE_PREFIXES = [
 async function clearUserScopedCaches(): Promise<void> {
   try {
     const keys = await AsyncStorage.getAllKeys();
-    const toRemove = keys.filter((k) => USER_SCOPED_STORAGE_PREFIXES.some((p) => k.startsWith(p)));
+    const toRemove = keys.filter((k: string) => USER_SCOPED_STORAGE_PREFIXES.some((p) => k.startsWith(p)));
     if (toRemove.length > 0) await AsyncStorage.multiRemove(toRemove);
   } catch (e) {
     if (process.env.NODE_ENV !== "production") {

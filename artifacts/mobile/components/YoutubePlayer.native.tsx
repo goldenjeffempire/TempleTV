@@ -157,7 +157,7 @@ function AudioModeCard({
       {onToggle && (
         <Pressable
           onPress={onToggle}
-          style={({ pressed }) => [audioStyles.switchBtn, { opacity: pressed ? 0.7 : 1 }]}
+          style={({ pressed }: { pressed: boolean }) => [audioStyles.switchBtn, { opacity: pressed ? 0.7 : 1 }]}
         >
           <Feather name="video" size={13} color="#B47FEB" />
           <Text style={audioStyles.switchBtnText}>Switch to Video</Text>
@@ -580,7 +580,7 @@ export function YoutubePlayer({
       <View style={[styles.overlay, { backgroundColor: "rgba(0,0,0,0.38)" }]}>
         <Pressable
           onPress={openExternal}
-          style={({ pressed }) => [
+          style={({ pressed }: { pressed: boolean }) => [
             styles.playButton,
             { backgroundColor: loading ? c.primary : "#FF0000", opacity: pressed ? 0.8 : 1, transform: [{ scale: pressed ? 0.92 : 1 }] },
           ]}

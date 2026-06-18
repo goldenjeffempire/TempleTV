@@ -53,7 +53,7 @@ export function CountdownOverlay({
         <View style={styles.btnRow}>
           <Pressable
             onPress={onCancel}
-            style={({ pressed }) => [
+            style={({ pressed }: { pressed: boolean }) => [
               styles.btn,
               styles.btnGhost,
               pressed && { opacity: 0.7 },
@@ -65,7 +65,7 @@ export function CountdownOverlay({
           </Pressable>
           <Pressable
             onPress={onPlayNow}
-            style={({ pressed }) => [
+            style={({ pressed }: { pressed: boolean }) => [
               styles.btn,
               styles.btnPrimary,
               pressed && { opacity: 0.85 },

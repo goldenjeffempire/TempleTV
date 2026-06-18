@@ -329,7 +329,7 @@ export default function LoginScreen() {
                     <Pressable
                       onPress={handleLogin}
                       disabled={loading}
-                      style={({ pressed }) => [styles.submitBtnOuter, { opacity: pressed ? 0.88 : 1 }]}
+                      style={({ pressed }: { pressed: boolean }) => [styles.submitBtnOuter, { opacity: pressed ? 0.88 : 1 }]}
                     >
                       <LinearGradient
                         colors={["#7c3aed", "#6d28d9", "#5b21b6"]}
@@ -366,7 +366,7 @@ export default function LoginScreen() {
 
                 <Pressable
                   onPress={() => router.replace("/signup")}
-                  style={({ pressed }) => [styles.signupBtn, { opacity: pressed ? 0.7 : 1 }]}
+                  style={({ pressed }: { pressed: boolean }) => [styles.signupBtn, { opacity: pressed ? 0.7 : 1 }]}
                 >
                   <Text style={styles.signupText}>
                     Don't have an account?{" "}
@@ -408,7 +408,7 @@ export default function LoginScreen() {
                     <Pressable
                       onPress={handleMfaSubmit}
                       disabled={loading || totpCode.length < 6}
-                      style={({ pressed }) => [styles.submitBtnOuter, { opacity: (pressed || totpCode.length < 6) ? 0.6 : 1 }]}
+                      style={({ pressed }: { pressed: boolean }) => [styles.submitBtnOuter, { opacity: (pressed || totpCode.length < 6) ? 0.6 : 1 }]}
                     >
                       <LinearGradient
                         colors={["#7c3aed", "#6d28d9", "#5b21b6"]}

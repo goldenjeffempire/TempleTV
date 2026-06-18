@@ -79,7 +79,7 @@ export function AuthGateModal() {
     closeAuthGate();
     if (target) {
       InteractionManager.runAfterInteractions(() => {
-        router.push({ pathname: target.pathname as any, params: target.params });
+        router.push({ pathname: target.pathname as `/${string}`, params: target.params });
       });
     }
   };
@@ -160,7 +160,7 @@ export function AuthGateModal() {
 
           <Pressable
             onPress={goToSignup}
-            style={({ pressed }) => [
+            style={({ pressed }: { pressed: boolean }) => [
               styles.primaryBtn,
               { backgroundColor: c.primary, opacity: pressed ? 0.9 : 1 },
             ]}
@@ -171,7 +171,7 @@ export function AuthGateModal() {
 
           <Pressable
             onPress={goToLogin}
-            style={({ pressed }) => [
+            style={({ pressed }: { pressed: boolean }) => [
               styles.secondaryBtn,
               { borderColor: c.border, opacity: pressed ? 0.7 : 1 },
             ]}
@@ -224,7 +224,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "flex-end",
     ...Platform.select({
-      web: { backdropFilter: "blur(8px)" as any },
+      web: { backdropFilter: "blur(8px)" } as Record<string, unknown>,
       default: {},
     }),
   },
@@ -238,7 +238,7 @@ const styles = StyleSheet.create({
       web: {
         borderRadius: 24,
         marginBottom: 24,
-        boxShadow: "0 20px 60px rgba(0,0,0,0.55)" as any,
+        boxShadow: "0 20px 60px rgba(0,0,0,0.55)" as unknown as string,
       },
       default: {
         shadowColor: "#000",

@@ -38,9 +38,9 @@ async function loadRNTP() {
   try {
     const mod = await import("react-native-track-player");
     TrackPlayer = mod.default;
-    Capability = mod.Capability as any;
-    AppKilledPlaybackBehavior = mod.AppKilledPlaybackBehavior as any;
-    State = mod.State as any;
+    Capability = mod.Capability;
+    AppKilledPlaybackBehavior = mod.AppKilledPlaybackBehavior;
+    State = mod.State;
     return true;
   } catch {
     return false;

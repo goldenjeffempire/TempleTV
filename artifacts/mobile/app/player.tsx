@@ -1522,7 +1522,7 @@ export default function PlayerScreen() {
                         hitSlop={8}
                         accessibilityRole="button"
                         accessibilityLabel={`React with ${emoji}`}
-                        style={({ pressed }) => [
+                        style={({ pressed }: { pressed: boolean }) => [
                           styles.fsEmojiBtn,
                           { opacity: pressed ? 0.55 : 1 },
                         ]}

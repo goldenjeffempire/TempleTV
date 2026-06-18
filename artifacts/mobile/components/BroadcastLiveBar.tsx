@@ -79,7 +79,7 @@ export function BroadcastLiveBar({
   const reactionIdxRef = useRef(0);
   const handleReact = () => {
     if (Platform.OS !== "web") Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const next = REACTION_CYCLE[reactionIdxRef.current % REACTION_CYCLE.length];
+    const next = REACTION_CYCLE[reactionIdxRef.current % REACTION_CYCLE.length]!;
     reactionIdxRef.current += 1;
     onSendReaction(next);
   };
@@ -114,7 +114,7 @@ export function BroadcastLiveBar({
       <View style={styles.bar}>
         {/* LIVE */}
         <Pressable
-          style={({ pressed }) => [styles.segment, pressed && styles.segmentPressed]}
+          style={({ pressed }: { pressed: boolean }) => [styles.segment, pressed && styles.segmentPressed]}
           onPress={() => handleTab("schedule")}
           accessibilityRole="button"
           accessibilityLabel="Live status — open program schedule"
@@ -132,7 +132,7 @@ export function BroadcastLiveBar({
 
         {/* VIEWERS */}
         <Pressable
-          style={({ pressed }) => [styles.segment, pressed && styles.segmentPressed]}
+          style={({ pressed }: { pressed: boolean }) => [styles.segment, pressed && styles.segmentPressed]}
           onPress={() => handleTab("schedule")}
           accessibilityRole="button"
           accessibilityLabel={`${viewers ?? "Unknown"} viewers watching now`}
@@ -143,7 +143,7 @@ export function BroadcastLiveBar({
 
         {/* REACTIONS */}
         <Pressable
-          style={({ pressed }) => [styles.segment, pressed && styles.segmentPressed]}
+          style={({ pressed }: { pressed: boolean }) => [styles.segment, pressed && styles.segmentPressed]}
           onPress={handleReact}
           accessibilityRole="button"
           accessibilityLabel="Send a reaction"
@@ -156,7 +156,7 @@ export function BroadcastLiveBar({
 
         {/* CHAT */}
         <Pressable
-          style={({ pressed }) => [styles.segment, pressed && styles.segmentPressed]}
+          style={({ pressed }: { pressed: boolean }) => [styles.segment, pressed && styles.segmentPressed]}
           onPress={() => handleTab("chat")}
           accessibilityRole="button"
           accessibilityLabel="Open live chat"
@@ -167,7 +167,7 @@ export function BroadcastLiveBar({
 
         {/* PRAYER */}
         <Pressable
-          style={({ pressed }) => [styles.segment, pressed && styles.segmentPressed]}
+          style={({ pressed }: { pressed: boolean }) => [styles.segment, pressed && styles.segmentPressed]}
           onPress={() => handleTab("prayer")}
           accessibilityRole="button"
           accessibilityLabel="Submit a prayer request"
@@ -178,7 +178,7 @@ export function BroadcastLiveBar({
 
         {/* SHARE */}
         <Pressable
-          style={({ pressed }) => [styles.segment, pressed && styles.segmentPressed]}
+          style={({ pressed }: { pressed: boolean }) => [styles.segment, pressed && styles.segmentPressed]}
           onPress={handleShare}
           accessibilityRole="button"
           accessibilityLabel="Share this broadcast"

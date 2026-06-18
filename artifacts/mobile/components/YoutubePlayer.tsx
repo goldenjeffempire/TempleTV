@@ -162,7 +162,7 @@ function WebYoutubePlayer({
       // Only accept messages from THIS iframe's window so a sibling
       // YouTube embed on the page can't trigger our state callbacks.
       if (event.source !== iframeRef.current?.contentWindow) return;
-      let data: any = event.data;
+      let data: unknown = event.data;
       if (typeof data === "string") {
         try {
           data = JSON.parse(data);
@@ -171,14 +171,15 @@ function WebYoutubePlayer({
         }
       }
       if (!data || typeof data !== "object") return;
+      const msg = data as Record<string, unknown>;
       const cbs = callbacksRef.current;
-      if (data.event === "onStateChange") {
+      if (msg["event"] === "onStateChange") {
         // YT.PlayerState: -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 cued
-        const state = data.info;
+        const state = msg["info"];
         if (state === 0) cbs.onEnd?.();
         else if (state === 1) cbs.onPlay?.();
         else if (state === 2) cbs.onPause?.();
-      } else if (data.event === "onError") {
+      } else if (msg["event"] === "onError") {
         cbs.onError?.();
       }
     }

@@ -64,7 +64,7 @@ export function PrayerSection() {
               setSending(false);
             });
         }}
-        style={({ pressed }) => [
+        style={({ pressed }: { pressed: boolean }) => [
           styles.prayerBtn,
           { backgroundColor: c.primary, opacity: sending || pressed ? 0.76 : 1 },
         ]}

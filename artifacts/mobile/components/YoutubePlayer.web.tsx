@@ -194,7 +194,7 @@ function WebAudioModeCard({
       {onSwitchToVideo && (
         <Pressable
           onPress={onSwitchToVideo}
-          style={({ pressed }) => [webAudioStyles.switchBtn, { opacity: pressed ? 0.7 : 1 }]}
+          style={({ pressed }: { pressed: boolean }) => [webAudioStyles.switchBtn, { opacity: pressed ? 0.7 : 1 }]}
         >
           <Feather name="video" size={13} color="#B47FEB" />
           <Text style={webAudioStyles.switchBtnText}>Switch to Video</Text>
@@ -634,14 +634,14 @@ export function YoutubePlayer({
           <View style={styles.errorBtnRow}>
             <Pressable
               onPress={handleManualRetry}
-              style={({ pressed }) => [styles.primaryBtn, { backgroundColor: c.primary, opacity: pressed ? 0.85 : 1 }]}
+              style={({ pressed }: { pressed: boolean }) => [styles.primaryBtn, { backgroundColor: c.primary, opacity: pressed ? 0.85 : 1 }]}
             >
               <Feather name="refresh-cw" size={14} color="#FFF" />
               <Text style={styles.primaryBtnText}>Try again</Text>
             </Pressable>
             <Pressable
               onPress={handleOpenYouTube}
-              style={({ pressed }) => [styles.secondaryBtn, { opacity: pressed ? 0.7 : 1 }]}
+              style={({ pressed }: { pressed: boolean }) => [styles.secondaryBtn, { opacity: pressed ? 0.7 : 1 }]}
             >
               <Feather name="external-link" size={14} color="#FFF" />
               <Text style={styles.secondaryBtnText}>Open on YouTube</Text>

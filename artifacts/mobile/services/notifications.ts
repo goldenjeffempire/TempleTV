@@ -16,7 +16,7 @@ function arrayBufferToBase64Url(buffer: ArrayBuffer | null): string {
   if (!buffer) return "";
   const bytes = new Uint8Array(buffer);
   let binary = "";
-  for (let i = 0; i < bytes.byteLength; i += 1) binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.byteLength; i += 1) binary += String.fromCharCode(bytes[i] ?? 0);
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 

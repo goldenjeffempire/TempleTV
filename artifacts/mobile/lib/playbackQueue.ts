@@ -108,7 +108,7 @@ export function getNextSermon(snapshot: QueueSnapshot): Sermon | null {
   if (!snapshot.currentId || snapshot.items.length === 0) return null;
   const idx = snapshot.items.findIndex((s) => s.id === snapshot.currentId);
   if (idx < 0 || idx >= snapshot.items.length - 1) return null;
-  return snapshot.items[idx + 1];
+  return snapshot.items[idx + 1] ?? null;
 }
 
 /** Sermon immediately before the current pointer, or null at the head. */
@@ -116,7 +116,7 @@ export function getPrevSermon(snapshot: QueueSnapshot): Sermon | null {
   if (!snapshot.currentId || snapshot.items.length === 0) return null;
   const idx = snapshot.items.findIndex((s) => s.id === snapshot.currentId);
   if (idx <= 0) return null;
-  return snapshot.items[idx - 1];
+  return snapshot.items[idx - 1] ?? null;
 }
 
 /** Zero-based position within the queue (-1 if not found). */

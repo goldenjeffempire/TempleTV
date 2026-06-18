@@ -23,9 +23,29 @@ import {
   isTrackPlayerSetup,
 } from "@/services/nowPlaying";
 import { postPlaybackTelemetryDelta } from "@/services/broadcast";
+// Type-only imports from lazily-required packages — never bundled at runtime.
+import type { Video as ExpoVideo, AVPlaybackStatus, ResizeMode as ExpoResizeMode } from "expo-av";
 
-let VideoComponent: any = null;
-let ResizeMode: any = null;
+/** Minimal interface for an hls.js Hls instance (lazily required on web). */
+interface HlsInstance {
+  loadSource(url: string): void;
+  attachMedia(media: HTMLVideoElement): void;
+  detachMedia(): void;
+  destroy(): void;
+  startLoad(startPosition?: number): void;
+  recoverMediaError(): void;
+  on(event: string, callback: (event: unknown, data?: unknown) => void): void;
+  off(event: string, callback: (event: unknown, data?: unknown) => void): void;
+}
+interface HlsConstructor {
+  new (config?: Record<string, unknown>): HlsInstance;
+  isSupported?(): boolean;
+  default?: HlsConstructor;
+  ErrorTypes?: Record<string, string>;
+}
+
+let VideoComponent: typeof ExpoVideo | null = null;
+let ResizeMode: typeof ExpoResizeMode | null = null;
 try {
   const av = require("expo-av");
   VideoComponent = av.Video;
@@ -132,7 +152,7 @@ function LocalAudioModeCard({
       {onToggle && (
         <Pressable
           onPress={onToggle}
-          style={({ pressed }) => [audioStyles.switchBtn, { opacity: pressed ? 0.7 : 1 }]}
+          style={({ pressed }: { pressed: boolean }) => [audioStyles.switchBtn, { opacity: pressed ? 0.7 : 1 }]}
         >
           <Feather name="video" size={13} color="#B47FEB" />
           <Text style={audioStyles.switchBtnText}>Switch to Video</Text>
@@ -229,10 +249,10 @@ export function LocalVideoPlayer({
   const c = useColors();
   const { width } = useWindowDimensions();
   const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, isPlaying, dataSaver, isRadioMode, toggleRadioMode } = usePlayer();
-  const [status, setStatus] = useState<any>(null);
+  const [status, setStatus] = useState<AVPlaybackStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const retryCountRef = useRef(0);
-  const videoRef = useRef<any>(null);
+  const videoRef = useRef<InstanceType<typeof ExpoVideo> | null>(null);
   const isMountedRef = useRef(true);
   const transitionOpacity = useRef(new Animated.Value(1)).current;
   const rntp = Platform.OS !== "web" && isTrackPlayerSetup();
@@ -245,8 +265,8 @@ export function LocalVideoPlayer({
   // muted but holding a decoded first frame of `effectiveNextUrl`.
   const webVideoRefA = useRef<HTMLVideoElement | null>(null);
   const webVideoRefB = useRef<HTMLVideoElement | null>(null);
-  const webHlsRefA = useRef<any>(null);
-  const webHlsRefB = useRef<any>(null);
+  const webHlsRefA = useRef<HlsInstance | null>(null);
+  const webHlsRefB = useRef<HlsInstance | null>(null);
   // Per-slot fatal-error retry budget for hls.js. Reset to 0 each time a
   // fresh URL is loaded into the slot; capped at 3 attempts per fresh load
   // before escalating to onError. Mirrors the TV player's recovery budget.
@@ -307,7 +327,7 @@ export function LocalVideoPlayer({
   // We can't put `status` in the watchdog effect's deps — it changes on
   // every position update, which would tear down and recreate the 1s
   // interval before it ever fires.
-  const statusRef = useRef<any>(null);
+  const statusRef = useRef<AVPlaybackStatus | null>(null);
   // onErrorRef lets the stall watchdog always call the latest onError without
   // being listed as a dep.  If onError were in the dep array it would force
   // the effect to tear down and re-run on every parent render (the caller
@@ -325,9 +345,9 @@ export function LocalVideoPlayer({
 
   const getWebVideo = useCallback((slot: "A" | "B"): HTMLVideoElement | null =>
     slot === "A" ? webVideoRefA.current : webVideoRefB.current, []);
-  const getWebHls = useCallback((slot: "A" | "B"): any =>
+  const getWebHls = useCallback((slot: "A" | "B"): HlsInstance | null =>
     slot === "A" ? webHlsRefA.current : webHlsRefB.current, []);
-  const setWebHls = useCallback((slot: "A" | "B", h: any) => {
+  const setWebHls = useCallback((slot: "A" | "B", h: HlsInstance | null) => {
     if (slot === "A") webHlsRefA.current = h; else webHlsRefB.current = h;
   }, []);
   const getWebLoadedUrl = useCallback((slot: "A" | "B"): string | null =>
@@ -438,7 +458,7 @@ export function LocalVideoPlayer({
   }, [isPlaying, isRadioMode, rntp]);
 
   const onPlaybackStatusUpdate = useCallback(
-    (s: any) => {
+    (s: AVPlaybackStatus) => {
       if (!isMountedRef.current) return;
       setStatus(s);
       statusRef.current = s;
@@ -633,8 +653,8 @@ export function LocalVideoPlayer({
       if (r && typeof r.then === "function") {
         r.then(() => {
           if (isMountedRef.current) setWebNeedsPlayGesture(false);
-        }).catch((err: any) => {
-          if (err && err.name === "NotAllowedError" && isMountedRef.current) {
+        }).catch((err: unknown) => {
+          if (err instanceof Error && err.name === "NotAllowedError" && isMountedRef.current) {
             setWebNeedsPlayGesture(true);
             setLoading(false);
             clearWebWatchdog();
@@ -668,7 +688,7 @@ export function LocalVideoPlayer({
     }
 
     // HLS path
-    let Hls: any;
+    let Hls: HlsConstructor | undefined;
     try { Hls = require("hls.js"); } catch { return; }
     const HlsClass = Hls?.default ?? Hls;
     if (!HlsClass) return;
@@ -712,8 +732,9 @@ export function LocalVideoPlayer({
         seekToStart();
         safePlay();
       });
-      hls.on("hlsError", (_e: any, data: any) => {
-        if (!data?.fatal) return;
+      hls.on("hlsError", (_e: unknown, rawData: unknown) => {
+        const data = rawData as Record<string, unknown> | undefined;
+        if (!data?.["fatal"]) return;
         // Preload-mode failures must NEVER surface to the user: just
         // tear down the slot. The next queue advance will fall back to a
         // cold load through the active path.
@@ -1063,8 +1084,8 @@ export function LocalVideoPlayer({
             resizeMode={coverMode ? (ResizeMode?.COVER ?? "cover") : (ResizeMode?.CONTAIN ?? "contain")}
             shouldPlay={autoPlay}
             positionMillis={startPositionMs}
-            onLoad={(st: any) => {
-              if (st?.naturalSize) {
+            onLoad={(st: AVPlaybackStatus) => {
+              if (st.isLoaded && st.naturalSize) {
                 const { width: vw, height: vh } = st.naturalSize;
                 if (vw > 0 && vh > 0) onAspectRatioChange?.(vw / vh);
               }
@@ -1157,13 +1178,13 @@ export function LocalVideoPlayer({
       onEnded: isActive ? () => onEnd?.() : undefined,
       onError: isActive ? () => onError?.() : undefined,
       onTimeUpdate: isActive
-        ? (e: any) => {
+        ? (e: React.SyntheticEvent<HTMLVideoElement>) => {
             const v = e.target as HTMLVideoElement;
             if (v.duration) updatePlayback(v.currentTime, v.duration);
           }
         : undefined,
       onLoadedMetadata: isActive
-        ? (e: any) => {
+        ? (e: React.SyntheticEvent<HTMLVideoElement>) => {
             const v = e.target as HTMLVideoElement;
             if (v.videoWidth > 0 && v.videoHeight > 0) {
               onAspectRatioChange?.(v.videoWidth / v.videoHeight);

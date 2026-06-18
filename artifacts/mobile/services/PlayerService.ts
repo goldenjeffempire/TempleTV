@@ -52,14 +52,26 @@ export async function PlaybackService() {
   // function is called synchronously from native and must register all listeners
   // before returning.
   interface RNTrackPlayerModule {
-    addEventListener(event: string, listener: () => Promise<void> | void): void;
+    addEventListener(
+      event: string,
+      listener: (eventData?: Record<string, unknown>) => Promise<void> | void,
+    ): void;
     play(): Promise<void>;
     pause(): Promise<void>;
     stop(): Promise<void>;
     seekTo(seconds: number): Promise<void>;
   }
+  interface RNTPEvent {
+    RemotePlay: string;
+    RemotePause: string;
+    RemoteStop: string;
+    RemoteNext: string;
+    RemotePrevious: string;
+    RemoteSeek: string;
+    RemoteDuck: string;
+  }
   let TrackPlayer: RNTrackPlayerModule | undefined;
-  let Event: Record<string, string> | undefined;
+  let Event: RNTPEvent | undefined;
   try {
     const mod = require("react-native-track-player");
     TrackPlayer = mod.default ?? mod;
@@ -72,45 +84,52 @@ export async function PlaybackService() {
 
   if (!TrackPlayer || !Event) return;
 
-  TrackPlayer.addEventListener(Event.RemotePlay, async () => {
-    await TrackPlayer.play();
+  // Capture non-null references for use inside async callbacks.
+  const tp = TrackPlayer;
+  const evt = Event;
+
+  tp.addEventListener(evt.RemotePlay, async () => {
+    await tp.play();
     handlers.onPlay?.();
   });
 
-  TrackPlayer.addEventListener(Event.RemotePause, async () => {
-    await TrackPlayer.pause();
+  tp.addEventListener(evt.RemotePause, async () => {
+    await tp.pause();
     handlers.onPause?.();
   });
 
-  TrackPlayer.addEventListener(Event.RemoteStop, async () => {
-    await TrackPlayer.stop();
+  tp.addEventListener(evt.RemoteStop, async () => {
+    await tp.stop();
     handlers.onStop?.();
   });
 
-  TrackPlayer.addEventListener(Event.RemoteNext, () => {
+  tp.addEventListener(evt.RemoteNext, () => {
     if (broadcastMode) return;
     handlers.onNext?.();
   });
 
-  TrackPlayer.addEventListener(Event.RemotePrevious, () => {
+  tp.addEventListener(evt.RemotePrevious, () => {
     if (broadcastMode) return;
     handlers.onPrevious?.();
   });
 
-  TrackPlayer.addEventListener(Event.RemoteSeek, async (event: { position: number }) => {
+  tp.addEventListener(evt.RemoteSeek, async (rawEvent?: Record<string, unknown>) => {
     if (broadcastMode) return;
-    await TrackPlayer.seekTo(event.position);
-    handlers.onSeek?.(event.position);
+    const position = typeof rawEvent?.position === "number" ? rawEvent.position : 0;
+    await tp.seekTo(position);
+    handlers.onSeek?.(position);
   });
 
-  TrackPlayer.addEventListener(Event.RemoteDuck, async (event: { permanent: boolean; paused: boolean }) => {
-    if (event.permanent) {
-      await TrackPlayer.pause();
+  tp.addEventListener(evt.RemoteDuck, async (rawEvent?: Record<string, unknown>) => {
+    const permanent = rawEvent?.permanent === true;
+    const paused = rawEvent?.paused === true;
+    if (permanent) {
+      await tp.pause();
       handlers.onPause?.();
-    } else if (event.paused) {
-      await TrackPlayer.pause();
+    } else if (paused) {
+      await tp.pause();
     } else {
-      await TrackPlayer.play();
+      await tp.play();
     }
   });
 }

@@ -50,8 +50,9 @@ export function useEmergencyAlerts() {
       try {
         const EventSource = require("react-native-sse").default;
         es = new EventSource(`${apiBase}/api/realtime/sse`);
+        const currentEs = es!;
 
-        es.addEventListener("omega-signal", (evt: { data: string }) => {
+        currentEs.addEventListener("omega-signal", (evt: { data: string }) => {
           try {
             const signal = JSON.parse(evt.data) as { type: string; payload?: Record<string, unknown> };
             if (signal.type === "EMERGENCY_BROADCAST" && signal.payload) {
@@ -70,8 +71,8 @@ export function useEmergencyAlerts() {
           } catch {}
         });
 
-        es.addEventListener("error", () => {
-          es?.close?.();
+        currentEs.addEventListener("error", () => {
+          currentEs.close?.();
           if (active) retryTimeout = setTimeout(connect, 6_000);
         });
       } catch {

@@ -1,4 +1,5 @@
 import React, { useRef, useState } from "react";
+import type { GestureResponderEvent, LayoutChangeEvent, PanResponderGestureState } from "react-native";
 import { PanResponder, StyleSheet, View } from "react-native";
 
 export function formatTime(totalSecs: number): string {
@@ -30,17 +31,17 @@ export function FsScrubBar({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
       onShouldBlockNativeResponder: () => true,
-      onPanResponderGrant: (evt) => {
+      onPanResponderGrant: (evt: GestureResponderEvent) => {
         startXRef.current = evt.nativeEvent.locationX;
         const r = Math.max(0, Math.min(1, startXRef.current / (barWidthRef.current || 1)));
         onScrub(r);
       },
-      onPanResponderMove: (_evt, gs) => {
+      onPanResponderMove: (_evt: GestureResponderEvent, gs: PanResponderGestureState) => {
         const x = startXRef.current + gs.dx;
         const r = Math.max(0, Math.min(1, x / (barWidthRef.current || 1)));
         onScrub(r);
       },
-      onPanResponderRelease: (_evt, gs) => {
+      onPanResponderRelease: (_evt: GestureResponderEvent, gs: PanResponderGestureState) => {
         const x = startXRef.current + gs.dx;
         const r = Math.max(0, Math.min(1, x / (barWidthRef.current || 1)));
         onScrubEnd(r);
@@ -57,7 +58,7 @@ export function FsScrubBar({
   return (
     <View
       style={styles.fsScrubBarWrap}
-      onLayout={(e) => {
+      onLayout={(e: LayoutChangeEvent) => {
         barWidthRef.current = e.nativeEvent.layout.width;
         setBarWidth(e.nativeEvent.layout.width);
       }}

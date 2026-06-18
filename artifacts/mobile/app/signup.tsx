@@ -324,7 +324,7 @@ export default function SignupScreen() {
                 <Pressable
                   onPress={handleSignup}
                   disabled={loading}
-                  style={({ pressed }) => [styles.submitBtnOuter, { opacity: pressed ? 0.88 : 1 }]}
+                  style={({ pressed }: { pressed: boolean }) => [styles.submitBtnOuter, { opacity: pressed ? 0.88 : 1 }]}
                 >
                   <LinearGradient
                     colors={["#7c3aed", "#6d28d9", "#5b21b6"]}
@@ -357,7 +357,7 @@ export default function SignupScreen() {
 
             <Pressable
               onPress={() => router.replace("/login")}
-              style={({ pressed }) => [styles.loginBtn, { opacity: pressed ? 0.7 : 1 }]}
+              style={({ pressed }: { pressed: boolean }) => [styles.loginBtn, { opacity: pressed ? 0.7 : 1 }]}
             >
               <Text style={styles.loginText}>
                 Already have an account?{" "}

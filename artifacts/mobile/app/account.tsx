@@ -38,7 +38,7 @@ import { AppHeader } from "@/components/AppHeader";
 
 function getInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
-  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  if (parts.length >= 2) return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase();
   return name.slice(0, 2).toUpperCase();
 }
 
@@ -364,7 +364,7 @@ export default function AccountScreen() {
             <TextInput
               style={[styles.modalInput, { color: c.foreground, borderColor: c.border, backgroundColor: c.background }]}
               value={deletePassword}
-              onChangeText={(t) => { setDeletePassword(t); if (deleteError) setDeleteError(null); }}
+              onChangeText={(t: string) => { setDeletePassword(t); if (deleteError) setDeleteError(null); }}
               placeholder="Current password"
               placeholderTextColor={c.mutedForeground}
               secureTextEntry
