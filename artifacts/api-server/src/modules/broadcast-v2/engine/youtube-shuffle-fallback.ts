@@ -316,6 +316,60 @@ class YtShuffleFallback {
     });
   }
 
+  /**
+   * Refresh the in-memory YouTube catalog playlist after a sync has added or
+   * updated videos.  Called by youtube-sync.service after a successful sync.
+   *
+   * Behaviour:
+   *   - Not active: silently no-ops; activate() already queries fresh on activation.
+   *   - Active + activating: no-op to avoid concurrent catalog loads.
+   *   - Active: queries the full YouTube catalog from DB, finds entries not
+   *     already in the shuffled playlist (by youtubeId), and inserts them at
+   *     a random position AFTER the current playlistIndex.  Current playback
+   *     is not interrupted.  On the next wraparound the full catalog is
+   *     re-shuffled, so new videos naturally enter the rotation.
+   */
+  async refreshCatalog(): Promise<void> {
+    if (!this._active || this._activating) return;
+    if (env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE) return;
+
+    try {
+      const videosTable = schema.videosTable;
+      const rows = await db
+        .select({ youtubeId: videosTable.youtubeId, title: videosTable.title })
+        .from(videosTable)
+        .where(and(eq(videosTable.videoSource, "youtube"), isNotNull(videosTable.youtubeId)));
+
+      const freshEntries: YtVideoEntry[] = rows.filter(
+        (r): r is { youtubeId: string; title: string } =>
+          typeof r.youtubeId === "string" && r.youtubeId.length > 0,
+      );
+
+      if (freshEntries.length === 0) return;
+
+      const existingIds = new Set(this._shuffledPlaylist.map((e) => e.youtubeId));
+      const newEntries = freshEntries.filter((e) => !existingIds.has(e.youtubeId));
+
+      if (newEntries.length === 0) return;
+
+      // Insert new entries at a random position after the current index so they
+      // enter the rotation without disturbing the currently-playing slot.
+      const insertAfter = Math.max(
+        this._playlistIndex,
+        Math.floor(Math.random() * (this._shuffledPlaylist.length - this._playlistIndex)) +
+          this._playlistIndex,
+      );
+      this._shuffledPlaylist.splice(insertAfter + 1, 0, ...fisherYatesShuffle(newEntries));
+
+      logger.info(
+        { newEntries: newEntries.length, totalCatalog: this._shuffledPlaylist.length },
+        "[yt-shuffle] catalog refreshed after YouTube sync — new videos added to rotation",
+      );
+    } catch (err) {
+      logger.warn({ err }, "[yt-shuffle] refreshCatalog() failed (non-fatal)");
+    }
+  }
+
   /** Snapshot for the /health endpoint and admin observability. */
   getInfo(): YtShuffleFallbackInfo {
     return {

@@ -8,6 +8,7 @@ import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { isUndefinedColumnError, extractPgError, isTransientPgError } from "../../infrastructure/db-schema-guard.js";
 import { registerNamedStore } from "../../infrastructure/cache.js";
 import { scanLibraryAndEnqueue } from "../broadcast/auto-enqueue.service.js";
+import { ytShuffleFallback } from "../broadcast-v2/engine/youtube-shuffle-fallback.js";
 
 const CHANNEL_ID = "UCPFFvkE-KGpR37qJgvYriJg";
 const YT_API_BASE = "https://www.googleapis.com/youtube/v3";
@@ -1191,6 +1192,20 @@ export async function syncYouTubeChannel(triggeredBy: "scheduler" | "manual" = "
       logger.warn({ err }, "youtube-sync: post-sync catalog cache invalidation failed (non-fatal)"),
     );
     adminEventBus.push("videos-library-updated", null);
+
+    // Signal the broadcast orchestrator to reload — new YouTube videos are
+    // available in managed_videos and the ytShuffleFallback catalog needs
+    // updating if it is currently active.
+    adminEventBus.push("broadcast-queue-updated");
+
+    // If the YouTube shuffle fallback is currently active, merge any newly-
+    // synced videos into the in-memory rotation without interrupting playback.
+    if (inserted > 0 || updated > 0) {
+      void ytShuffleFallback.refreshCatalog().catch((err) =>
+        logger.warn({ err }, "youtube-sync: shuffle fallback catalog refresh failed (non-fatal)"),
+      );
+    }
+
     void persistQuota().catch((err) =>
       logger.warn({ err }, "youtube-sync: post-sync quota persist failed (non-fatal)"),
     );

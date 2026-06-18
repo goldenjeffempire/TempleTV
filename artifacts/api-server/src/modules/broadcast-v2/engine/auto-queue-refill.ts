@@ -73,12 +73,16 @@ async function run(): Promise<void> {
     );
 
     // Find library videos that are transcoded/uploadable but NOT currently active in queue.
+    // Excludes YouTube-sourced videos — those are served through the ytShuffleFallback
+    // override mechanism (activated when the local queue is empty) and should never be
+    // inserted into the broadcast_queue directly.
     const candidates = await db.execute<{ id: string; title: string }>(sql`
       SELECT mv.id, mv.title
       FROM managed_videos mv
       WHERE
-        mv.transcoding_status IN ('done', 'faststart_applied', 'none')
+        mv.transcoding_status IN ('ready', 'hls_ready', 'none')
         AND (mv.hls_master_url IS NOT NULL OR mv.local_video_url IS NOT NULL)
+        AND mv.video_source != 'youtube'
         AND NOT EXISTS (
           SELECT 1 FROM broadcast_queue bq
           WHERE bq.video_id = mv.id AND bq.is_active = true

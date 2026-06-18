@@ -3,17 +3,59 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { requireAuth } from "../../middleware/auth.js";
 import { youtubeSyncDispatcher } from "./youtube-sync.dispatcher.js";
+import { ytShuffleFallback } from "../broadcast-v2/engine/youtube-shuffle-fallback.js";
 import {
   getSyncStatus,
   getCategoryStats,
   recategorizeAllVideos,
   isRecategorizeInProgress,
+  isSyncInProgress,
 } from "./youtube-sync.service.js";
 
 let manualSyncInProgress = false;
 
 export async function youtubeSyncRoutes(app: FastifyInstance) {
   const r = app.withTypeProvider<ZodTypeProvider>();
+
+  /**
+   * GET /youtube/sync/mobile-status
+   * Lightweight public endpoint for mobile clients to check sync health and
+   * catalog freshness. No authentication required — returns non-sensitive data
+   * only. Rate-limited to 30 req/min per IP.
+   */
+  r.get(
+    "/youtube/sync/mobile-status",
+    {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["public"],
+        summary: "YouTube sync status for mobile clients",
+        response: {
+          200: z.object({
+            lastSyncAt: z.string().nullable(),
+            lastSyncStatus: z.string().nullable(),
+            totalVideos: z.number(),
+            syncInProgress: z.boolean(),
+            shuffleFallbackActive: z.boolean(),
+            nextSyncAt: z.string().nullable(),
+          }),
+          429: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async () => {
+      const status = await getSyncStatus();
+      const fallbackInfo = ytShuffleFallback.getInfo();
+      return {
+        lastSyncAt: status.lastSyncAt,
+        lastSyncStatus: status.lastSyncStatus,
+        totalVideos: status.totalYoutubeVideos,
+        syncInProgress: isSyncInProgress() || manualSyncInProgress,
+        shuffleFallbackActive: fallbackInfo.active,
+        nextSyncAt: status.nextSyncAt,
+      };
+    },
+  );
 
   /**
    * GET /admin/youtube/sync/status

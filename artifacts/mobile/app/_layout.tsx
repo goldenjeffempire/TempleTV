@@ -13,7 +13,7 @@ import Constants from "expo-constants";
 import { router, Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect, useRef, useState } from "react";
-import { Linking, Platform, View } from "react-native";
+import { AppState, AppStateStatus, Linking, Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { setupMobileBroadcastStorage } from "@/lib/mobileBroadcastStorage";
@@ -596,6 +596,43 @@ function RootLayout() {
       }
     }
   }, [fontReady]);
+
+  // ── Foreground catalog recovery ─────────────────────────────────────────────
+  // When the app returns to the foreground after being backgrounded for longer
+  // than CATALOG_STALE_THRESHOLD_MS, proactively refetch all active queries so
+  // the library, search, and player surfaces show fresh YouTube catalog data
+  // without the user needing to pull-to-refresh.
+  //
+  // This runs unconditionally (not gated on fontReady) so data is in-flight
+  // while fonts finish loading — on re-open the content is already fresh when
+  // the UI becomes visible.
+  const _backgroundedAtMs = useRef<number | null>(null);
+  const CATALOG_STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+
+    const handleAppState = (nextState: AppStateStatus) => {
+      if (nextState === "background" || nextState === "inactive") {
+        _backgroundedAtMs.current = Date.now();
+      } else if (nextState === "active") {
+        const away = _backgroundedAtMs.current !== null
+          ? Date.now() - _backgroundedAtMs.current
+          : Infinity;
+        _backgroundedAtMs.current = null;
+
+        if (away >= CATALOG_STALE_THRESHOLD_MS) {
+          // App was away long enough that the catalog may be stale — refetch
+          // all currently-mounted query observers so they load fresh data.
+          void queryClient.refetchQueries({ type: "active", stale: true }).catch(() => {});
+        }
+      }
+    };
+
+    const sub = AppState.addEventListener("change", handleAppState);
+    return () => sub.remove();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!fontReady) return null;
 
