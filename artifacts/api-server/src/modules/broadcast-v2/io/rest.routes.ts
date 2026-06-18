@@ -56,6 +56,7 @@ import { getBroadcastV2SseViewerCount } from "./sse.gateway.js";
 import { getExhaustionStatus } from "../engine/queue-exhaustion-monitor.js";
 import { getAutoRefillStatus } from "../engine/auto-queue-refill.js";
 import { getStorageStats } from "../../../infrastructure/storage.js";
+import { getStitchedBroadcastManifest, invalidateStitchCache } from "../engine/hls-stream-stitcher.js";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
 const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
@@ -753,7 +754,7 @@ export async function restRoutes(app: FastifyInstance) {
   {
     type SnapValue = ReturnType<typeof broadcastOrchestrator.snapshot>;
     let _stateCache: { snap: SnapValue; expiresAt: number } | null = null;
-    broadcastOrchestrator.on("frame", () => { _stateCache = null; });
+    broadcastOrchestrator.on("frame", () => { _stateCache = null; invalidateStitchCache(); });
 
     app.get("/state", {
       schema: { response: { 304: z.void(), 429: _429err } },
@@ -784,6 +785,46 @@ export async function restRoutes(app: FastifyInstance) {
       return { state: _stateCache.snap };
     });
   }
+
+  // ── GET /stream.m3u8 — live stitched HLS broadcast manifest ──────────────
+  // Generates a single continuously-updating HLS manifest that stitches the
+  // current and next broadcast queue items with #EXT-X-DISCONTINUITY.
+  // Mobile and TV HLS players subscribe to this URL and receive gapless
+  // playback across item boundaries without any client-side rebinding.
+  //
+  // Behaviour:
+  //   - Returns 200 + HLS manifest when an HLS item is on air
+  //   - Returns 503 + empty live manifest when off-air or item is MP4/YouTube
+  //     (clients should fall back to the dual-buffer path)
+  //   - Cached for 2 s; invalidated on every orchestrator frame event
+  //   - Rate-limited to 60 req/min — HLS players re-fetch every targetDuration
+  //     seconds (6–10 s); 60/min covers up to ~10 concurrent players safely
+  app.get("/stream.m3u8", {
+    schema: { response: { 429: _429err } },
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+  }, async (_req, reply) => {
+    const manifest = await getStitchedBroadcastManifest().catch((err: unknown) => {
+      logger.warn({ err }, "[broadcast-v2] stream.m3u8: stitcher error (non-fatal)");
+      return null;
+    });
+    reply
+      .header("Cache-Control", "no-store, max-age=0")
+      .header("X-Accel-Buffering", "no")
+      .header("Access-Control-Allow-Origin", "*");
+    if (!manifest) {
+      // Off-air or non-HLS item — return an empty live manifest so the player
+      // stays subscribed and picks up the next valid manifest on re-fetch.
+      return reply
+        .code(503)
+        .header("Content-Type", "application/vnd.apple.mpegurl")
+        .header("Retry-After", "5")
+        .send("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n");
+    }
+    return reply
+      .code(200)
+      .header("Content-Type", "application/vnd.apple.mpegurl")
+      .send(manifest);
+  });
 
 const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegative().default(0) });
 

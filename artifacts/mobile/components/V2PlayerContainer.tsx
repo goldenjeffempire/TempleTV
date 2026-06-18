@@ -1705,8 +1705,18 @@ export function V2PlayerContainer({
     onRetry?: () => void;
   }
   const overlayContent = useMemo<OverlayContent | null>(() => {
-    const p = loadingPhase;
+    // ── YouTube override: expo-av cannot play YouTube — branded overlay ───────
+    // Keep first so subsequent checks don't have to guard against it.
+    if (isYouTubeOverride) {
+      const overrideTitle = server?.override?.title;
+      return {
+        main: overrideTitle ?? "Live YouTube Broadcast",
+        sub: "This broadcast is streaming live on YouTube",
+        showSpinner: false,
+      };
+    }
 
+    // ── FATAL: unrecoverable stream failure — always show ─────────────────────
     if (snapshot.state === "FATAL") {
       const secsLabel =
         fatalRetrySecsLeft == null
@@ -1721,157 +1731,74 @@ export function V2PlayerContainer({
         onRetry: forceRebind,
       };
     }
-    // YouTube live override — expo-av cannot play YouTube URLs so we surface a
-    // branded overlay rather than attempting to load it. The buffer is idle
-    // (excludeYouTube=true prevents any load), so no spinner is needed.
-    if (isYouTubeOverride) {
-      const overrideTitle = server?.override?.title;
-      return {
-        main: overrideTitle ?? "Live YouTube Broadcast",
-        sub: "This broadcast is streaming live on YouTube",
-        showSpinner: false,
-      };
-    }
-    // HLS/RTMP override — show a loading overlay until the first video frame
-    // renders (videoReady=true). LIVE_OVERRIDE_ACTIVE is a persistent state
-    // that does not transition to PLAYING when the override starts playing,
-    // so we gate on videoReady (first-frame signal) rather than FSM state to
-    // know when the override is actually visible. Once videoReady=true the
-    // overlay disappears and the native video surface is revealed.
-    if (snapshot.state === "LIVE_OVERRIDE_ACTIVE") {
-      if (videoReady) return null;
-      return {
-        main: p === 0 ? "Switching to Live Override" : "Loading Override…",
-        sub: p === 0 ? "Broadcasting live from override source" : "Please wait…",
-        showSpinner: true,
-        onRetry: p >= 3 ? forceReconnect : undefined,
-      };
-    }
+
+    // ── OFFLINE_HOLD: no internet — always show ───────────────────────────────
     if (snapshot.state === "OFFLINE_HOLD") {
       return {
         main: isOnline ? "Reconnecting…" : "No Internet Connection",
-        sub: isOnline ? "Re-establishing broadcast link" : "Will reconnect automatically when signal returns",
+        sub: isOnline
+          ? "Re-establishing broadcast link"
+          : "Will reconnect automatically when signal returns",
         showSpinner: true,
       };
     }
-    // BOOTSTRAP — transport not yet connected, no server snapshot yet.
-    if (snapshot.state === "BOOTSTRAP") {
+
+    // ── BOOTSTRAP with no server snapshot yet: cold-start indicator ───────────
+    // Once we have a server snapshot (server !== null), switch to poster-only
+    // mode so the thumbnail is immediately visible during transport setup.
+    if (snapshot.state === "BOOTSTRAP" && !server) {
       return {
-        main: p === 0 ? "Connecting to Broadcast" : "Connecting…",
-        sub: p === 0
-          ? "Establishing secure connection"
-          : p === 1
-          ? "Reaching broadcast server"
-          : "Taking a bit longer than usual — please wait",
+        main: "Connecting to Broadcast",
+        sub: "Establishing secure connection…",
         showSpinner: true,
-        onRetry: p >= 3 ? forceRebind : undefined,
+        onRetry: loadingPhase >= 3 ? forceRebind : undefined,
       };
     }
-    // SYNCING — transport connected, waiting for first server snapshot.
-    if (snapshot.state === "SYNCING") {
-      if (server && !server.current && !server.override) {
-        return {
-          main: "Temple TV is Off-Air",
-          sub: "We'll be back shortly — stay tuned",
-          showSpinner: false,
-        };
-      }
-      return {
-        main: p === 0 ? "Loading Live Stream" : "Synchronizing Broadcast…",
-        sub: p === 0
-          ? "Fetching broadcast data"
-          : p === 1
-          ? "Almost ready to play"
-          : "Still loading — almost there",
-        showSpinner: true,
-        onRetry: p >= 3 ? forceRebind : undefined,
-      };
-    }
-    // PREPARING_ACTIVE — item bound to active buffer, waiting for buffer-ready.
-    if (snapshot.state === "PREPARING_ACTIVE") {
-      return {
-        main: p === 0 ? "Preparing Video" : p === 1 ? "Buffering Stream…" : "Loading…",
-        sub: p === 0
-          ? "Buffering live stream"
-          : p === 1
-          ? "Loading video segments"
-          : p === 2
-          ? "This is taking a moment — please wait"
-          : "Still buffering — hang tight",
-        showSpinner: true,
-        onRetry: p >= 3 ? forceRebind : undefined,
-      };
-    }
-    // Active playback — no overlay.
+
+    // ── SYNCING / LIVE_OVERRIDE_ACTIVE (first frame not yet visible) ──────────
+    // If the server says off-air (no current, no override) and we know it for
+    // certain, surface that rather than leaving a blank poster indefinitely.
     if (
-      snapshot.state === "PLAYING" ||
-      snapshot.state === "HANDOFF" ||
-      snapshot.state === "PREPARING_NEXT"
-    ) return null;
-    // Recovery states.
-    // RECOVERING_PRIMARY: use forceRebind (not forceReconnect) so the video
-    // buffer is actually reloaded when the user taps "Tap to reconnect".
-    // forceReconnect() only reconnects the WS transport — without a fresh
-    // bind intent the video element stays frozen regardless of the WS state.
-    // Show the retry button at p >= 1 (5 s) instead of p >= 2 (10 s) so the
-    // user gets an escape hatch before the automatic 8 s load-timeout cycles
-    // through all 3 retry attempts.
-    if (snapshot.state === "RECOVERING_PRIMARY") {
+      snapshot.state === "SYNCING" &&
+      server &&
+      !server.current &&
+      !server.override
+    ) {
       return {
-        main: p === 0 ? "Reconnecting…" : "Retrying Stream…",
-        sub: p === 0 ? "Retrying stream source" : "Attempting stream recovery",
-        showSpinner: true,
-        onRetry: p >= 1 ? forceRebind : undefined,
+        main: "Temple TV is Off-Air",
+        sub: "We'll be back shortly — stay tuned",
+        showSpinner: false,
       };
     }
-    // RECOVERING_FAILOVER — loading the backup/failover stream.
-    // This check MUST come before server?.failover.active so that when both
-    // conditions are true, the user sees the active spinner ("Switching to
-    // Backup") rather than a static "Failover stream active / On standby"
-    // message that looks like a freeze. The failover.active banner is a
-    // steady-state indicator for when the failover is already playing; during
-    // the load phase the FSM state takes priority.
-    if (snapshot.state === "RECOVERING_FAILOVER") {
-      return {
-        main: p === 0
-          ? "Switching to Backup"
-          : p === 1
-          ? "Loading Backup Stream…"
-          : p === 2
-          ? "Backup stream taking longer…"
-          : "Still connecting to backup",
-        sub: p === 0
-          ? "Loading failover stream"
-          : p === 1
-          ? "Connecting to backup source"
-          : p === 2
-          ? "Poor signal or backup source busy — please wait"
-          : "Auto-recovery in progress",
-        showSpinner: true,
-        // Offer manual reconnect after 15 s (phase 3) — auto-recovery may
-        // have already cycled several times by then and user feedback helps.
-        onRetry: p >= 3 ? forceRebind : undefined,
-      };
-    }
-    // Failover is active and the stream is playing — steady-state indicator.
-    if (server?.failover.active) {
-      const reason = server.failover.reason ?? "Failover stream active";
-      return { main: reason, sub: "On standby", showSpinner: false };
-    }
-    if (snapshot.state === "SKIP_PENDING") {
-      return {
-        main: p === 0 ? "Loading Next Broadcast" : p === 1 ? "Preparing Next Item…" : "Loading…",
-        sub: p === 0
-          ? "Preparing next item in queue"
-          : p === 1
-          ? "Almost ready"
-          : "This is taking a moment — please wait",
-        showSpinner: true,
-        onRetry: p >= 3 ? forceRebind : undefined,
-      };
-    }
-    // Remaining states: genuinely off-air when no content.
-    if (server && !server.current && !server.override) {
+
+    // ── HLS/RTMP override playing, video frame already visible ───────────────
+    // Once the override's first frame fires (videoReady=true) there is nothing
+    // to overlay — the Video element is visible. Keep null so the user sees
+    // the live stream without obstruction.
+    if (snapshot.state === "LIVE_OVERRIDE_ACTIVE" && videoReady) return null;
+
+    // ── Genuinely off-air: settled state, no content anywhere ────────────────
+    // Only shown when the FSM has settled into a non-transient state. Transient
+    // states (PREPARING_ACTIVE, RECOVERING_*, SKIP_PENDING) are silent — they
+    // show the poster and a subtle status dot instead of a blocking overlay.
+    const TRANSIENT_STATES = new Set([
+      "BOOTSTRAP",
+      "SYNCING",
+      "PREPARING_ACTIVE",
+      "RECOVERING_PRIMARY",
+      "RECOVERING_FAILOVER",
+      "SKIP_PENDING",
+      "LIVE_OVERRIDE_ACTIVE",
+      "PLAYING",
+      "HANDOFF",
+      "PREPARING_NEXT",
+    ]);
+    if (
+      server &&
+      !server.current &&
+      !server.override &&
+      !TRANSIENT_STATES.has(snapshot.state)
+    ) {
       const nextTitle = server.next?.title;
       return {
         main: "Temple TV is Off-Air",
@@ -1880,8 +1807,15 @@ export function V2PlayerContainer({
         upNext: nextTitle && nextTitle.length > 0 ? nextTitle : undefined,
       };
     }
+
+    // ── Zero-loading UX: all other states show poster only ────────────────────
+    // PREPARING_ACTIVE, RECOVERING_PRIMARY, RECOVERING_FAILOVER, SKIP_PENDING,
+    // SYNCING (with content), LIVE_OVERRIDE_ACTIVE (awaiting first frame),
+    // PLAYING, HANDOFF, PREPARING_NEXT — no blocking overlay, no spinner.
+    // The poster + ambient background + pulsing status dot provide visual
+    // continuity while the player tunes in silently.
     return null;
-  }, [snapshot.state, server, loadingPhase, isOnline, isYouTubeOverride, videoReady, forceReconnect, forceRebind, fatalRetrySecsLeft]);
+  }, [snapshot.state, server, isOnline, isYouTubeOverride, videoReady, forceRebind, fatalRetrySecsLeft, loadingPhase]);
 
   // Poster: show the upcoming/current sermon thumbnail behind the buffers
   // while the player is still tuning in, off-air, reconnecting, or in any
@@ -1908,7 +1842,11 @@ export function V2PlayerContainer({
   const posterFadeAnim = useRef(new Animated.Value(1)).current;
   const prevPosterUrl = useRef<string | null>(null);
 
-  const showPosterContent = (!!overlayContent || !videoReady) && !!posterUrl;
+  // Include isTransientState so the poster always shows during silent
+  // loading/recovery states — even when overlayContent is null and videoReady
+  // is still true from the previous play session (e.g. RECOVERING_PRIMARY
+  // where the old frame is frozen but the buffer is being rebuilt).
+  const showPosterContent = (!!overlayContent || !videoReady || isTransientState) && !!posterUrl;
 
   useEffect(() => {
     // When the posterUrl changes (item transition), snap opacity back to 1 so
@@ -1957,6 +1895,40 @@ export function V2PlayerContainer({
     // fails to load within 12 s the timeout is a legitimate recovery signal.
     snapshot.state === "LIVE_OVERRIDE_ACTIVE";
 
+  // True during any state where the player is silently loading/recovering
+  // (zero-loading UX: poster shown, no blocking overlay, pulsing status dot).
+  // Used to gate the poster visibility and banner suppression independently
+  // of overlayContent (which is null for these states by design).
+  const isTransientState =
+    snapshot.state === "PREPARING_ACTIVE" ||
+    snapshot.state === "RECOVERING_PRIMARY" ||
+    snapshot.state === "RECOVERING_FAILOVER" ||
+    snapshot.state === "SKIP_PENDING" ||
+    snapshot.state === "SYNCING" ||
+    // LIVE_OVERRIDE_ACTIVE before first frame: buffering silently
+    (snapshot.state === "LIVE_OVERRIDE_ACTIVE" && !videoReady) ||
+    // BOOTSTRAP once we have a snapshot: thumbnail visible while connecting
+    (snapshot.state === "BOOTSTRAP" && !!server);
+
+  // Pulsing opacity animation for the status dot — loops between 0.3 and 1
+  // while the player is in a transient state, stops when playing.
+  const tuningPulse = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    const anim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(tuningPulse, { toValue: 0.3, duration: 700, useNativeDriver: true }),
+        Animated.timing(tuningPulse, { toValue: 1.0, duration: 700, useNativeDriver: true }),
+      ]),
+    );
+    if (isTransientState && !overlayContent) {
+      anim.start();
+    } else {
+      anim.stop();
+      tuningPulse.setValue(1);
+    }
+    return () => anim.stop();
+  }, [isTransientState, overlayContent, tuningPulse]);
+
   // Banner text: distinguish "no signal" from "WS disconnected" so viewers
   // understand whether to wait for auto-reconnect (WS) or move somewhere
   // with better coverage (no signal).
@@ -1988,6 +1960,10 @@ export function V2PlayerContainer({
   // when the WS drops briefly without disrupting the video.
   const suppressBanner =
     !!overlayContent ||
+    // Suppress during all silent transient states — the poster provides
+    // visual continuity; showing the amber reconnecting banner on top of it
+    // creates conflicting signals ("something is wrong" vs "poster is fine").
+    isTransientState ||
     snapshot.state === "PLAYING" ||
     snapshot.state === "HANDOFF" ||
     snapshot.state === "PREPARING_NEXT" ||
@@ -2117,6 +2093,32 @@ export function V2PlayerContainer({
         <View style={styles.firstFrameLoadingCentered} pointerEvents="none">
           <ActivityIndicator color="rgba(255,255,255,0.85)" size="large" />
         </View>
+      )}
+
+      {/* Tuning status dot — visible during all silent transient states
+          (PREPARING_ACTIVE, RECOVERING_*, SKIP_PENDING, SYNCING with content).
+          A tiny pulsing circle in the bottom-left corner signals the player is
+          actively loading without blocking the poster with a dark scrim.
+          Not shown in minimal/hero mode or when a full overlay is visible. */}
+      {isTransientState && !overlayContent && !minimal && (
+        <View style={styles.tuningIndicator} pointerEvents="none">
+          <Animated.View style={[styles.tuningDot, { opacity: tuningPulse }]} />
+          <Text style={styles.tuningDotLabel}>LIVE</Text>
+        </View>
+      )}
+
+      {/* Manual reconnect — offered after extended transient state (≥15 s).
+          Provides an escape hatch when auto-recovery is cycling without
+          showing a blocking overlay. Not shown in minimal/hero mode. */}
+      {isTransientState && !overlayContent && !minimal && loadingPhase >= 3 && (
+        <Pressable
+          onPress={forceRebind}
+          style={styles.manualRetryBtn}
+          accessibilityRole="button"
+          accessibilityLabel="Reconnect to broadcast"
+        >
+          <Text style={styles.manualRetryText}>Tap to reconnect</Text>
+        </Pressable>
       )}
 
       {/* Source quality badge — shown during active playback only.
@@ -2319,5 +2321,42 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: "700",
     letterSpacing: 0.8,
+  },
+  tuningIndicator: {
+    position: "absolute",
+    bottom: 12,
+    left: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    zIndex: 15,
+  },
+  tuningDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#fff",
+  },
+  tuningDotLabel: {
+    color: "rgba(255,255,255,0.55)",
+    fontSize: 8,
+    fontWeight: "700",
+    letterSpacing: 1.2,
+  },
+  manualRetryBtn: {
+    position: "absolute",
+    bottom: 36,
+    left: 0,
+    right: 0,
+    alignItems: "center",
+    zIndex: 15,
+  },
+  manualRetryText: {
+    color: "rgba(255,255,255,0.60)",
+    fontSize: 12,
+    fontWeight: "600",
+    letterSpacing: 0.3,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
   },
 });
