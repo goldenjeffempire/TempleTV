@@ -53,7 +53,7 @@ import { router, Stack, useLocalSearchParams } from "expo-router";
 import { parseBoolParam, parseNumberParam } from "@/lib/params";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
-import { useKeepAwake } from "expo-keep-awake";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from "expo-av";
 import { usePictureInPicture } from "@/hooks/usePictureInPicture";
 import {
@@ -437,14 +437,6 @@ export default function PlayerScreen() {
   const c = useColors();
   const { isOnline } = useNetworkStatus();
 
-  // Keep the screen on for the entire time the player screen is mounted.
-  // The root layout already configures audio for background playback, but
-  // for *visual* playback (live broadcast, VOD watch session) the user
-  // expects the screen never to dim or auto-lock — same as YouTube/Twitch.
-  // `useKeepAwake` is scoped to component lifetime: it auto-releases the
-  // wake lock on unmount, so leaving the player frees the lock for normal
-  // OS battery behaviour.
-  useKeepAwake();
 
   // Re-assert the audio mode on player mount. The root layout sets this
   // once at app boot, but iOS/Android can revoke audio focus when another
@@ -662,6 +654,22 @@ export default function PlayerScreen() {
     // returns to the foreground (native ActivityLifecycleCallbacks + JS cleanup).
     showRestoreButton: true,
   });
+
+  // PiP-aware screen wake lock.
+  // While the player screen is visible, prevent the screen from sleeping so
+  // the user can watch without the display turning off — same as YouTube/Twitch.
+  // When the app enters PiP the player is in the background; holding the wake
+  // lock there wastes battery without benefit. Deactivate during PiP and
+  // re-activate automatically when PiP exits (isInPip → false).
+  useEffect(() => {
+    if (isInPip) {
+      deactivateKeepAwake();
+      return;
+    }
+    void activateKeepAwakeAsync();
+    return () => { deactivateKeepAwake(); };
+  }, [isInPip]);
+
   // Last-known playback position (ms). Written by handleProgressWithPosition
   // so that entering/exiting fullscreen can seek the new player instance to
   // where the previous one stopped, giving a seamless visual transition.

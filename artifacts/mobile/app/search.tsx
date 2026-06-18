@@ -231,7 +231,12 @@ export default function SearchScreen() {
             clearButtonMode="never"
           />
           {query.length > 0 && (
-            <Pressable onPress={clearQuery} hitSlop={10}>
+            <Pressable
+              onPress={clearQuery}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Clear search"
+            >
               <Feather name="x-circle" size={16} color={c.mutedForeground} />
             </Pressable>
           )}
@@ -257,6 +262,9 @@ export default function SearchScreen() {
                   borderColor: category === item.value ? c.primary : c.border,
                 },
               ]}
+              accessibilityRole="button"
+              accessibilityLabel={`Filter by ${item.label}`}
+              accessibilityState={{ selected: category === item.value }}
             >
               <Text
                 style={[
@@ -347,6 +355,8 @@ export default function SearchScreen() {
                     setRecent([]);
                   }}
                   hitSlop={10}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear all recent searches"
                 >
                   <Text style={[styles.clearAll, { color: c.primary }]}>Clear all</Text>
                 </Pressable>
@@ -356,6 +366,8 @@ export default function SearchScreen() {
                   key={q}
                   onPress={() => applyRecent(q)}
                   style={[styles.recentRow, { borderBottomColor: c.border }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Search for ${q}`}
                 >
                   <Feather name="clock" size={15} color={c.mutedForeground} />
                   <Text style={[styles.recentText, { color: c.foreground }]} numberOfLines={1}>
@@ -365,6 +377,8 @@ export default function SearchScreen() {
                     onPress={() => deleteRecent(q)}
                     hitSlop={10}
                     style={styles.recentDelete}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Remove ${q} from recent searches`}
                   >
                     <Feather name="x" size={14} color={c.mutedForeground} />
                   </Pressable>
@@ -386,6 +400,8 @@ export default function SearchScreen() {
                   setCategory(cat.value as SermonCategory);
                 }}
                 style={[styles.catGridItem, { backgroundColor: c.card, borderColor: c.border }]}
+                accessibilityRole="button"
+                accessibilityLabel={`Browse ${cat.label} sermons`}
               >
                 <Text style={[styles.catGridText, { color: c.foreground }]}>{cat.label}</Text>
               </Pressable>

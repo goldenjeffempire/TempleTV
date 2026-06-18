@@ -179,6 +179,8 @@ export default function AccountScreen() {
           <Pressable
             onPress={() => router.push("/login")}
             style={[styles.signInBtn, { backgroundColor: c.primary }]}
+            accessibilityRole="button"
+            accessibilityLabel="Sign in to your account"
           >
             <Text style={styles.signInText}>Sign In</Text>
           </Pressable>
@@ -269,6 +271,8 @@ export default function AccountScreen() {
           <Pressable
             onPress={() => router.push("/change-password")}
             style={[styles.actionRow, { backgroundColor: c.card, borderColor: c.border }]}
+            accessibilityRole="button"
+            accessibilityLabel="Change password"
           >
             <View style={[styles.actionIcon, { backgroundColor: c.primary + "22" }]}>
               <Feather name="lock" size={17} color={c.primary} />
@@ -280,6 +284,8 @@ export default function AccountScreen() {
           <Pressable
             onPress={() => router.push("/history")}
             style={[styles.actionRow, { backgroundColor: c.card, borderColor: c.border }]}
+            accessibilityRole="button"
+            accessibilityLabel="View watch history"
           >
             <View style={[styles.actionIcon, { backgroundColor: c.primary + "22" }]}>
               <Feather name="clock" size={17} color={c.primary} />
@@ -291,6 +297,8 @@ export default function AccountScreen() {
           <Pressable
             onPress={() => router.push("/favorites" as never)}
             style={[styles.actionRow, { backgroundColor: c.card, borderColor: c.border }]}
+            accessibilityRole="button"
+            accessibilityLabel="View saved videos"
           >
             <View style={[styles.actionIcon, { backgroundColor: c.primary + "22" }]}>
               <Feather name="heart" size={17} color={c.primary} />
@@ -302,6 +310,8 @@ export default function AccountScreen() {
           <Pressable
             onPress={handleSignOut}
             style={[styles.actionRow, { backgroundColor: c.card, borderColor: c.border }]}
+            accessibilityRole="button"
+            accessibilityLabel="Sign out of your account"
           >
             <View style={[styles.actionIcon, { backgroundColor: "#ef444422" }]}>
               <Feather name="log-out" size={17} color="#ef4444" />
@@ -313,6 +323,8 @@ export default function AccountScreen() {
             onPress={handleDeleteAccount}
             disabled={deleting}
             style={[styles.actionRow, { backgroundColor: c.card, borderColor: c.border, opacity: deleting ? 0.6 : 1 }]}
+            accessibilityRole="button"
+            accessibilityLabel={deleting ? "Deleting account" : "Delete account permanently"}
           >
             <View style={[styles.actionIcon, { backgroundColor: "#ef444422" }]}>
               {deleting ? (
@@ -366,6 +378,8 @@ export default function AccountScreen() {
                 onPress={() => { if (!deleting) { setDeleteModalOpen(false); setDeletePassword(""); setDeleteError(null); } }}
                 disabled={deleting}
                 style={[styles.modalBtn, { backgroundColor: "transparent", borderColor: c.border, borderWidth: 1 }]}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel account deletion"
               >
                 <Text style={[styles.modalBtnText, { color: c.foreground }]}>Cancel</Text>
               </Pressable>
@@ -373,6 +387,8 @@ export default function AccountScreen() {
                 onPress={confirmDeleteAccount}
                 disabled={deleting}
                 style={[styles.modalBtn, { backgroundColor: "#ef4444", opacity: deleting ? 0.7 : 1 }]}
+                accessibilityRole="button"
+                accessibilityLabel={deleting ? "Deleting account" : "Confirm and delete account"}
               >
                 {deleting ? (
                   <ActivityIndicator color="#fff" size="small" />

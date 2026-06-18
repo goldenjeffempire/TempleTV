@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useEffect, useRef, useState } from "react";
+import React, { createContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router } from "expo-router";
@@ -326,25 +326,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (isLoggedIn && isAuthGateOpen) setAuthGateOpen(false);
   }, [isLoggedIn, isAuthGateOpen]);
 
+  // Memoize the context value so consumers only re-render when a value they
+  // actually use changes, not on every AuthProvider render tick. Without this,
+  // any auth state change (token refresh, sessionExpiredAt update, auth-gate
+  // toggle) causes ALL context consumers — including V2PlayerContainer,
+  // BroadcastBuffer, and every screen — to re-render unnecessarily.
+  const contextValue = useMemo(
+    () => ({
+      user,
+      token,
+      isLoading,
+      isLoggedIn,
+      sessionExpiredAt,
+      signIn,
+      signOut,
+      forgetSession,
+      updateUser,
+      isAuthGateOpen,
+      pendingPlayback,
+      openAuthGate,
+      closeAuthGate,
+      consumePendingPlayback,
+    }),
+    [
+      user,
+      token,
+      isLoading,
+      isLoggedIn,
+      sessionExpiredAt,
+      signIn,
+      signOut,
+      forgetSession,
+      updateUser,
+      isAuthGateOpen,
+      pendingPlayback,
+      openAuthGate,
+      closeAuthGate,
+      consumePendingPlayback,
+    ],
+  );
+
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        token,
-        isLoading,
-        isLoggedIn,
-        sessionExpiredAt,
-        signIn,
-        signOut,
-        forgetSession,
-        updateUser,
-        isAuthGateOpen,
-        pendingPlayback,
-        openAuthGate,
-        closeAuthGate,
-        consumePendingPlayback,
-      }}
-    >
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );
