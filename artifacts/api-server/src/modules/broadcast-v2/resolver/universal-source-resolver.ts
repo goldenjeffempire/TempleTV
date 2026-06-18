@@ -67,11 +67,13 @@ const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
   // Sister/related first-party domains
   "jctm.org.ng",
   ".jctm.org.ng",
-  // Replit deployment — covers *.replit.app (current public-deploy URLs)
-  // and the legacy *.repl.co domains. Needed when the API server is hosted
+  // Replit deployment — covers *.replit.app (current public-deploy URLs),
+  // *.replit.dev (Replit dev preview URLs used in Replit workspaces), and
+  // the legacy *.repl.co domains. Needed when the API server is hosted
   // on Replit or when previously-uploaded files stored a Replit subdomain
   // as their absolute URL before migrating to a custom domain.
   ".replit.app",
+  ".replit.dev",
   ".repl.co",
   // Railway — popular Node.js / container deployment platform used for
   // staging and preview environments.

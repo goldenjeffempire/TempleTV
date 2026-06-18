@@ -821,9 +821,29 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         }
       } else {
         // ── MP4 / DASH / non-HLS path ──────────────────────────────────
-        v.playFromPositionAsync(state.positionSecs * 1000).catch(() => {
-          emit({ type: "buffer-error", bufferId, error: "play-failed" });
-        });
+        // Apply the same drift-correction seek guard used for VOD HLS.
+        // For MP4 faststart (direct Range-request streaming), repeated
+        // seeks on small anchor shifts still cause ExoPlayer to discard
+        // its prefetched byte range and issue a new Range request, which
+        // produces a visible 100–300 ms rebuffer stall on weak connections.
+        // Skip the re-seek when the playhead is already within
+        // HLS_SMALL_DRIFT_SKIP_MS (8 s) of the target — the viewer is
+        // watching the correct content and the minor desync is not visible.
+        // The initial seek (playStartMsRef === null) always fires so the
+        // player starts at the correct broadcast position.
+        const targetMs = state.positionSecs * 1000;
+        const currentPlayheadMs = playheadMsRef.current;
+        const nearTarget =
+          currentPlayheadMs !== null &&
+          playStartMsRef.current !== null &&
+          Math.abs(targetMs - currentPlayheadMs) < HLS_SMALL_DRIFT_SKIP_MS;
+
+        if (!nearTarget) {
+          playStartMsRef.current = Date.now();
+          v.playFromPositionAsync(targetMs).catch(() => {
+            emit({ type: "buffer-error", bufferId, error: "play-failed" });
+          });
+        }
       }
     } else {
       v.pauseAsync().catch(() => {});
@@ -2122,17 +2142,19 @@ export function V2PlayerContainer({
       )}
 
       {/* Source quality badge — shown during active playback only.
-          'hls' → "HD"  (adaptive HLS, best quality)
-          'mp4_faststart' / 'mp4_raw' → "SD"  (MP4 fallback)
+          'hls'           → "HLS"  (adaptive HLS manifest chain)
+          'mp4_faststart' → "MP4"  (direct MP4 streaming, moov at byte-0)
+          'mp4_raw'       → "SD"   (un-optimised MP4, moov may be at EOF)
           Hidden during overlays (tuning/off-air) and in minimal/hero mode.
           Hidden during overrides (youtube / live_override) since those are
           external sources whose quality the server can't classify. */}
       {videoReady && !overlayContent && !minimal && (() => {
         const sq = server?.sourceQuality;
         if (!sq || sq === "live_override" || sq === "youtube") return null;
+        const label = sq === "hls" ? "HLS" : sq === "mp4_faststart" ? "MP4" : "SD";
         return (
           <View style={styles.qualityBadge} pointerEvents="none">
-            <Text style={styles.qualityBadgeText}>{sq === "hls" ? "HD" : "SD"}</Text>
+            <Text style={styles.qualityBadgeText}>{label}</Text>
           </View>
         );
       })()}
