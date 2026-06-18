@@ -107,7 +107,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, AppState, Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Animated, AppState, Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { ResizeMode, Video, type AVPlaybackStatus } from "expo-av";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { MobileBufferState } from "@workspace/player-core/adapters/mobile";
@@ -229,6 +229,21 @@ const HLS_SMALL_DRIFT_SKIP_MS = 8_000;
  * ensures `shouldPlay = true`, which is already true.  No seek occurs.
  */
 const HLS_LIVE_SYNC_INTERVAL_MS = 30_000;
+
+/**
+ * How far before the active buffer's end (ms) to emit a `buffer-near-end`
+ * event to the machine. This is the client-side complement to the server's
+ * `preload` frame (also 90 s). Emitting near-end from the player guarantees
+ * the machine proactively loads the next item into the inactive buffer even
+ * when the server's preload frame arrives late — e.g. during a transport
+ * reconnect or a slow-link snapshot delay.
+ *
+ * Matches `PRELOAD_LEAD_MS` in `lib/player-core/src/machine.ts` so the
+ * two triggers work in lockstep. Only fires once per bind revision (guarded
+ * by `nearEndReportedRef`) and only for VOD content with a finite duration.
+ * Live HLS has no fixed end point so near-end detection is skipped for it.
+ */
+const NEAR_END_PRELOAD_LEAD_MS = 90_000;
 
 /**
  * Maximum time (ms) to wait for expo-av's `onLoad` to fire after a new
@@ -413,6 +428,13 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   // swallow the onLoad event when the same URL was rebound after a failure,
   // leaving the FSM stuck in RECOVERING_PRIMARY until the watchdog fired.
   const lastReportedRevision = useRef<number>(-1);
+
+  // Guards the one-per-bind-revision `buffer-near-end` event. Once emitted for
+  // the current bindRevision, no further near-end events are sent until the
+  // next bind. This prevents flooding the machine with near-end on every 500 ms
+  // status tick while the playhead stays inside the preload window. Reset to
+  // `false` at the start of every bindRevision useEffect.
+  const nearEndReportedRef = useRef(false);
 
   // Keep suppressEvents in a ref so the stable `emit` callback below can
   // read the CURRENT value without appearing in its useCallback dep array.
@@ -619,6 +641,9 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
     playStartMsRef.current = null;
     playheadMsRef.current = null;
     hlsQuickFinishCountRef.current = 0;
+    // Reset the near-end preload guard so the new item can fire buffer-near-end
+    // when its playhead enters the NEAR_END_PRELOAD_LEAD_MS window.
+    nearEndReportedRef.current = false;
 
     // ── Same-URL recovery fast-path ──────────────────────────────────────
     // RECOVERING_PRIMARY/FAILOVER often rebinds the SAME URL (same item,
@@ -981,6 +1006,55 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         // segment arrives or after a seek completes.
         if (typeof status.positionMillis === "number" && status.positionMillis > 0) {
           playheadMsRef.current = status.positionMillis;
+        }
+
+        // ── Near-end preload trigger ──────────────────────────────────────────
+        // Client-side complement to the server's 90 s `preload` frame.
+        //
+        // The machine already responds to server-sent preload frames (see
+        // `onPreload` in machine.ts) by binding the inactive buffer to the next
+        // queue item ~90 s before the current one ends. However, if the
+        // transport is reconnecting, the server's preload frame arrives late, or
+        // the snapshot is cached, this 90 s signal can be absent — leaving the
+        // inactive buffer unloaded right up until the active buffer fires
+        // `buffer-ended`, producing a visible black-screen gap between items.
+        //
+        // When the active buffer's remaining time enters the 90 s window, emit
+        // `buffer-near-end` to the machine. The machine's `onBufferNearEnd()`
+        // will bind the inactive buffer to `server.next` if it isn't already
+        // loaded — guaranteeing the handoff buffer is warming regardless of
+        // whether the server's preload frame arrived.
+        //
+        // Guards:
+        //   - `state.active`: only the ACTIVE buffer drives preloads. The
+        //     inactive buffer loading in the background must NOT emit near-end —
+        //     the machine would misinterpret it as the active content ending.
+        //   - `!suppressEventsRef.current`: suppressed (view-only) consumers
+        //     (hero preview while fullscreen is open) must not interfere with
+        //     the shared FSM owned by the primary consumer.
+        //   - `nearEndReportedRef.current`: fire once per bind revision only.
+        //     The 500 ms status cadence would otherwise flood the machine with
+        //     identical events for the entire 90 s preload window.
+        //   - Finite `durationMillis > 0`: live HLS has `durationMillis = null`
+        //     or `Infinity`. Near-end detection is meaningless for live streams
+        //     whose playlist has no fixed end point — the server manages live
+        //     transitions via explicit snapshot frames.
+        if (
+          status.isLoaded &&
+          state.active &&
+          !suppressEventsRef.current &&
+          !nearEndReportedRef.current &&
+          typeof status.durationMillis === "number" &&
+          isFinite(status.durationMillis) &&
+          status.durationMillis > 0 &&
+          typeof status.positionMillis === "number" &&
+          status.positionMillis > 0
+        ) {
+          const remainingMs = status.durationMillis - status.positionMillis;
+          if (remainingMs > 0 && remainingMs < NEAR_END_PRELOAD_LEAD_MS) {
+            nearEndReportedRef.current = true;
+            emit({ type: "buffer-near-end", bufferId });
+          }
         }
 
         // ── isPlaying fast-path (Android ExoPlayer audio-before-onLoad fix) ──
@@ -1821,9 +1895,46 @@ export function V2PlayerContainer({
     const t = server?.current?.thumbnailUrl ?? server?.next?.thumbnailUrl ?? null;
     return t && t.length > 0 ? t : null;
   }, [server]);
-  // Show poster while there is an overlay (tuning/off-air/reconnecting)
-  // OR while the video frame is not yet ready (prevents black flash).
-  const showPoster = (!!overlayContent || !videoReady) && !!posterUrl;
+  // Animated opacity for the sharp poster image. Starts at 1 (fully opaque)
+  // and fades to 0 over 350 ms when the video frame becomes ready AND the
+  // overlay is gone — eliminating the instant pop-to-black that occurred when
+  // the <Image> was unmounted synchronously the moment `videoReady` flipped.
+  // Snaps back to 1 instantly (no duration) when a new poster should appear
+  // (reconnect, off-air, item change) so the thumbnail is always sharp while
+  // the player is loading the next clip. The component stays mounted whenever
+  // `posterUrl` is non-null so the Animated value is never reset by an
+  // unmount/remount cycle. `pointerEvents="none"` on the wrapping Animated.View
+  // ensures the invisible faded poster never intercepts touch events.
+  const posterFadeAnim = useRef(new Animated.Value(1)).current;
+  const prevPosterUrl = useRef<string | null>(null);
+
+  const showPosterContent = (!!overlayContent || !videoReady) && !!posterUrl;
+
+  useEffect(() => {
+    // When the posterUrl changes (item transition), snap opacity back to 1 so
+    // the new thumbnail is instantly visible while the next video is loading.
+    if (posterUrl !== prevPosterUrl.current) {
+      prevPosterUrl.current = posterUrl;
+      posterFadeAnim.stopAnimation();
+      posterFadeAnim.setValue(1);
+      return; // opacity already at 1 — no need to evaluate showPosterContent further
+    }
+    if (showPosterContent) {
+      // Overlay or first-frame wait — poster must be fully visible. Cancel any
+      // in-progress fade-out and snap to opaque.
+      posterFadeAnim.stopAnimation();
+      posterFadeAnim.setValue(1);
+    } else if (posterUrl) {
+      // Video is live and overlay is gone — smoothly fade the poster out so
+      // the transition from poster→video is perceptually seamless rather than
+      // a hard cut.
+      Animated.timing(posterFadeAnim, {
+        toValue: 0,
+        duration: 350,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [showPosterContent, posterUrl, posterFadeAnim]);
 
   // True when the FSM is actively waiting for an active-buffer signal
   // (PREPARING_ACTIVE → PLAYING, RECOVERING_* → PLAYING). Used to gate the
@@ -1899,14 +2010,22 @@ export function V2PlayerContainer({
         />
       )}
 
-      {/* Sharp poster — shown only in overlay states (tuning/off-air/reconnecting) */}
-      {showPoster && !minimal && (
-        <Image
-          source={{ uri: posterUrl! }}
-          style={styles.poster}
-          resizeMode="contain"
-          accessible={false}
-        />
+      {/* Sharp poster — fades in instantly on overlay/load states and fades
+          out smoothly (350 ms) when the video frame becomes live and the
+          overlay clears. Kept mounted whenever posterUrl is non-null so the
+          Animated.Value is never reset by an unmount/remount cycle. */}
+      {posterUrl && !minimal && (
+        <Animated.View
+          style={[styles.poster, { opacity: posterFadeAnim }]}
+          pointerEvents="none"
+        >
+          <Image
+            source={{ uri: posterUrl }}
+            style={styles.posterInner}
+            resizeMode="contain"
+            accessible={false}
+          />
+        </Animated.View>
       )}
 
       <BroadcastBuffer
@@ -2056,6 +2175,18 @@ const styles = StyleSheet.create({
     width: "100%",
     height: "100%",
     zIndex: 5,
+  },
+  // Inner Image inside the Animated.View wrapper — fills the wrapper fully so
+  // the opacity animation applies to the wrapper while the image itself
+  // stays at full opacity within its own coordinate space.
+  posterInner: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: "100%",
+    height: "100%",
   },
   banner: {
     position: "absolute",
