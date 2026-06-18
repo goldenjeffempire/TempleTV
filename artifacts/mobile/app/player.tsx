@@ -31,6 +31,7 @@ import React, {
   useSyncExternalStore,
 } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   AppState,
@@ -84,6 +85,8 @@ import { FloatingReactions, type FloatingReactionsHandle } from "@/components/Fl
 import { V2PlayerContainer } from "@/components/V2PlayerContainer";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { getApiBase } from "@/lib/apiBase";
+import { useV2BroadcastNative } from "@workspace/player-core/react-native";
+import type { V2Item } from "@workspace/player-core";
 import { usePageSeo } from "@/hooks/usePageSeo";
 import { usePlayer } from "@/context/PlayerContext";
 
@@ -406,6 +409,149 @@ function BroadcastHlsPlayer({ muted, suppressEvents, isInPip, ...rest }: Broadca
   );
 }
 
+// ─── Broadcast Companion Components ──────────────────────────────────────────
+
+/**
+ * Live countdown showing how many minutes remain in the current broadcast
+ * program. Updates every 10 s (not per-second) to keep re-renders minimal.
+ */
+function BroadcastTimeRemaining({
+  endsAtMs,
+  textColor,
+}: {
+  endsAtMs: number;
+  textColor: string;
+}) {
+  const [secsLeft, setSecsLeft] = useState(() =>
+    Math.max(0, Math.floor((endsAtMs - Date.now()) / 1000)),
+  );
+  useEffect(() => {
+    const tick = () =>
+      setSecsLeft(Math.max(0, Math.floor((endsAtMs - Date.now()) / 1000)));
+    tick();
+    const id = setInterval(tick, 10_000);
+    return () => clearInterval(id);
+  }, [endsAtMs]);
+  if (secsLeft <= 0) return null;
+  const mins = Math.floor(secsLeft / 60);
+  const label =
+    mins >= 60
+      ? `${Math.floor(mins / 60)}h ${mins % 60}m remaining`
+      : mins > 0
+      ? `${mins}m remaining`
+      : "Ending soon";
+  return (
+    <Text style={[broadcastCompStyles.timeRemaining, { color: textColor }]}>
+      {label}
+    </Text>
+  );
+}
+
+/**
+ * Compact "Up Next" strip — shows the next item queued in the V2 broadcast
+ * engine so viewers know what's coming up after the current program.
+ */
+function BroadcastUpNextStrip({
+  item,
+  colors,
+}: {
+  item: V2Item;
+  colors: ReturnType<typeof useColors>;
+}) {
+  const startTime = new Date(item.startsAtMs);
+  const timeLabel = startTime.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return (
+    <View
+      style={[
+        broadcastCompStyles.upNextContainer,
+        { backgroundColor: colors.card, borderColor: colors.border },
+      ]}
+    >
+      <Text
+        style={[broadcastCompStyles.upNextLabel, { color: colors.mutedForeground }]}
+      >
+        UP NEXT
+      </Text>
+      <View style={broadcastCompStyles.upNextRow}>
+        {item.thumbnailUrl ? (
+          <Image
+            source={{ uri: item.thumbnailUrl }}
+            style={broadcastCompStyles.upNextThumb}
+            resizeMode="cover"
+          />
+        ) : (
+          <Image
+            source={PLACEHOLDER}
+            style={broadcastCompStyles.upNextThumb}
+            resizeMode="cover"
+          />
+        )}
+        <View style={broadcastCompStyles.upNextInfo}>
+          <Text
+            style={[broadcastCompStyles.upNextTitle, { color: colors.foreground }]}
+            numberOfLines={2}
+          >
+            {item.title}
+          </Text>
+          <Text
+            style={[broadcastCompStyles.upNextTime, { color: colors.mutedForeground }]}
+          >
+            {timeLabel}
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+const broadcastCompStyles = StyleSheet.create({
+  timeRemaining: {
+    fontSize: 11,
+    fontFamily: "Inter_500Medium",
+    marginTop: 2,
+  },
+  upNextContainer: {
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 10,
+    gap: 6,
+    marginTop: 4,
+  },
+  upNextLabel: {
+    fontSize: 10,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 0.8,
+  },
+  upNextRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  upNextThumb: {
+    width: 56,
+    height: 32,
+    borderRadius: 4,
+    flexShrink: 0,
+  },
+  upNextInfo: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  upNextTitle: {
+    fontSize: 13,
+    fontFamily: "Inter_600SemiBold",
+    lineHeight: 18,
+  },
+  upNextTime: {
+    fontSize: 11,
+    fontFamily: "Inter_400Regular",
+  },
+});
+
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function PlayerScreen() {
@@ -436,6 +582,14 @@ export default function PlayerScreen() {
   const isLandscape = width > height;
   const c = useColors();
   const { isOnline } = useNetworkStatus();
+
+  // V2 broadcast snapshot — attaches to the singleton session (same WS/SSE
+  // connection as V2PlayerContainer, zero extra connections). Reads live
+  // state: current/next item, mode, off-air reason, source quality, and
+  // whether the transport is currently connected.
+  const { snapshot: v2Snapshot, connected: v2Connected } = useV2BroadcastNative({
+    baseUrl: `${apiBase}/api/broadcast-v2`,
+  });
 
 
   // Re-assert the audio mode on player mount. The root layout sets this
@@ -518,6 +672,21 @@ export default function PlayerScreen() {
   // which already calls playLive() and sets PlayerContext.isLive=true.
   const isBroadcastV2 = isLive && !( !!( params.youtubeId ?? params.videoId ) && !hlsUrl );
 
+  // Derived V2 live metadata — conditional on isBroadcastV2 so VOD screens
+  // never read stale broadcast state.
+  const v2ServerSnap    = isBroadcastV2 ? (v2Snapshot.lastServerSnapshot ?? null) : null;
+  const v2Current       = v2ServerSnap?.current       ?? null;
+  const v2Next          = v2ServerSnap?.next           ?? null;
+  const v2Mode          = v2ServerSnap?.mode           ?? null;
+  const v2Override      = v2ServerSnap?.override       ?? null;
+  const v2OffAirReason  = v2ServerSnap?.offAirReason   ?? null;
+  const v2SourceQuality = v2ServerSnap?.sourceQuality  ?? null;
+  // Live-updating title — V2 snapshot is authoritative; route params are the
+  // bootstrap fallback until the first server frame arrives.
+  const liveTitle = isBroadcastV2
+    ? (v2Override?.title ?? v2Current?.title ?? title)
+    : title;
+
   // Sync PlayerContext.isBroadcastMode with whether the V2 broadcast engine
   // is active. Without this, the MiniPlayer and any context consumer that
   // reads isBroadcastMode would never know the broadcast channel is playing —
@@ -589,13 +758,13 @@ export default function PlayerScreen() {
   usePageSeo(
     isLive
       ? {
-          title: title || "Temple TV — Live Broadcast",
+          title: liveTitle || "Temple TV — Live Broadcast",
           description: "Watch Temple TV live worship broadcast",
           path: "/player",
           structuredData: {
             "@context": "https://schema.org",
             "@type": "BroadcastEvent",
-            name: title || "Temple TV — Live Broadcast",
+            name: liveTitle || "Temple TV — Live Broadcast",
             description: "Watch Temple TV live worship broadcast",
             isLiveBroadcast: true,
             location: {
@@ -1312,30 +1481,130 @@ export default function PlayerScreen() {
         {/* ── Title & Metadata ──────────────────────────────────────────── */}
         <View style={[styles.infoBlock, { borderBottomColor: c.border }]}>
           {isLive ? (
-            /* Live broadcast — channel identity + live status */
+            /* Live broadcast — V2-driven channel identity + live status */
             <View style={styles.liveMeta}>
-              {/* Program / channel name — primary visual element */}
-              <Text style={[styles.liveChannelName, { color: c.foreground }]} numberOfLines={2}>
-                {title || "Live Broadcast"}
-              </Text>
+              {/* Reconnecting banner — shown while the V2 transport is
+                  re-establishing its WS/SSE connection after a drop */}
+              {isBroadcastV2 && !v2Connected && (
+                <View
+                  style={[
+                    styles.reconnectBanner,
+                    { backgroundColor: c.card, borderColor: c.border },
+                  ]}
+                >
+                  <ActivityIndicator size="small" color={c.primary} />
+                  <Text style={[styles.reconnectText, { color: c.mutedForeground }]}>
+                    Reconnecting to broadcast…
+                  </Text>
+                </View>
+              )}
 
-              {/* Sub-row: badge + ministry + viewer count */}
-              <View style={styles.liveSubRow}>
-                <LiveBadge size="small" />
-                <Text style={[styles.liveMinistry, { color: c.mutedForeground }]}>
-                  JCTM Ministries
-                </Text>
-                {sync.viewerCount != null && sync.viewerCount > 0 && (
-                  <View style={[styles.viewerChip, { backgroundColor: c.card, borderColor: c.border }]}>
-                    <Feather name="users" size={10} color={c.mutedForeground} />
-                    <Text style={[styles.viewerChipText, { color: c.mutedForeground }]}>
-                      {sync.viewerCount >= 1000
-                        ? `${(sync.viewerCount / 1000).toFixed(1)}k`
-                        : String(sync.viewerCount)}
+              {/* Off-air state — shown when the V2 queue has no current item */}
+              {isBroadcastV2 && !v2Current && v2Mode === "queue" ? (
+                <View
+                  style={[
+                    styles.offAirCard,
+                    { backgroundColor: c.card, borderColor: c.border },
+                  ]}
+                >
+                  <View style={[styles.offAirIconWrap, { backgroundColor: c.muted }]}>
+                    <Feather name="wifi-off" size={18} color={c.mutedForeground} />
+                  </View>
+                  <View style={styles.offAirBody}>
+                    <Text style={[styles.offAirTitle, { color: c.foreground }]}>Off Air</Text>
+                    <Text style={[styles.offAirDesc, { color: c.mutedForeground }]}>
+                      {v2OffAirReason === "empty"
+                        ? "No content is currently scheduled."
+                        : v2OffAirReason === "all_blocked"
+                        ? "Content temporarily unavailable."
+                        : "Broadcast is paused."}
                     </Text>
                   </View>
-                )}
-              </View>
+                </View>
+              ) : (
+                <>
+                  {/* Override mode badge */}
+                  {isBroadcastV2 && v2Mode === "override" && v2Override && (
+                    <View style={styles.modeBadgeRow}>
+                      <View style={[styles.modeBadge, { backgroundColor: "#f59e0b18" }]}>
+                        <Feather name="zap" size={11} color="#d97706" />
+                        <Text style={[styles.modeBadgeText, { color: "#d97706" }]}>
+                          LIVE OVERRIDE
+                        </Text>
+                      </View>
+                    </View>
+                  )}
+                  {/* Failover mode badge */}
+                  {isBroadcastV2 && v2Mode === "failover" && (
+                    <View style={styles.modeBadgeRow}>
+                      <View style={[styles.modeBadge, { backgroundColor: "#ef444418" }]}>
+                        <Feather name="alert-triangle" size={11} color="#ef4444" />
+                        <Text style={[styles.modeBadgeText, { color: "#ef4444" }]}>
+                          FAILOVER MODE
+                        </Text>
+                      </View>
+                    </View>
+                  )}
+
+                  {/* Program / channel name — live-updating from V2 snapshot */}
+                  <Text
+                    style={[styles.liveChannelName, { color: c.foreground }]}
+                    numberOfLines={2}
+                  >
+                    {liveTitle || "Live Broadcast"}
+                  </Text>
+
+                  {/* Sub-row: badge + ministry + quality badge + viewer count */}
+                  <View style={styles.liveSubRow}>
+                    <LiveBadge size="small" />
+                    <Text style={[styles.liveMinistry, { color: c.mutedForeground }]}>
+                      JCTM Ministries
+                    </Text>
+                    {/* HD badge — only shown for HLS source quality */}
+                    {isBroadcastV2 && v2SourceQuality === "hls" && (
+                      <View
+                        style={[
+                          styles.qualityBadge,
+                          {
+                            backgroundColor: c.primary + "18",
+                            borderColor: c.primary + "40",
+                          },
+                        ]}
+                      >
+                        <Text style={[styles.qualityBadgeText, { color: c.primary }]}>HD</Text>
+                      </View>
+                    )}
+                    {sync.viewerCount != null && sync.viewerCount > 0 && (
+                      <View
+                        style={[
+                          styles.viewerChip,
+                          { backgroundColor: c.card, borderColor: c.border },
+                        ]}
+                      >
+                        <Feather name="users" size={10} color={c.mutedForeground} />
+                        <Text style={[styles.viewerChipText, { color: c.mutedForeground }]}>
+                          {sync.viewerCount >= 1000
+                            ? `${(sync.viewerCount / 1000).toFixed(1)}k`
+                            : String(sync.viewerCount)}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Time remaining in current program */}
+                  {isBroadcastV2 && v2Current && v2Current.endsAtMs > Date.now() && (
+                    <BroadcastTimeRemaining
+                      endsAtMs={v2Current.endsAtMs}
+                      textColor={c.mutedForeground}
+                    />
+                  )}
+
+                  {/* Up Next strip — next queued item from the V2 engine */}
+                  {isBroadcastV2 && v2Next && (
+                    <BroadcastUpNextStrip item={v2Next} colors={c} />
+                  )}
+                </>
+              )}
             </View>
           ) : (
             <>
@@ -2005,6 +2274,39 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth, borderRadius: 20,
     paddingHorizontal: 8, paddingVertical: 3,
   },
+  // Reconnecting banner
+  reconnectBanner: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    borderRadius: 8, borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 10, paddingVertical: 7,
+  },
+  reconnectText: { fontSize: 12, fontWeight: "500" },
+  // Off-air card
+  offAirCard: {
+    flexDirection: "row", alignItems: "center", gap: 12,
+    borderRadius: 10, borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 12, paddingVertical: 10,
+  },
+  offAirIconWrap: {
+    width: 40, height: 40, borderRadius: 20,
+    alignItems: "center", justifyContent: "center", flexShrink: 0,
+  },
+  offAirBody: { flex: 1, minWidth: 0 },
+  offAirTitle: { fontSize: 14, fontWeight: "700" },
+  offAirDesc: { fontSize: 12, lineHeight: 17, marginTop: 2 },
+  // Mode badge (override / failover)
+  modeBadgeRow: { flexDirection: "row" },
+  modeBadge: {
+    flexDirection: "row", alignItems: "center", gap: 4,
+    borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3,
+  },
+  modeBadgeText: { fontSize: 10, fontWeight: "700", letterSpacing: 0.6 },
+  // Source quality badge
+  qualityBadge: {
+    borderWidth: StyleSheet.hairlineWidth, borderRadius: 4,
+    paddingHorizontal: 5, paddingVertical: 1,
+  },
+  qualityBadgeText: { fontSize: 10, fontWeight: "700", letterSpacing: 0.4 },
   viewerChipText: { fontSize: 11, fontWeight: "600" },
   videoTitle: { fontSize: 19, fontWeight: "800", lineHeight: 26, letterSpacing: -0.4 },
   metaRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4, marginTop: 1 },
