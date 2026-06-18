@@ -504,6 +504,20 @@ const Env = z.object({
   // Example: https://cdn.templetv.org.ng
   CDN_BASE_URL: z.string().optional(),
 
+  // ── S3 Object Storage ─────────────────────────────────────────────────────
+  // Bucket name for the AWS S3 (or S3-compatible) object storage backend.
+  // When set, the API uses S3 for all binary blobs instead of PostgreSQL BYTEA.
+  // Credentials are auto-discovered from the standard AWS_ACCESS_KEY_ID /
+  // AWS_SECRET_ACCESS_KEY environment variables (set them as Replit secrets).
+  // Example: "temple-tv-media-storage"
+  S3_BUCKET: z.string().optional(),
+  // AWS region for the S3 bucket. Falls back to AWS_REGION env var if not set.
+  // Example: "eu-north-1"
+  S3_REGION: z.string().optional(),
+  // Optional custom endpoint URL for S3-compatible services (MinIO, R2, etc.).
+  // Leave unset for standard AWS S3.
+  AWS_ENDPOINT_URL: z.string().url().optional(),
+
   // ── A3: Security — HLS streaming token ───────────────────────────────────
   // When REQUIRE_HLS_TOKEN=true, the /api/hls/* proxy validates a short-lived
   // HMAC token (`?t=TOKEN`) before streaming segments. Opt-in so existing
@@ -534,39 +548,18 @@ const Env = z.object({
   // Maximum simultaneous in-flight requests to the /api/hls/* proxy.
   // Requests beyond this limit receive 503 with Retry-After: 5.
   //
-  // CRITICAL MEMORY MATH — read before raising this value:
+  // Memory budget (S3 backend — recommended):
+  //   Per concurrent request (segment Buffer, ~4–8 MiB, released after send)
+  //   Node.js + API baseline RSS: ~300 MiB
+  //   At HLS_MAX_CONCURRENT=10: ~300 + 80 = ~380 MiB peak RSS ✓
+  //   At HLS_MAX_CONCURRENT=20: ~300 + 160 = ~460 MiB peak RSS ✓
   //
-  // The pg driver decodes PostgreSQL BYTEA columns via hex encoding at the
-  // text-protocol level.  For an 8 MiB HLS segment the wire data is a 16 MiB
-  // hex string that is allocated in the V8 heap before being decoded into an
-  // 8 MiB external Buffer.  Peak per-request V8 heap impact = 16 MiB (hex
-  // string, transient) + 8 MiB external Buffer (held until client ACKs).
+  // Memory budget (PostgreSQL BYTEA backend — legacy fallback):
+  //   The pg driver decodes BYTEA via hex encoding: 8 MiB segment → 16 MiB
+  //   V8 string (transient) + 8 MiB external Buffer (held until client ACKs).
+  //   At HLS_MAX_CONCURRENT=10: ~300 + 160 + 80 = ~540 MiB peak RSS ✓
   //
-  // Budget calculation:
-  //   Per concurrent request (V8 hex, transient) : 16 MiB
-  //   Per concurrent request (external Buffer)   :  8 MiB
-  //   Node.js + API baseline RSS                 : ~300 MiB
-  //
-  //   At HLS_MAX_CONCURRENT=10 (Replit default — constrained host):
-  //     V8 hex strings  : 10 × 16 MiB = 160 MiB
-  //     External buffers: 10 ×  8 MiB =  80 MiB
-  //     Total peak RSS  : ~540 MiB    (well under MEMORY_RESTART_RSS_MB=1536 ✓)
-  //
-  //   At HLS_MAX_CONCURRENT=20:
-  //     V8 hex strings  : 20 × 16 MiB = 320 MiB
-  //     External buffers: 20 ×  8 MiB = 160 MiB
-  //     Total peak RSS  : ~780 MiB    (fits MEMORY_RESTART_RSS_MB=1536 ✓)
-  //
-  //   At HLS_MAX_CONCURRENT=30:
-  //     Total peak RSS  : ~1020 MiB   — safe on ≥ 2 GiB hosts, OOM on 512 MiB
-  //
-  // Recommended values by deployment size:
-  //   Replit / constrained (≤ 2 GiB)                           : 10 (default)
-  //   Production  (--max-old-space-size=1536, ≥ 2 GiB host)   : 20 (set via env)
-  //   Production  (--max-old-space-size=2048, ≥ 4 GiB host)   : 30 (set via env)
-  //
-  // Raise MEMORY_RESTART_RSS_MB proportionally when raising this value.
-  // video-serve.routes.ts emits a startup WARN when the budget would overflow.
+  // video-serve.routes.ts emits a startup info/warn log with the budget.
   HLS_MAX_CONCURRENT: z.coerce.number().int().positive().default(10),
 
   // In-process LRU cache for immutable HLS .ts segments (integer megabytes).

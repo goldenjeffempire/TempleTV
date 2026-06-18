@@ -185,66 +185,65 @@ export async function videoServeRoutes(app: FastifyInstance) {
   }
 
   // ── HLS memory budget validation ────────────────────────────────────────────
-  // Each concurrent HLS request allocates a 16 MiB hex string in the V8 heap
-  // (pg BYTEA wire decoding) PLUS an 8 MiB external Buffer held until the
-  // response is fully flushed.  If HLS_MAX_CONCURRENT × 16 MiB approaches the
-  // V8 heap cap the GC is unable to keep up, causing latency spikes and OOM
-  // crashes.  Detect this at startup so misconfiguration is caught immediately.
+  // Checks configured concurrency against estimated peak RSS so misconfiguration
+  // is caught at startup rather than discovered mid-broadcast via OOM crash.
+  // Budget math differs between the S3 backend (no BYTEA hex overhead) and the
+  // PostgreSQL BYTEA fallback backend (16 MiB hex string per 8 MiB segment).
   {
-    // Infer the V8 heap cap from --max-old-space-size=N, fall back to 460 MiB.
-    const v8HeapCapMb = (() => {
-      for (const arg of process.execArgv) {
-        const m = /--max-old-space-size=(\d+)/.exec(arg);
-        if (m) return parseInt(m[1], 10);
-      }
-      return 460;
-    })();
-
     const hlsMax = HLS_MAX();
-    // Peak V8 heap from concurrent BYTEA hex strings (transient but simultaneous).
-    const hexHeapMb = hlsMax * 16;
-    // Peak external Buffer memory held until clients acknowledge each segment.
-    const bufferExternalMb = hlsMax * 8;
-    // Conservative API baseline (JIT, DB pool, module cache, libuv, etc.).
-    const baselineRssMb = 300;
-    const estimatedPeakRssMb = baselineRssMb + hexHeapMb + bufferExternalMb;
-    // The effective restart threshold respects the Math.max guard in memory-watchdog.ts.
+    const baselineRssMb = 300; // JIT, DB pool, module cache, libuv, etc.
     const effectiveRestartMb = Math.max(env.MEMORY_RESTART_RSS_MB, env.MEMORY_WARN_RSS_MB);
+    const s = storage();
+    const isS3 = s.bucket !== null;
 
-    if (hexHeapMb > v8HeapCapMb * 0.8) {
-      logger.error(
-        {
-          hlsMaxConcurrent: hlsMax,
-          hexHeapMb,
-          v8HeapCapMb,
-          safeMax: Math.floor(v8HeapCapMb * 0.8 / 16),
-        },
-        "video-serve: HLS_MAX_CONCURRENT is too high for this V8 heap cap. " +
-        `${hlsMax} concurrent requests × 16 MiB pg hex strings = ${hexHeapMb} MiB ` +
-        `exceeds 80% of the ${v8HeapCapMb} MiB V8 heap (--max-old-space-size). ` +
-        "GC thrashing will cause latency spikes and likely OOM crashes under load. " +
-        `Lower HLS_MAX_CONCURRENT to ≤${Math.floor(v8HeapCapMb * 0.8 / 16)} ` +
-        `or raise --max-old-space-size above ${Math.ceil(hexHeapMb / 0.8)}.`,
-      );
-    } else if (estimatedPeakRssMb > effectiveRestartMb) {
-      logger.warn(
-        {
-          hlsMaxConcurrent: hlsMax,
-          estimatedPeakRssMb,
-          effectiveRestartMb,
-          memoryWarnMb: env.MEMORY_WARN_RSS_MB,
-          memoryRestartMb: env.MEMORY_RESTART_RSS_MB,
-        },
-        "video-serve: HLS memory budget exceeds MEMORY_RESTART_RSS_MB. " +
-        `${hlsMax} concurrent × (16 MiB hex + 8 MiB buffer) + ${baselineRssMb} MiB baseline ` +
-        `= ${estimatedPeakRssMb} MiB estimated peak RSS, but the watchdog restarts at ` +
-        `${effectiveRestartMb} MiB. Lower HLS_MAX_CONCURRENT or raise MEMORY_RESTART_RSS_MB.`,
-      );
+    if (isS3) {
+      // S3 backend: segment bytes stream directly from AWS without BYTEA hex
+      // encoding.  Per-request overhead is just the segment Buffer (~4–8 MiB)
+      // held until the client ACKs the full response.
+      const bufferExternalMb = hlsMax * 8;
+      const estimatedPeakRssMb = baselineRssMb + bufferExternalMb;
+      if (estimatedPeakRssMb > effectiveRestartMb) {
+        logger.warn(
+          { hlsMaxConcurrent: hlsMax, estimatedPeakRssMb, effectiveRestartMb, backend: "s3" },
+          "video-serve: HLS memory budget close to restart threshold — lower HLS_MAX_CONCURRENT or raise MEMORY_RESTART_RSS_MB",
+        );
+      } else {
+        logger.info(
+          { hlsMaxConcurrent: hlsMax, estimatedPeakRssMb, effectiveRestartMb, backend: "s3" },
+          "video-serve: HLS memory budget OK (S3 backend)",
+        );
+      }
     } else {
-      logger.info(
-        { hlsMaxConcurrent: hlsMax, estimatedPeakRssMb, v8HeapCapMb, effectiveRestartMb },
-        "video-serve: HLS memory budget OK",
-      );
+      // PostgreSQL BYTEA backend: pg driver decodes each 8 MiB segment as a
+      // 16 MiB hex string in the V8 heap before converting to a Buffer.
+      // If HLS_MAX_CONCURRENT × 16 MiB approaches the V8 heap cap, GC cannot
+      // keep up, causing latency spikes and OOM crashes.
+      const v8HeapCapMb = (() => {
+        for (const arg of process.execArgv) {
+          const m = /--max-old-space-size=(\d+)/.exec(arg);
+          if (m) return parseInt(m[1], 10);
+        }
+        return 460;
+      })();
+      const hexHeapMb = hlsMax * 16;
+      const bufferExternalMb = hlsMax * 8;
+      const estimatedPeakRssMb = baselineRssMb + hexHeapMb + bufferExternalMb;
+      if (hexHeapMb > v8HeapCapMb * 0.8) {
+        logger.error(
+          { hlsMaxConcurrent: hlsMax, hexHeapMb, v8HeapCapMb, safeMax: Math.floor(v8HeapCapMb * 0.8 / 16), backend: "postgresql" },
+          `video-serve: HLS_MAX_CONCURRENT is too high for this V8 heap cap — ${hlsMax} × 16 MiB = ${hexHeapMb} MiB exceeds 80% of the ${v8HeapCapMb} MiB V8 heap. Lower HLS_MAX_CONCURRENT or raise --max-old-space-size.`,
+        );
+      } else if (estimatedPeakRssMb > effectiveRestartMb) {
+        logger.warn(
+          { hlsMaxConcurrent: hlsMax, estimatedPeakRssMb, effectiveRestartMb, backend: "postgresql" },
+          `video-serve: HLS memory budget exceeds MEMORY_RESTART_RSS_MB. ${hlsMax} × (16 MiB hex + 8 MiB buffer) + ${baselineRssMb} MiB baseline = ${estimatedPeakRssMb} MiB.`,
+        );
+      } else {
+        logger.info(
+          { hlsMaxConcurrent: hlsMax, estimatedPeakRssMb, v8HeapCapMb, effectiveRestartMb, backend: "postgresql" },
+          "video-serve: HLS memory budget OK (PostgreSQL BYTEA backend)",
+        );
+      }
     }
   }
 

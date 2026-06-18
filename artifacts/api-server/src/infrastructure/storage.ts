@@ -1,8 +1,23 @@
 import { randomUUID, createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { sql } from "drizzle-orm";
+import {
+  S3Client,
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  DeleteObjectCommand,
+  DeleteObjectsCommand,
+  ListObjectsV2Command,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
+} from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { db, pgPool } from "./db.js";
 import { logger } from "./logger.js";
+import { env } from "../config/env.js";
 
 /**
  * Database-backed binary object storage.
@@ -772,11 +787,254 @@ class DatabaseObjectStorage implements ObjectStorage {
   }
 }
 
+// ── S3ObjectStorage ───────────────────────────────────────────────────────────
+//
+// AWS S3 (or S3-compatible) object storage backend.
+//
+// Credentials are auto-discovered from the standard AWS environment variables:
+//   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
+// Set S3_BUCKET (and optionally S3_REGION, AWS_ENDPOINT_URL) in app config.
+//
+// Key design notes:
+//   - Multipart maps directly to real S3 multipart API (no temp rows in DB).
+//   - publicUrl returns a CDN URL when CDN_BASE_URL is set, otherwise the
+//     API proxy path (/api/v1/uploads/…) so callers always get a valid URL.
+//   - signedDownloadUrl / signedUploadUrl generate real S3 presigned URLs.
+//   - getObject / getObjectRange return AWS SDK body streams (Node.js Readable).
+//   - deleteByPrefix lists + batches DeleteObjects (max 1000 per call).
+//   - _activeStreamCount tracks open S3 streams for graceful shutdown parity
+//     with the DatabaseObjectStorage implementation.
+class S3ObjectStorage implements ObjectStorage {
+  readonly enabled = true;
+  readonly bucket: string;
+  readonly region: string | null;
+  private readonly client: S3Client;
+
+  constructor(bucket: string, region?: string | null, endpoint?: string) {
+    this.bucket = bucket;
+    this.region = region ?? process.env.AWS_REGION ?? null;
+    this.client = new S3Client({
+      ...(this.region ? { region: this.region } : {}),
+      ...(endpoint ? { endpoint, forcePathStyle: true } : {}),
+    });
+  }
+
+  // ── URL helpers ─────────────────────────────────────────────────────────────
+
+  publicUrl(key: string): string {
+    const cdnBase = env.CDN_BASE_URL?.replace(/\/$/, "");
+    if (cdnBase) {
+      return `${cdnBase}/${key}`;
+    }
+    // Fall back to the API proxy path so callers always receive a valid URL.
+    const suffix = key.startsWith("uploads/") ? key.slice("uploads/".length) : key;
+    return `/api/v1/uploads/${suffix}`;
+  }
+
+  async signedDownloadUrl(key: string, ttlSeconds = 3600): Promise<string> {
+    const cmd = new GetObjectCommand({ Bucket: this.bucket, Key: key });
+    return getSignedUrl(this.client, cmd, { expiresIn: ttlSeconds });
+  }
+
+  async signedUploadUrl({ key, contentType, ttlSeconds = 3600 }: { key: string; contentType?: string; ttlSeconds?: number }): Promise<{ url: string; key: string }> {
+    const cmd = new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      ContentType: contentType ?? "application/octet-stream",
+    });
+    const url = await getSignedUrl(this.client, cmd, { expiresIn: ttlSeconds });
+    return { url, key };
+  }
+
+  // ── Core CRUD ───────────────────────────────────────────────────────────────
+
+  async putObject({ key, body, contentType }: { key: string; body: Buffer | Uint8Array; contentType?: string }): Promise<{ key: string; url: string }> {
+    const buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
+    await this.client.send(new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+      Body: buf,
+      ContentType: contentType ?? "application/octet-stream",
+      ContentLength: buf.length,
+    }));
+    return { key, url: this.publicUrl(key) };
+  }
+
+  async getObject(key: string): Promise<{ body: Readable; contentType?: string; contentLength?: number }> {
+    try {
+      const resp = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+      if (!resp.Body) {
+        throw Object.assign(
+          new Error(`Object not found in storage: ${key}`),
+          { code: "SOURCE_MISSING", $metadata: { httpStatusCode: 404 } },
+        );
+      }
+      // In Node.js the AWS SDK v3 returns a NodeJS.ReadableStream (IncomingMessage).
+      const body = resp.Body as unknown as Readable;
+      _activeStreamCount++;
+      const dec = () => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); };
+      body.once("close", dec);
+      body.once("error", dec);
+      return { body, contentType: resp.ContentType, contentLength: resp.ContentLength };
+    } catch (err: unknown) {
+      const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+      if (e.name === "NoSuchKey" || e.$metadata?.httpStatusCode === 404) {
+        throw Object.assign(
+          new Error(`Object not found in storage: ${key}`),
+          { code: "SOURCE_MISSING", $metadata: { httpStatusCode: 404 } },
+        );
+      }
+      throw err;
+    }
+  }
+
+  async getObjectRange(key: string, start: number, end: number): Promise<{ body: Readable; contentType?: string; contentLength: number } | null> {
+    try {
+      const resp = await this.client.send(new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Range: `bytes=${start}-${end}`,
+      }));
+      if (!resp.Body) return null;
+      const body = resp.Body as unknown as Readable;
+      _activeStreamCount++;
+      const dec = () => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); };
+      body.once("close", dec);
+      body.once("error", dec);
+      const length = end - start + 1;
+      return { body, contentType: resp.ContentType, contentLength: length };
+    } catch (err: unknown) {
+      const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+      if (e.name === "NoSuchKey" || e.$metadata?.httpStatusCode === 404) return null;
+      throw err;
+    }
+  }
+
+  async headObject(key: string): Promise<{ exists: boolean; contentLength?: number; contentType?: string }> {
+    try {
+      const resp = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+      return {
+        exists: true,
+        contentLength: resp.ContentLength,
+        contentType: resp.ContentType,
+      };
+    } catch (err: unknown) {
+      const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+      if (e.name === "NotFound" || e.$metadata?.httpStatusCode === 404) {
+        return { exists: false };
+      }
+      throw err;
+    }
+  }
+
+  async deleteObject(key: string): Promise<void> {
+    await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+  }
+
+  async deleteByPrefix(prefix: string): Promise<number> {
+    let deleted = 0;
+    let continuationToken: string | undefined;
+    do {
+      const list = await this.client.send(new ListObjectsV2Command({
+        Bucket: this.bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      }));
+      const objects = (list.Contents ?? [])
+        .filter((o): o is { Key: string } => typeof o.Key === "string")
+        .map(o => ({ Key: o.Key }));
+      if (objects.length > 0) {
+        await this.client.send(new DeleteObjectsCommand({
+          Bucket: this.bucket,
+          Delete: { Objects: objects, Quiet: true },
+        }));
+        deleted += objects.length;
+      }
+      continuationToken = list.IsTruncated ? list.NextContinuationToken : undefined;
+    } while (continuationToken);
+    return deleted;
+  }
+
+  // ── Multipart upload ────────────────────────────────────────────────────────
+  // Maps directly to S3's native multipart API. No temp rows in PostgreSQL.
+
+  async createMultipartUpload({ key, contentType }: { key: string; contentType?: string }): Promise<{ uploadId: string }> {
+    const resp = await this.client.send(new CreateMultipartUploadCommand({
+      Bucket: this.bucket,
+      Key: key,
+      ContentType: contentType ?? "application/octet-stream",
+    }));
+    if (!resp.UploadId) throw new Error("S3 did not return an UploadId");
+    return { uploadId: resp.UploadId };
+  }
+
+  async signUploadPart({ key, uploadId, partNumber, ttlSeconds = 3600 }: { key: string; uploadId: string; partNumber: number; ttlSeconds?: number }): Promise<string> {
+    const cmd = new UploadPartCommand({
+      Bucket: this.bucket,
+      Key: key,
+      UploadId: uploadId,
+      PartNumber: partNumber,
+    });
+    return getSignedUrl(this.client, cmd, { expiresIn: ttlSeconds });
+  }
+
+  async uploadPart({ key, uploadId, partNumber, body }: { key: string; uploadId: string; partNumber: number; body: Buffer }): Promise<{ etag: string }> {
+    const resp = await this.client.send(new UploadPartCommand({
+      Bucket: this.bucket,
+      Key: key,
+      UploadId: uploadId,
+      PartNumber: partNumber,
+      Body: body,
+      ContentLength: body.length,
+    }));
+    return { etag: resp.ETag ?? "" };
+  }
+
+  async completeMultipartUpload({ key, uploadId, parts }: { key: string; uploadId: string; parts: MultipartPart[] }): Promise<{ key: string; etag: string | null; location: string | null }> {
+    const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
+    const resp = await this.client.send(new CompleteMultipartUploadCommand({
+      Bucket: this.bucket,
+      Key: key,
+      UploadId: uploadId,
+      MultipartUpload: {
+        Parts: sorted.map(p => ({ PartNumber: p.partNumber, ETag: p.etag })),
+      },
+    }));
+    logger.info({ key, uploadId, parts: sorted.length }, "[storage] S3 completeMultipartUpload done");
+    return { key, etag: resp.ETag ?? null, location: resp.Location ?? this.publicUrl(key) };
+  }
+
+  async abortMultipartUpload({ key, uploadId }: { key: string; uploadId: string }): Promise<void> {
+    await this.client.send(new AbortMultipartUploadCommand({
+      Bucket: this.bucket,
+      Key: key,
+      UploadId: uploadId,
+    }));
+  }
+}
+
 let _storage: ObjectStorage | null = null;
 
 export function storage(): ObjectStorage {
   if (_storage) return _storage;
+  const bucket = env.S3_BUCKET;
+  if (bucket) {
+    _storage = new S3ObjectStorage(
+      bucket,
+      env.S3_REGION ?? process.env.AWS_REGION,
+      env.AWS_ENDPOINT_URL,
+    );
+    logger.info(
+      {
+        bucket,
+        region: env.S3_REGION ?? process.env.AWS_REGION ?? "sdk-auto-discovery",
+        endpoint: env.AWS_ENDPOINT_URL ?? "aws-default",
+      },
+      "[storage] S3 object storage ready",
+    );
+    return _storage;
+  }
   _storage = new DatabaseObjectStorage();
-  logger.info("Database-backed object storage ready (zero external dependencies)");
+  logger.info("[storage] Database-backed object storage ready (PostgreSQL BYTEA fallback)");
   return _storage;
 }
