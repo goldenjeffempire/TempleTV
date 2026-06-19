@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
-    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
+    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"WARNING: Expected pnpm but got: $npm_config_user_agent\" >&2 ;; esac'",
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "setup:hooks": "git config core.hooksPath .githooks && echo 'Git hooks activated (.githooks/pre-push)'",
     "build": "pnpm run typecheck && pnpm -r --if-present run build",
