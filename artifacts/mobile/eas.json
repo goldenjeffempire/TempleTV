@@ -132,7 +132,7 @@
       "node": "22.14.0",
       "android": {
         "buildType": "app-bundle",
-        "resourceClass": "large"
+        "resourceClass": "medium"
       },
       "env": {
         "APP_ENV": "production",
