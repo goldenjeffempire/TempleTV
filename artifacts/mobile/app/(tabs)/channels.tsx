@@ -21,6 +21,7 @@ import { Feather } from "@expo/vector-icons";
 import { router, Stack, useFocusEffect } from "expo-router";
 import { useColors } from "@/hooks/useColors";
 import { ScreenHeader } from "@/components/ScreenHeader";
+import { StreamStatusBadge } from "@/components/StreamStatusBadge";
 import { getApiBase } from "@/lib/apiBase";
 import { fetchChannels, type ApiChannel } from "@/services/api";
 import type { SermonCategory } from "@/types";
@@ -347,10 +348,7 @@ function ChannelCard({
               {channel.name}
             </Text>
             {channel.isRunning && !tuning && (
-              <View style={styles.liveBadge}>
-                <View style={styles.liveDotIndicator} />
-                <Text style={styles.liveBadgeText}>LIVE</Text>
-              </View>
+              <StreamStatusBadge state="live" variant="compact" />
             )}
             {tuning && (
               <Text style={[styles.tuningText, { color: colors.mutedForeground }]}>Tuning…</Text>

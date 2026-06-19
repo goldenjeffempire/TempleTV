@@ -45,10 +45,12 @@ import { VideoCard } from "@/components/VideoCard";
 import { SectionHeader } from "@/components/SectionHeader";
 import { SkeletonVerticalCard, SkeletonHero } from "@/components/SkeletonCard";
 import { V2PlayerContainer } from "@/components/V2PlayerContainer";
+import { StreamStatusBadge } from "@/components/StreamStatusBadge";
 import { getApiBase } from "@/lib/apiBase";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import { usePlayer } from "@/context/PlayerContext";
 import { useBroadcastSync } from "@/hooks/useBroadcastSync";
+import { useMediaPlayerState } from "@/hooks/useMediaPlayerState";
 import type { Sermon, SermonCategory } from "@/types";
 
 const CATEGORY_ROWS: SermonCategory[] = [
@@ -131,6 +133,13 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
 
   const { isBroadcastMode } = usePlayer();
 
+  // Unified media state — drives badge, CTA, and status indicators.
+  const {
+    mediaState,
+    isWatchLiveCTAVisible,
+    isReconnecting,
+  } = useMediaPlayerState();
+
   // V2 FSM singleton — attaches a React listener to the already-running session.
   // No extra WS connection. Replaces v1-WS (useBroadcastSync) which caused hero
   // flicker on every reconnect even when V2 was playing normally.
@@ -158,19 +167,6 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [v2Server]);
-
-  // Animated pulse for the ON AIR dot — gives the "live" feel.
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-  useEffect(() => {
-    const anim = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 0.25, duration: 750, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1, duration: 750, useNativeDriver: true }),
-      ]),
-    );
-    anim.start();
-    return () => anim.stop();
-  }, [pulseAnim]);
 
   // Live viewer count + OMEGA emergency signal from the v1 broadcast sync heartbeat.
   // V2Snapshot (player-core) does not carry viewer counts or OMEGA signals — those
@@ -286,12 +282,12 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
         <View style={styles.heroContent}>
           {/* ── Badges row ── */}
           <View style={styles.heroBadges}>
-            {hasActiveBroadcast && (
-              <View style={styles.onAirBadge}>
-                <Animated.View style={[styles.onAirDot, { opacity: pulseAnim }]} />
-                <Text style={styles.onAirText}>ON AIR</Text>
-              </View>
-            )}
+            {/* Unified stream status badge — live/loading/reconnecting/offline/error */}
+            <StreamStatusBadge
+              state={mediaState}
+              variant="compact"
+              hideWhenIdle={!hasActiveBroadcast}
+            />
 
             {hasActiveBroadcast && viewerCount != null && viewerCount > 0 && (
               <View style={styles.viewerBadge}>
@@ -311,8 +307,11 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
             )}
           </View>
 
-          {/* ── CTA button ── */}
-          {!watchNowDisabled && (
+          {/* ── CTA button ──
+              "Watch Live" only surfaces in idle / offline / error states.
+              While the stream is loading or reconnecting the hero itself is
+              still tappable — the CTA transitions to a quieter state indicator. */}
+          {!watchNowDisabled && isWatchLiveCTAVisible && (
             <Pressable
               onPress={handleTuneIn}
               style={({ pressed }) => [
@@ -326,6 +325,22 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
               <Text style={styles.heroBtnText}>
                 {hasActiveBroadcast ? "Watch Live" : "Watch Now"}
               </Text>
+            </Pressable>
+          )}
+
+          {/* ── "Now Watching" indicator — replaces CTA while broadcast is active ── */}
+          {!watchNowDisabled && !isWatchLiveCTAVisible && !isReconnecting && (
+            <Pressable
+              onPress={handleTuneIn}
+              style={({ pressed }) => [
+                styles.heroBtnSecondary,
+                { borderColor: "rgba(255,255,255,0.45)", opacity: pressed ? 0.78 : 1 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Open broadcast player"
+            >
+              <Feather name="maximize-2" size={13} color="#fff" />
+              <Text style={styles.heroBtnSecondaryText}>Open Player</Text>
             </Pressable>
           )}
         </View>
@@ -692,6 +707,21 @@ const styles = StyleSheet.create({
     borderRadius: 24,
   },
   heroBtnText: { fontSize: 14, fontWeight: "700", color: "#fff" },
+  heroBtnSecondary: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    alignSelf: "flex-start",
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 24,
+    borderWidth: 1.5,
+  },
+  heroBtnSecondaryText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#fff",
+  },
 
   // ── Content ─────────────────────────────────────────────────────────────────
   content: { paddingTop: 24, gap: 32 },

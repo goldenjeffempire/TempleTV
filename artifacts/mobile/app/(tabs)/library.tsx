@@ -28,9 +28,11 @@ import { useColors } from "@/hooks/useColors";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import { usePaginatedVideos } from "@/hooks/useVideos";
 import { SermonCard } from "@/components/SermonCard";
+import { VideoCard } from "@/components/VideoCard";
 import { getApiBase } from "@/lib/apiBase";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
+import { useBreakpoint } from "@/hooks/useBreakpoint";
 import type { Sermon, SermonCategory, SortMode } from "@/types";
 import { useWatchProgress, type ContinueWatchingItem } from "@/hooks/useWatchProgress";
 import { playbackQueue } from "@/lib/playbackQueue";
@@ -490,6 +492,12 @@ export default function LibraryScreen() {
 
   const currentSort = SORT_OPTIONS.find((s) => s.value === sort)!;
 
+  // Tablet-responsive grid — on tablets (≥768 px) show 2 columns of vertical
+  // VideoCards instead of a single-column horizontal SermonCard list. On phone
+  // keep the existing horizontal-list layout which maximises density.
+  const { isTablet, getCardWidth: getTabletCardWidth } = useBreakpoint();
+  const numCols = isTablet ? 2 : 1;
+
   // Stable ref to the latest sermons array so renderItem doesn't have to
   // depend on it (which would re-render every visible row on every page
   // append). Reading the ref at tap-time gives the player the most current
@@ -497,15 +505,30 @@ export default function LibraryScreen() {
   const sermonsRef = useRef<Sermon[]>(sermons);
   sermonsRef.current = sermons;
 
+  // tabletCardWidth is computed once per breakpoint change. The function
+  // is stable across renders so this value won't bounce.
+  const tabletCardWidth = isTablet ? getTabletCardWidth(2) : 0;
+
   const renderItem = useCallback(
-    ({ item }: { item: Sermon }) => (
-      <SermonCard
-        sermon={item}
-        onPress={() => navigateToSermon(item, sermonsRef.current)}
-        variant="horizontal"
-      />
-    ),
-    [],
+    ({ item }: { item: Sermon }) => {
+      if (isTablet) {
+        return (
+          <VideoCard
+            sermon={item}
+            onPress={() => navigateToSermon(item, sermonsRef.current)}
+            cardWidth={tabletCardWidth}
+          />
+        );
+      }
+      return (
+        <SermonCard
+          sermon={item}
+          onPress={() => navigateToSermon(item, sermonsRef.current)}
+          variant="horizontal"
+        />
+      );
+    },
+    [isTablet, tabletCardWidth],
   );
 
   // Keep the shared playback queue in sync as the library loads more pages
@@ -771,7 +794,11 @@ export default function LibraryScreen() {
               ListHeaderComponent={ListHeader}
               ListEmptyComponent={<EmptyState search={debouncedSearch} c={c} />}
               ListFooterComponent={ListFooter}
-              contentContainerStyle={[styles.list, { paddingBottom: insets.bottom + 100 }]}
+              contentContainerStyle={[
+                styles.list,
+                { paddingBottom: insets.bottom + 100 },
+                isTablet && styles.listTablet,
+              ]}
               refreshControl={
                 <RefreshControl
                   refreshing={isRefreshing}
@@ -786,7 +813,10 @@ export default function LibraryScreen() {
               maxToRenderPerBatch={10}
               windowSize={7}
               initialNumToRender={10}
-              getItemLayout={(_data, index) => ({
+              numColumns={numCols}
+              key={numCols}
+              columnWrapperStyle={numCols > 1 ? styles.columnWrapper : undefined}
+              getItemLayout={isTablet ? undefined : (_data, index) => ({
                 length: SERMON_CARD_HEIGHT,
                 offset: (SERMON_CARD_HEIGHT + LIST_ITEM_GAP) * index,
                 index,
@@ -972,6 +1002,15 @@ const styles = StyleSheet.create({
     textDecorationLine: "underline",
   },
   list: { gap: 0 },
+  listTablet: {
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  columnWrapper: {
+    gap: 12,
+    marginBottom: 0,
+    alignItems: "flex-start",
+  },
   loadingWrap: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12, paddingTop: 60 },
   loadingText: { fontSize: 14 },
   empty: { alignItems: "center", paddingVertical: 60, paddingHorizontal: 32, gap: 12 },
