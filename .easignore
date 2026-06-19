@@ -1,6 +1,9 @@
 # Root-level EAS build ignore
 # Only the mobile app and its workspace dependencies are needed.
-# Everything else is excluded to keep the archive small and fast.
+# Source code for non-mobile packages is excluded to keep the archive small,
+# BUT each package's package.json MUST remain so pnpm can resolve all
+# workspace importers declared in pnpm-lock.yaml (frozen-lockfile install
+# fails instantly if any importer directory is missing entirely).
 
 # ── Global exclusions ───────────────────────────────────────────────────────
 node_modules/
@@ -12,42 +15,71 @@ dist/
 .DS_Store
 *.log
 
-# ── Server / API (not needed for mobile build) ─────────────────────────────
-artifacts/api-server/
-artifacts/admin/
-artifacts/tv/
-artifacts/mockup-sandbox/
+# ── Server / API — keep package.json, exclude heavy source ─────────────────
+artifacts/api-server/src/
+artifacts/api-server/dist/
+artifacts/api-server/dist-types/
+artifacts/api-server/tests/
+artifacts/api-server/Dockerfile
+artifacts/api-server/DEPLOYMENT.md
+artifacts/api-server/README.md
 
-# ── Database / spec / other libs (not direct mobile deps) ──────────────────
-lib/db/
-lib/api-spec/
-# NOTE: lib/api-zod/ is required because lib/api-client-react (mobile dep)
-# declares "@workspace/api-zod": "workspace:*" — excluding it makes
-# `pnpm install` fail at the EAS Prebuild phase with
-# ERR_PNPM_WORKSPACE_PKG_NOT_FOUND.
+# ── Admin SPA — keep package.json, exclude heavy source ────────────────────
+artifacts/admin/src/
+artifacts/admin/dist/
+artifacts/admin/public/
+artifacts/admin/Dockerfile
+artifacts/admin/README.md
+
+# ── TV SPA — keep package.json, exclude heavy source ───────────────────────
+artifacts/tv/src/
+artifacts/tv/dist/
+artifacts/tv/public/
+
+# ── Mockup sandbox — keep package.json, exclude heavy source ───────────────
+artifacts/mockup-sandbox/src/
+
+# ── Database / spec — keep package.json, exclude heavy source ──────────────
+lib/db/src/
+lib/db/drizzle.config.ts
+lib/db/README.md
+lib/api-spec/README.md
+
+# ── Scripts workspace package — keep package.json, exclude source ──────────
+# NOTE: scripts/ MUST stay in the archive (pnpm-workspace.yaml declares it
+# as an importer); only its source files can be excluded.
+scripts/src/
+scripts/*.sh
+scripts/*.mjs
+scripts/*.js
+scripts/*.ts
 
 # ── Local agent state ──────────────────────────────────────────────────────
 .local/
 
 # ── Build outputs ──────────────────────────────────────────────────────────
-artifacts/*/dist/
 artifacts/*/build/
 lib/*/dist/
 
 # ── Misc ───────────────────────────────────────────────────────────────────
 .git/
-scripts/
 RELEASE_PIPELINE.md
 CHANGELOG.md
 turbo.json
 
 # ─── What IS included ──────────────────────────────────────────────────────
-# package.json            (workspace root — needed for pnpm workspace config)
-# pnpm-workspace.yaml     (workspace package resolution)
+# package.json            (workspace root — pnpm workspace config)
+# pnpm-workspace.yaml     (workspace package globs)
 # pnpm-lock.yaml          (lockfile for reproducible installs on EAS server)
+# patches/                (react-native-track-player patch — required by lockfile)
+# stubs/                  (shell-quote stub — referenced in pnpm overrides)
 # artifacts/mobile/       (the mobile app itself)
+# artifacts/*/package.json (stub presence for all workspace importers)
 # lib/player-core/        (@workspace/player-core dep)
 # lib/broadcast-sync/     (@workspace/broadcast-sync dep)
 # lib/broadcast-types/    (@workspace/broadcast-types dep)
 # lib/api-client-react/   (@workspace/api-client-react dep)
 # lib/api-zod/            (transitive: api-client-react -> api-zod)
+# lib/api-spec/package.json  (importer stub)
+# lib/db/package.json        (importer stub)
+# scripts/package.json       (importer stub)
