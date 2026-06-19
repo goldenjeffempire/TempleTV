@@ -10,6 +10,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## v1.0.29 — 2026-06-19
+
+### Release Name
+Performance & Stability improvements
+
+### Release Note
+This update brings under-the-hood reliability improvements to the Temple TV app. The broadcast player, live stream connectivity, and background audio session have been further hardened for uninterrupted worship viewing. Android build pipeline has been updated for improved compatibility and faster delivery of future releases.
+
+### Changed
+- **Android versionCode**: 82 → 83. Targets v1.0.29 release candidate.
+- **Build pipeline**: API server network dependency (undici) now correctly externalised, preventing build failures on cold deploys.
+- **EAS Android build profile**: `production-android` resource class aligned to available build tier for reliable CI delivery.
+
+---
+
 ## v1.0.26 — 2026-06-14
 
 ### Release Name
