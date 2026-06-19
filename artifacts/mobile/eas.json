@@ -9,8 +9,8 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "node": "24.1.0",
-      "pnpm": "10.26.1",
+      "node": "22.14.0",
+      "pnpm": "9.15.9",
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleDebug"
@@ -28,8 +28,8 @@
     "development-device": {
       "developmentClient": true,
       "distribution": "internal",
-      "node": "24.1.0",
-      "pnpm": "10.26.1",
+      "node": "22.14.0",
+      "pnpm": "9.15.9",
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleDebug"
@@ -48,8 +48,8 @@
       "distribution": "internal",
       "channel": "preview",
       "credentialsSource": "remote",
-      "node": "24.1.0",
-      "pnpm": "10.26.1",
+      "node": "22.14.0",
+      "pnpm": "9.15.9",
       "android": {
         "buildType": "apk",
         "resourceClass": "medium"
@@ -70,8 +70,8 @@
       "distribution": "internal",
       "channel": "staging",
       "credentialsSource": "remote",
-      "node": "24.1.0",
-      "pnpm": "10.26.1",
+      "node": "22.14.0",
+      "pnpm": "9.15.9",
       "android": {
         "buildType": "apk",
         "resourceClass": "medium"
@@ -93,8 +93,8 @@
       "distribution": "store",
       "channel": "production",
       "credentialsSource": "remote",
-      "node": "24.1.0",
-      "pnpm": "10.26.1",
+      "node": "22.14.0",
+      "pnpm": "9.15.9",
       "android": {
         "buildType": "app-bundle",
         "resourceClass": "large"
@@ -116,8 +116,8 @@
       "distribution": "store",
       "channel": "production",
       "credentialsSource": "remote",
-      "node": "24.1.0",
-      "pnpm": "10.26.1",
+      "node": "22.14.0",
+      "pnpm": "9.15.9",
       "ios": {
         "resourceClass": "m1-medium",
         "buildConfiguration": "Release"
@@ -135,8 +135,8 @@
       "distribution": "store",
       "channel": "production",
       "credentialsSource": "remote",
-      "node": "24.1.0",
-      "pnpm": "10.26.1",
+      "node": "22.14.0",
+      "pnpm": "9.15.9",
       "android": {
         "buildType": "app-bundle",
         "resourceClass": "medium"
@@ -153,8 +153,8 @@
       "autoIncrement": true,
       "channel": "firetv",
       "credentialsSource": "remote",
-      "node": "24.1.0",
-      "pnpm": "10.26.1",
+      "node": "22.14.0",
+      "pnpm": "9.15.9",
       "android": {
         "buildType": "apk",
         "resourceClass": "medium"
@@ -171,8 +171,8 @@
       "autoIncrement": true,
       "channel": "androidtv",
       "credentialsSource": "remote",
-      "node": "24.1.0",
-      "pnpm": "10.26.1",
+      "node": "22.14.0",
+      "pnpm": "9.15.9",
       "android": {
         "buildType": "app-bundle",
         "resourceClass": "medium"
@@ -189,8 +189,8 @@
       "autoIncrement": true,
       "channel": "appletv",
       "credentialsSource": "remote",
-      "node": "24.1.0",
-      "pnpm": "10.26.1",
+      "node": "22.14.0",
+      "pnpm": "9.15.9",
       "ios": {
         "resourceClass": "m1-medium",
         "buildConfiguration": "Release",
