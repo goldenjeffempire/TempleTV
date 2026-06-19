@@ -1447,7 +1447,72 @@ interface AutonomyReport {
       totalRepairs: number;
       consecutiveFailures: number;
     };
+    queueExhaustion?: {
+      level: string;
+      timeToEmptyMs: number | null;
+      timeToEmptyFmt: string | null;
+      activeItemCount: number;
+      overrideSuppressed: boolean;
+    };
+    autoRefill?: {
+      enabled: boolean;
+      lastRefillAtMs: number | null;
+      lastRefillCount: number;
+      totalRefilled: number;
+      libraryIsYouTubeOnly: boolean;
+    };
+    deadAir?: {
+      totalIncidents: number;
+      openIncident: boolean;
+      longestIncidentMs: number;
+      totalDeadAirMs: number;
+      onAirPct: number | null;
+    };
+    transcodingAutoRetry?: {
+      enabled: boolean;
+      totalRetried: number;
+      lastRetryCount: number;
+    };
   };
+}
+
+interface EpgEntry {
+  id: string;
+  title: string;
+  durationSecs: number;
+  thumbnailUrl: string | null;
+  sourceQuality: string;
+  isPlaying: boolean;
+  estimatedStartMs: number;
+  estimatedEndMs: number;
+}
+
+interface ProgramGuide {
+  generatedAtMs: number;
+  mode: string;
+  totalActiveItems: number;
+  hoursAhead: number;
+  cycleDurationMs: number;
+  schedule: EpgEntry[];
+}
+
+interface DeadAirIncident {
+  id: string;
+  startedAtMs: number;
+  endedAtMs: number | null;
+  durationMs: number | null;
+  reason: string;
+  recoveryMode: string | null;
+}
+
+interface IncidentsReport {
+  generatedAtMs: number;
+  openIncident: DeadAirIncident | null;
+  recentIncidents: DeadAirIncident[];
+  totalIncidents: number;
+  longestIncidentMs: number;
+  totalDeadAirMs: number;
+  onAirPct: number | null;
 }
 
 /**
@@ -1558,6 +1623,68 @@ function AutonomyCard({ report }: { report: AutonomyReport | undefined }) {
           </div>
         </div>
 
+        {/* Queue exhaustion + auto-refill */}
+        {report.selfHealing.queueExhaustion && (
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-md border bg-muted/30 px-2.5 py-2 space-y-0.5">
+              <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Queue level</div>
+              <div className={`text-sm font-bold ${
+                report.selfHealing.queueExhaustion.level === "ok"
+                  ? "text-green-600 dark:text-green-400"
+                  : report.selfHealing.queueExhaustion.level === "warning"
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-red-600 dark:text-red-400"
+              }`}>
+                {report.selfHealing.queueExhaustion.level.toUpperCase()}
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                {report.selfHealing.queueExhaustion.timeToEmptyFmt
+                  ? `${report.selfHealing.queueExhaustion.timeToEmptyFmt} left`
+                  : `${report.selfHealing.queueExhaustion.activeItemCount} items`}
+              </div>
+            </div>
+            {report.selfHealing.autoRefill && (
+              <div className="rounded-md border bg-muted/30 px-2.5 py-2 space-y-0.5">
+                <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Auto-refill</div>
+                <div className="text-sm font-bold tabular-nums">{report.selfHealing.autoRefill.totalRefilled}</div>
+                <div className="text-[10px] text-muted-foreground">total refilled</div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Dead-air + transcoding auto-retry */}
+        {report.selfHealing.deadAir && (
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-md border bg-muted/30 px-2.5 py-2 space-y-0.5">
+              <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Dead-air</div>
+              <div className={`text-sm font-bold tabular-nums ${
+                report.selfHealing.deadAir.openIncident
+                  ? "text-red-600 dark:text-red-400"
+                  : "text-foreground"
+              }`}>
+                {report.selfHealing.deadAir.totalIncidents} incidents
+              </div>
+              <div className="text-[10px] text-muted-foreground">
+                {report.selfHealing.deadAir.openIncident
+                  ? "⚠ off-air now"
+                  : report.selfHealing.deadAir.onAirPct !== null
+                    ? `${report.selfHealing.deadAir.onAirPct}% on-air`
+                    : "tracking…"}
+              </div>
+            </div>
+            {report.selfHealing.transcodingAutoRetry && (
+              <div className="rounded-md border bg-muted/30 px-2.5 py-2 space-y-0.5">
+                <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Transcode retry</div>
+                <div className="text-sm font-bold tabular-nums">{report.selfHealing.transcodingAutoRetry.totalRetried}</div>
+                <div className="text-[10px] text-muted-foreground">
+                  {report.selfHealing.transcodingAutoRetry.enabled ? "auto-retry on" : "disabled"}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* V2 native connection counts */}
         <div className="flex items-center gap-3 pt-0.5 text-[11px] text-muted-foreground">
           <WifiIcon className="h-3.5 w-3.5 shrink-0" />
@@ -1565,6 +1692,256 @@ function AutonomyCard({ report }: { report: AutonomyReport | undefined }) {
           <span className="font-medium tabular-nums text-foreground">{report.viewers.total}</span>
           <span className="ml-auto tabular-nums">WS {report.viewers.ws} · SSE {report.viewers.sse}</span>
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Program Guide card — shows the next N hours of scheduled broadcast content
+ * derived from the in-memory queue's rotation order.
+ */
+function ProgramGuideCard({ guide }: { guide: ProgramGuide | undefined }) {
+  if (!guide) return null;
+
+  const now = Date.now();
+
+  function fmtTime(ms: number): string {
+    const d = new Date(ms);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function fmtDuration(secs: number): string {
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${s > 0 ? `${s}s` : ""}`.trim();
+    return `${s}s`;
+  }
+
+  function fmtCycleDuration(ms: number): string {
+    const totalSecs = Math.round(ms / 1000);
+    const h = Math.floor(totalSecs / 3600);
+    const m = Math.floor((totalSecs % 3600) / 60);
+    if (h > 0) return `${h}h ${m}m`;
+    return `${m}m`;
+  }
+
+  const qualityBadge = (q: string) => {
+    if (q === "hls") return <Badge variant="outline" className="text-[9px] py-0 h-4 px-1 border-blue-400 text-blue-600">HLS</Badge>;
+    if (q === "mp4_faststart") return <Badge variant="outline" className="text-[9px] py-0 h-4 px-1 border-green-400 text-green-600">MP4</Badge>;
+    return <Badge variant="outline" className="text-[9px] py-0 h-4 px-1">SD</Badge>;
+  };
+
+  const offAir = guide.totalActiveItems === 0;
+  const visibleItems = guide.schedule.slice(0, 20);
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 pt-4">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <CalendarDays className="h-4 w-4 text-purple-500" />
+            Program Guide
+          </CardTitle>
+          <div className="flex items-center gap-1.5">
+            {!offAir && (
+              <span className="text-[10px] text-muted-foreground tabular-nums">
+                {guide.totalActiveItems} items · cycle {fmtCycleDuration(guide.cycleDurationMs)}
+              </span>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="pb-4">
+        {offAir ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground py-4 justify-center">
+            <Radio className="h-4 w-4" />
+            <span>Channel is off-air — no scheduled content</span>
+          </div>
+        ) : (
+          <div className="space-y-0">
+            {visibleItems.map((entry, idx) => {
+              const isNow = entry.isPlaying;
+              const isPast = entry.estimatedEndMs < now && !isNow;
+              const isUpcoming = entry.estimatedStartMs > now;
+
+              return (
+                <div
+                  key={`${entry.id}-${idx}`}
+                  className={`flex items-center gap-2.5 py-1.5 border-b last:border-0 ${
+                    isNow
+                      ? "bg-green-50 dark:bg-green-950/20 -mx-3 px-3 rounded"
+                      : isPast
+                        ? "opacity-40"
+                        : ""
+                  }`}
+                >
+                  {/* Time column */}
+                  <div className="w-10 shrink-0 text-[10px] tabular-nums text-muted-foreground text-right">
+                    {fmtTime(entry.estimatedStartMs)}
+                  </div>
+
+                  {/* On-air indicator */}
+                  <div className="w-1.5 shrink-0">
+                    {isNow && (
+                      <div className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
+                    )}
+                  </div>
+
+                  {/* Thumbnail */}
+                  {entry.thumbnailUrl ? (
+                    <img
+                      src={entry.thumbnailUrl}
+                      alt=""
+                      className="h-7 w-12 object-cover rounded shrink-0"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="h-7 w-12 rounded bg-muted shrink-0 flex items-center justify-center">
+                      <Video className="h-3 w-3 text-muted-foreground" />
+                    </div>
+                  )}
+
+                  {/* Title */}
+                  <span className={`flex-1 min-w-0 text-xs truncate ${isNow ? "font-semibold" : ""}`}>
+                    {entry.title}
+                  </span>
+
+                  {/* Duration */}
+                  <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
+                    {fmtDuration(entry.durationSecs)}
+                  </span>
+
+                  {/* Quality badge */}
+                  <div className="shrink-0">{qualityBadge(entry.sourceQuality)}</div>
+                </div>
+              );
+            })}
+            {guide.schedule.length > 20 && (
+              <div className="text-center text-[11px] text-muted-foreground pt-2">
+                +{guide.schedule.length - 20} more items in next {guide.hoursAhead}h
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Incidents card — shows dead-air incidents (channel went off-air) with
+ * duration, reason, and recovery information.
+ */
+function IncidentsCard({ incidents }: { incidents: IncidentsReport | undefined }) {
+  if (!incidents) return null;
+
+  const now = Date.now();
+
+  function fmtAge(ms: number | null): string {
+    if (ms === null) return "—";
+    const ago = now - ms;
+    if (ago < 60_000) return `${Math.round(ago / 1000)}s ago`;
+    if (ago < 3_600_000) return `${Math.round(ago / 60_000)}m ago`;
+    if (ago < 86_400_000) return `${Math.round(ago / 3_600_000)}h ago`;
+    return `${Math.round(ago / 86_400_000)}d ago`;
+  }
+
+  function fmtDurationMs(ms: number | null): string {
+    if (ms === null) return "ongoing";
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+    if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+    return `${Math.round(ms / 3_600_000)}h`;
+  }
+
+  const hasOpenIncident = incidents.openIncident !== null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2 pt-4">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <AlertTriangle className={`h-4 w-4 ${hasOpenIncident ? "text-red-500 animate-pulse" : "text-amber-500"}`} />
+            Dead-Air Incidents
+          </CardTitle>
+          <div className="flex items-center gap-1.5">
+            {incidents.onAirPct !== null && (
+              <Badge variant="outline" className={`text-[10px] py-0 h-5 ${
+                incidents.onAirPct >= 99
+                  ? "border-green-400 text-green-600"
+                  : incidents.onAirPct >= 95
+                    ? "border-amber-400 text-amber-600"
+                    : "border-red-400 text-red-600"
+              }`}>
+                {incidents.onAirPct}% on-air
+              </Badge>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="pb-4 space-y-3">
+        {/* Summary row */}
+        <div className="grid grid-cols-3 gap-2">
+          <div className="rounded-md border bg-muted/30 px-2.5 py-2 space-y-0.5 text-center">
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Total</div>
+            <div className="text-sm font-bold tabular-nums">{incidents.totalIncidents}</div>
+            <div className="text-[10px] text-muted-foreground">incidents</div>
+          </div>
+          <div className="rounded-md border bg-muted/30 px-2.5 py-2 space-y-0.5 text-center">
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Longest</div>
+            <div className="text-sm font-bold tabular-nums">{fmtDurationMs(incidents.longestIncidentMs || null)}</div>
+            <div className="text-[10px] text-muted-foreground">single gap</div>
+          </div>
+          <div className="rounded-md border bg-muted/30 px-2.5 py-2 space-y-0.5 text-center">
+            <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Total off-air</div>
+            <div className="text-sm font-bold tabular-nums">{fmtDurationMs(incidents.totalDeadAirMs || null)}</div>
+            <div className="text-[10px] text-muted-foreground">cumulative</div>
+          </div>
+        </div>
+
+        {/* Open incident alert */}
+        {hasOpenIncident && (
+          <div className="rounded-md border border-red-300 bg-red-50 dark:bg-red-950/20 px-3 py-2 flex items-center gap-2">
+            <div className="h-2 w-2 rounded-full bg-red-500 animate-pulse shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-semibold text-red-700 dark:text-red-300">Channel is currently off-air</div>
+              <div className="text-[10px] text-red-600 dark:text-red-400">
+                Started {fmtAge(incidents.openIncident!.startedAtMs)} · reason: {incidents.openIncident!.reason}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Recent incidents list */}
+        {incidents.recentIncidents.length === 0 ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground py-3 justify-center">
+            <CheckCircle2 className="h-4 w-4 text-green-500" />
+            <span>No dead-air incidents recorded yet</span>
+          </div>
+        ) : (
+          <div className="divide-y">
+            {incidents.recentIncidents.slice(0, 10).map((inc) => (
+              <div key={inc.id} className="flex items-center gap-2.5 py-1.5 text-xs">
+                <div className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                  inc.durationMs !== null && inc.durationMs > 300_000
+                    ? "bg-red-500"
+                    : inc.durationMs !== null && inc.durationMs > 60_000
+                      ? "bg-amber-500"
+                      : "bg-yellow-400"
+                }`} />
+                <span className="text-muted-foreground tabular-nums w-14 shrink-0">{fmtAge(inc.startedAtMs)}</span>
+                <span className="font-medium tabular-nums w-10 shrink-0">{fmtDurationMs(inc.durationMs)}</span>
+                <span className="text-muted-foreground truncate flex-1 min-w-0">{inc.reason}</span>
+                {inc.recoveryMode && (
+                  <span className="text-[10px] text-green-600 dark:text-green-400 shrink-0">→ {inc.recoveryMode}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -1745,6 +2122,25 @@ function BroadcastV2PageInner() {
     queryFn: () => api.get<AutonomyReport>("/broadcast-v2/autonomy-report"),
     refetchInterval: 60_000,
     staleTime: 55_000,
+  });
+
+  // Program Guide (EPG) — projects the broadcast schedule for the next 12 hours
+  // from the in-memory queue. No auth required on server; polls every 60 s here
+  // since the EPG only changes when the queue changes (SSE invalidates on update).
+  const { data: programGuide } = useQuery({
+    queryKey: ["broadcast-v2-program-guide"],
+    queryFn: () => api.get<ProgramGuide>("/broadcast-v2/program-guide?hoursAhead=12"),
+    refetchInterval: sseGated60s,
+    staleTime: 55_000,
+  });
+
+  // Dead-air incidents — last 50 off-air events with duration + reason.
+  // Polls every 90 s; incidents only change when the channel recovers.
+  const { data: incidentsReport } = useQuery({
+    queryKey: ["broadcast-v2-incidents"],
+    queryFn: () => api.get<IncidentsReport>("/broadcast-v2/incidents"),
+    refetchInterval: sseGated120s,
+    staleTime: 85_000,
   });
 
   // Diagnostics — auth-guarded deep snapshot of all engine subsystems.
@@ -2324,6 +2720,9 @@ function BroadcastV2PageInner() {
     // Source health reflects URL reachability and bad-URL cache state —
     // must refresh whenever the queue changes (item added/removed/cleared).
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+    // EPG + incidents reflect queue state — invalidate so they show current content
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-program-guide"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-autonomy-report"] });
     clearTimeout(reloadTimer.current);
     reloadTimer.current = setTimeout(() => {
       api
@@ -3850,6 +4249,12 @@ function BroadcastV2PageInner() {
 
       {/* Autonomy status — critical-worker health + self-healing score */}
       <AutonomyCard report={autonomyReport} />
+
+      {/* Dead-air incident log */}
+      <IncidentsCard incidents={incidentsReport} />
+
+      {/* Program Guide — next 12 hours of scheduled content */}
+      <ProgramGuideCard guide={programGuide} />
 
       {/* Engine health panel */}
       <Card>

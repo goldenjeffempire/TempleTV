@@ -24,8 +24,11 @@ import { startAutoQueueRefill, stopAutoQueueRefill, getAutoRefillStatus } from "
 import { refreshStorageStats, getStorageStats } from "../../infrastructure/storage.js";
 import { env } from "../../config/env.js";
 import { sendAdminAlert } from "../mail/mail.service.js";
+import { installDeadAirTracker, getDeadAirStats } from "./engine/dead-air-tracker.js";
+import { transcodingAutoRetryScan, getTranscodingAutoRetryStatus } from "./engine/transcoding-auto-retry.js";
 
 export { getExhaustionStatus, getAutoRefillStatus, getStorageStats };
+export { getDeadAirStats, getTranscodingAutoRetryStatus };
 
 export { getQueueHealthGuardStatus };
 
@@ -436,11 +439,30 @@ function startSupervisedWorkers(): void {
     backoffMs: [60_000, 5 * 60_000],
   });
 
+  // Transcoding auto-retry: re-enqueues permanently-failed transcoding jobs
+  // (transcodingStatus='failed', objectPath IS NOT NULL, non-terminal error)
+  // after a 24-hour cooldown. Max 3 auto-retries per video by default.
+  // Runs every 6 hours; initial delay of 10 minutes so the system is warm.
+  if (!process.env["TRANSCODING_AUTO_RETRY_DISABLE"]) {
+    workerSupervisor.spawn({
+      name: "transcoding-auto-retry",
+      fn: () => transcodingAutoRetryScan(),
+      intervalMs: 6 * 60 * 60_000,
+      initialDelayMs: 10 * 60_000,
+      backoffMs: [5 * 60_000, 15 * 60_000, 30 * 60_000],
+    });
+  }
+
   // Queue exhaustion monitor + auto-refill run as lightweight interval-based
   // processes (not supervised workers) since they are computation-light and
   // must not count against the worker circuit-breaker budget.
   startExhaustionMonitor();
   startAutoQueueRefill();
+
+  // Dead-air incident tracker: monitors orchestrator frame stream to record
+  // every period the channel is off-air (no item, no override). Install after
+  // all workers so the orchestrator is likely started on first frame.
+  installDeadAirTracker();
 
   logger.info("[broadcast-v2] supervised workers registered");
 }

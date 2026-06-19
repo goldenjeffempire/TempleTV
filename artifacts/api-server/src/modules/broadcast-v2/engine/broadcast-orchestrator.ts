@@ -4254,6 +4254,44 @@ class BroadcastOrchestrator extends EventEmitter {
     }
   }
 
+  /**
+   * Returns a lightweight program-guide payload that REST callers use to
+   * compute the upcoming broadcast schedule (EPG) without needing access to
+   * the private `items`, `cycleStartedAtMs`, or `cycleDurationMs` fields.
+   *
+   * The caller projects wall-clock start/end times for each item by
+   * starting from the current item's wall-clock position and chaining
+   * forward. Items loop in a ring (when the last item finishes the cycle
+   * returns to item 0), so a 24-hour EPG will typically show each item
+   * several times.
+   *
+   * Returns null when the orchestrator has no items loaded (OFF_AIR).
+   */
+  getProgramGuide(): {
+    cycleStartedAtMs: number;
+    cycleDurationMs: number;
+    items: Array<{
+      id: string;
+      title: string;
+      durationSecs: number;
+      thumbnailUrl: string | null;
+      sourceQuality: "hls" | "mp4_faststart" | "mp4_raw";
+    }>;
+  } | null {
+    if (this.items.length === 0 || this.cycleDurationMs === 0) return null;
+    return {
+      cycleStartedAtMs: this.cycleStartedAtMs,
+      cycleDurationMs: this.cycleDurationMs,
+      items: this.items.map((it) => ({
+        id: it.id,
+        title: it.title,
+        durationSecs: it.durationSecs,
+        thumbnailUrl: it.thumbnailUrl,
+        sourceQuality: it.sourceQuality,
+      })),
+    };
+  }
+
   async initiateFullRecovery(reason: string): Promise<void> {
     logger.warn(
       { channelId: this.channelId, reason },

@@ -57,6 +57,8 @@ import { getExhaustionStatus } from "../engine/queue-exhaustion-monitor.js";
 import { getAutoRefillStatus } from "../engine/auto-queue-refill.js";
 import { getStorageStats } from "../../../infrastructure/storage.js";
 import { getStitchedBroadcastManifest, invalidateStitchCache } from "../engine/hls-stream-stitcher.js";
+import { getDeadAirStats } from "../engine/dead-air-tracker.js";
+import { getTranscodingAutoRetryStatus } from "../engine/transcoding-auto-retry.js";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
 const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
@@ -733,7 +735,182 @@ export async function restRoutes(app: FastifyInstance) {
           confidenceSourceSets: getUrlBadSourceSetsSize(),
         },
         storageReconciliation: storageRecon,
+        queueExhaustion: (() => {
+          const ex = getExhaustionStatus();
+          return {
+            level: ex.level,
+            timeToEmptyMs: ex.timeToEmptyMs,
+            timeToEmptyFmt: ex.timeToEmptyFmt,
+            activeItemCount: ex.activeItemCount,
+            overrideSuppressed: ex.overrideSuppressed,
+          };
+        })(),
+        autoRefill: (() => {
+          const ar = getAutoRefillStatus();
+          return {
+            enabled: ar.enabled,
+            lastRefillAtMs: ar.lastRefillAtMs,
+            lastRefillCount: ar.lastRefillCount,
+            totalRefilled: ar.totalRefilled,
+            libraryIsYouTubeOnly: ar.libraryIsYouTubeOnly,
+          };
+        })(),
+        deadAir: (() => {
+          const da = getDeadAirStats();
+          return {
+            totalIncidents: da.totalIncidents,
+            openIncident: da.openIncident !== null,
+            longestIncidentMs: da.longestIncidentMs,
+            totalDeadAirMs: da.totalDeadAirMs,
+            onAirPct: da.onAirPct,
+          };
+        })(),
+        transcodingAutoRetry: (() => {
+          const tr = getTranscodingAutoRetryStatus();
+          return {
+            enabled: tr.enabled,
+            totalRetried: tr.totalRetried,
+            lastRetryCount: tr.lastRetryCount,
+          };
+        })(),
       },
+    };
+  });
+
+  // ── Public: Electronic Program Guide (EPG) ───────────────────────────
+  // Returns the projected broadcast schedule for the next N hours based
+  // on the in-memory queue and the current cycle position. No auth
+  // required — viewers and apps can use this to build a channel guide.
+  //
+  // Items loop (the queue is a ring), so a 24-hour EPG will show each
+  // item multiple times when the total queue duration < 24 h.
+  // Rate-limited: 30 req/min (identical to /health).
+  app.get("/program-guide", {
+    schema: {
+      response: { 429: _429err },
+      querystring: z.object({
+        hoursAhead: z.coerce.number().min(1).max(168).default(24).optional(),
+      }),
+    },
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    reply.header("Cache-Control", "public, max-age=30");
+
+    const hoursAhead = Math.max(1, Math.min(168,
+      Number((req.query as Record<string, string>).hoursAhead ?? 24) || 24));
+    const now = Date.now();
+    const snap = broadcastOrchestrator.snapshot();
+    const guide = broadcastOrchestrator.getProgramGuide();
+
+    if (!guide || guide.items.length === 0) {
+      return {
+        generatedAtMs: now,
+        mode: snap.mode,
+        override: snap.override,
+        offAirReason: snap.offAirReason,
+        totalActiveItems: 0,
+        hoursAhead,
+        cycleDurationMs: 0,
+        schedule: [],
+      };
+    }
+
+    const { cycleStartedAtMs, cycleDurationMs, items } = guide;
+    const limitMs = hoursAhead * 3_600_000;
+    const cutoffMs = now + limitMs;
+
+    // Find which item is currently playing by computing elapsed position.
+    const elapsed = ((now - cycleStartedAtMs) % cycleDurationMs + cycleDurationMs) % cycleDurationMs;
+    let startCursor = now - elapsed; // wall-clock ms when the current cycle began
+    let startIdx = 0;
+
+    // Walk through offsets to find the current item.
+    let acc = 0;
+    for (let i = 0; i < items.length; i++) {
+      const span = items[i]!.durationSecs * 1000;
+      if (elapsed < acc + span) {
+        // Rewind cursor to this item's actual start
+        startCursor = now - (elapsed - acc);
+        startIdx = i;
+        break;
+      }
+      acc += span;
+    }
+
+    interface EpgEntry {
+      id: string;
+      title: string;
+      durationSecs: number;
+      thumbnailUrl: string | null;
+      sourceQuality: string;
+      isPlaying: boolean;
+      estimatedStartMs: number;
+      estimatedEndMs: number;
+    }
+
+    const schedule: EpgEntry[] = [];
+    const currentItemId = snap.current?.id ?? null;
+    let cursor = startCursor;
+    let i = startIdx;
+    let iterations = 0;
+    // Max iterations = items we'd show in hoursAhead + safety buffer
+    const maxIterations = Math.ceil(limitMs / Math.max(1, cycleDurationMs / items.length)) + items.length * 2;
+
+    while (cursor < cutoffMs && iterations < maxIterations && schedule.length < 500) {
+      iterations++;
+      const item = items[i % items.length]!;
+      const durationMs = item.durationSecs * 1000;
+      const estimatedStartMs = cursor;
+      const estimatedEndMs = cursor + durationMs;
+
+      schedule.push({
+        id: item.id,
+        title: item.title,
+        durationSecs: item.durationSecs,
+        thumbnailUrl: item.thumbnailUrl,
+        sourceQuality: item.sourceQuality,
+        isPlaying: item.id === currentItemId && estimatedStartMs <= now && estimatedEndMs > now,
+        estimatedStartMs,
+        estimatedEndMs,
+      });
+
+      cursor = estimatedEndMs;
+      i = (i + 1) % items.length;
+      // Stop if we've completed a full loop when queue is long
+      if (i === startIdx && cursor >= now + cycleDurationMs) break;
+    }
+
+    return {
+      generatedAtMs: now,
+      mode: snap.mode,
+      override: snap.override,
+      offAirReason: snap.offAirReason,
+      totalActiveItems: items.length,
+      hoursAhead,
+      cycleDurationMs,
+      schedule,
+    };
+  });
+
+  // ── Admin: dead-air incident log ─────────────────────────────────────
+  // Returns the last MAX_INCIDENTS (50) dead-air incidents in reverse
+  // chronological order plus aggregate stats (total count, on-air %).
+  // Requires editor auth. Rate-limited: 20 req/min.
+  app.get("/incidents", {
+    ...adminGuard,
+    schema: { response: { 429: _429err } },
+    config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+  }, async (_req, reply) => {
+    reply.header("Cache-Control", "no-store, max-age=0");
+    const da = getDeadAirStats();
+    return {
+      generatedAtMs: Date.now(),
+      openIncident: da.openIncident,
+      recentIncidents: da.recentIncidents,
+      totalIncidents: da.totalIncidents,
+      longestIncidentMs: da.longestIncidentMs,
+      totalDeadAirMs: da.totalDeadAirMs,
+      onAirPct: da.onAirPct,
     };
   });
 
