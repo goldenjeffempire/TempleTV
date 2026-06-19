@@ -85,6 +85,9 @@ const shared = {
     // sub-path requires through pnpm's virtual store symlinks. Externalise it
     // so Node loads it via its own resolver at runtime.
     "undici",
+    // ioredis uses CJS internal requires that esbuild cannot resolve through
+    // pnpm's virtual store symlinks. Externalise it so Node loads it at runtime.
+    "ioredis",
   ],
 };
 
