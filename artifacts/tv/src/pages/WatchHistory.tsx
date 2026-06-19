@@ -394,8 +394,8 @@ export function WatchHistory({ onBack, onPlay }: WatchHistoryProps) {
                       style={{
                         width: "100%",
                         height: "100%",
-                        objectFit: "contain",
-                        objectPosition: "center",
+                        objectFit: "cover",
+                        objectPosition: "center top",
                         background: "#000",
                       }}
                       onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}

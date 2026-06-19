@@ -1,8 +1,9 @@
 import React, { useEffect, useRef } from "react";
-import { Animated, Platform, StyleSheet, View } from "react-native";
+import { Animated, Platform, StyleSheet, View, useWindowDimensions } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useColors } from "@/hooks/useColors";
 import colors from "@/constants/colors";
+import { getCardWidth, CARD_ASPECT_RATIO, DURATION } from "@/constants/design";
 
 const ND = Platform.OS !== "web";
 
@@ -13,8 +14,8 @@ function Shimmer({ style }: { style: object }) {
   useEffect(() => {
     const anim = Animated.loop(
       Animated.sequence([
-        Animated.timing(shimmer, { toValue: 1, duration: 900, useNativeDriver: ND }),
-        Animated.timing(shimmer, { toValue: 0, duration: 900, useNativeDriver: ND }),
+        Animated.timing(shimmer, { toValue: 1, duration: DURATION.skeleton, useNativeDriver: ND }),
+        Animated.timing(shimmer, { toValue: 0, duration: DURATION.skeleton, useNativeDriver: ND }),
       ]),
     );
     anim.start();
@@ -30,14 +31,24 @@ function Shimmer({ style }: { style: object }) {
   );
 }
 
+/**
+ * SkeletonVerticalCard — matches VideoCard vertical layout exactly.
+ * Width and thumbnail height are computed from the current screen width using
+ * the same getCardWidth() function VideoCard uses, so skeleton ↔ real card
+ * dimensions are always in sync.
+ */
 export function SkeletonVerticalCard() {
+  const { width: screenWidth } = useWindowDimensions();
+  const cardWidth = getCardWidth(screenWidth);
+  const thumbHeight = Math.round(cardWidth / CARD_ASPECT_RATIO);
+
   return (
     <View
-      style={skeletonStyles.verticalCard}
+      style={[skeletonStyles.verticalCard, { width: cardWidth }]}
       accessibilityElementsHidden={true}
       importantForAccessibility="no-hide-descendants"
     >
-      <Shimmer style={skeletonStyles.verticalThumb} />
+      <Shimmer style={{ width: cardWidth, height: thumbHeight, borderRadius: 10, marginBottom: 0 }} />
       <Shimmer style={skeletonStyles.title1} />
       <Shimmer style={skeletonStyles.title2} />
       <Shimmer style={skeletonStyles.meta} />
@@ -173,8 +184,9 @@ const heroSkeletonStyles = StyleSheet.create({
 });
 
 const skeletonStyles = StyleSheet.create({
-  verticalCard: { width: 200, gap: 8, padding: 4 },
-  verticalThumb: { width: 200, height: 113, borderRadius: 12 },
+  // Vertical card — width set dynamically via useWindowDimensions
+  verticalCard: { gap: 8, padding: 4 },
+  // Horizontal list card
   horizontalCard: { flexDirection: "row", gap: 12, padding: 12, marginHorizontal: 16, marginBottom: 8 },
   horizontalThumb: { width: 120, height: 68, borderRadius: 8 },
   horizontalInfo: { flex: 1, gap: 8, justifyContent: "center" },

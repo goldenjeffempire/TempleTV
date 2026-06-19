@@ -7,6 +7,9 @@
  *
  * Uses expo-image for intelligent caching, progressive loading, and smooth
  * transitions — significantly faster repeat loads vs React Native's Image.
+ *
+ * Card width is responsive: computed from the current screen width so two cards
+ * always fit in a row even on 320 px phones (getCardWidth clamps 148–220 px).
  */
 
 import React from "react";
@@ -15,12 +18,14 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
 import type { Sermon } from "@/types";
 import { VideoLiveStatusBadge } from "@/components/LiveBadge";
+import { getCardWidth, CARD_ASPECT_RATIO } from "@/constants/design";
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
 
@@ -31,6 +36,11 @@ interface VideoCardProps {
   horizontal?: boolean;
   /** show a live indicator badge (legacy — prefer sermon.youtubeLiveStatus) */
   showLiveBadge?: boolean;
+  /**
+   * Override card width. Defaults to getCardWidth(screenWidth) — a responsive
+   * value that guarantees two cards + gap fit in any scroll row from 320 px up.
+   */
+  cardWidth?: number;
 }
 
 function formatViews(n: number): string {
@@ -44,8 +54,12 @@ export const VideoCard = React.memo(function VideoCard({
   onPress,
   horizontal = false,
   showLiveBadge = false,
+  cardWidth: cardWidthProp,
 }: VideoCardProps) {
   const c = useColors();
+  const { width: screenWidth } = useWindowDimensions();
+  const cardWidth = cardWidthProp ?? getCardWidth(screenWidth);
+  const thumbHeight = Math.round(cardWidth / CARD_ASPECT_RATIO);
 
   if (horizontal) {
     return (
@@ -66,6 +80,7 @@ export const VideoCard = React.memo(function VideoCard({
             placeholder={PLACEHOLDER}
             style={styles.horzThumb}
             contentFit="cover"
+            contentPosition="top"
             transition={150}
           />
           {(sermon.youtubeLiveStatus || showLiveBadge) && (
@@ -126,19 +141,20 @@ export const VideoCard = React.memo(function VideoCard({
       onPress={onPress}
       style={({ pressed }) => [
         styles.cardContainer,
-        { backgroundColor: c.card, borderColor: c.border },
+        { backgroundColor: c.card, borderColor: c.border, width: cardWidth },
         pressed && { opacity: 0.75 },
       ]}
       accessibilityRole="button"
       accessibilityLabel={`Play ${sermon.title}`}
     >
-      {/* Thumbnail */}
-      <View style={styles.cardThumbWrap}>
+      {/* Thumbnail — responsive 16:9 */}
+      <View style={[styles.cardThumbWrap, { height: thumbHeight }]}>
         <Image
           source={sermon.thumbnailUrl ? { uri: sermon.thumbnailUrl } : PLACEHOLDER}
           placeholder={PLACEHOLDER}
           style={styles.cardThumb}
           contentFit="cover"
+          contentPosition="top"
           transition={150}
         />
         {(sermon.youtubeLiveStatus || showLiveBadge) && (
@@ -223,17 +239,17 @@ const styles = StyleSheet.create({
   horzPreacher: { fontSize: 12 },
   horzMeta: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 2 },
 
-  // ── Vertical (card) layout ────────────────────────────────────────────────
+  // ── Vertical (card) layout — width set dynamically per-render ─────────────
   cardContainer: {
     borderRadius: 12,
     overflow: "hidden",
     borderWidth: StyleSheet.hairlineWidth,
-    width: 180,
+    // width injected at render time from getCardWidth(screenWidth)
   },
   cardThumbWrap: {
     width: "100%",
-    aspectRatio: 16 / 9,
     backgroundColor: "#111",
+    // height set dynamically: Math.round(cardWidth / CARD_ASPECT_RATIO)
   },
   cardThumb: { width: "100%", height: "100%" },
   playOverlay: {

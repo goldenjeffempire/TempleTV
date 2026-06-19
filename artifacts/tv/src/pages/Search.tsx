@@ -82,7 +82,7 @@ function ResultCard({ video, focused, onSelect }: { video: VideoItem; focused: b
             alt={`Thumbnail for ${video.title}`}
             loading="lazy"
             decoding="async"
-            style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }}
+            style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center top", background: "#000" }}
             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
         ) : null}

@@ -143,7 +143,7 @@ function EpisodeCard({
             alt=""
             loading="lazy"
             decoding="async"
-            style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }}
+            style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center top", background: "#000" }}
             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
         ) : (
@@ -486,7 +486,7 @@ export function SeriesDetail({ series, onBack, onPlay, onEpisodeDetails }: Serie
                 src={series.thumbnailUrl}
                 alt={series.title}
                 decoding="async"
-                style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }}
+                style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center top", background: "#000" }}
                 onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
               />
             ) : (

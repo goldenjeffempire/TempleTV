@@ -462,3 +462,181 @@ video {
     font-size: clamp(13px, 3.8vw, 16px);
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   GLOBAL DESIGN SYSTEM UTILITIES
+   Single source of truth for layout primitives used across every page/component.
+   Add classes here instead of repeating inline styles.
+══════════════════════════════════════════════════════════════════════════════ */
+
+/* ── Thumbnail normalisation ─────────────────────────────────────────────────
+   Apply .tt-thumb to any <img> inside a fixed-size container to get face-safe
+   cover crop consistently across every card, hero, and result tile.          */
+.tt-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center top;   /* face-safe: bias toward top half           */
+  display: block;
+}
+
+/* ── 16:9 aspect wrapper ─────────────────────────────────────────────────────
+   Apply to the thumbnail container; put .tt-thumb inside.                    */
+.tt-aspect-16-9 {
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  position: relative;
+  background: rgba(255,255,255,0.04);
+}
+
+/* ── Card thumbnail with rounded top corners ──────────────────────────────── */
+.tt-card-thumb {
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: 10px 10px 0 0;
+  position: relative;
+  background: rgba(255,255,255,0.04);
+}
+.tt-card-thumb img,
+.tt-card-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center top;
+  display: block;
+}
+
+/* ── Responsive auto-fill grid ───────────────────────────────────────────────
+   Fills columns with cards 130 px → 220 px wide; 2-col minimum on 320 px.   */
+.tt-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(clamp(130px, 28vw, 220px), 1fr));
+  gap: clamp(10px, 1.5vw, 20px);
+}
+
+/* ── Standard scrollable page container ──────────────────────────────────── */
+.tt-page {
+  padding: var(--tv-safe-v) var(--tv-safe-h);
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+  scrollbar-width: none;
+}
+.tt-page::-webkit-scrollbar { display: none; }
+
+/* ── Section / page header row ───────────────────────────────────────────── */
+.tt-page-header {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: clamp(16px, 2.5vh, 36px) var(--tv-safe-h) clamp(10px, 1.5vh, 20px);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  position: sticky;
+  top: 0;
+  background: rgba(10,10,10,0.96);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  z-index: 10;
+  flex-shrink: 0;
+}
+
+/* ── Connection status dot ─────────────────────────────────────────────────
+   Usage: <span class="tt-status-dot tt-status-dot--live">             */
+.tt-status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.tt-status-dot--live       { background: #22c55e; }
+.tt-status-dot--loading    { background: #f59e0b; animation: pulse-live 1s ease-in-out infinite; }
+.tt-status-dot--reconnect  { background: #f59e0b; animation: pulse-live 0.75s ease-in-out infinite; }
+.tt-status-dot--offline    { background: #ef4444; }
+.tt-status-dot--idle       { background: rgba(255,255,255,0.25); }
+
+/* ── Vertical rhythm — section spacing scale ──────────────────────────────
+   Apply to the direct children of a page's scroll container.               */
+.tt-section { margin-bottom: clamp(24px, 3.5vh, 48px); }
+.tt-section + .tt-section { margin-top: 0; }
+
+/* ── Empty / error state centred placeholder ─────────────────────────────── */
+.tt-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px var(--tv-safe-h);
+  text-align: center;
+  color: rgba(255,255,255,0.3);
+}
+.tt-empty-state h3 {
+  font-size: clamp(15px, 1.4vw, 20px);
+  font-weight: 600;
+  color: rgba(255,255,255,0.45);
+  margin: 0;
+}
+.tt-empty-state p {
+  font-size: clamp(12px, 1vw, 15px);
+  margin: 0;
+  max-width: 360px;
+}
+
+/* ── 320 px compliance — minimum safe widths ─────────────────────────────── */
+@media (max-width: 359px) {
+  .tt-card { min-width: 120px; }
+  .tt-grid {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  }
+}
+
+/* ── Connection banner (streaming resilience indicator) ──────────────────── */
+.tt-conn-banner {
+  position: fixed;
+  bottom: calc(var(--mobile-nav-h) + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 24px;
+  font-size: clamp(11px, 1vw, 13px);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  z-index: 100;
+  pointer-events: none;
+  white-space: nowrap;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  animation: tv-screen-in 0.25s ease-out;
+}
+.tt-conn-banner--reconnecting {
+  background: rgba(245,158,11,0.18);
+  border: 1px solid rgba(245,158,11,0.35);
+  color: #fbbf24;
+}
+.tt-conn-banner--offline {
+  background: rgba(239,68,68,0.15);
+  border: 1px solid rgba(239,68,68,0.3);
+  color: #f87171;
+}
+.tt-conn-banner--recovered {
+  background: rgba(34,197,94,0.15);
+  border: 1px solid rgba(34,197,94,0.3);
+  color: #4ade80;
+}
+
+@media (pointer: fine) {
+  /* On TV/desktop pin to top-right instead of bottom-center */
+  .tt-conn-banner {
+    bottom: auto;
+    top: 16px;
+    right: 16px;
+    left: auto;
+    transform: none;
+  }
+}
