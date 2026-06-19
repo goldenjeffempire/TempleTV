@@ -930,7 +930,7 @@ export function LiveBroadcastV2({
           if (ytId) return (
             <iframe
               key={`override-${ytId}`}
-              src={`https://www.youtube.com/embed/${ytId}?autoplay=1&rel=0&modestbranding=1&enablejsapi=1`}
+              src={`https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3&disablekb=1&enablejsapi=1`}
               allow="autoplay; encrypted-media; fullscreen"
               allowFullScreen
               style={{
@@ -953,7 +953,7 @@ export function LiveBroadcastV2({
         return (
           <iframe
             key={ytId}
-            src={`https://www.youtube.com/embed/${ytId}?autoplay=1&rel=0&modestbranding=1&enablejsapi=1`}
+            src={`https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3&disablekb=1&enablejsapi=1`}
             allow="autoplay; encrypted-media; fullscreen"
             allowFullScreen
             style={{

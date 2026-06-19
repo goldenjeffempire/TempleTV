@@ -1554,6 +1554,33 @@ class BroadcastOrchestrator extends EventEmitter {
           );
         }
       }
+
+      // ── Fast-path ytShuffleFallback activation on empty queue ────────────────
+      // The selfHealEmptyTimer activates ytShuffleFallback only after
+      // EMPTY_POLLS_BEFORE_LIBRARY_SCAN × SELF_HEAL_EMPTY_MS (≈ 30 s) because
+      // it requires a library scan to complete first. On startup in a
+      // YouTube-only deployment this means ~30 s of dead-air on every restart.
+      //
+      // If ytShuffleFallback is not yet active AND no override is running AND
+      // the env var is not disabled, activate it immediately so viewers see
+      // content within seconds rather than waiting for the full scan cycle.
+      // This is safe: startOverride() is idempotent and the selfHealEmptyTimer
+      // will not double-activate because ytShuffleFallback.isActive will be
+      // true by the time the next poll fires.
+      if (
+        !ytShuffleFallback.isActive &&
+        this.mode !== "override" &&
+        !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE
+      ) {
+        void ytShuffleFallback
+          .activate((opts) => this.startOverride(opts))
+          .catch((err: unknown) =>
+            logger.warn(
+              { err },
+              "[broadcast-v2] reloadInner: immediate ytShuffleFallback activation failed (non-fatal)",
+            ),
+          );
+      }
     }
 
     // Snapshot the old item IDs BEFORE replacing this.items so we can detect

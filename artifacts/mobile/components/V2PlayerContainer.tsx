@@ -107,7 +107,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Animated, AppState, Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Animated, AppState, Image, Linking, Pressable, StyleSheet, Text, View } from "react-native";
 import { ResizeMode, Video, type AVPlaybackStatus } from "expo-av";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { MobileBufferState } from "@workspace/player-core/adapters/mobile";
@@ -1717,6 +1717,8 @@ export function V2PlayerContainer({
     sub: string;
     showSpinner: boolean;
     upNext?: string;
+    /** When set, renders a "Watch on YouTube" deep-link button. */
+    youtubeUrl?: string | null;
     /**
      * When present, a "Tap to reconnect" button is shown below the sub-text.
      * Only set after the user has been stuck for several phase steps so we
@@ -1731,8 +1733,9 @@ export function V2PlayerContainer({
       const overrideTitle = server?.override?.title;
       return {
         main: overrideTitle ?? "Live YouTube Broadcast",
-        sub: "This broadcast is streaming live on YouTube",
+        sub: "This broadcast is airing on YouTube",
         showSpinner: false,
+        youtubeUrl: server?.override?.url ?? null,
       };
     }
 
@@ -2071,6 +2074,20 @@ export function V2PlayerContainer({
                 {overlayContent.upNext}
               </Text>
             </View>
+          ) : null}
+          {overlayContent.youtubeUrl ? (
+            <Pressable
+              onPress={() => {
+                if (overlayContent.youtubeUrl) {
+                  void Linking.openURL(overlayContent.youtubeUrl);
+                }
+              }}
+              style={({ pressed }) => [styles.overlayRetryBtn, pressed && styles.overlayRetryBtnPressed]}
+              accessibilityRole="link"
+              accessibilityLabel="Watch on YouTube"
+            >
+              <Text style={styles.overlayRetryText}>Watch on YouTube ▶</Text>
+            </Pressable>
           ) : null}
           {overlayContent.onRetry ? (
             <Pressable
