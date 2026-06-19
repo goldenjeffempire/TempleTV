@@ -38,6 +38,7 @@ import {
   ExternalLink,
   Info,
   Loader2,
+  Monitor,
   RefreshCw,
   SkipForward,
   Wifi,
@@ -807,7 +808,9 @@ export function BroadcastPreviewV2({ className }: Props) {
             ? overlay.kind === "fatal"
               ? "bg-black/85 opacity-100"
               : overlay.kind === "skipping"
-                ? "bg-amber-950/70 opacity-100"
+                ? skipDiagnosis?.scope === "preview-only"
+                  ? "bg-black/80 opacity-100"
+                  : "bg-amber-950/70 opacity-100"
                 : "bg-black/60 opacity-100"
             : "opacity-0 pointer-events-none"
         }`}
@@ -842,7 +845,11 @@ export function BroadcastPreviewV2({ className }: Props) {
           </>
         ) : overlay?.kind === "skipping" && skipDiagnosis ? (
           <>
-            <SkipForward size={20} className="text-amber-300/80 animate-pulse" />
+            {skipDiagnosis.scope === "preview-only" ? (
+              <Monitor size={20} className="text-slate-400/60" />
+            ) : (
+              <SkipForward size={20} className="text-amber-300/80 animate-pulse" />
+            )}
             {/* Label + info tooltip */}
             <TooltipProvider delayDuration={120}>
               <Tooltip>
@@ -851,8 +858,10 @@ export function BroadcastPreviewV2({ className }: Props) {
                     className="flex items-center gap-1.5 rounded px-1.5 py-0.5 hover:bg-white/10 transition-colors cursor-default"
                     aria-label="Source failure details"
                   >
-                    <p className="text-xs font-medium text-amber-200">
-                      {overlay.label}
+                    <p className={`text-xs font-medium ${skipDiagnosis.scope === "preview-only" ? "text-slate-300/80" : "text-amber-200"}`}>
+                      {skipDiagnosis.scope === "preview-only"
+                        ? "Preview unavailable — broadcast is live"
+                        : overlay.label}
                     </p>
                     <Info
                       size={11}

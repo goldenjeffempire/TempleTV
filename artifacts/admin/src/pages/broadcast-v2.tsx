@@ -933,9 +933,10 @@ const SortableQueueItem = memo(function SortableQueueItem({
       )}
 
       {/* Placeholder duration badge — 1800 s is the upload-time default that
-          indicates ffprobe never ran successfully. The item will still air but
-          the schedule timing will be inaccurate until the duration is resolved. */}
-      {Math.round(item.durationSecs) === 1800 && (
+          indicates ffprobe never ran successfully. Also catches 0 (ffprobe
+          returned nothing). The item will still air but the schedule timing
+          will be inaccurate until the duration is resolved. */}
+      {(Math.round(item.durationSecs) === 1800 || item.durationSecs <= 0) && (
         <div className="flex items-center gap-1 shrink-0">
           <Badge
             variant="outline"

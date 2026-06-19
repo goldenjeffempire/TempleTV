@@ -43,6 +43,12 @@ export const videosTable = pgTable("managed_videos", {
   //   null                — not set (assembly failure, size mismatch, or old
   //                         item created before this column existed).
   transcodingErrorKind: text("transcoding_error_kind"),
+  // Number of times the transcoding-auto-retry worker has automatically
+  // re-enqueued this video after a non-terminal failure. Capped at
+  // TRANSCODING_AUTO_RETRY_MAX (default 3) to prevent infinite retry loops.
+  // Reset to 0 when the operator manually triggers a retry.
+  // null = never auto-retried (column added June 2026).
+  autoRetryCount: integer("auto_retry_count").default(0),
   // ── Upload metadata (Postgres = source of truth, bucket = bytes) ─────────
   originalFilename: text("original_filename"),
   mimeType: text("mime_type"),
