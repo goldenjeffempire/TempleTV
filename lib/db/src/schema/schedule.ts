@@ -5,7 +5,11 @@ import type { z } from "zod/v4";
 export const scheduleTable = pgTable("schedule_entries", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
-  dayOfWeek: integer("day_of_week").notNull(),
+  /**
+   * 0 (Sun) – 6 (Sat) for recurring weekly entries.
+   * null when `scheduledDate` is set (one-time events derive the day from the date).
+   */
+  dayOfWeek: integer("day_of_week"),
   startTime: text("start_time").notNull(),
   endTime: text("end_time"),
   contentType: text("content_type").notNull(),
@@ -13,14 +17,31 @@ export const scheduleTable = pgTable("schedule_entries", {
   isRecurring: boolean("is_recurring").notNull().default(true),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  /**
+   * ISO date string "YYYY-MM-DD" for one-time (non-recurring) scheduled events.
+   * When set, `isRecurring` should be false and `dayOfWeek` may be null.
+   * The schedule-bridge matches these by comparing scheduledDate to today's
+   * local date string rather than by dayOfWeek.
+   *
+   * After a one-time event fires, the bridge sets `isActive=false` so the
+   * entry does not re-fire even if the server restarts (clearing the in-memory
+   * firedSlots map).
+   */
+  scheduledDate: text("scheduled_date"),
+  /**
+   * When true and contentType = "video", the bridge uses the broadcast
+   * override mechanism (broadcastOrchestrator.startOverride) instead of
+   * simply enqueuing the video. This guarantees the video plays at the
+   * scheduled time, interrupting whatever is currently on-air.
+   *
+   * For live / external types this is always effectively true — overrides
+   * are their only dispatch mode. For playlist type this flag is ignored.
+   */
+  priorityOverride: boolean("priority_override").notNull().default(false),
 }, (table) => [
-  // The `WHERE is_active = true` count runs from at least four hot paths
-  // (admin stats x3, broadcast cold-build, /healthz). Even on a small table
-  // a sequence scan inside a parallel-three-read p95 budget is wasteful.
   index("idx_schedule_entries_active").on(table.isActive),
-  // Admin schedule list orders by `(dayOfWeek, startTime)`. A composite
-  // index makes the sort an index scan rather than a sort node.
   index("idx_schedule_entries_day_time").on(table.dayOfWeek, table.startTime),
+  index("idx_schedule_entries_scheduled_date").on(table.scheduledDate),
 ]);
 
 export const insertScheduleSchema = createInsertSchema(scheduleTable).omit({ createdAt: true });

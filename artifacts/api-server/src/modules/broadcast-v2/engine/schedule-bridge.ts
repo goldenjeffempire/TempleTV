@@ -2,31 +2,49 @@
  * Schedule-to-Air Bridge Worker
  *
  * Bridges the `schedule_entries` table to the live broadcast engine. Runs once
- * per minute and checks whether any active schedule entry whose `startTime`
- * falls within the current minute should trigger a broadcast action:
+ * per minute and checks whether any active schedule entry should trigger a
+ * broadcast action.
  *
- *  - contentType = "video"    → auto-enqueue the managed_videos row if it is
- *                               not already in the broadcast queue.
- *  - contentType = "live"     → start a live override (HLS URL) for the entry's
- *                               duration (until endTime, or 4 h if not set).
- *  - contentType = "external" → start a live override with the contentId URL.
- *  - contentType = "playlist" → scanLibraryAndEnqueue so all eligible videos
- *                               are in rotation (best-effort playlist semantics).
+ * Two matching modes:
  *
- * All actions are idempotent: duplicate fires within the same minute are no-ops
- * because the broadcast queue has a unique-per-active-video index and the
- * override system deduplicates by idempotency key.
+ *  RECURRING (scheduledDate IS NULL):
+ *    Matches when `dayOfWeek` == today's day-of-week AND `startTime` falls
+ *    within the current minute (with a ±2-minute catch-up window).
  *
- * The worker is registered with the WorkerSupervisor so it has circuit-breaker
- * protection and structured error logging.
+ *  ONE-TIME (scheduledDate IS NOT NULL, e.g. "2026-06-22"):
+ *    Matches when `scheduledDate` == today's local date string AND `startTime`
+ *    falls within the current minute window. After firing, the entry is
+ *    automatically deactivated (isActive=false) to prevent re-fire on restart.
+ *
+ * Action types by contentType + priorityOverride:
+ *
+ *  contentType = "video" + priorityOverride = false:
+ *    Enqueue the managed_videos row if not already in the broadcast queue.
+ *    Best-effort: does not interrupt whatever is currently on-air.
+ *
+ *  contentType = "video" + priorityOverride = true:
+ *    Interrupt the current broadcast immediately using the override mechanism.
+ *    Resolves the video's best playable URL (HLS > MP4 faststart > MP4 raw)
+ *    and calls broadcastOrchestrator.startOverride() with resumeQueueOnEnd=true.
+ *    This guarantees the scheduled video plays at the exact time.
+ *
+ *  contentType = "live" / "external":
+ *    Start a live override (HLS URL) for the entry's duration.
+ *
+ *  contentType = "playlist":
+ *    scanLibraryAndEnqueue so all eligible library videos are in rotation.
+ *
+ * All actions are idempotent (unique-index on queue, override dedup key).
  */
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, isNotNull } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { broadcastOrchestrator } from "./broadcast-orchestrator.js";
 import { enqueueIfMissing, scanLibraryAndEnqueue } from "../../broadcast/auto-enqueue.service.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
+import { scheduleService } from "../../schedule/schedule.service.js";
+import { env } from "../../../config/env.js";
 
 const sched = schema.scheduleTable;
 const vt = schema.videosTable;
@@ -34,64 +52,45 @@ const qt = schema.broadcastQueueTable;
 
 /**
  * Tracks schedule entries that have already fired in this server session.
- * Key: "<entryId>_<dayOfWeek>_<startMinutesSinceMidnight>"
- * Value: Unix timestamp (ms) when the entry fired.
+ * Key: "<entryId>_<dow>_<startMin>" for recurring,
+ *      "<entryId>_<scheduledDate>_<startMin>" for one-time events.
  *
- * This enables a ±2-minute catch-up window: if the supervisor fires slightly
- * late (delayed by a prior long-running job), entries that should have started
- * up to 2 minutes ago are still dispatched on the next tick. The map prevents
- * double-fires when the same entry falls within the catch-up window on
- * consecutive ticks.
- *
- * The map is cleared at midnight so entries can re-fire the next day.
- * On server restart the map is empty — entries that already fired today may
- * re-fire once, but all actions are idempotent (unique-index on the queue,
- * override dedup key) so the only effect is a redundant log line.
+ * Cleared at midnight so recurring entries can fire the next day.
  */
 const firedSlots = new Map<string, number>();
 
-function firedSlotKey(entryId: string, dow: number, startMin: number): string {
-  return `${entryId}_${dow}_${startMin}`;
+function firedSlotKey(entryId: string, qualifier: string, startMin: number): string {
+  return `${entryId}_${qualifier}_${startMin}`;
 }
 
 (function scheduleMidnightClear() {
   const now = new Date();
   const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-  const msUntilMidnight = midnight.getTime() - now.getTime();
   const t = setTimeout(() => {
     firedSlots.clear();
     scheduleMidnightClear();
-  }, msUntilMidnight);
+  }, midnight.getTime() - now.getTime());
   t.unref?.();
 })();
 
-/**
- * Parse "HH:MM" or "HH:MM:SS" into total minutes since midnight.
- */
 function parseTimeToMinutes(t: string): number {
   const parts = t.split(":").map(Number);
   return (parts[0]! * 60) + (parts[1]! ?? 0);
 }
 
-/**
- * Returns today's day-of-week (0=Sun … 6=Sat) in local server time.
- * The schedule table uses the same convention (0-6).
- */
-function todayDow(): number {
-  return new Date().getDay();
-}
+function todayDow(): number { return new Date().getDay(); }
 
-/**
- * Returns the current wall-clock minute since midnight in local server time.
- */
 function nowMinutes(): number {
   const d = new Date();
   return d.getHours() * 60 + d.getMinutes();
 }
 
-/**
- * Returns a ms timestamp for today's endTime, or null.
- */
+/** "YYYY-MM-DD" in local time */
+function todayDateStr(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function endTimeMsForToday(endTime: string | null): number | null {
   if (!endTime) return null;
   const mins = parseTimeToMinutes(endTime);
@@ -100,9 +99,6 @@ function endTimeMsForToday(endTime: string | null): number | null {
   return d.getTime();
 }
 
-/**
- * Check whether the managed_videos row is already in the active broadcast queue.
- */
 async function isAlreadyQueued(videoId: string): Promise<boolean> {
   const rows = await db
     .select({ id: qt.id })
@@ -113,51 +109,81 @@ async function isAlreadyQueued(videoId: string): Promise<boolean> {
 }
 
 /**
- * Main worker function — called once per minute by the WorkerSupervisor.
+ * Resolve the best playable URL for a managed video.
+ * Only returns HLS URLs — MP4-only videos are not suitable for priority
+ * override (the V2Override kind must be "hls" | "rtmp" | "youtube").
+ * Callers should fall back to standard enqueue when null is returned.
  */
+async function resolveVideoHlsUrl(videoId: string): Promise<string | null> {
+  const [v] = await db
+    .select({ hlsMasterUrl: vt.hlsMasterUrl })
+    .from(vt)
+    .where(eq(vt.id, videoId))
+    .limit(1);
+  if (!v?.hlsMasterUrl) return null;
+  return v.hlsMasterUrl;
+}
+
 export async function scheduleBridgeScan(): Promise<void> {
   const dow = todayDow();
   const currentMin = nowMinutes();
+  const today = todayDateStr();
 
-  // Fetch all active schedule entries for today whose startTime minute
-  // matches the current wall-clock minute (±0 — the supervisor fires every
-  // 60 s so we align to the minute boundary).
-  const entries = await db
+  // Fetch recurring entries for today's day-of-week
+  const recurringEntries = await db
     .select()
     .from(sched)
     .where(
       and(
         eq(sched.isActive, true),
+        isNull(sched.scheduledDate),
         eq(sched.dayOfWeek, dow),
       ),
     );
 
-  const firing = entries.filter((e) => {
+  // Fetch one-time entries for today's date
+  const oneTimeEntries = await db
+    .select()
+    .from(sched)
+    .where(
+      and(
+        eq(sched.isActive, true),
+        isNotNull(sched.scheduledDate),
+        eq(sched.scheduledDate, today),
+      ),
+    );
+
+  const allEntries = [...recurringEntries, ...oneTimeEntries];
+
+  const firing = allEntries.filter((e) => {
     const startMin = parseTimeToMinutes(e.startTime);
-    // 2-minute catch-up window: fire if start was within the last 2 minutes.
-    // This handles supervisor delays (previous job took >60 s, server briefly
-    // paused, etc.) so a missed tick does not permanently skip the entry.
     const diff = currentMin - startMin;
     if (diff < 0 || diff > 2) return false;
-    // Idempotency: skip if this exact slot already fired in this server session.
-    return !firedSlots.has(firedSlotKey(e.id, dow, startMin));
+    const qualifier = e.scheduledDate ?? String(dow);
+    return !firedSlots.has(firedSlotKey(e.id, qualifier, startMin));
   });
 
   if (firing.length === 0) return;
 
   logger.info(
-    { count: firing.length, dow, currentMin },
-    "[schedule-bridge] firing %d schedule entries for this minute",
+    { count: firing.length, dow, currentMin, today },
+    "[schedule-bridge] firing %d schedule entries",
     firing.length,
   );
 
   for (const entry of firing) {
-    // Mark the slot as fired BEFORE handleEntry so that a throw inside
-    // handleEntry does not cause the same entry to re-fire on the next tick.
     const startMin = parseTimeToMinutes(entry.startTime);
-    firedSlots.set(firedSlotKey(entry.id, dow, startMin), Date.now());
+    const qualifier = entry.scheduledDate ?? String(dow);
+    firedSlots.set(firedSlotKey(entry.id, qualifier, startMin), Date.now());
     try {
       await handleEntry(entry);
+      // Deactivate one-time entries after firing so they don't re-fire on restart.
+      if (entry.scheduledDate) {
+        await scheduleService.deactivateOneTime(entry.id).catch((err: unknown) =>
+          logger.warn({ err, entryId: entry.id }, "[schedule-bridge] failed to deactivate one-time entry (non-fatal)"),
+        );
+        adminEventBus.push("broadcast-schedule-updated", { reason: "one-time-fired-deactivated", entryId: entry.id });
+      }
     } catch (err: unknown) {
       logger.warn(
         { err, entryId: entry.id, title: entry.title, contentType: entry.contentType },
@@ -171,7 +197,6 @@ type ScheduleRow = typeof sched.$inferSelect;
 
 async function handleEntry(entry: ScheduleRow): Promise<void> {
   const endsAtMs = endTimeMsForToday(entry.endTime);
-  // Default override duration: 4 hours if no endTime specified.
   const overrideDurationMs = endsAtMs
     ? Math.max(0, endsAtMs - Date.now())
     : 4 * 60 * 60_000;
@@ -182,7 +207,8 @@ async function handleEntry(entry: ScheduleRow): Promise<void> {
         logger.warn({ entryId: entry.id }, "[schedule-bridge] video entry has no contentId — skipping");
         return;
       }
-      // Verify the video exists before attempting to enqueue it.
+
+      // Verify video exists
       const [video] = await db
         .select({ id: vt.id, title: vt.title })
         .from(vt)
@@ -192,13 +218,44 @@ async function handleEntry(entry: ScheduleRow): Promise<void> {
         logger.warn({ entryId: entry.id, videoId: entry.contentId }, "[schedule-bridge] video not found — skipping");
         return;
       }
+
+      if (entry.priorityOverride) {
+        // PRIORITY OVERRIDE MODE: interrupt current broadcast immediately.
+        // Requires an HLS URL — MP4-only videos fall back to standard enqueue.
+        const hlsUrl = await resolveVideoHlsUrl(video.id);
+        if (!hlsUrl) {
+          logger.warn(
+            { entryId: entry.id, videoId: video.id },
+            "[schedule-bridge] priority-override: no HLS URL yet — falling back to enqueue",
+          );
+          const result = await enqueueIfMissing({ videoId: video.id, reason: "schedule-bridge-fallback" });
+          if (result.enqueued) {
+            adminEventBus.push("broadcast-queue-updated", { reason: "schedule-bridge-priority-fallback", entryId: entry.id });
+            adminEventBus.push("broadcast-schedule-updated", { reason: "schedule-bridge-fired", entryId: entry.id });
+          }
+          return;
+        }
+        await broadcastOrchestrator.startOverride({
+          kind: "hls",
+          url: hlsUrl,
+          title: entry.title,
+          endsAtMs: endsAtMs ?? (Date.now() + overrideDurationMs),
+          resumeQueueOnEnd: true,
+        });
+        logger.info(
+          { entryId: entry.id, videoId: video.id, kind: "hls", hasEndTime: !!endsAtMs },
+          "[schedule-bridge] priority-override started for scheduled video",
+        );
+        adminEventBus.push("broadcast-queue-updated", { reason: "schedule-bridge-priority", entryId: entry.id });
+        adminEventBus.push("broadcast-schedule-updated", { reason: "schedule-bridge-fired", entryId: entry.id });
+        return;
+      }
+
+      // STANDARD MODE: just enqueue if not already queued
       if (await isAlreadyQueued(video.id)) {
         logger.debug({ entryId: entry.id, videoId: video.id }, "[schedule-bridge] video already in queue — no-op");
         return;
       }
-      // Directly enqueue the specific scheduled video (not a library scan which
-      // might pick a different video). enqueueIfMissing is idempotent and handles
-      // the not-yet-playable / corrupt-source checks internally.
       const result = await enqueueIfMissing({ videoId: video.id, reason: "schedule-bridge" });
       logger.info(
         { entryId: entry.id, videoId: video.id, enqueued: result.enqueued, skipReason: result.skipReason },
@@ -206,7 +263,6 @@ async function handleEntry(entry: ScheduleRow): Promise<void> {
       );
       if (result.enqueued) {
         adminEventBus.push("broadcast-queue-updated", { reason: "schedule-bridge", entryId: entry.id });
-        // Notify the admin schedule page so it can reflect that this entry fired.
         adminEventBus.push("broadcast-schedule-updated", { reason: "schedule-bridge-fired", entryId: entry.id });
       }
       break;
@@ -233,16 +289,12 @@ async function handleEntry(entry: ScheduleRow): Promise<void> {
         { entryId: entry.id, url: entry.contentId, endsAtMs },
         "[schedule-bridge] live/external override started",
       );
-      // Notify both queue and schedule pages — an override changes broadcast
-      // mode which affects both the Master Control queue view and the schedule
-      // entry list.
       adminEventBus.push("broadcast-queue-updated", { reason: "schedule-bridge-live", entryId: entry.id });
       adminEventBus.push("broadcast-schedule-updated", { reason: "schedule-bridge-fired", entryId: entry.id });
       break;
     }
 
     case "playlist": {
-      // Best-effort: ensure all eligible library videos are in the queue.
       const result = await scanLibraryAndEnqueue({ reason: "schedule-bridge-playlist", maxToAdd: 500 });
       logger.info(
         { entryId: entry.id, enqueued: result.enqueued },

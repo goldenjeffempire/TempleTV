@@ -12,6 +12,7 @@ import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
 import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
 import { runFaststart } from "../transcoder/faststart.service.js";
 import { isUndefinedColumnError, SAFE_VIDEO_COLS } from "../../infrastructure/db-schema-guard.js";
+import { generateThumbnailForVideo } from "./thumbnail-generator.service.js";
 
 /**
  * Admin video listing + metadata management.
@@ -984,6 +985,64 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         queued,
         skipped,
         message: `${queued} video${queued === 1 ? "" : "s"} queued for HLS transcoding${skipped > 0 ? `, ${skipped} skipped (no source file)` : ""}.`,
+      };
+    },
+  );
+
+  // ── POST /admin/videos/:id/generate-thumbnail ─────────────────────────────
+  r.post(
+    "/videos/:id/generate-thumbnail",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Extract a thumbnail frame from a local video using ffmpeg and save it to storage",
+        security: [{ bearerAuth: [] }],
+        params: z.object({ id: z.string().min(1) }),
+        body: z.object({
+          /** If true, regenerate even if a thumbnailUrl already exists (ignores hasCustomThumbnail). */
+          force: z.boolean().default(false),
+        }),
+        response: {
+          200: z.object({
+            videoId: z.string(),
+            thumbnailUrl: z.string(),
+            generated: z.boolean(),
+            message: z.string(),
+          }),
+          404: z.object({ error: z.string() }),
+          422: z.object({ error: z.string() }),
+          429: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const { id } = req.params;
+      const { force } = req.body;
+
+      const result = await generateThumbnailForVideo(id, force);
+
+      if (result.error === "Video not found") {
+        return reply.code(404).send({ error: "Video not found" });
+      }
+      if (!result.generated && result.error && !result.thumbnailUrl) {
+        return reply.code(422).send({ error: result.error ?? "Thumbnail generation failed" });
+      }
+
+      // Invalidate catalog cache so updated thumbnailUrl is served immediately.
+      if (result.generated) {
+        invalidateVideosCatalogCache();
+        adminEventBus.push("videos-library-updated");
+      }
+
+      return {
+        videoId: result.videoId,
+        thumbnailUrl: result.thumbnailUrl,
+        generated: result.generated,
+        message: result.generated
+          ? "Thumbnail generated successfully"
+          : (result.error ?? "Thumbnail already exists"),
       };
     },
   );

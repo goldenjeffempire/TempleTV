@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   BarChart2, Eye, Clock, Film, Tv2, Smartphone, Monitor,
   TrendingUp, CheckCircle2, RefreshCw, Download, Users, Zap, Radio,
@@ -21,6 +22,8 @@ import {
   Area,
   BarChart,
   Bar,
+  LineChart,
+  Line,
   PieChart,
   Pie,
   Cell,
@@ -184,8 +187,20 @@ function useLiveViewerCount() {
   return { count, trend, error };
 }
 
+interface RetentionBucket {
+  bucketPct: number;
+  atLeastSecs: number;
+  viewerPct: number;
+}
+interface RetentionData {
+  videoId: string;
+  totalSessions: number;
+  buckets: RetentionBucket[];
+}
+
 export default function AnalyticsPage() {
   const [range, setRange] = useState<RangeKey>("30d");
+  const [retentionVideoId, setRetentionVideoId] = useState<string>("");
   const { count: liveCount, trend: liveTrend, error: liveError } = useLiveViewerCount();
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
@@ -258,6 +273,29 @@ export default function AnalyticsPage() {
       web: d.web,
     })),
     [platData?.days],
+  );
+
+  // Auto-select first top video for retention chart when data loads
+  useEffect(() => {
+    if (!retentionVideoId && (data?.topVideos?.length ?? 0) > 0) {
+      setRetentionVideoId(data!.topVideos[0]!.id);
+    }
+  }, [data?.topVideos, retentionVideoId]);
+
+  const { data: retentionData, isLoading: retentionLoading } = useQuery({
+    queryKey: ["analytics-retention", retentionVideoId],
+    queryFn: () => api.get<RetentionData>(`/analytics/video/${retentionVideoId}/retention`),
+    enabled: retentionVideoId.length > 0,
+    staleTime: 120_000,
+  });
+
+  const retentionChartData = useMemo(
+    () => (retentionData?.buckets ?? []).map((b) => ({
+      pct: `${b.bucketPct}%`,
+      viewers: b.viewerPct,
+      secs: b.atLeastSecs,
+    })),
+    [retentionData?.buckets],
   );
 
   function handleRefreshAll() {
@@ -692,6 +730,71 @@ export default function AnalyticsPage() {
                 </div>
               ))}
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Row 7: Viewer Retention Curve ── */}
+      {(data?.topVideos?.length ?? 0) > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <TrendingUp size={15} /> Viewer Retention Curve
+              </CardTitle>
+              <div className="flex items-center gap-2">
+                {retentionData && (
+                  <Badge variant="outline" className="text-[10px]">
+                    {retentionData.totalSessions.toLocaleString()} sessions
+                  </Badge>
+                )}
+                <Select value={retentionVideoId} onValueChange={setRetentionVideoId}>
+                  <SelectTrigger className="h-7 w-56 text-xs">
+                    <SelectValue placeholder="Pick a video" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(data?.topVideos ?? []).map((v) => (
+                      <SelectItem key={v.id} value={v.id} className="text-xs">
+                        {v.title.length > 40 ? v.title.slice(0, 40) + "…" : v.title}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <ChartErrorBoundary label="Retention curve">
+              {retentionLoading ? (
+                <Skeleton className="h-48 w-full" />
+              ) : retentionChartData.length > 0 ? (
+                <>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <LineChart data={retentionChartData} margin={{ left: 0, right: 8, top: 4, bottom: 4 }}>
+                      <CartesianGrid strokeDasharray="3 3" opacity={0.12} />
+                      <XAxis dataKey="pct" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                      <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} tickLine={false} axisLine={false} width={28} tickFormatter={(v: number) => `${v}%`} />
+                      <Tooltip
+                        contentStyle={{ background: "hsl(var(--popover))", border: "1px solid hsl(var(--border))", borderRadius: 8, fontSize: 12 }}
+                        formatter={(v: number, _: string, entry: { payload?: { secs?: number } }) => [
+                          `${v}% of viewers`,
+                          `Watched ≥${entry.payload?.secs ?? 0}s`,
+                        ]}
+                      />
+                      <ReferenceLine y={50} stroke="hsl(var(--muted-foreground))" strokeDasharray="4 4" label={{ value: "50%", position: "right", fontSize: 10 }} />
+                      <Line type="monotone" dataKey="viewers" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <p className="text-[10px] text-muted-foreground mt-1 text-center">
+                    % of viewers who watched at least that far into the video (based on max position reached per session)
+                  </p>
+                </>
+              ) : (
+                <div className="flex items-center justify-center h-48 text-sm text-muted-foreground">
+                  No session data for this video yet
+                </div>
+              )}
+            </ChartErrorBoundary>
           </CardContent>
         </Card>
       )}

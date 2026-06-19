@@ -12,17 +12,20 @@ export const userWatchHistoryTable = pgTable(
     videoCategory: text("video_category").notNull().default(""),
     watchedAt: timestamp("watched_at", { withTimezone: true }).notNull().defaultNow(),
     progressSecs: integer("progress_secs").notNull().default(0),
+    /**
+     * Total video duration in seconds — stored alongside progress so the
+     * `GET /user/continue-watching` query can filter out completed videos
+     * (progressSecs / durationSecs >= 0.95) without a JOIN to managed_videos.
+     *
+     * Null means the client did not supply duration at upsert time; these
+     * entries are included in continue-watching results conservatively.
+     */
+    durationSecs: integer("duration_secs"),
   },
   (t) => ({
     userIdx: index("user_watch_history_user_id_idx").on(t.userId),
     userWatchedIdx: index("user_watch_history_user_watched_idx").on(t.userId, t.watchedAt),
-    // Supports JOIN queries from the video detail page (e.g. "has user watched
-    // this video before?" lookup) and batch history queries grouped by video.
     videoIdx: index("user_watch_history_video_id_idx").on(t.videoId),
-    // Unique constraint on (userId, videoId) — each user has at most one history
-    // entry per video. This is the target for onConflictDoUpdate upserts in
-    // the POST /user/history route, replacing the racy SELECT + INSERT/UPDATE
-    // two-step that could create duplicate rows under concurrent requests.
     userVideoIdx: uniqueIndex("user_watch_history_user_video_idx").on(t.userId, t.videoId),
   }),
 );

@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, schema } from "../../infrastructure/db.js";
+import { requireAuth } from "../../middleware/auth.js";
 
 const WatchEventBodySchema = z.object({
   /**
@@ -156,6 +157,96 @@ export async function analyticsRoutes(app: FastifyInstance) {
       }
 
       return reply.code(204).send(null);
+    },
+  );
+
+  // ── GET /analytics/video/:videoId/retention ──────────────────────────────
+  //
+  // Per-video viewer retention curve for the admin analytics dashboard.
+  //
+  // Approach: use `viewer_sessions.watchedSecs` as a proxy for "how far the
+  // viewer got". Because watchedSecs is updated with GREATEST on every
+  // heartbeat, it tracks the viewer's maximum reached position. Bucketing
+  // all sessions by watchedSecs lets us compute what % of viewers made it
+  // past each point in the video.
+  //
+  // The curve is in 10 equal-width buckets (0-9%, 10-19%, … 90-99%, 100%).
+  // Each bucket reports the % of total sessions that watched AT LEAST that
+  // far — a classic "retention = viewers remaining" curve.
+  r.get(
+    "/video/:videoId/retention",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["analytics"],
+        summary: "Per-video viewer retention curve — percentage of viewers who watched past each point",
+        security: [{ bearerAuth: [] }],
+        params: z.object({ videoId: z.string().min(1).max(256) }),
+        querystring: z.object({
+          since: z.string().datetime({ offset: true }).optional(),
+        }),
+        response: {
+          200: z.object({
+            videoId: z.string(),
+            totalSessions: z.number().int(),
+            buckets: z.array(z.object({
+              bucketPct: z.number(),
+              atLeastSecs: z.number(),
+              viewerPct: z.number(),
+            })),
+          }),
+          429: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req) => {
+      const { videoId } = req.params;
+      const { since } = req.query;
+      const sessions = schema.viewerSessionsTable;
+
+      const sinceFilter = since ? sql`${sessions.startedAt} >= ${new Date(since)}` : undefined;
+      const videoFilter = sql`${sessions.videoId} = ${videoId} AND ${sessions.watchedSecs} > 0`;
+
+      const rows = await db
+        .select({ watchedSecs: sessions.watchedSecs })
+        .from(sessions)
+        .where(sinceFilter ? sql`${videoFilter} AND ${sinceFilter}` : videoFilter)
+        .limit(10_000);
+
+      const totalSessions = rows.length;
+
+      if (totalSessions === 0) {
+        return {
+          videoId,
+          totalSessions: 0,
+          buckets: Array.from({ length: 10 }, (_, i) => ({
+            bucketPct: (i + 1) * 10,
+            atLeastSecs: 0,
+            viewerPct: 0,
+          })),
+        };
+      }
+
+      // Find the 95th-percentile of watchedSecs as the effective "video length"
+      // to avoid outliers (seeked-to-end sessions) inflating the x-axis.
+      const sorted = rows.map((r) => r.watchedSecs).sort((a, b) => a - b);
+      const p95idx = Math.min(Math.floor(sorted.length * 0.95), sorted.length - 1);
+      const effectiveDuration = Math.max(sorted[p95idx]!, 1);
+
+      const NUM_BUCKETS = 10;
+      const buckets = Array.from({ length: NUM_BUCKETS }, (_, i) => {
+        const fraction = (i + 1) / NUM_BUCKETS;
+        const atLeastSecs = Math.round(effectiveDuration * fraction);
+        const watchedAtLeast = rows.filter((r) => r.watchedSecs >= atLeastSecs * 0.95).length;
+        return {
+          bucketPct: (i + 1) * 10,
+          atLeastSecs,
+          viewerPct: Math.round((watchedAtLeast / totalSessions) * 100),
+        };
+      });
+
+      return { videoId, totalSessions, buckets };
     },
   );
 }

@@ -270,6 +270,15 @@ async function startWorkers() {
   } else {
     logger.info("storage reconciliation worker disabled by STORAGE_RECONCILIATION_INTERVAL_MS=0");
   }
+
+  // Thumbnail sweep worker: auto-generates missing thumbnails for local videos
+  // that were uploaded before on-demand thumbnail extraction was available.
+  // Runs every 10 minutes (THUMBNAIL_SWEEP_INTERVAL_MS), 2-minute boot delay,
+  // processes at most 5 videos per pass to avoid OOM during active transcoding.
+  {
+    const { startThumbnailSweepWorker } = await import("./modules/broadcast-v2/engine/thumbnail-sweep-worker.js");
+    startThumbnailSweepWorker();
+  }
 }
 
 async function stopWorkers() {

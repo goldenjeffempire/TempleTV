@@ -14,6 +14,8 @@
  *   GET    /user/watch-history           — alias for /user/history
  *   POST   /user/history                 — upsert a watch-history entry
  *   DELETE /user/history                 — clear entire watch history
+ *
+ *   GET    /user/continue-watching       — in-progress videos (cross-device resume)
  */
 
 import type { FastifyInstance } from "fastify";
@@ -94,6 +96,7 @@ const HistoryItemSchema = z.object({
   videoThumbnail: z.string(),
   videoCategory: z.string(),
   progressSecs: z.number().int(),
+  durationSecs: z.number().int().nullable(),
   watchedAt: z.string(),
 });
 
@@ -301,6 +304,7 @@ export async function userRoutes(app: FastifyInstance) {
           videoThumbnail: r.videoThumbnail,
           videoCategory: r.videoCategory,
           progressSecs: r.progressSecs,
+          durationSecs: r.durationSecs ?? null,
           watchedAt: r.watchedAt.toISOString(),
         })),
       };
@@ -337,6 +341,7 @@ export async function userRoutes(app: FastifyInstance) {
         videoThumbnail: r.videoThumbnail,
         videoCategory: r.videoCategory,
         progressSecs: r.progressSecs,
+        durationSecs: r.durationSecs ?? null,
         watchedAt: r.watchedAt.toISOString(),
       }));
       return { history };
@@ -369,6 +374,7 @@ export async function userRoutes(app: FastifyInstance) {
           videoThumbnail: z.string().default(""),
           videoCategory: z.string().default(""),
           progressSecs: z.number().int().min(0).default(0),
+          durationSecs: z.number().int().min(1).max(86_400).optional(),
         }),
         response: {
           200: HistoryItemSchema,
@@ -378,7 +384,7 @@ export async function userRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const userId = req.principal!.id;
-      const { videoId, progressSecs } = req.body;
+      const { videoId, progressSecs, durationSecs } = req.body;
       // Sanitize all user-supplied display strings before persisting.
       const videoTitle     = sanitizeText(req.body.videoTitle);
       const videoThumbnail = sanitizeText(req.body.videoThumbnail);
@@ -409,10 +415,19 @@ export async function userRoutes(app: FastifyInstance) {
       // id is always stable across repeated watch-progress syncs.
       const [row] = await db
         .insert(historyTable)
-        .values({ id: nanoid(), userId, videoId, videoTitle, videoThumbnail, videoCategory, progressSecs, watchedAt: now })
+        .values({ id: nanoid(), userId, videoId, videoTitle, videoThumbnail, videoCategory, progressSecs, durationSecs: durationSecs ?? null, watchedAt: now })
         .onConflictDoUpdate({
           target: [historyTable.userId, historyTable.videoId],
-          set: { watchedAt: now, progressSecs, videoTitle, videoThumbnail, videoCategory },
+          set: {
+            watchedAt: now,
+            progressSecs,
+            videoTitle,
+            videoThumbnail,
+            videoCategory,
+            // Only update durationSecs if the client supplied it — never
+            // overwrite a known duration with null from a minimal heartbeat.
+            ...(durationSecs != null ? { durationSecs } : {}),
+          },
         })
         .returning();
       return {
@@ -422,8 +437,81 @@ export async function userRoutes(app: FastifyInstance) {
         videoThumbnail: row!.videoThumbnail,
         videoCategory: row!.videoCategory,
         progressSecs: row!.progressSecs,
+        durationSecs: row!.durationSecs ?? null,
         watchedAt: row!.watchedAt.toISOString(),
       };
+    },
+  );
+
+  // ── GET /user/continue-watching ──────────────────────────────────────────
+  //
+  // Returns in-progress videos so any device can resume where another left off.
+  //
+  // Inclusion criteria:
+  //   • progressSecs > 30 s  — the user made a meaningful start
+  //   • not completed        — (progressSecs / durationSecs < 0.95) OR durationSecs
+  //                            unknown (include conservatively so we don't
+  //                            permanently hide short-form content)
+  //
+  // Ordered by watchedAt DESC so the most recently-paused video appears first.
+  r.get(
+    "/continue-watching",
+    {
+      preHandler: requireAuth(),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["user"],
+        summary: "List in-progress videos for the authenticated user (cross-device resume)",
+        security: [{ bearerAuth: [] }],
+        querystring: z.object({
+          limit: z.coerce.number().int().min(1).max(50).default(20).catch(20),
+        }),
+        response: {
+          200: z.object({ items: z.array(HistoryItemSchema) }),
+          429: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req) => {
+      const userId = req.principal!.id;
+      const { limit } = req.query;
+
+      // Pull all non-trivial watch-history rows and filter in JS so we can
+      // handle the NULL durationSecs case cleanly without raw SQL.
+      const rows = await db
+        .select()
+        .from(historyTable)
+        .where(
+          and(
+            eq(historyTable.userId, userId),
+            // Filter rows where progressSecs > 30 at the DB level to cut
+            // down the result set before the JS completion filter below.
+            sql`${historyTable.progressSecs} > 30`,
+          ),
+        )
+        .orderBy(desc(historyTable.watchedAt))
+        // Fetch slightly more than limit so the completion filter doesn't
+        // shrink the result below limit in most cases.
+        .limit(limit * 3);
+
+      const items = rows
+        .filter((r) => {
+          if (r.durationSecs == null || r.durationSecs <= 0) return true;
+          return r.progressSecs / r.durationSecs < 0.95;
+        })
+        .slice(0, limit)
+        .map((r) => ({
+          id: r.id,
+          videoId: r.videoId,
+          videoTitle: r.videoTitle,
+          videoThumbnail: r.videoThumbnail,
+          videoCategory: r.videoCategory,
+          progressSecs: r.progressSecs,
+          durationSecs: r.durationSecs ?? null,
+          watchedAt: r.watchedAt.toISOString(),
+        }));
+
+      return { items };
     },
   );
 

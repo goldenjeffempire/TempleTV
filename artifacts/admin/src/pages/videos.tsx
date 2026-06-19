@@ -766,6 +766,23 @@ export default function VideosPage() {
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Faststart request failed"),
   });
 
+  const thumbnailMutation = useMutation({
+    mutationFn: ({ id, force }: { id: string; force?: boolean }) =>
+      api.post<{ videoId: string; thumbnailUrl: string; generated: boolean; message: string }>(
+        `/admin/videos/${id}/generate-thumbnail`,
+        { force: force ?? false },
+      ),
+    onSuccess: (res) => {
+      if (res.generated) {
+        toast.success("Thumbnail generated successfully");
+        void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      } else {
+        toast.info(res.message ?? "Thumbnail already exists");
+      }
+    },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Thumbnail generation failed"),
+  });
+
   const retryAssemblyMutation = useMutation({
     mutationFn: (id: string) =>
       api.post<{ canRetry: boolean; message: string }>(`/admin/videos/upload/retry-assembly/${id}`),
@@ -1636,6 +1653,16 @@ export default function VideosPage() {
                           ? <><Globe size={13} className="mr-2 text-green-600" /> Publish to library</>
                           : <><EyeOff size={13} className="mr-2 text-orange-500" /> Hide from library</>}
                       </DropdownMenuItem>
+                      {v.videoSource === "local" && v.localVideoUrl && (
+                        <DropdownMenuItem
+                          onClick={() => thumbnailMutation.mutate({ id: v.id, force: !!v.thumbnailUrl })}
+                          disabled={thumbnailMutation.isPending && thumbnailMutation.variables?.id === v.id}
+                          title={v.thumbnailUrl ? "Regenerate thumbnail from video using ffmpeg" : "Extract thumbnail frame from video using ffmpeg"}
+                        >
+                          <Film size={13} className="mr-2 text-violet-500" />
+                          {v.thumbnailUrl ? "Regenerate thumbnail" : "Generate thumbnail"}
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
                         className="text-red-600 focus:text-red-600"

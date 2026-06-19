@@ -30,7 +30,7 @@ export async function scheduleRoutes(app: FastifyInstance) {
     {
       schema: {
         tags: ["schedule"],
-        summary: "List the weekly broadcast schedule",
+        summary: "List all schedule entries (recurring + one-time)",
         response: { 200: ListScheduleResponseSchema },
       },
     },
@@ -46,11 +46,28 @@ export async function scheduleRoutes(app: FastifyInstance) {
     },
   );
 
+  r.get(
+    "/upcoming",
+    {
+      schema: {
+        tags: ["schedule"],
+        summary: "List upcoming one-time scheduled events (scheduledDate >= today)",
+        response: { 200: ListScheduleResponseSchema },
+      },
+    },
+    async (_req, reply) => {
+      const result = await scheduleService.listUpcoming();
+      reply.header("Cache-Control", "public, max-age=60, stale-while-revalidate=30");
+      return result;
+    },
+  );
+
   r.post(
     "/",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
         tags: ["schedule"],
         summary: "Create a schedule entry",
         body: CreateScheduleBodySchema,
@@ -61,8 +78,6 @@ export async function scheduleRoutes(app: FastifyInstance) {
     async (req, reply) => {
       invalidateScheduleCache();
       const created = await scheduleService.create(req.body);
-      // Notify all connected admin tabs so their schedule pages refresh
-      // immediately rather than waiting for the next poll cycle.
       adminEventBus.push("broadcast-schedule-updated", { reason: "schedule-created", id: created.id });
       reply.code(201);
       return created;
@@ -73,7 +88,8 @@ export async function scheduleRoutes(app: FastifyInstance) {
     "/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
         tags: ["schedule"],
         summary: "Update a schedule entry",
         params: idParam,
@@ -94,7 +110,8 @@ export async function scheduleRoutes(app: FastifyInstance) {
     "/:id",
     {
       preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+      schema: {
         tags: ["schedule"],
         summary: "Delete a schedule entry",
         params: idParam,
