@@ -552,6 +552,14 @@ export function BroadcastPreviewV2({ className }: Props) {
   }, [server]);
 
   const overlay = useMemo(() => {
+    // When a YouTube source is active, the YouTube placeholder card (rendered
+    // below at zIndex 15) provides all the context the operator needs.
+    // Suppress the spinner overlay entirely so it doesn't cover the card.
+    // RECOVERING_PRIMARY / RECOVERING_FAILOVER / SKIP_PENDING are all expected
+    // states when the FSM tries (and correctly fails) to load a YouTube URL
+    // via hls.js — none of them represent a real viewer-facing problem.
+    if (youtubeVideoId) return null;
+
     if (snapshot.state === "OFFLINE_HOLD") {
       return { kind: "reconnect" as const, label: "Reconnecting…" };
     }
@@ -577,12 +585,6 @@ export function BroadcastPreviewV2({ className }: Props) {
       return { kind: "tuning" as const, label: "Retrying source…" };
     }
     if (snapshot.state === "SKIP_PENDING") {
-      // YouTube sources cannot be played through the <video> element, so
-      // SKIP_PENDING is expected here — but we still want operators to see
-      // the state rather than silently suppressing it. Render a distinct
-      // yellow warning instead of the full "Skipping…" banner so it is
-      // visible alongside the YouTube placeholder card without being alarming.
-      if (youtubeVideoId) return { kind: "skipping" as const, label: "YouTube source · skip pending" };
       return { kind: "skipping" as const, label: "Skipping to next item…" };
     }
     if (server && !server.current && !server.override) {
@@ -753,38 +755,46 @@ export function BroadcastPreviewV2({ className }: Props) {
         style={{ zIndex: 1, opacity: 0, display: "block", willChange: "transform", transform: "translateZ(0)" }}
       />
 
-      {/* YouTube override placeholder.
-          YouTube iframe embedding was removed (see useMemo comment above).
-          When a live-override points at a YouTube URL, the native HLS buffers
-          above cannot play it, so we show a static thumbnail + open-in-YouTube
-          link instead. No detection window, no Error 153, no postMessage races. */}
+      {/* YouTube source card — shown whenever a YouTube URL is on air (ytShuffle
+          fallback or manual live-override). zIndex 15 sits above the spinner
+          overlay (zIndex 10) so the card is never obscured by recovery states.
+          The FSM will cycle RECOVERING→SKIP_PENDING because hls.js cannot load
+          a YouTube URL — that is expected and does not affect real viewers. */}
       {youtubeVideoId && (
         <div
           className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-4 text-center"
-          style={{ zIndex: 5 }}
+          style={{ zIndex: 15 }}
         >
+          {/* Blurred thumbnail ambient fill */}
           <div
-            className="absolute inset-0 bg-cover bg-center opacity-15"
+            className="absolute inset-0 bg-cover bg-center"
             style={{
               backgroundImage: `url(https://img.youtube.com/vi/${youtubeVideoId}/hqdefault.jpg)`,
-              filter: "blur(4px)",
+              filter: "blur(8px) brightness(0.22) saturate(1.3)",
+              transform: "scale(1.08)",
             }}
           />
+          {/* YouTube logo pill */}
+          <div className="relative z-10 flex items-center gap-1.5 bg-red-600/90 text-white text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wide mb-0.5">
+            <svg viewBox="0 0 24 24" fill="currentColor" style={{ width: 10, height: 10 }}>
+              <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+            </svg>
+            YouTube
+          </div>
+          {/* Thumbnail */}
           <img
             src={`https://img.youtube.com/vi/${youtubeVideoId}/mqdefault.jpg`}
-            alt="Video thumbnail"
-            className="relative z-10 w-28 rounded shadow-lg object-cover"
+            alt={title ?? "Video thumbnail"}
+            className="relative z-10 w-32 rounded-md shadow-xl object-cover border border-white/10"
             draggable={false}
             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
           />
-          <div className="relative z-10 space-y-1.5 max-w-[260px]">
-            <p className="text-white text-[11px] font-semibold leading-snug">
-              YouTube override active
-            </p>
-            <p className="text-white/60 text-[10px] leading-relaxed">
-              This live-override points at a YouTube URL. The native HLS preview
-              below cannot render YouTube content. TV and mobile viewers see this
-              same item; verify playback directly on YouTube.
+          <div className="relative z-10 space-y-1 max-w-[240px]">
+            {title && (
+              <p className="text-white text-[11px] font-semibold leading-snug line-clamp-2">{title}</p>
+            )}
+            <p className="text-white/50 text-[9px] leading-relaxed">
+              YouTube is airing on TV &amp; mobile — preview not available in this browser
             </p>
           </div>
           <div className="relative z-10 flex items-center gap-2 flex-wrap justify-center">
@@ -792,9 +802,9 @@ export function BroadcastPreviewV2({ className }: Props) {
               href={`https://www.youtube.com/watch?v=${youtubeVideoId}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-[11px] font-medium text-white bg-red-600 hover:bg-red-500 transition-colors px-2.5 py-1 rounded"
+              className="flex items-center gap-1.5 text-[10px] font-semibold text-white bg-red-600 hover:bg-red-500 active:bg-red-700 transition-colors px-3 py-1.5 rounded-full"
             >
-              <ExternalLink size={10} />
+              <ExternalLink size={9} />
               Watch on YouTube
             </a>
           </div>

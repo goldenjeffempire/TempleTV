@@ -1555,21 +1555,36 @@ export function V2PlayerContainer({
   const activeBufferId = buffers.A.active ? "A" : "B";
 
   // ── YouTube-override detection ────────────────────────────────────────────
-  // When the admin activates a YouTube live override, the machine transitions
-  // to LIVE_OVERRIDE_ACTIVE and binds the V2Override (kind: "youtube") to the
-  // active buffer. expo-av cannot play YouTube URLs — attempting to load one
-  // causes onError to fire immediately, sending buffer-error into the FSM and
+  // When the admin activates a YouTube live override (or the ytShuffle fallback
+  // fires), the machine transitions to LIVE_OVERRIDE_ACTIVE and binds the
+  // V2Override (kind: "youtube") to the active buffer. expo-av cannot play
+  // YouTube URLs — attempting to load one causes onError to fire immediately,
   // triggering RECOVERING_PRIMARY → RECOVERING_FAILOVER → SKIP_PENDING → FATAL.
   //
-  // We detect this condition and exclude YouTube from both BroadcastBuffer
-  // instances (same guard used by minimal/hero) to prevent the recovery spiral.
-  // A dedicated overlay is shown instead so the viewer understands what's live.
+  // Two detection paths — both must agree before we suppress expo-av:
+  //
+  //   1. Buffer-item path (reliable once FSM has bound the V2Override):
+  //      checks buffers[activeBufferId].item directly.
+  //
+  //   2. Server-snapshot path (reliable immediately on state entry, BEFORE the
+  //      FSM has had a chance to bind the item): checks server.override.kind.
+  //      This is the critical fix for ytShuffle — without it, expo-av races to
+  //      load the YouTube URL during the window between state entry and item
+  //      binding, producing the native loading spinner indefinitely.
+  //
+  // Using OR so whichever path resolves first wins.
   const activeItem = buffers[activeBufferId].item;
   const isYouTubeOverride =
     snapshot.state === "LIVE_OVERRIDE_ACTIVE" &&
-    activeItem !== null &&
-    !("source" in activeItem) &&   // V2Override has .kind directly, not .source.kind
-    activeItem.kind === "youtube";
+    (
+      // Path 1: buffer item is already bound as a V2Override with kind "youtube"
+      (activeItem !== null &&
+       !("source" in activeItem) &&
+       activeItem.kind === "youtube") ||
+      // Path 2: server snapshot already reports youtube override — use this
+      // immediately so expo-av never attempts to load the YouTube URL
+      server?.override?.kind === "youtube"
+    );
 
   // ── PiP buffer-swap re-entry (Android) ───────────────────────────────
   // When the broadcast performs an A/B handoff (item N ends → item N+1
@@ -1719,6 +1734,8 @@ export function V2PlayerContainer({
     upNext?: string;
     /** When set, renders a "Watch on YouTube" deep-link button. */
     youtubeUrl?: string | null;
+    /** YouTube thumbnail URL — shown as a card above the overlay text. */
+    youtubeThumbnailUrl?: string | null;
     /**
      * When present, a "Tap to reconnect" button is shown below the sub-text.
      * Only set after the user has been stuck for several phase steps so we
@@ -1731,11 +1748,19 @@ export function V2PlayerContainer({
     // Keep first so subsequent checks don't have to guard against it.
     if (isYouTubeOverride) {
       const overrideTitle = server?.override?.title;
+      const overrideUrl = server?.override?.url ?? null;
+      // Extract video ID for thumbnail — handles both youtube.com/watch?v= and youtu.be/ forms
+      let youtubeThumbnailUrl: string | null = null;
+      if (overrideUrl) {
+        const m = overrideUrl.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+        if (m) youtubeThumbnailUrl = `https://img.youtube.com/vi/${m[1]}/mqdefault.jpg`;
+      }
       return {
         main: overrideTitle ?? "Live YouTube Broadcast",
-        sub: "This broadcast is airing on YouTube",
+        sub: "Airing on YouTube — tap below to watch",
         showSpinner: false,
-        youtubeUrl: server?.override?.url ?? null,
+        youtubeUrl: overrideUrl,
+        youtubeThumbnailUrl,
       };
     }
 
@@ -2063,6 +2088,14 @@ export function V2PlayerContainer({
               style={styles.overlaySpinner}
             />
           )}
+          {overlayContent.youtubeThumbnailUrl ? (
+            <Image
+              source={{ uri: overlayContent.youtubeThumbnailUrl }}
+              style={styles.overlayYtThumb}
+              resizeMode="cover"
+              accessible={false}
+            />
+          ) : null}
           <Text style={styles.overlayText}>{overlayContent.main}</Text>
           {overlayContent.sub ? (
             <Text style={styles.overlaySubText}>{overlayContent.sub}</Text>
@@ -2082,11 +2115,11 @@ export function V2PlayerContainer({
                   void Linking.openURL(overlayContent.youtubeUrl);
                 }
               }}
-              style={({ pressed }) => [styles.overlayRetryBtn, pressed && styles.overlayRetryBtnPressed]}
+              style={({ pressed }) => [styles.overlayYtBtn, pressed && styles.overlayYtBtnPressed]}
               accessibilityRole="link"
               accessibilityLabel="Watch on YouTube"
             >
-              <Text style={styles.overlayRetryText}>Watch on YouTube ▶</Text>
+              <Text style={styles.overlayYtBtnText}>Watch on YouTube ▶</Text>
             </Pressable>
           ) : null}
           {overlayContent.onRetry ? (
@@ -2341,6 +2374,29 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 14,
     fontWeight: "600",
+    letterSpacing: 0.3,
+  },
+  overlayYtThumb: {
+    width: 180,
+    height: 101,
+    borderRadius: 8,
+    marginBottom: 14,
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  overlayYtBtn: {
+    marginTop: 18,
+    paddingVertical: 11,
+    paddingHorizontal: 26,
+    backgroundColor: "#ff0000",
+    borderRadius: 999,
+  },
+  overlayYtBtnPressed: {
+    backgroundColor: "#cc0000",
+  },
+  overlayYtBtnText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "700",
     letterSpacing: 0.3,
   },
   qualityBadge: {
