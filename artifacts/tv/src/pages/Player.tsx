@@ -200,7 +200,7 @@ function YouTubePlayer({
     return () => window.removeEventListener("keydown", handler, true);
   }, [onBack]);
 
-  const src = `https://www.youtube.com/embed/${videoId}?autoplay=1&controls=${isLive ? 0 : 1}&rel=0&modestbranding=1&enablejsapi=1`;
+  const src = `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&mute=1&controls=${isLive ? 0 : 1}&rel=0&modestbranding=1&enablejsapi=1&playsinline=1`;
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%", background: "#000" }}>
@@ -214,7 +214,7 @@ function YouTubePlayer({
         ref={iframeRef}
         src={src}
         style={{ width: "100%", height: "100%", border: "none", display: loading ? "none" : "block" }}
-        allow="autoplay; encrypted-media; picture-in-picture"
+        allow="autoplay; encrypted-media; picture-in-picture; playsinline"
         allowFullScreen
         onLoad={() => { setLoading(false); loadingRef.current = false; }}
       />

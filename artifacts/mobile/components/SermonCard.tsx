@@ -7,6 +7,12 @@ import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
 import type { Sermon } from "@/types";
 import { VideoLiveStatusBadge } from "@/components/LiveBadge";
+import { CARD_ASPECT_RATIO } from "@/constants/design";
+
+const SERMON_CARD_VERTICAL_WIDTH = 200;
+const SERMON_CARD_VERTICAL_THUMB_H = Math.round(SERMON_CARD_VERTICAL_WIDTH / CARD_ASPECT_RATIO);
+const SERMON_CARD_HORIZ_THUMB_W = 120;
+const SERMON_CARD_HORIZ_THUMB_H = Math.round(SERMON_CARD_HORIZ_THUMB_W / CARD_ASPECT_RATIO);
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
 
@@ -174,7 +180,7 @@ export const SermonCard = memo(function SermonCard({
 
 const styles = StyleSheet.create({
   verticalCard: {
-    width: 200,
+    width: SERMON_CARD_VERTICAL_WIDTH,
     gap: 8,
   },
   thumbContainer: {
@@ -182,8 +188,8 @@ const styles = StyleSheet.create({
     position: "relative",
   },
   verticalThumb: {
-    width: 200,
-    height: 112,
+    width: SERMON_CARD_VERTICAL_WIDTH,
+    height: SERMON_CARD_VERTICAL_THUMB_H,
     backgroundColor: "#111",
   },
   durationBadge: {
@@ -234,14 +240,14 @@ const styles = StyleSheet.create({
   horizontalThumbWrap: {
     borderRadius: 8,
     overflow: "hidden",
-    width: 120,
-    height: 68,
+    width: SERMON_CARD_HORIZ_THUMB_W,
+    height: SERMON_CARD_HORIZ_THUMB_H,
     backgroundColor: "#111",
     position: "relative",
   },
   horizontalThumb: {
-    width: 120,
-    height: 68,
+    width: SERMON_CARD_HORIZ_THUMB_W,
+    height: SERMON_CARD_HORIZ_THUMB_H,
   },
   horizontalInfo: {
     flex: 1,
