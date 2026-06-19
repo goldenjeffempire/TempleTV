@@ -615,6 +615,24 @@ export function BroadcastPreviewV2({ className }: Props) {
     return diagnosis.scope === "preview-only" ? diagnosis : null;
   }, [snapshot.state, snapshot.activeBufferId, snapshot.bufferA, snapshot.bufferB, server]);
 
+  // Compute the source diagnosis for FATAL states — same logic as
+  // recoverySourceDiagnosis but triggered when retries have been exhausted.
+  // Shown as a green "preview-only" indicator so operators immediately know
+  // whether the failure affects real viewers or only the admin browser.
+  const fatalSourceDiagnosis = useMemo<SourceDiagnosis | null>(() => {
+    if (snapshot.state !== "FATAL") return null;
+    const activeItem =
+      snapshot.activeBufferId === "A" ? snapshot.bufferA : snapshot.bufferB;
+    let source: V2Source | null = null;
+    if (activeItem && "source" in activeItem) {
+      source = (activeItem as { source: V2Source }).source;
+    } else if (server?.current?.source) {
+      source = server.current.source;
+    }
+    const diagnosis = classifySourceFailure(source);
+    return diagnosis.scope === "preview-only" ? diagnosis : null;
+  }, [snapshot.state, snapshot.activeBufferId, snapshot.bufferA, snapshot.bufferB, server]);
+
   // Compute the source diagnosis only when SKIP_PENDING. The active buffer
   // holds whichever item the FSM was trying to play when retries were
   // exhausted — prefer that over lastServerSnapshot so overrides are handled.
@@ -947,6 +965,34 @@ export function BroadcastPreviewV2({ className }: Props) {
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
+          </>
+        ) : overlay?.kind === "fatal" ? (
+          <>
+            <AlertTriangle
+              size={20}
+              className={fatalSourceDiagnosis ? "text-amber-400/60" : "text-red-400/70"}
+            />
+            <p className="text-xs font-medium text-white/70">{overlay.label}</p>
+            {fatalSourceDiagnosis && (
+              <TooltipProvider delayDuration={120}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div className="flex items-center gap-1 mt-0.5 cursor-default">
+                      <CheckCircle2 size={10} className="text-emerald-400 shrink-0" />
+                      <p className="text-[10px] text-emerald-300/80 leading-tight">
+                        {fatalSourceDiagnosis.headline} — real viewers unaffected
+                      </p>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-[260px] text-[11px]">
+                    <p className="font-medium mb-1">{fatalSourceDiagnosis.headline}</p>
+                    <p className="text-muted-foreground leading-relaxed">
+                      {fatalSourceDiagnosis.viewerNote}
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
           </>
         ) : (
           <p className="text-xs font-medium text-white/70">{overlay?.label ?? ""}</p>

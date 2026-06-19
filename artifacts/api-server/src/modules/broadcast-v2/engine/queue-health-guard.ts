@@ -23,11 +23,13 @@
  * QUEUE_MIN_ITEMS after reconciliation — indicating the library genuinely
  * has fewer eligible videos than the minimum threshold.
  */
-import { count, eq, sql } from "drizzle-orm";
+import { and, count, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
 import { scanLibraryAndEnqueue } from "../../broadcast/auto-enqueue.service.js";
+import { enqueueTranscode, boostTranscodePriority } from "../../transcoder/transcoder.queue.js";
+import { transcoderDispatcher } from "../../transcoder/transcoder.dispatcher.js";
 
 const q = schema.broadcastQueueTable;
 const v = schema.videosTable;
@@ -240,7 +242,54 @@ class QueueHealthGuardImpl {
     // Fix zero-duration queue items so the cycle schedule is accurate.
     await repairZeroDurations();
 
-    // ── Phase 4: Threshold alerting ────────────────────────────────────────
+    // ── Phase 4: HLS auto-trigger ──────────────────────────────────────────
+    // For every active local-video queue item that still lacks an HLS master
+    // playlist, enqueue (or re-arm) a high-priority HLS transcoding job.
+    // This makes the "1 missing HLS" badge self-healing: within one scan
+    // cycle the transcoder is automatically kicked without the operator
+    // clicking "Prepare HLS" on the broadcast console.
+    try {
+      const missingHlsRows = await db
+        .select({
+          videoId: q.videoId,
+          localVideoUrl: v.localVideoUrl,
+          transcodingStatus: v.transcodingStatus,
+        })
+        .from(q)
+        .innerJoin(v, eq(q.videoId, v.id))
+        .where(
+          and(
+            eq(q.isActive, true),
+            isNotNull(q.videoId),
+            isNull(v.hlsMasterUrl),
+          ),
+        );
+
+      let hlsTriggered = 0;
+      for (const row of missingHlsRows) {
+        if (!row.videoId || !row.localVideoUrl) continue;
+        if (row.transcodingStatus === "hls_ready") continue;
+        try {
+          await enqueueTranscode({ videoId: row.videoId, videoPath: row.localVideoUrl, priority: 10 });
+          void boostTranscodePriority(row.videoId, 10).catch(() => {});
+          hlsTriggered++;
+        } catch {
+          // non-fatal: log at debug to avoid alert noise on duplicate-job 409s
+        }
+      }
+
+      if (hlsTriggered > 0) {
+        transcoderDispatcher.nudge();
+        logger.info(
+          { hlsTriggered },
+          "[queue-reconcile] auto-triggered HLS transcoding for queue items missing HLS master playlist",
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, "[queue-reconcile] HLS auto-trigger scan failed (non-fatal)");
+    }
+
+    // ── Phase 5: Threshold alerting ────────────────────────────────────────
     const activeCount = await getActiveItemCount();
     this.lastActiveCount = activeCount;
     this.belowThreshold = activeCount < threshold;
