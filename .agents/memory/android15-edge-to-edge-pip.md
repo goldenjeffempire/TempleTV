@@ -79,4 +79,13 @@ Build `bd5ad982` (versionCode 83) failed with `EAS_BUILD_UNKNOWN_GRADLE_ERROR` �
 - `android/src/main/AndroidManifest.xml` — package declaration only
 - `android/src/main/kotlin/expo/modules/pipandroid/ExpoPipAndroidModule.kt` — full Kotlin impl (see above)
 
-New build `d112e173` (versionCode 84) submitted with both the TypeScript fixes (8 errors across 5 files) and the restored Kotlin native module.
+New build `d112e173` (versionCode 84) also failed — the Android files were NOT committed to the repo (session ended before files were persisted). The android/ directory for expo-pip-android is prone to being lost between sessions.
+
+**Critical note:** The `android/` directory inside `expo-pip-android` is NOT auto-generated — it must exist in source control. Verify it's present before any EAS submission: `find artifacts/mobile/modules/expo-pip-android/android -name "*.kt" | grep -q .` If missing, recreate the 3 files listed above.
+
+Kotlin implementation details that differ from naive approach:
+- Notification ID: 9001 (not 7001)
+- Restore request code: 9002  
+- Icon: `android.R.drawable.ic_menu_zoom` (not ic_menu_view)
+- UI thread: use `CountDownLatch(1).await(3, SECONDS)` around `runOnUiThread` for `enterPictureInPictureMode` and `setPictureInPictureParams`
+- Channel ID: `pip_restore_channel`
