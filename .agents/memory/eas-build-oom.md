@@ -15,8 +15,8 @@ When EAS builds die with `FATAL ERROR: Reached heap limit Allocation failed - Ja
 
 4. **SENTRY_DISABLE_AUTO_UPLOAD missing on staging profiles** — Sentry source map upload on non-production EAS builds adds post-bundle memory pressure. Add `SENTRY_DISABLE_AUTO_UPLOAD=true` to every profile that is not explicitly the production upload target.
 
-5. **resourceClass: medium for production Android bundles** — complex monorepos benefit from `large`. Production and production-android profiles should use `resourceClass: "large"`.
+5. **resourceClass: large unavailable on free EAS tier** — `large` resource class requires a Production/Enterprise/On-Demand EAS plan. Account `templedev` is on the free tier → use `medium` for all profiles. If the plan is upgraded, `large` is the right choice for production-android.
 
 **Why:** These five causes compound. Cause 1 (heap ceiling) × Cause 2 (worker amplification) means 4096 / 4 = only 1 GB effective heap per process at peak — far below Metro's ~2 GB working set for this codebase.
 
-**How to apply:** When any new EAS profile is added to eas.json, it must include `NODE_OPTIONS: "--max-old-space-size=8192"` and, if it's a non-production build, `SENTRY_DISABLE_AUTO_UPLOAD: "true"`. When any new native or browser-only library is added to the monorepo and appears in mobile's node_modules, grep mobile source first to confirm actual usage before adding it to `dependencies`.
+**How to apply:** When any new EAS profile is added to eas.json, it must include `NODE_OPTIONS: "--max-old-space-size=8192"` and, if it's a non-production build, `SENTRY_DISABLE_AUTO_UPLOAD: "true"`. When any new native or browser-only library is added to the monorepo and appears in mobile's node_modules, grep mobile source first to confirm actual usage before adding it to `dependencies`. Do not set `resourceClass: "large"` unless the EAS account has an active paid plan (check https://expo.dev/accounts/templedev/settings/subscriptions).
