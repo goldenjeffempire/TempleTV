@@ -1,0 +1,14 @@
+build:
+  name: Android production store bundle
+  steps:
+    - eas/checkout
+    - run:
+        name: Install pnpm 9 and project dependencies
+        command: |
+          echo "System pnpm: $(pnpm --version 2>/dev/null || echo 'not found')"
+          npm install -g pnpm@9.15.9 --registry https://registry.npmjs.org
+          export PATH="$(npm prefix -g)/bin:$PATH"
+          echo "Active pnpm: $(pnpm --version)"
+          pnpm install --frozen-lockfile
+    - eas/prebuild
+    - eas/build

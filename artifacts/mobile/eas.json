@@ -10,7 +10,6 @@
       "developmentClient": true,
       "distribution": "internal",
       "node": "22.14.0",
-      "pnpm": "9.15.9",
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleDebug"
@@ -29,7 +28,6 @@
       "developmentClient": true,
       "distribution": "internal",
       "node": "22.14.0",
-      "pnpm": "9.15.9",
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleDebug"
@@ -49,7 +47,6 @@
       "channel": "preview",
       "credentialsSource": "remote",
       "node": "22.14.0",
-      "pnpm": "9.15.9",
       "android": {
         "buildType": "apk",
         "resourceClass": "medium"
@@ -71,7 +68,6 @@
       "channel": "staging",
       "credentialsSource": "remote",
       "node": "22.14.0",
-      "pnpm": "9.15.9",
       "android": {
         "buildType": "apk",
         "resourceClass": "medium"
@@ -94,7 +90,6 @@
       "channel": "production",
       "credentialsSource": "remote",
       "node": "22.14.0",
-      "pnpm": "9.15.9",
       "android": {
         "buildType": "app-bundle",
         "resourceClass": "large"
@@ -117,7 +112,6 @@
       "channel": "production",
       "credentialsSource": "remote",
       "node": "22.14.0",
-      "pnpm": "9.15.9",
       "ios": {
         "resourceClass": "m1-medium",
         "buildConfiguration": "Release"
@@ -131,12 +125,12 @@
       }
     },
     "production-android": {
+      "config": "production-android.yml",
       "autoIncrement": false,
       "distribution": "store",
       "channel": "production",
       "credentialsSource": "remote",
       "node": "22.14.0",
-      "pnpm": "9.15.9",
       "android": {
         "buildType": "app-bundle",
         "resourceClass": "medium"
@@ -154,7 +148,6 @@
       "channel": "firetv",
       "credentialsSource": "remote",
       "node": "22.14.0",
-      "pnpm": "9.15.9",
       "android": {
         "buildType": "apk",
         "resourceClass": "medium"
@@ -172,7 +165,6 @@
       "channel": "androidtv",
       "credentialsSource": "remote",
       "node": "22.14.0",
-      "pnpm": "9.15.9",
       "android": {
         "buildType": "app-bundle",
         "resourceClass": "medium"
@@ -190,7 +182,6 @@
       "channel": "appletv",
       "credentialsSource": "remote",
       "node": "22.14.0",
-      "pnpm": "9.15.9",
       "ios": {
         "resourceClass": "m1-medium",
         "buildConfiguration": "Release",
