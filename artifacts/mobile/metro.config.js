@@ -71,12 +71,20 @@ config.resolver.extraNodeModules = {
 //       before the module is parsed, and returning `{ type: 'empty' }` tells
 //       Metro to emit a no-op stub module without ever reading the file.
 config.resolver.resolveRequest = (context, moduleName, platform) => {
+  // shaka-player is not installed (removed to fix EAS build OOM). Stub it on
+  // ALL platforms — react-native-track-player's web implementation imports it
+  // lazily but the audio service is no-op'd on the web preview anyway.
+  if (
+    moduleName === "shaka-player" ||
+    moduleName.startsWith("shaka-player/")
+  ) {
+    return { type: "empty" };
+  }
+
   if (platform !== "web") {
     if (
       moduleName === "hls.js" ||
-      moduleName.startsWith("hls.js/") ||
-      moduleName === "shaka-player" ||
-      moduleName.startsWith("shaka-player/")
+      moduleName.startsWith("hls.js/")
     ) {
       // Return an empty stub. require("hls.js") will yield {} at runtime.
       // LocalVideoPlayer checks `HlsClass.isSupported` which is undefined on
