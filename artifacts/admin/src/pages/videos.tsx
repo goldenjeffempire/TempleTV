@@ -61,6 +61,7 @@ interface AdminVideo {
   sizeBytes: number | null;
   mimeType: string | null;
   originalFilename: string | null;
+  tags: string[] | null;
   /**
    * Whether the source video file is still in object storage.
    * true  → retry transcoding is possible.
@@ -147,6 +148,7 @@ interface EditForm {
   broadcastOnly: boolean;
   scheduledPublishAt: string;
   scheduledUnpublishAt: string;
+  tags: string[];
 }
 
 interface ChapterDraft {
@@ -173,12 +175,14 @@ function snapshotForCompare(f: EditForm): string {
     broadcastOnly: f.broadcastOnly,
     scheduledPublishAt: f.scheduledPublishAt,
     scheduledUnpublishAt: f.scheduledUnpublishAt,
+    tags: [...f.tags].sort(),
   });
 }
 
 type PatchDelta = Partial<EditForm> & {
   scheduledPublishAt?: string | null;
   scheduledUnpublishAt?: string | null;
+  tags?: string[] | null;
 };
 
 function buildEditDelta(original: EditForm, current: EditForm): PatchDelta {
@@ -195,6 +199,8 @@ function buildEditDelta(original: EditForm, current: EditForm): PatchDelta {
   if (current.featured !== original.featured) delta.featured = current.featured;
   if (current.metadataLocked !== original.metadataLocked) delta.metadataLocked = current.metadataLocked;
   if (current.broadcastOnly !== original.broadcastOnly) delta.broadcastOnly = current.broadcastOnly;
+  if (JSON.stringify([...current.tags].sort()) !== JSON.stringify([...original.tags].sort()))
+    delta.tags = current.tags;
   if (current.scheduledPublishAt !== original.scheduledPublishAt)
     delta.scheduledPublishAt = current.scheduledPublishAt
       ? new Date(current.scheduledPublishAt).toISOString()
@@ -447,7 +453,7 @@ export default function VideosPage() {
   const [previewVideo, setPreviewVideo] = useState<AdminVideo | null>(null);
   const [editForm, setEditForm] = useState<EditForm>({
     title: "", description: "", category: "", preacher: "", featured: false, metadataLocked: false, broadcastOnly: false,
-    scheduledPublishAt: "", scheduledUnpublishAt: "",
+    scheduledPublishAt: "", scheduledUnpublishAt: "", tags: [],
   });
   // Original form values captured when the dialog opened — used to compute
   // a delta payload and to enable/disable the Save button.
@@ -458,6 +464,14 @@ export default function VideosPage() {
   // Chapter editor state
   const [editChapters, setEditChapters] = useState<ChapterDraft[]>([]);
   const [chapterDraft, setChapterDraft] = useState<ChapterDraft>({ startSecs: "", title: "" });
+  // Tag editor state
+  const [tagInput, setTagInput] = useState("");
+  // Tag filter for the library listing
+  const [tagFilter, setTagFilter] = useState("");
+  // Bulk scheduling state
+  const [bulkScheduleOpen, setBulkScheduleOpen] = useState(false);
+  const [bulkSchedulePublishAt, setBulkSchedulePublishAt] = useState("");
+  const [bulkScheduleUnpublishAt, setBulkScheduleUnpublishAt] = useState("");
 
   // Drag-over state for the page-level drop zone
   const [pageDragOver, setPageDragOver] = useState(false);
@@ -488,12 +502,13 @@ export default function VideosPage() {
   // ── Data fetching ──────────────────────────────────────────────────────────
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["admin-videos", page, search, statusFilter, categoryFilter, sortOrder],
+    queryKey: ["admin-videos", page, search, statusFilter, categoryFilter, sortOrder, tagFilter],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE), sort: sortOrder, source: "local" });
       if (search) params.set("search", search);
       if (statusFilter !== "all") params.set("transcodingStatus", statusFilter);
       if (categoryFilter !== "all") params.set("category", categoryFilter);
+      if (tagFilter) params.set("tag", tagFilter);
       return api.get<VideoListResponse>(`/admin/videos?${params}`);
     },
     placeholderData: (prev) => prev,
@@ -1053,6 +1068,25 @@ export default function VideosPage() {
     onError: () => toast.error("Bulk delete failed"),
   });
 
+  const bulkScheduleMutation = useMutation({
+    mutationFn: async ({ ids, publishAt, unpublishAt }: { ids: string[]; publishAt: string; unpublishAt: string }) => {
+      const patch: Record<string, string | null> = {};
+      if (publishAt) patch.scheduledPublishAt = new Date(publishAt).toISOString();
+      else patch.scheduledPublishAt = null;
+      if (unpublishAt) patch.scheduledUnpublishAt = new Date(unpublishAt).toISOString();
+      else patch.scheduledUnpublishAt = null;
+      return Promise.all(ids.map(id => api.patch(`/admin/videos/${id}`, patch)));
+    },
+    onSuccess: () => {
+      toast.success(`Scheduled ${selectedIds.size} video${selectedIds.size !== 1 ? "s" : ""}`);
+      setBulkScheduleOpen(false);
+      setBulkSchedulePublishAt("");
+      setBulkScheduleUnpublishAt("");
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+    },
+    onError: () => toast.error("Bulk schedule failed"),
+  });
+
   const openEdit = (v: AdminVideo) => {
     const initial: EditForm = {
       title: v.title,
@@ -1064,12 +1098,14 @@ export default function VideosPage() {
       broadcastOnly: v.broadcastOnly,
       scheduledPublishAt: isoToDatetimeLocal(v.scheduledPublishAt),
       scheduledUnpublishAt: isoToDatetimeLocal(v.scheduledUnpublishAt),
+      tags: v.tags ?? [],
     };
     setEditForm(initial);
     setEditOriginal(initial);
     setEditError(null);
     setEditChapters((v.chapters ?? []).map(c => ({ startSecs: String(c.startSecs), title: c.title })));
     setChapterDraft({ startSecs: "", title: "" });
+    setTagInput("");
     setEditVideo(v);
   };
 
@@ -1104,10 +1140,10 @@ export default function VideosPage() {
 
   const resetFilters = () => {
     setSearch(""); setSearchInput(""); setStatusFilter("all");
-    setCategoryFilter("all"); setSortOrder("newest"); setPage(1);
+    setCategoryFilter("all"); setSortOrder("newest"); setTagFilter(""); setPage(1);
     setSelectedIds(new Set());
   };
-  const hasActiveFilters = search || statusFilter !== "all" || categoryFilter !== "all" || sortOrder !== "newest";
+  const hasActiveFilters = search || statusFilter !== "all" || categoryFilter !== "all" || sortOrder !== "newest" || tagFilter;
 
   // ── Multi-file upload helpers ──────────────────────────────────────────────
 
@@ -1354,6 +1390,18 @@ export default function VideosPage() {
           </SelectContent>
         </Select>
 
+        {/* Tag filter */}
+        {tagFilter ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-8 gap-1 text-xs px-2.5 bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20"
+            onClick={() => { setTagFilter(""); setPage(1); setSelectedIds(new Set()); }}
+          >
+            #{tagFilter} <X size={10} />
+          </Button>
+        ) : null}
+
         {/* Status */}
         <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(1); setSelectedIds(new Set()); }}>
           <SelectTrigger className="h-8 text-sm w-36">
@@ -1458,7 +1506,7 @@ export default function VideosPage() {
           <span className="text-sm font-medium">
             {selectedIds.size} video{selectedIds.size !== 1 ? "s" : ""} selected
           </span>
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="flex items-center gap-2 ml-auto flex-wrap">
             <Button
               size="sm"
               variant="outline"
@@ -1469,6 +1517,15 @@ export default function VideosPage() {
             >
               <Zap size={11} className="text-amber-500" />
               {bulkTranscodeMutation.isPending ? "Queuing…" : "Transcode selected"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setBulkScheduleOpen((o) => !o)}
+              className="h-7 px-2.5 text-xs gap-1"
+            >
+              <CalendarClock size={11} className="text-blue-500" />
+              Schedule selected
             </Button>
             <Button
               size="sm"
@@ -1487,6 +1544,41 @@ export default function VideosPage() {
               className="h-7 px-2 text-xs text-muted-foreground"
             >
               Clear
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk schedule inline panel */}
+      {bulkScheduleOpen && selectedIds.size > 0 && (
+        <div className="rounded-lg border border-blue-200 dark:border-blue-900/40 bg-blue-50/60 dark:bg-blue-950/20 px-4 py-3 space-y-3">
+          <div className="flex items-center gap-2">
+            <CalendarClock size={14} className="text-blue-500" />
+            <span className="text-sm font-medium">Schedule {selectedIds.size} video{selectedIds.size !== 1 ? "s" : ""}</span>
+            <button type="button" className="ml-auto text-muted-foreground hover:text-foreground" onClick={() => setBulkScheduleOpen(false)} aria-label="Close schedule panel"><X size={14} /></button>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">Publish at (leave blank to clear)</Label>
+              <Input type="datetime-local" className="h-8 text-xs" value={bulkSchedulePublishAt} onChange={(e) => setBulkSchedulePublishAt(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs text-muted-foreground">Unpublish at (leave blank to clear)</Label>
+              <Input type="datetime-local" className="h-8 text-xs" value={bulkScheduleUnpublishAt} onChange={(e) => setBulkScheduleUnpublishAt(e.target.value)} />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              className="h-7 text-xs gap-1"
+              disabled={bulkScheduleMutation.isPending || (!bulkSchedulePublishAt && !bulkScheduleUnpublishAt)}
+              onClick={() => bulkScheduleMutation.mutate({ ids: [...selectedIds], publishAt: bulkSchedulePublishAt, unpublishAt: bulkScheduleUnpublishAt })}
+            >
+              {bulkScheduleMutation.isPending ? <Loader2 size={11} className="animate-spin" /> : <CalendarClock size={11} />}
+              Apply schedule
+            </Button>
+            <Button size="sm" variant="ghost" className="h-7 text-xs text-muted-foreground" onClick={() => { setBulkSchedulePublishAt(""); setBulkScheduleUnpublishAt(""); bulkScheduleMutation.mutate({ ids: [...selectedIds], publishAt: "", unpublishAt: "" }); }}>
+              Clear all schedules
             </Button>
           </div>
         </div>
@@ -1582,6 +1674,14 @@ export default function VideosPage() {
                           <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 border-orange-400 text-orange-500">Broadcast only</Badge>
                         </span>
                       )}
+                      {(v.scheduledPublishAt || v.scheduledUnpublishAt) && (
+                        <span title={v.scheduledPublishAt ? `Publishes ${new Date(v.scheduledPublishAt).toLocaleString()}` : `Unpublishes ${new Date(v.scheduledUnpublishAt!).toLocaleString()}`}>
+                          <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 border-blue-400 text-blue-500 gap-0.5">
+                            <CalendarClock size={8} />
+                            {v.scheduledPublishAt ? "Sched. publish" : "Sched. unpublish"}
+                          </Badge>
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-3 mt-0.5 flex-wrap">
                       <span className="text-[10px] text-muted-foreground/60 flex items-center gap-0.5"><HardDrive size={9} />Uploaded</span>
@@ -1589,6 +1689,11 @@ export default function VideosPage() {
                       {v.category && <span className="text-xs text-muted-foreground capitalize">{v.category}</span>}
                       {v.duration && <span className="text-xs text-muted-foreground">{formatDuration(v.duration)}</span>}
                       {v.sizeBytes != null && <span className="text-xs text-muted-foreground">{formatBytes(v.sizeBytes)}</span>}
+                      {v.tags && v.tags.length > 0 && v.tags.slice(0, 3).map(tag => (
+                        <button key={tag} type="button" onClick={(e) => { e.stopPropagation(); setTagFilter(tag); setPage(1); setSelectedIds(new Set()); }} className="text-[10px] text-primary/70 hover:text-primary border border-primary/20 rounded px-1 py-0 leading-4 transition-colors" title={`Filter by tag: ${tag}`}>
+                          #{tag}
+                        </button>
+                      ))}
                       {v.viewCount > 0 && (
                         <span className="text-xs text-muted-foreground flex items-center gap-0.5">
                           <Eye size={10} /> {v.viewCount.toLocaleString()}
@@ -2230,6 +2335,57 @@ export default function VideosPage() {
                       />
                     </div>
                   )}
+
+                  {/* Tags */}
+                  <div className="rounded-lg border p-3 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <BookOpen size={14} className="text-muted-foreground" />
+                      <span className="text-sm font-medium">Tags</span>
+                      <span className="text-[10px] text-muted-foreground ml-auto">Filterable labels</span>
+                    </div>
+                    {editForm.tags.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {editForm.tags.map(tag => (
+                          <span key={tag} className="inline-flex items-center gap-0.5 text-xs bg-primary/10 text-primary border border-primary/20 rounded px-1.5 py-0.5">
+                            #{tag}
+                            <button type="button" aria-label={`Remove tag ${tag}`} onClick={() => setEditForm(f => ({ ...f, tags: f.tags.filter(t => t !== tag) }))} className="ml-0.5 hover:text-destructive">
+                              <X size={10} />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2">
+                      <Input
+                        placeholder="Add tag (press Enter)"
+                        value={tagInput}
+                        onChange={(e) => setTagInput(e.target.value.toLowerCase().replace(/[^a-z0-9-_]/g, ""))}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            const t = tagInput.trim();
+                            if (t && !editForm.tags.includes(t) && editForm.tags.length < 20) {
+                              setEditForm(f => ({ ...f, tags: [...f.tags, t] }));
+                              setTagInput("");
+                            }
+                          }
+                        }}
+                        className="h-7 text-xs flex-1"
+                        aria-label="Add tag"
+                      />
+                      <Button type="button" size="icon" variant="outline" className="h-7 w-7 flex-shrink-0" aria-label="Add tag"
+                        onClick={() => {
+                          const t = tagInput.trim();
+                          if (t && !editForm.tags.includes(t) && editForm.tags.length < 20) {
+                            setEditForm(f => ({ ...f, tags: [...f.tags, t] }));
+                            setTagInput("");
+                          }
+                        }}
+                      >
+                        <Plus size={11} />
+                      </Button>
+                    </div>
+                  </div>
 
                   {/* Content Scheduling */}
                   <div className="rounded-lg border p-3 space-y-3">

@@ -101,6 +101,8 @@ const VideoRowSchema = z.object({
   scheduledUnpublishAt: z.string().nullable(),
   /** Ordered chapter markers. Each entry: { startSecs: number, title: string }. null = none. */
   chapters: z.array(z.object({ startSecs: z.number().nonnegative(), title: z.string().max(200) })).nullable(),
+  /** Free-form admin-assigned tags. null = no tags. */
+  tags: z.array(z.string()).nullable(),
 });
 
 const ListQuerySchema = z.object({
@@ -124,6 +126,8 @@ const ListQuerySchema = z.object({
   // COUNT query. Ignored for other sort modes (published, views, title) which
   // still use classic offset pagination.
   cursor: z.string().max(256).optional(),
+  // Filter to videos that contain this tag (exact match, case-sensitive).
+  tag: z.string().trim().max(100).optional(),
 });
 
 const ListResponseSchema = z.object({
@@ -150,6 +154,8 @@ const PatchBodySchema = z.object({
   scheduledPublishAt: z.union([z.string().datetime(), z.null()]).optional(),
   /** ISO-8601 string or null to clear. */
   scheduledUnpublishAt: z.union([z.string().datetime(), z.null()]).optional(),
+  /** Replace the video's tag list. Empty array clears all tags. Null = no change. */
+  tags: z.array(z.string().max(100)).max(20).nullable().optional(),
 }).strict();
 
 // ── Keyset cursor helpers ──────────────────────────────────────────────────
@@ -239,6 +245,12 @@ function toDto(row: typeof videos.$inferSelect, progress: number | null = null):
           typeof (c as Record<string, unknown>).startSecs === "number" &&
           typeof (c as Record<string, unknown>).title === "string",
       );
+    })(),
+    tags: (() => {
+      const raw = (row as { tags?: unknown }).tags;
+      if (!Array.isArray(raw)) return null;
+      const filtered = raw.filter((t): t is string => typeof t === "string");
+      return filtered.length > 0 ? filtered : null;
     })(),
   };
 }
@@ -347,6 +359,11 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         };
         const vals = statusMap[q.transcodingStatus] ?? [q.transcodingStatus];
         filters.push(inArray(videos.transcodingStatus, vals));
+      }
+      if (q.tag) {
+        // ANY() operator: check if the tag is present in the tags array column.
+        // NULL tags → ANY(NULL) = NULL (falsy) so untagged rows are excluded naturally.
+        filters.push(sql`${q.tag} = ANY(${videos.tags})`);
       }
 
       // Cursor keyset filter (imported_at + id tie-break), applied when an
@@ -567,6 +584,9 @@ export async function adminVideosRoutes(app: FastifyInstance) {
           : {}),
         ...(body.scheduledUnpublishAt !== undefined
           ? { scheduledUnpublishAt: body.scheduledUnpublishAt ? new Date(body.scheduledUnpublishAt) : null }
+          : {}),
+        ...(body.tags !== undefined && body.tags !== null
+          ? { tags: body.tags }
           : {}),
       };
 

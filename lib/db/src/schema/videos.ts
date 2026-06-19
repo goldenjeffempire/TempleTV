@@ -139,6 +139,11 @@ export const videosTable = pgTable("managed_videos", {
   // by startSecs. Used by the player to render a chapter timeline.
   // null = no chapters defined.
   chapters: jsonb("chapters"),
+  // ── Video tags ────────────────────────────────────────────────────────────
+  // Free-form string labels attached by admins (e.g. "easter", "youth", "series-3").
+  // Used for filtering in the admin library. Stored as a Postgres text[] array.
+  // null = no tags.
+  tags: text("tags").array(),
 }, (table) => [
   index("idx_managed_videos_imported_at").on(table.importedAt),
   index("idx_managed_videos_category").on(table.category),
