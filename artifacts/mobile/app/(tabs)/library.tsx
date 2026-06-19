@@ -29,6 +29,10 @@ import { ScreenHeader } from "@/components/ScreenHeader";
 import { usePaginatedVideos } from "@/hooks/useVideos";
 import { SermonCard } from "@/components/SermonCard";
 import { VideoCard } from "@/components/VideoCard";
+import {
+  SkeletonHorizontalCard,
+  SkeletonSeriesCard,
+} from "@/components/SkeletonCard";
 import { getApiBase } from "@/lib/apiBase";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
@@ -780,11 +784,10 @@ export default function LibraryScreen() {
       {mode === "videos" && (
         <>
           {loading && sermons.length === 0 ? (
-            <View style={styles.loadingWrap}>
-              <ActivityIndicator size="large" color={c.primary} />
-              <Text style={[styles.loadingText, { color: c.mutedForeground }]}>
-                Loading catalog…
-              </Text>
+            <View style={styles.skeletonList}>
+              {Array.from({ length: 5 }).map((_, i) => (
+                <SkeletonHorizontalCard key={i} />
+              ))}
             </View>
           ) : (
             <FlatList
@@ -842,11 +845,10 @@ export default function LibraryScreen() {
         >
           {ListHeader}
           {seriesLoading && series.length === 0 ? (
-            <View style={styles.loadingWrap}>
-              <ActivityIndicator size="large" color={c.primary} />
-              <Text style={[styles.loadingText, { color: c.mutedForeground }]}>
-                Loading series…
-              </Text>
+            <View style={styles.skeletonList}>
+              {Array.from({ length: 3 }).map((_, i) => (
+                <SkeletonSeriesCard key={i} />
+              ))}
             </View>
           ) : seriesError ? (
             <View style={[styles.errorBar, { backgroundColor: "#ef4444" + "22", marginHorizontal: 16 }]}>
@@ -1000,6 +1002,9 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#991b1b",
     textDecorationLine: "underline",
+  },
+  skeletonList: {
+    paddingTop: 8,
   },
   list: { gap: 0 },
   listTablet: {

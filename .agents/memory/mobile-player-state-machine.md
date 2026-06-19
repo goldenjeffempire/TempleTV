@@ -33,6 +33,37 @@ Full-surface overlay with exponential-backoff auto-retry countdown. NOT for use 
 Reads `Dimensions` and returns `isTablet` (≥768), `isLargePhone` (≥480), `columnCount`, `getCardWidth(cols)`.
 Source of truth: `BREAKPOINT` map in `constants/design.ts`.
 
+## Skeleton loading wiring
+
+All skeleton components live in `components/SkeletonCard.tsx`. Wire them in as follows:
+- **Library videos loading**: `Array.from({length:5}).map((_,i) => <SkeletonHorizontalCard key={i} />)` in a `skeletonList` View
+- **Library series loading**: `Array.from({length:3}).map((_,i) => <SkeletonSeriesCard key={i} />)` in same `skeletonList` View  
+- **Channels loading**: `Array.from({length:3}).map((_,i) => <SkeletonChannelCard key={i} />)` in `channelList` View
+- Home screen already has `SkeletonHero` + `SkeletonVerticalCard` rows (complete)
+
+Never replace "load more" footer spinners with skeletons — `ActivityIndicator` is correct there.
+
+## Hero streaming resilience
+
+Three-state CTA priority chain in `HeroSection`:
+1. `isFatal === true` → red "Reconnect" `<Pressable onPress={forceRebind}>` (highest priority)
+2. `isWatchLiveCTAVisible` (idle/offline/error, !fatal) → brand-color "Watch Live" / "Watch Now"
+3. `!isWatchLiveCTAVisible && !isReconnecting` → ghost "Open Player" secondary button
+4. `isReconnecting` → no button (StreamStatusBadge provides amber spinner feedback)
+
+Destructure `forceRebind` from `useV2BroadcastNative()` alongside `snapshot`.
+Destructure `isFatal` from `useMediaPlayerState()`.
+
+## Channels category grid — tablet responsiveness
+
+`CategoryTile` calls `useBreakpoint()` directly and applies `styles.categoryTileTablet` (`width: "31%"`) on tablets,
+giving a 3-column grid versus the phone default `width: "47.5%"` (2-column).
+
+## LINE_HEIGHT system — where applied
+
+- `SectionHeader.tsx`: `title` = `LINE_HEIGHT.xl` (26), `subtitle` = `LINE_HEIGHT.sm` (17)
+- `channels.tsx categoryTileLabel`: `LINE_HEIGHT.lg` (22); `categoryTileDesc`: `LINE_HEIGHT.xs` (15)
+
 ## Library tablet grid pattern
 
 ```tsx

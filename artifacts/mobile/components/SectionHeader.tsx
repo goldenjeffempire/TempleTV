@@ -1,6 +1,7 @@
 import React from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { useColors } from "@/hooks/useColors";
+import { LINE_HEIGHT } from "@/constants/design";
 
 interface SectionHeaderProps {
   title: string;
@@ -53,11 +54,13 @@ const styles = StyleSheet.create({
   },
   title: {
     fontSize: 20,
+    lineHeight: LINE_HEIGHT.xl,
     fontFamily: "Inter_700Bold",
     letterSpacing: -0.2,
   },
   subtitle: {
     fontSize: 12,
+    lineHeight: LINE_HEIGHT.sm,
     fontFamily: "Inter_400Regular",
     marginTop: 2,
     letterSpacing: 0.2,

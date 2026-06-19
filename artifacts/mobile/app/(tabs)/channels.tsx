@@ -22,6 +22,9 @@ import { router, Stack, useFocusEffect } from "expo-router";
 import { useColors } from "@/hooks/useColors";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import { StreamStatusBadge } from "@/components/StreamStatusBadge";
+import { SkeletonChannelCard } from "@/components/SkeletonCard";
+import { useBreakpoint } from "@/hooks/useBreakpoint";
+import { LINE_HEIGHT } from "@/constants/design";
 import { getApiBase } from "@/lib/apiBase";
 import { fetchChannels, type ApiChannel } from "@/services/api";
 import type { SermonCategory } from "@/types";
@@ -379,6 +382,7 @@ function ChannelCard({
 
 function CategoryTile({ cat }: { cat: CategoryConfig }) {
   const colors = useColors();
+  const { isTablet } = useBreakpoint();
 
   const handlePress = useCallback(() => {
     router.navigate({
@@ -392,6 +396,7 @@ function CategoryTile({ cat }: { cat: CategoryConfig }) {
       onPress={handlePress}
       style={({ pressed }) => [
         styles.categoryTile,
+        isTablet && styles.categoryTileTablet,
         { backgroundColor: colors.card, borderColor: colors.border, opacity: pressed ? 0.75 : 1 },
       ]}
       accessibilityRole="button"
@@ -499,11 +504,13 @@ export default function ChannelsTab() {
 
   if (loading && channels.length === 0) {
     channelsSectionContent = (
-      <View style={[styles.inlineLoader, { borderColor: colors.border, backgroundColor: colors.card }]}>
-        <ActivityIndicator size="small" color={colors.primary} />
-        <Text style={[styles.inlineLoaderText, { color: colors.mutedForeground }]}>
-          Loading channels…
-        </Text>
+      <View style={styles.channelList}>
+        {Array.from({ length: 3 }).map((_, i) => (
+          <React.Fragment key={i}>
+            {i > 0 && <View style={{ height: 10 }} />}
+            <SkeletonChannelCard />
+          </React.Fragment>
+        ))}
       </View>
     );
   } else if (error) {
@@ -837,6 +844,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginBottom: 2,
   },
-  categoryTileLabel: { fontSize: 14, fontWeight: "700", letterSpacing: -0.2 },
-  categoryTileDesc: { fontSize: 11, lineHeight: 15 },
+  categoryTileTablet: {
+    width: "31%",
+  },
+  categoryTileLabel: { fontSize: 14, fontWeight: "700", letterSpacing: -0.2, lineHeight: LINE_HEIGHT.lg },
+  categoryTileDesc: { fontSize: 11, lineHeight: LINE_HEIGHT.xs },
 });

@@ -138,12 +138,13 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
     mediaState,
     isWatchLiveCTAVisible,
     isReconnecting,
+    isFatal,
   } = useMediaPlayerState();
 
   // V2 FSM singleton — attaches a React listener to the already-running session.
   // No extra WS connection. Replaces v1-WS (useBroadcastSync) which caused hero
   // flicker on every reconnect even when V2 was playing normally.
-  const { snapshot: v2Snapshot } = useV2BroadcastNative({
+  const { snapshot: v2Snapshot, forceRebind } = useV2BroadcastNative({
     baseUrl: `${apiBase}/api/broadcast-v2`,
   });
   const v2Server = v2Snapshot.lastServerSnapshot;
@@ -307,11 +308,26 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
             )}
           </View>
 
-          {/* ── CTA button ──
-              "Watch Live" only surfaces in idle / offline / error states.
-              While the stream is loading or reconnecting the hero itself is
-              still tappable — the CTA transitions to a quieter state indicator. */}
-          {!watchNowDisabled && isWatchLiveCTAVisible && (
+          {/* ── CTA / Reconnect button ──
+              Priority order:
+              1. isFatal → "Reconnect" button calls forceRebind() to fully reload transport.
+              2. isWatchLiveCTAVisible (idle / offline / error) → "Watch Live" / "Watch Now".
+              3. Active broadcast, not reconnecting → quiet "Open Player" secondary button.
+              While reconnecting, no button is shown — the StreamStatusBadge provides feedback. */}
+          {isFatal ? (
+            <Pressable
+              onPress={forceRebind}
+              style={({ pressed }) => [
+                styles.heroBtn,
+                { backgroundColor: "#DC2626", opacity: pressed ? 0.85 : 1 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Reconnect to live broadcast"
+            >
+              <Feather name="refresh-cw" size={13} color="#fff" />
+              <Text style={styles.heroBtnText}>Reconnect</Text>
+            </Pressable>
+          ) : !watchNowDisabled && isWatchLiveCTAVisible ? (
             <Pressable
               onPress={handleTuneIn}
               style={({ pressed }) => [
@@ -326,10 +342,7 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
                 {hasActiveBroadcast ? "Watch Live" : "Watch Now"}
               </Text>
             </Pressable>
-          )}
-
-          {/* ── "Now Watching" indicator — replaces CTA while broadcast is active ── */}
-          {!watchNowDisabled && !isWatchLiveCTAVisible && !isReconnecting && (
+          ) : !watchNowDisabled && !isWatchLiveCTAVisible && !isReconnecting ? (
             <Pressable
               onPress={handleTuneIn}
               style={({ pressed }) => [
@@ -342,7 +355,7 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
               <Feather name="maximize-2" size={13} color="#fff" />
               <Text style={styles.heroBtnSecondaryText}>Open Player</Text>
             </Pressable>
-          )}
+          ) : null}
         </View>
       </LinearGradient>
 
