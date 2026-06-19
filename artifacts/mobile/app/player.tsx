@@ -31,7 +31,6 @@ import React, {
   useSyncExternalStore,
 } from "react";
 import {
-  ActivityIndicator,
   Alert,
   Animated,
   AppState,
@@ -61,6 +60,7 @@ import { useColors } from "@/hooks/useColors";
 import { YoutubePlayer } from "@/components/YoutubePlayer";
 import { LocalVideoPlayer } from "@/components/LocalVideoPlayer";
 import { LiveBadge } from "@/components/LiveBadge";
+import { StreamStatusBadge } from "@/components/StreamStatusBadge";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import { useFavorites } from "@/hooks/useFavorites";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
@@ -1041,16 +1041,11 @@ export default function PlayerScreen() {
               {/* Reconnecting banner — shown while the V2 transport is
                   re-establishing its WS/SSE connection after a drop */}
               {isBroadcastV2 && !v2Connected && (
-                <View
-                  style={[
-                    styles.reconnectBanner,
-                    { backgroundColor: c.card, borderColor: c.border },
-                  ]}
-                >
-                  <ActivityIndicator size="small" color={c.primary} />
-                  <Text style={[styles.reconnectText, { color: c.mutedForeground }]}>
-                    Reconnecting to broadcast…
-                  </Text>
+                <View style={styles.reconnectBannerWrap}>
+                  <StreamStatusBadge
+                    state={isOnline ? "reconnecting" : "offline"}
+                    variant="banner"
+                  />
                 </View>
               )}
 
@@ -1667,13 +1662,7 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth, borderRadius: 20,
     paddingHorizontal: 8, paddingVertical: 3,
   },
-  // Reconnecting banner
-  reconnectBanner: {
-    flexDirection: "row", alignItems: "center", gap: 8,
-    borderRadius: 8, borderWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 10, paddingVertical: 7,
-  },
-  reconnectText: { fontSize: 12, fontWeight: "500" },
+  reconnectBannerWrap: { marginBottom: 6 },
   // Off-air card
   offAirCard: {
     flexDirection: "row", alignItems: "center", gap: 12,

@@ -34,6 +34,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useTheme, type ThemeChoice } from "@/context/ThemeContext";
 import Constants from "expo-constants";
 import { APP_CONFIG } from "@/constants/config";
+import { LINE_HEIGHT } from "@/constants/design";
 import {
   requestNotificationPermissions,
   getNotificationPermissionStatus,
@@ -650,6 +651,7 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   sectionTitle: {
     fontSize: 11,
+    lineHeight: LINE_HEIGHT.xxs,
     fontWeight: "700",
     letterSpacing: 0.8,
     paddingHorizontal: 20,
@@ -676,9 +678,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  rowLabel: { fontSize: 15, fontWeight: "500" },
-  rowDesc: { fontSize: 12, marginTop: 1 },
-  rowValue: { fontSize: 12, marginTop: 1 },
+  rowLabel: { fontSize: 15, lineHeight: LINE_HEIGHT.md, fontWeight: "500" },
+  rowDesc: { fontSize: 12, lineHeight: LINE_HEIGHT.xs, marginTop: 1 },
+  rowValue: { fontSize: 12, lineHeight: LINE_HEIGHT.xs, marginTop: 1 },
   profileRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -694,9 +696,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  avatarText: { fontSize: 18, fontWeight: "700", color: "#fff" },
-  profileName: { fontSize: 16, fontWeight: "600" },
-  profileEmail: { fontSize: 13 },
+  avatarText: { fontSize: 18, lineHeight: LINE_HEIGHT.xl, fontWeight: "700", color: "#fff" },
+  profileName: { fontSize: 16, lineHeight: LINE_HEIGHT.lg, fontWeight: "600" },
+  profileEmail: { fontSize: 13, lineHeight: LINE_HEIGHT.sm },
   switch: {
     width: 44,
     height: 24,
@@ -737,6 +739,6 @@ const styles = StyleSheet.create({
     paddingVertical: 32,
     gap: 6,
   },
-  appVersion: { fontSize: 13 },
-  appTagline: { fontSize: 12 },
+  appVersion: { fontSize: 13, lineHeight: LINE_HEIGHT.sm },
+  appTagline: { fontSize: 12, lineHeight: LINE_HEIGHT.xs },
 });

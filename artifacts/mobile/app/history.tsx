@@ -19,6 +19,7 @@ import { router, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { SermonCard } from "@/components/SermonCard";
+import { LINE_HEIGHT } from "@/constants/design";
 import { AppHeader } from "@/components/AppHeader";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
 import type { HistoryEntry } from "@/hooks/useWatchHistory";
@@ -181,8 +182,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginBottom: 4,
   },
-  emptyTitle: { fontSize: 20, fontWeight: "700", textAlign: "center" },
-  emptyDesc: { fontSize: 14, textAlign: "center", lineHeight: 20 },
+  emptyTitle: { fontSize: 20, lineHeight: LINE_HEIGHT.xxl, fontWeight: "700", textAlign: "center" },
+  emptyDesc: { fontSize: 14, lineHeight: LINE_HEIGHT.base, textAlign: "center" },
   browseBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -192,10 +193,11 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginTop: 8,
   },
-  browseBtnText: { color: "#fff", fontSize: 15, fontWeight: "600" },
+  browseBtnText: { color: "#fff", fontSize: 15, lineHeight: LINE_HEIGHT.md, fontWeight: "600" },
   list: { paddingTop: 4 },
   historyCount: {
     fontSize: 13,
+    lineHeight: LINE_HEIGHT.sm,
     paddingHorizontal: 20,
     paddingVertical: 10,
   },

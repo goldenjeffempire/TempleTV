@@ -38,6 +38,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useColors } from "@/hooks/useColors";
 import { SermonCard } from "@/components/SermonCard";
+import { SkeletonHorizontalCard } from "@/components/SkeletonCard";
 import { usePaginatedVideos } from "@/hooks/useVideos";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import type { Sermon, SermonCategory, SortMode } from "@/types";
@@ -305,9 +306,12 @@ export default function SearchScreen() {
       {isSearching ? (
         <>
           {loading && sermons.length === 0 ? (
-            <View style={styles.centered}>
-              <ActivityIndicator size="large" color={c.primary} />
-              <Text style={[styles.loadingText, { color: c.mutedForeground }]}>Searching…</Text>
+            <View style={{ paddingTop: 8 }}>
+              <SkeletonHorizontalCard />
+              <SkeletonHorizontalCard />
+              <SkeletonHorizontalCard />
+              <SkeletonHorizontalCard />
+              <SkeletonHorizontalCard />
             </View>
           ) : sermons.length === 0 ? (
             <View style={styles.centered}>

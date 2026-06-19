@@ -7,7 +7,6 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   FlatList,
   Platform,
   Pressable,
@@ -22,6 +21,7 @@ import { router, Stack, useLocalSearchParams } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { SermonCard } from "@/components/SermonCard";
+import { SkeletonHorizontalCard } from "@/components/SkeletonCard";
 import { getApiBase } from "@/lib/apiBase";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
 import type { Sermon } from "@/types";
@@ -180,10 +180,16 @@ export default function SeriesDetailScreen() {
 
   if (loading) {
     return (
-      <View style={[styles.container, styles.center, { backgroundColor: c.background }]}>
-        <AppHeader title="Series" onBack={goBack} />
-        <ActivityIndicator size="large" color={c.primary} style={{ marginTop: 40 }} />
-        <Text style={[styles.loadingText, { color: c.mutedForeground }]}>Loading series…</Text>
+      <View style={[styles.container, { backgroundColor: c.background }]}>
+        <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
+        <View style={[styles.skeletonHero, { backgroundColor: c.muted }]} />
+        <View style={styles.skeletonList}>
+          <SkeletonHorizontalCard />
+          <SkeletonHorizontalCard />
+          <SkeletonHorizontalCard />
+          <SkeletonHorizontalCard />
+          <SkeletonHorizontalCard />
+        </View>
       </View>
     );
   }
@@ -396,6 +402,8 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   emptyText: { fontSize: 15 },
+  skeletonHero: { height: 280 },
+  skeletonList: { paddingTop: 12 },
   loadingText: { fontSize: 14, marginTop: 12 },
   errorTitle: { fontSize: 18, fontWeight: "600", marginTop: 12 },
   errorDesc: { fontSize: 13, marginTop: 4, textAlign: "center", paddingHorizontal: 32 },
