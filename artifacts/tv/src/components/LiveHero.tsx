@@ -133,8 +133,8 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
       className={`relative overflow-hidden ${focused ? "tv-hero-focused" : ""}`}
       style={{
         width: "100%",
-        height: "min(94vh, 1080px)",
-        minHeight: "max(72dvh, 480px)",
+        height: "var(--hero-h)",
+        minHeight: "var(--hero-min-h)",
         background: "#060606",
         cursor: "pointer",
         outline: "none",
@@ -378,10 +378,10 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
           right: 0,
           bottom: 0,
           padding:
-            "0 clamp(20px, 4.5vw, 72px) calc(env(safe-area-inset-bottom, 0px) + clamp(36px, 6.5vw, 96px))",
+            "0 clamp(20px, 4.5vw, 72px) calc(env(safe-area-inset-bottom, 0px) + clamp(18px, 3.5vw, 72px))",
           display: "flex",
           flexDirection: "column",
-          gap: "clamp(12px, 1.8vw, 22px)",
+          gap: "clamp(8px, 1.2vw, 18px)",
           maxWidth: 1100,
           opacity: mounted ? 1 : 0,
           transform: mounted ? "translateY(0)" : "translateY(28px)",
@@ -422,7 +422,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
               className="flex items-center"
               style={{
                 gap: "clamp(8px, 1.4vw, 12px)",
-                marginTop: 8,
+                marginTop: 4,
                 flexWrap: "wrap",
               }}
             >
@@ -456,215 +456,158 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
                     letterSpacing: "-0.01em",
                   }}
                 >
-                  Watch Now
-                </span>
-              </div>
-            </div>
-          </>
-        ) : !isLive ? (
-          <>
-            {/* ── State 2: 24/7 Broadcast On Air ──
-                Shown whenever there is no YouTube LIVE NOW stream active.
-                The broadcast engine may be playing queue items, running a
-                YouTube shuffle-fallback override, or showing its own "off
-                air" overlay — LiveBroadcastV2 handles all those internally.
-                We use `!isLive` (not `hasBroadcast`) so this panel always
-                appears when the engine is active, even when `broadcastItem`
-                is null (override/shuffle-fallback mode with empty local queue). */}
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div
-                className="flex items-center gap-2 rounded-full"
-                style={{
-                  background: "rgba(106,13,173,0.85)",
-                  width: "fit-content",
-                  padding: "6px 16px",
-                  boxShadow: "0 6px 24px rgba(106,13,173,0.45)",
-                  border: "1px solid rgba(168,85,247,0.4)",
-                  backdropFilter: "blur(6px)",
-                }}
-              >
-                <div
-                  className="live-pulse rounded-full"
-                  style={{ width: 8, height: 8, background: "#a855f7" }}
-                />
-                <span
-                  style={{
-                    fontSize: 12,
-                    fontWeight: 800,
-                    color: "#fff",
-                    letterSpacing: "0.14em",
-                  }}
-                >
-                  ON AIR · TEMPLE TV
-                </span>
-              </div>
-              <ViewerCountBadge count={viewerCount ?? null} />
-            </div>
-
-            <TempleTvLogo size={80} variant="icon" decorative />
-            <p
-              style={{
-                fontSize: "clamp(16px, 1.4vw, 22px)",
-                color: "rgba(255,255,255,0.82)",
-                maxWidth: 720,
-                lineHeight: 1.5,
-                textShadow: "0 2px 16px rgba(0,0,0,0.55)",
-                margin: 0,
-              }}
-            >
-              Spirit-filled teachings and worship — broadcasting live around the clock.
-            </p>
-
-            {/* Round 6: removed BroadcastProgressBar — TV-channel viewers do
-                not see playback position or remaining time. The "ON AIR"
-                badge above is the only liveness indicator. */}
-
-            <div
-              className="flex items-center"
-              style={{ gap: "clamp(8px, 1.4vw, 12px)", marginTop: 4, flexWrap: "wrap" }}
-            >
-              <div
-                className="flex items-center rounded-xl"
-                style={{
-                  background: focused ? "hsl(270 75% 50%)" : "rgba(106,13,173,0.9)",
-                  color: "#fff",
-                  padding: "clamp(12px, 1.8vw, 16px) clamp(20px, 3.2vw, 32px)",
-                  gap: "clamp(8px, 1.2vw, 12px)",
-                  width: "fit-content",
-                  boxShadow: focused
-                    ? "0 12px 36px rgba(106,13,173,0.55)"
-                    : "0 6px 20px rgba(0,0,0,0.4)",
-                  transform: focused ? "scale(1.04)" : "scale(1)",
-                  transition: "all 0.18s ease",
-                  minHeight: 44,
-                  border: "1px solid rgba(168,85,247,0.35)",
-                }}
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                  style={{ width: "clamp(18px, 2vw, 22px)", height: "auto" }}
-                >
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-                <span
-                  style={{
-                    fontSize: "clamp(15px, 1.8vw, 19px)",
-                    fontWeight: 800,
-                    letterSpacing: "-0.01em",
-                  }}
-                >
-                  Watch Now
+                  Watch Live
                 </span>
               </div>
             </div>
           </>
         ) : (
           <>
-            {/* ── State 3: Off-air ── */}
-            <div
-              className="flex items-center gap-2 rounded-full"
-              style={{
-                background: showScheduledLive
-                  ? "rgba(255,138,0,0.18)"
-                  : "rgba(255,255,255,0.14)",
-                width: "fit-content",
-                padding: "6px 16px",
-                backdropFilter: "blur(6px)",
-                border: showScheduledLive
-                  ? "1px solid rgba(255,138,0,0.45)"
-                  : "1px solid rgba(255,255,255,0.12)",
-              }}
-            >
+            {/* ── State 2 / 3: Broadcast active or off-air ──────────────────
+                The badge adapts to three sub-states:
+                  • broadcastCurrent?.item → "ON AIR · TEMPLE TV" (purple)
+                  • showScheduledLive      → "STARTING SOON" countdown (amber)
+                  • neither               → "OFF AIR · 24/7 ON DEMAND" (muted)
+                LiveBroadcastV2 (background layer) owns its own off-air overlay;
+                this metadata panel drives only the informational copy.
+                Previous code had `isLive ? A : !isLive ? B : C` where the
+                third branch (C) was unreachable — fixed by collapsing to a
+                single !isLive branch with adaptive content. */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <div
-                className="rounded-full"
+                className="flex items-center gap-2 rounded-full"
                 style={{
-                  width: 9,
-                  height: 9,
-                  background: showScheduledLive ? "#FF8A00" : "rgba(255,255,255,0.5)",
-                  boxShadow: showScheduledLive ? "0 0 10px rgba(255,138,0,0.7)" : undefined,
-                  animation: countdown?.imminent
-                    ? "tv-imminent-pulse 900ms ease-in-out infinite"
-                    : undefined,
+                  background: showScheduledLive
+                    ? "rgba(255,138,0,0.18)"
+                    : broadcastCurrent?.item
+                    ? "rgba(106,13,173,0.85)"
+                    : "rgba(255,255,255,0.14)",
+                  width: "fit-content",
+                  padding: "6px 16px",
+                  backdropFilter: "blur(6px)",
+                  border: showScheduledLive
+                    ? "1px solid rgba(255,138,0,0.45)"
+                    : broadcastCurrent?.item
+                    ? "1px solid rgba(168,85,247,0.4)"
+                    : "1px solid rgba(255,255,255,0.12)",
+                  boxShadow:
+                    broadcastCurrent?.item && !showScheduledLive
+                      ? "0 6px 24px rgba(106,13,173,0.45)"
+                      : undefined,
                 }}
-              />
-              <span
+              >
+                <div
+                  className={
+                    broadcastCurrent?.item || showScheduledLive
+                      ? "live-pulse rounded-full"
+                      : "rounded-full"
+                  }
+                  style={{
+                    width: 8,
+                    height: 8,
+                    background: showScheduledLive
+                      ? "#FF8A00"
+                      : broadcastCurrent?.item
+                      ? "#a855f7"
+                      : "rgba(255,255,255,0.5)",
+                    boxShadow: showScheduledLive
+                      ? "0 0 10px rgba(255,138,0,0.7)"
+                      : undefined,
+                    animation: countdown?.imminent
+                      ? "tv-imminent-pulse 900ms ease-in-out infinite"
+                      : undefined,
+                  }}
+                />
+                <span
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 800,
+                    color: showScheduledLive ? "#FFD79A" : "#fff",
+                    letterSpacing: "0.14em",
+                  }}
+                >
+                  {showScheduledLive
+                    ? countdown
+                      ? countdown.label.toUpperCase()
+                      : "STARTING SOON"
+                    : broadcastCurrent?.item
+                    ? "ON AIR · TEMPLE TV"
+                    : "OFF AIR · 24/7 ON DEMAND"}
+                </span>
+              </div>
+              {(broadcastCurrent?.item || showScheduledLive) && (
+                <ViewerCountBadge count={viewerCount ?? null} />
+              )}
+            </div>
+
+            {/* Logo + description — hidden on small phones (≤480px) via
+                .tt-hero-expand to avoid obscuring the 16:9 video area */}
+            <div className="tt-hero-expand">
+              <TempleTvLogo size={60} variant="icon" decorative />
+              <p
                 style={{
-                  fontSize: 12,
-                  fontWeight: 700,
-                  color: showScheduledLive ? "#FFD79A" : "rgba(255,255,255,0.88)",
-                  letterSpacing: "0.14em",
+                  fontSize: "clamp(14px, 1.3vw, 20px)",
+                  color: "rgba(255,255,255,0.82)",
+                  maxWidth: 680,
+                  lineHeight: 1.5,
+                  textShadow: "0 2px 16px rgba(0,0,0,0.55)",
+                  margin: 0,
                 }}
               >
                 {showScheduledLive
-                  ? countdown
-                    ? countdown.label.toUpperCase()
-                    : "STARTING SOON"
-                  : "OFF AIR · 24/7 ON DEMAND"}
-              </span>
+                  ? "Scheduled live service — tap to join when ready."
+                  : "Spirit-filled teachings and worship — broadcasting live around the clock."}
+              </p>
             </div>
-            <h1
-              style={{
-                fontSize: "clamp(40px, 5.2vw, 72px)",
-                fontWeight: 900,
-                color: "#fff",
-                lineHeight: 1.05,
-                letterSpacing: "-0.02em",
-                textShadow: "0 4px 32px rgba(0,0,0,0.6)",
-                margin: 0,
-              }}
-            >
-              {showScheduledLive ? "Live Service Coming Up" : <TempleTvLogo size={56} variant="icon" decorative />}
-            </h1>
-            <p
-              style={{
-                fontSize: "clamp(16px, 1.4vw, 22px)",
-                color: "rgba(255,255,255,0.82)",
-                maxWidth: 720,
-                lineHeight: 1.5,
-                textShadow: "0 2px 16px rgba(0,0,0,0.55)",
-                margin: 0,
-              }}
-            >
-              {showScheduledLive
-                ? "Scheduled live service — tap to join."
-                : "Jesus Christ Temple Ministry — Spirit-filled broadcasts, worship, and teachings any time you need them."}
-            </p>
-            <div
-              className="flex items-center rounded-xl"
-              style={{
-                background: focused ? "hsl(270 75% 50%)" : "rgba(106,13,173,0.9)",
-                color: "#fff",
-                padding: "clamp(12px, 1.8vw, 16px) clamp(20px, 3.2vw, 32px)",
-                gap: "clamp(6px, 1vw, 10px)",
-                width: "fit-content",
-                marginTop: 8,
-                boxShadow: focused
-                  ? "0 12px 36px rgba(106,13,173,0.5)"
-                  : "0 6px 20px rgba(0,0,0,0.35)",
-                transform: focused ? "scale(1.04)" : "scale(1)",
-                transition: "all 0.18s ease",
-                minHeight: 44,
-                border: "1px solid rgba(168,85,247,0.35)",
-              }}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                fill="currentColor"
-                style={{ width: "clamp(16px, 1.8vw, 20px)", height: "auto" }}
-              >
-                <path d="M8 5v14l11-7z" />
-              </svg>
-              <span
+
+            {/* CTA — only shown when NOT actively playing queue content.
+                When broadcastCurrent.item exists the broadcast player is
+                already running; clicking anywhere on the hero triggers
+                onSelect() which opens the full-screen player — a "Watch
+                Now" button here would be a redundant, confusing duplicate. */}
+            {!broadcastCurrent?.item && (
+              <div
+                className="flex items-center rounded-xl"
                 style={{
-                  fontSize: "clamp(14px, 1.7vw, 18px)",
-                  fontWeight: 800,
-                  letterSpacing: "-0.01em",
+                  background: focused
+                    ? showScheduledLive ? "rgba(255,138,0,0.95)" : "hsl(270 75% 50%)"
+                    : showScheduledLive ? "rgba(255,138,0,0.75)" : "rgba(106,13,173,0.9)",
+                  color: "#fff",
+                  padding: "clamp(12px, 1.8vw, 16px) clamp(20px, 3.2vw, 32px)",
+                  gap: "clamp(6px, 1vw, 10px)",
+                  width: "fit-content",
+                  marginTop: 4,
+                  boxShadow: focused
+                    ? "0 12px 36px rgba(106,13,173,0.5)"
+                    : "0 6px 20px rgba(0,0,0,0.35)",
+                  transform: focused ? "scale(1.04)" : "scale(1)",
+                  transition: "all 0.18s ease",
+                  minHeight: 44,
+                  border: `1px solid ${
+                    showScheduledLive
+                      ? "rgba(255,138,0,0.5)"
+                      : "rgba(168,85,247,0.35)"
+                  }`,
                 }}
               >
-                Watch Now
-              </span>
-            </div>
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  style={{ width: "clamp(16px, 1.8vw, 20px)", height: "auto" }}
+                >
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+                <span
+                  style={{
+                    fontSize: "clamp(14px, 1.7vw, 18px)",
+                    fontWeight: 800,
+                    letterSpacing: "-0.01em",
+                  }}
+                >
+                  {showScheduledLive ? "Tune In" : "Browse Archive"}
+                </span>
+              </div>
+            )}
           </>
         )}
       </div>

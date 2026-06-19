@@ -509,10 +509,10 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
                 <div className="skeleton" style={{ width: 180, height: 22, marginBottom: 16, borderRadius: 6 }} />
                 <div style={{ display: "flex", gap: 18 }}>
                   {[0, 1, 2, 3, 4].map((j) => (
-                    <div key={j} style={{ flexShrink: 0 }}>
-                      <div className="skeleton" style={{ width: 348, height: 196, borderRadius: 14 }} />
-                      <div className="skeleton" style={{ width: 220, height: 14, marginTop: 10, borderRadius: 4 }} />
-                      <div className="skeleton" style={{ width: 80, height: 12, marginTop: 6, borderRadius: 4 }} />
+                    <div key={j} style={{ flexShrink: 0, width: "clamp(155px, 42vw, 348px)" }}>
+                      <div className="skeleton" style={{ width: "100%", aspectRatio: "16/9", borderRadius: 14 }} />
+                      <div className="skeleton" style={{ width: "65%", height: 14, marginTop: 10, borderRadius: 4 }} />
+                      <div className="skeleton" style={{ width: "35%", height: 12, marginTop: 6, borderRadius: 4 }} />
                     </div>
                   ))}
                 </div>
@@ -611,7 +611,7 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
                           onClick={() => onPlay(entry.videoId, entry.title, entry.hlsUrl ?? undefined, entry.positionSecs)}
                           style={{
                             flexShrink: 0,
-                            width: 220,
+                            width: "clamp(155px, 44vw, 220px)",
                             cursor: "pointer",
                             outline: focused ? "2px solid rgba(168,85,247,0.9)" : "none",
                             outlineOffset: 4,
@@ -621,9 +621,9 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
                           }}
                         >
                           {/* Thumbnail with progress bar */}
-                          <div style={{ width: 220, height: 132, borderRadius: 12, overflow: "hidden", position: "relative", background: "rgba(255,255,255,0.06)", marginBottom: 10 }}>
+                          <div style={{ width: "100%", aspectRatio: "16/9", borderRadius: 12, overflow: "hidden", position: "relative", background: "rgba(255,255,255,0.06)", marginBottom: 10 }}>
                             {thumb ? (
-                              <img src={thumb} alt={entry.title} style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }} loading="lazy" decoding="async" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                              <img src={thumb} alt={entry.title} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center" }} loading="lazy" decoding="async" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                             ) : (
                               <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
                                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -706,7 +706,7 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
                           onClick={() => onPlay(fav.videoId, fav.title, fav.hlsUrl ?? undefined)}
                           style={{
                             flexShrink: 0,
-                            width: 220,
+                            width: "clamp(155px, 44vw, 220px)",
                             cursor: "pointer",
                             outline: focused ? "2px solid rgba(168,85,247,0.9)" : "none",
                             outlineOffset: 4,
@@ -715,9 +715,9 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
                             transition: "transform 0.15s ease",
                           }}
                         >
-                          <div style={{ width: 220, height: 132, borderRadius: 12, overflow: "hidden", position: "relative", background: "rgba(255,255,255,0.06)", marginBottom: 10 }}>
+                          <div style={{ width: "100%", aspectRatio: "16/9", borderRadius: 12, overflow: "hidden", position: "relative", background: "rgba(255,255,255,0.06)", marginBottom: 10 }}>
                             {fav.thumbnailUrl ? (
-                              <img src={fav.thumbnailUrl} alt={fav.title} style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }} loading="lazy" decoding="async" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                              <img src={fav.thumbnailUrl} alt={fav.title} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center" }} loading="lazy" decoding="async" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                             ) : (
                               <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
                                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -784,7 +784,7 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
                           onClick={() => onSeriesDetail(s)}
                           style={{
                             flexShrink: 0,
-                            width: 200,
+                            width: "clamp(140px, 40vw, 200px)",
                             cursor: "pointer",
                             outline: focused ? "2px solid rgba(106,13,173,0.9)" : "none",
                             outlineOffset: 4,
@@ -793,9 +793,9 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
                             transition: "transform 0.15s ease",
                           }}
                         >
-                          <div style={{ width: 200, height: 120, borderRadius: 12, overflow: "hidden", position: "relative", background: "rgba(255,255,255,0.06)", marginBottom: 10 }}>
+                          <div style={{ width: "100%", aspectRatio: "16/9", borderRadius: 12, overflow: "hidden", position: "relative", background: "rgba(255,255,255,0.06)", marginBottom: 10 }}>
                             {s.thumbnailUrl ? (
-                              <img src={s.thumbnailUrl} alt={s.title} style={{ width: "100%", height: "100%", objectFit: "contain", objectPosition: "center", background: "#000" }} loading="lazy" decoding="async" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                              <img src={s.thumbnailUrl} alt={s.title} style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center" }} loading="lazy" decoding="async" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                             ) : (
                               <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
                                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
@@ -854,6 +854,7 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
         onSearch={onNavigateSearch}
         onSettings={onNavigateSettings}
         hasLive={liveStatus?.isLive ?? false}
+        activeTab="watch"
       />
     </div>
   );

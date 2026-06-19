@@ -7,6 +7,7 @@ export interface MobileBottomNavProps {
   onSearch: () => void;
   onSettings: () => void;
   hasLive?: boolean;
+  activeTab?: "watch" | "search" | "live" | "library" | "settings";
 }
 
 interface TabItem {
@@ -15,6 +16,7 @@ interface TabItem {
   icon: React.ReactNode;
   onClick: () => void;
   highlight?: boolean;
+  active?: boolean;
 }
 
 export function MobileBottomNav({
@@ -24,6 +26,7 @@ export function MobileBottomNav({
   onSearch,
   onSettings,
   hasLive = false,
+  activeTab = "watch",
 }: MobileBottomNavProps) {
   const tabs: TabItem[] = [
     {
@@ -36,6 +39,7 @@ export function MobileBottomNav({
         </svg>
       ),
       onClick: onWatch,
+      active: activeTab === "watch",
     },
     {
       id: "search",
@@ -47,6 +51,7 @@ export function MobileBottomNav({
         </svg>
       ),
       onClick: onSearch,
+      active: activeTab === "search",
     },
     {
       id: "live",
@@ -59,6 +64,7 @@ export function MobileBottomNav({
       ),
       onClick: onLive,
       highlight: hasLive,
+      active: activeTab === "live",
     },
     {
       id: "library",
@@ -70,6 +76,7 @@ export function MobileBottomNav({
         </svg>
       ),
       onClick: onLibrary,
+      active: activeTab === "library",
     },
     {
       id: "settings",
@@ -81,6 +88,7 @@ export function MobileBottomNav({
         </svg>
       ),
       onClick: onSettings,
+      active: activeTab === "settings",
     },
   ];
 
@@ -96,7 +104,7 @@ export function MobileBottomNav({
         zIndex: 50,
         display: "flex",
         alignItems: "stretch",
-        background: "rgba(5, 5, 15, 0.88)",
+        background: "rgba(5, 5, 15, 0.92)",
         backdropFilter: "blur(20px)",
         WebkitBackdropFilter: "blur(20px)",
         borderTop: "1px solid rgba(255,255,255,0.07)",
@@ -114,6 +122,7 @@ export function MobileBottomNav({
 function NavTab({ tab }: { tab: TabItem }) {
   const [pressed, setPressed] = React.useState(false);
   const isLive = tab.id === "live";
+  const isActive = tab.active === true;
 
   return (
     <button
@@ -121,6 +130,7 @@ function NavTab({ tab }: { tab: TabItem }) {
       onTouchStart={() => setPressed(true)}
       onTouchEnd={() => { setPressed(false); }}
       aria-label={tab.label}
+      aria-current={isActive ? "page" : undefined}
       style={{
         flex: 1,
         display: "flex",
@@ -179,24 +189,48 @@ function NavTab({ tab }: { tab: TabItem }) {
           )}
         </div>
       ) : (
-        <span style={{ color: "rgba(255,255,255,0.5)", display: "flex" }}>
+        <span
+          style={{
+            color: isActive ? "#fff" : "rgba(255,255,255,0.45)",
+            display: "flex",
+            transition: "color 0.15s ease",
+          }}
+        >
           {tab.icon}
         </span>
       )}
       <span
         style={{
           fontSize: 10,
-          fontWeight: isLive ? 700 : 500,
+          fontWeight: isLive || isActive ? 700 : 500,
           color: isLive
             ? tab.highlight ? "#f87171" : "#c084fc"
+            : isActive
+            ? "#fff"
             : "rgba(255,255,255,0.45)",
           letterSpacing: "0.03em",
           lineHeight: 1,
           marginTop: isLive ? 4 : 0,
+          transition: "color 0.15s ease",
         }}
       >
         {isLive && tab.highlight ? "● LIVE" : tab.label}
       </span>
+      {/* Active indicator dot — shown for non-Live active tabs */}
+      {isActive && !isLive && (
+        <span
+          style={{
+            position: "absolute",
+            bottom: 6,
+            left: "50%",
+            transform: "translateX(-50%)",
+            width: 4,
+            height: 4,
+            borderRadius: "50%",
+            background: "hsl(var(--primary))",
+          }}
+        />
+      )}
     </button>
   );
 }
