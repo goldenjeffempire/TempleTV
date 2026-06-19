@@ -1213,6 +1213,14 @@ class UploadQueueEngine {
       // a clean idempotent re-attempt.
       if (initResp.status === 401) {
         await forceRefreshToken().catch(() => {});
+        if (!tokenStore.getAccess()) {
+          tokenStore.clear();
+          window.dispatchEvent(new Event("ttv:auth-expired"));
+          throw Object.assign(
+            new Error("Session expired — please log in again"),
+            { fatal: true },
+          );
+        }
         initResp = await fetch(`${base}/v1/admin/videos/upload/init`, {
           method: "POST",
           headers: { ...authHeaders(), "Content-Type": "application/json" },
@@ -1222,9 +1230,19 @@ class UploadQueueEngine {
       }
 
       if (!initResp.ok) {
+        if (initResp.status === 401) {
+          tokenStore.clear();
+          window.dispatchEvent(new Event("ttv:auth-expired"));
+          throw Object.assign(
+            new Error("Session expired — please log in again"),
+            { fatal: true },
+          );
+        }
         const errBody = (await initResp.json().catch(() => ({}))) as Record<string, unknown>;
         throw new Error(
           (errBody.message as string) ||
+          (errBody.title as string) ||
+          (errBody.detail as string) ||
           (errBody.error as string) ||
           `Upload init failed (${initResp.status})`,
         );

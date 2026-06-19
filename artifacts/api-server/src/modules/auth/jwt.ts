@@ -52,6 +52,7 @@ export async function signAccessToken(p: Omit<AccessTokenPayload, "type">): Prom
 export async function signRefreshToken(p: Omit<RefreshTokenPayload, "type">): Promise<string> {
   return new SignJWT({ ...p, type: "refresh" } satisfies RefreshTokenPayload)
     .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
     .setExpirationTime(Math.floor(Date.now() / 1000) + env.JWT_REFRESH_TTL_SECONDS)
     .sign(refreshSecret);
 }
