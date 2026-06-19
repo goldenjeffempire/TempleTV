@@ -71,3 +71,12 @@ android/src/main/kotlin/expo/modules/pipandroid/
 
 ## Version for this fix
 versionCode 56 (v1.0.16 → next build). `production-android` has `autoIncrement:false` so versionCode must be bumped manually in `app.json` for each release.
+
+## Build failure history (June 2026)
+
+Build `bd5ad982` (versionCode 83) failed with `EAS_BUILD_UNKNOWN_GRADLE_ERROR` — same root cause as Google Play PiP check: `android/` directory was absent. The missing three files were recreated:
+- `android/build.gradle` — uses `expo-module-gradle-plugin` + `org.jetbrains.kotlin.android`; namespace `expo.modules.pipandroid`; minSdkVersion 24
+- `android/src/main/AndroidManifest.xml` — package declaration only
+- `android/src/main/kotlin/expo/modules/pipandroid/ExpoPipAndroidModule.kt` — full Kotlin impl (see above)
+
+New build `d112e173` (versionCode 84) submitted with both the TypeScript fixes (8 errors across 5 files) and the restored Kotlin native module.
