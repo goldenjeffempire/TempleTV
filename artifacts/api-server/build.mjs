@@ -81,6 +81,10 @@ const shared = {
     "asn1.js",
     "minimalistic-assert",
     "minimalistic-crypto-utils",
+    // undici v7 uses CJS internally but esbuild cannot resolve its internal
+    // sub-path requires through pnpm's virtual store symlinks. Externalise it
+    // so Node loads it via its own resolver at runtime.
+    "undici",
   ],
 };
 
