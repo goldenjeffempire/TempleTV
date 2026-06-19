@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, integer, bigint, index, uniqueIndex, check } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, integer, bigint, jsonb, index, uniqueIndex, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import type { z } from "zod/v4";
@@ -125,6 +125,20 @@ export const videosTable = pgTable("managed_videos", {
   // frames (generateQuickThumbnail, scheduleEarlyThumbnail) from overwriting
   // the custom image on subsequent re-processing or assembly retries.
   hasCustomThumbnail: boolean("has_custom_thumbnail").notNull().default(false),
+  // ── Content scheduling ────────────────────────────────────────────────────
+  // When set, a background worker will auto-publish this video (set
+  // broadcastOnly=false) at or after this UTC timestamp.
+  // null = no scheduled publish.
+  scheduledPublishAt: timestamp("scheduled_publish_at", { withTimezone: true }),
+  // When set, a background worker will auto-unpublish this video (set
+  // broadcastOnly=true) at or after this UTC timestamp.
+  // null = no scheduled unpublish.
+  scheduledUnpublishAt: timestamp("scheduled_unpublish_at", { withTimezone: true }),
+  // ── Video chapter markers ─────────────────────────────────────────────────
+  // JSON array of { startSecs: number, title: string } objects, sorted ascending
+  // by startSecs. Used by the player to render a chapter timeline.
+  // null = no chapters defined.
+  chapters: jsonb("chapters"),
 }, (table) => [
   index("idx_managed_videos_imported_at").on(table.importedAt),
   index("idx_managed_videos_category").on(table.category),

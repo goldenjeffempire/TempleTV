@@ -14,13 +14,21 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { desc } from "drizzle-orm";
+import { desc, inArray } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
 
 const AuditEntrySchema = z.object({
   id: z.string(),
-  type: z.enum(["video_uploaded", "video_transcoded", "user_created", "schedule_added", "config_changed"]),
+  type: z.enum([
+    "video_uploaded",
+    "video_transcoded",
+    "user_created",
+    "schedule_added",
+    "config_changed",
+    "media_action",
+    "broadcast_action",
+  ]),
   timestamp: z.string(),
   actor: z.string().nullable(),
   title: z.string(),
@@ -49,7 +57,7 @@ export async function auditLogRoutes(app: FastifyInstance) {
           // endpoint is stuck at the first `limit` entries regardless of how
           // many rows exist across the source tables.
           offset: z.coerce.number().int().min(0).default(0),
-          type: z.enum(["video_uploaded", "video_transcoded", "user_created", "schedule_added", "config_changed", "all"]).default("all"),
+          type: z.enum(["video_uploaded", "video_transcoded", "user_created", "schedule_added", "config_changed", "media_action", "broadcast_action", "all"]).default("all"),
         }),
         response: {
           200: z.object({
@@ -200,6 +208,93 @@ export async function auditLogRoutes(app: FastifyInstance) {
           }
         } catch {
           /* app_config table might not exist — skip */
+        }
+      }
+
+      // ── Media audit log (media_audit_log table) ────────────────────────────
+      if (type === "all" || type === "media_action") {
+        try {
+          const mediaActions = await db
+            .select()
+            .from(schema.mediaAuditLogTable)
+            .orderBy(desc(schema.mediaAuditLogTable.createdAt))
+            .limit(fetchLimit);
+
+          const ACTION_TITLES: Record<string, string> = {
+            scheduled_publish:   "Video Auto-Published",
+            scheduled_unpublish: "Video Auto-Unpublished",
+            corrupt_source:      "Corrupt Source Detected",
+            hls_transcoded:      "HLS Transcoding Complete",
+            faststart_applied:   "Faststart Applied",
+            source_deleted:      "Source File Deleted",
+            chapters_updated:    "Chapters Updated",
+            thumbnail_generated: "Thumbnail Generated",
+          };
+
+          for (const a of mediaActions) {
+            entries.push({
+              id: `media-${a.id}`,
+              type: "media_action",
+              timestamp: a.createdAt.toISOString(),
+              actor: a.triggeredBy === "system" ? null : a.triggeredBy,
+              title: ACTION_TITLES[a.action] ?? `Media: ${a.action}`,
+              description: a.reason ?? a.action,
+              meta: {
+                ...(a.videoId ? { videoId: a.videoId } : {}),
+                ...(a.errorCode ? { errorCode: a.errorCode } : {}),
+                action: a.action,
+                ...((a.metadata as Record<string, unknown> | null) ?? {}),
+              },
+            });
+          }
+        } catch {
+          /* media_audit_log may not exist on pre-migration DBs — skip */
+        }
+      }
+
+      // ── Broadcast event log (significant events only) ──────────────────────
+      if (type === "all" || type === "broadcast_action") {
+        try {
+          const SIGNIFICANT_EVENTS = [
+            "ITEM_STARTED", "ITEM_SKIPPED", "OVERRIDE_SET", "OVERRIDE_CLEARED",
+            "BROADCAST_STARTED", "BROADCAST_STOPPED", "FAILOVER_TRIGGERED",
+          ];
+          const broadcastEvents = await db
+            .select({
+              id: schema.broadcastEventLogTable.id,
+              eventType: schema.broadcastEventLogTable.eventType,
+              payload: schema.broadcastEventLogTable.payload,
+              createdAt: schema.broadcastEventLogTable.createdAt,
+            })
+            .from(schema.broadcastEventLogTable)
+            .where(inArray(schema.broadcastEventLogTable.eventType, SIGNIFICANT_EVENTS))
+            .orderBy(desc(schema.broadcastEventLogTable.createdAt))
+            .limit(fetchLimit);
+
+          const EVENT_TITLES: Record<string, string> = {
+            ITEM_STARTED:        "Broadcast Item Started",
+            ITEM_SKIPPED:        "Broadcast Item Skipped",
+            OVERRIDE_SET:        "Broadcast Override Set",
+            OVERRIDE_CLEARED:    "Broadcast Override Cleared",
+            BROADCAST_STARTED:   "Broadcast Started",
+            BROADCAST_STOPPED:   "Broadcast Stopped",
+            FAILOVER_TRIGGERED:  "Failover Triggered",
+          };
+
+          for (const ev of broadcastEvents) {
+            const p = ev.payload as Record<string, unknown>;
+            entries.push({
+              id: `bcast-${ev.id}`,
+              type: "broadcast_action",
+              timestamp: ev.createdAt.toISOString(),
+              actor: (p.actor as string | undefined) ?? null,
+              title: EVENT_TITLES[ev.eventType] ?? ev.eventType,
+              description: (p.title as string | undefined) ?? (p.itemId as string | undefined) ?? ev.eventType,
+              meta: { eventType: ev.eventType, ...p },
+            });
+          }
+        } catch {
+          /* broadcast_event_log may not exist in all envs — skip */
         }
       }
 

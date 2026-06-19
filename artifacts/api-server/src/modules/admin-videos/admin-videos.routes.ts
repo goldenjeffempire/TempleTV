@@ -95,6 +95,12 @@ const VideoRowSchema = z.object({
    * Sourced from the most recent transcoding_jobs row for this video.
    */
   transcodingProgress: z.number().int().nullable(),
+  /** ISO-8601 UTC — auto-publish (set broadcastOnly=false) at this time. null = not scheduled. */
+  scheduledPublishAt: z.string().nullable(),
+  /** ISO-8601 UTC — auto-unpublish (set broadcastOnly=true) at this time. null = not scheduled. */
+  scheduledUnpublishAt: z.string().nullable(),
+  /** Ordered chapter markers. Each entry: { startSecs: number, title: string }. null = none. */
+  chapters: z.array(z.object({ startSecs: z.number().nonnegative(), title: z.string().max(200) })).nullable(),
 });
 
 const ListQuerySchema = z.object({
@@ -140,6 +146,10 @@ const PatchBodySchema = z.object({
   featured: z.boolean().optional(),
   metadataLocked: z.boolean().optional(),
   broadcastOnly: z.boolean().optional(),
+  /** ISO-8601 string or null to clear. */
+  scheduledPublishAt: z.union([z.string().datetime(), z.null()]).optional(),
+  /** ISO-8601 string or null to clear. */
+  scheduledUnpublishAt: z.union([z.string().datetime(), z.null()]).optional(),
 }).strict();
 
 // ── Keyset cursor helpers ──────────────────────────────────────────────────
@@ -218,6 +228,18 @@ function toDto(row: typeof videos.$inferSelect, progress: number | null = null):
     videoWidth: row.videoWidth ?? null,
     videoHeight: row.videoHeight ?? null,
     transcodingProgress: progress,
+    scheduledPublishAt: (row as { scheduledPublishAt?: Date | null }).scheduledPublishAt?.toISOString() ?? null,
+    scheduledUnpublishAt: (row as { scheduledUnpublishAt?: Date | null }).scheduledUnpublishAt?.toISOString() ?? null,
+    chapters: (() => {
+      const raw = (row as { chapters?: unknown }).chapters;
+      if (!Array.isArray(raw)) return null;
+      return (raw as Array<unknown>).filter(
+        (c): c is { startSecs: number; title: string } =>
+          typeof c === "object" && c !== null &&
+          typeof (c as Record<string, unknown>).startSecs === "number" &&
+          typeof (c as Record<string, unknown>).title === "string",
+      );
+    })(),
   };
 }
 
@@ -540,6 +562,12 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         ...(body.featured !== undefined    ? { featured: body.featured }       : {}),
         ...(body.metadataLocked !== undefined ? { metadataLocked: body.metadataLocked } : {}),
         ...(body.broadcastOnly !== undefined  ? { broadcastOnly: body.broadcastOnly }   : {}),
+        ...(body.scheduledPublishAt !== undefined
+          ? { scheduledPublishAt: body.scheduledPublishAt ? new Date(body.scheduledPublishAt) : null }
+          : {}),
+        ...(body.scheduledUnpublishAt !== undefined
+          ? { scheduledUnpublishAt: body.scheduledUnpublishAt ? new Date(body.scheduledUnpublishAt) : null }
+          : {}),
       };
 
       let updated: VideoRow[];
@@ -569,6 +597,52 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       adminEventBus.push("videos-library-updated", { videoId: id, reason: "metadata-updated" });
 
       return toDto(row);
+    },
+  );
+
+  // ── PUT /videos/:id/chapters ─────────────────────────────────────────────────
+  r.put(
+    "/videos/:id/chapters",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Replace chapter markers for a video",
+        params: z.object({ id: z.string().min(1).max(128) }),
+        body: z.object({
+          chapters: z.array(
+            z.object({
+              startSecs: z.number().nonnegative(),
+              title: z.string().min(1).max(200),
+            }),
+          ).max(200),
+        }),
+        response: {
+          200: VideoRowSchema,
+          404: z.object({ error: z.string() }),
+          429: z.object({ error: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req, reply) => {
+      const { id } = req.params;
+      // Sort ascending by startSecs before saving.
+      const sorted = [...req.body.chapters].sort((a, b) => a.startSecs - b.startSecs);
+
+      const [updated] = await db
+        .update(videos)
+        .set({ chapters: sorted })
+        .where(eq(videos.id, id))
+        .returning();
+
+      if (!updated) return reply.code(404).send({ error: `Video not found: ${id}` });
+
+      void invalidateVideosCatalogCache();
+      adminEventBus.push("videos-library-updated", { videoId: id, reason: "chapters-updated" });
+
+      return toDto(updated as typeof videos.$inferSelect);
     },
   );
 

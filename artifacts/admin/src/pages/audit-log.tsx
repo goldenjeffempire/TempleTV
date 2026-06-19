@@ -9,14 +9,14 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Upload, Users, Calendar, Settings2, Zap,
-  RefreshCw, Search, Clock, Download,
+  RefreshCw, Search, Clock, Download, Activity, Radio,
 } from "lucide-react";
 import { exportRowsAsCsv } from "@/lib/csv-export";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
 
-type EntryType = "video_uploaded" | "video_transcoded" | "user_created" | "schedule_added" | "config_changed";
+type EntryType = "video_uploaded" | "video_transcoded" | "user_created" | "schedule_added" | "config_changed" | "media_action" | "broadcast_action";
 
 interface AuditEntry {
   id: string;
@@ -53,6 +53,16 @@ const TYPE_META: Record<EntryType, { label: string; icon: React.ReactNode; color
     label: "Config Changed",
     icon: <Settings2 size={14} />,
     color: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
+  },
+  media_action: {
+    label: "Media Action",
+    icon: <Activity size={14} />,
+    color: "bg-teal-500/10 text-teal-400 border-teal-500/20",
+  },
+  broadcast_action: {
+    label: "Broadcast Event",
+    icon: <Radio size={14} />,
+    color: "bg-rose-500/10 text-rose-400 border-rose-500/20",
   },
 };
 
@@ -198,7 +208,7 @@ export default function AuditLogPage() {
 
       {/* Stats row */}
       {data && (
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
           {(Object.entries(TYPE_META) as [EntryType, typeof TYPE_META[EntryType]][]).map(([type, m]) => (
             <Card
               key={type}

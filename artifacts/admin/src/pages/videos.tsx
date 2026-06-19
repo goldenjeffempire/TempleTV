@@ -32,7 +32,7 @@ import {
   UploadCloud, X, FileVideo, Layers, Lock, LockOpen, Youtube, HardDrive,
   ArrowUpDown, SlidersHorizontal, Zap, Clapperboard, Globe, AlertTriangle,
   Wrench, CheckCircle2, Play, Loader2, Info, ClipboardList, TriangleAlert,
-  CircleCheck, CircleX, RefreshCcw, Inbox,
+  CircleCheck, CircleX, RefreshCcw, Inbox, CalendarClock, BookOpen, Plus,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { LiveStatusBadge } from "@/components/live-status-badge";
@@ -86,6 +86,9 @@ interface AdminVideo {
   videoWidth: number | null;
   videoHeight: number | null;
   transcodingProgress: number | null;
+  scheduledPublishAt: string | null;
+  scheduledUnpublishAt: string | null;
+  chapters: { startSecs: number; title: string }[] | null;
 }
 
 interface VideoListResponse {
@@ -142,6 +145,13 @@ interface EditForm {
   featured: boolean;
   metadataLocked: boolean;
   broadcastOnly: boolean;
+  scheduledPublishAt: string;
+  scheduledUnpublishAt: string;
+}
+
+interface ChapterDraft {
+  startSecs: string;
+  title: string;
 }
 
 // Server-enforced limits — keep client in sync with PatchBodySchema in
@@ -161,14 +171,21 @@ function snapshotForCompare(f: EditForm): string {
     featured: f.featured,
     metadataLocked: f.metadataLocked,
     broadcastOnly: f.broadcastOnly,
+    scheduledPublishAt: f.scheduledPublishAt,
+    scheduledUnpublishAt: f.scheduledUnpublishAt,
   });
 }
 
-function buildEditDelta(original: EditForm, current: EditForm): Partial<EditForm> {
+type PatchDelta = Partial<EditForm> & {
+  scheduledPublishAt?: string | null;
+  scheduledUnpublishAt?: string | null;
+};
+
+function buildEditDelta(original: EditForm, current: EditForm): PatchDelta {
   // Only send fields that actually changed. Avoids unnecessary writes,
   // unnecessary `videos-library-updated` SSE fan-out, and accidental
   // overwrite of fields a parallel admin may have edited in another tab.
-  const delta: Partial<EditForm> = {};
+  const delta: PatchDelta = {};
   const tTitle = current.title.trim();
   const tPreacher = current.preacher.trim();
   if (tTitle !== original.title.trim()) delta.title = tTitle;
@@ -178,7 +195,44 @@ function buildEditDelta(original: EditForm, current: EditForm): Partial<EditForm
   if (current.featured !== original.featured) delta.featured = current.featured;
   if (current.metadataLocked !== original.metadataLocked) delta.metadataLocked = current.metadataLocked;
   if (current.broadcastOnly !== original.broadcastOnly) delta.broadcastOnly = current.broadcastOnly;
+  if (current.scheduledPublishAt !== original.scheduledPublishAt)
+    delta.scheduledPublishAt = current.scheduledPublishAt
+      ? new Date(current.scheduledPublishAt).toISOString()
+      : null;
+  if (current.scheduledUnpublishAt !== original.scheduledUnpublishAt)
+    delta.scheduledUnpublishAt = current.scheduledUnpublishAt
+      ? new Date(current.scheduledUnpublishAt).toISOString()
+      : null;
   return delta;
+}
+
+/** Format an ISO string to the local datetime-local input value (YYYY-MM-DDTHH:mm). */
+function isoToDatetimeLocal(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Format seconds to MM:SS or HH:MM:SS. */
+function secsToTimecode(secs: number): string {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+/** Parse timecode (HH:MM:SS, MM:SS, or bare seconds) → seconds or null. */
+function timecodeToSecs(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (/^\d+$/.test(trimmed)) return parseInt(trimmed, 10);
+  const parts = trimmed.split(":").map(Number);
+  if (parts.some(isNaN)) return null;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return null;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -393,6 +447,7 @@ export default function VideosPage() {
   const [previewVideo, setPreviewVideo] = useState<AdminVideo | null>(null);
   const [editForm, setEditForm] = useState<EditForm>({
     title: "", description: "", category: "", preacher: "", featured: false, metadataLocked: false, broadcastOnly: false,
+    scheduledPublishAt: "", scheduledUnpublishAt: "",
   });
   // Original form values captured when the dialog opened — used to compute
   // a delta payload and to enable/disable the Save button.
@@ -400,6 +455,9 @@ export default function VideosPage() {
   // Inline error surfaced inside the edit dialog (in addition to the toast)
   // so the user sees exactly which field/limit the server rejected.
   const [editError, setEditError] = useState<string | null>(null);
+  // Chapter editor state
+  const [editChapters, setEditChapters] = useState<ChapterDraft[]>([]);
+  const [chapterDraft, setChapterDraft] = useState<ChapterDraft>({ startSecs: "", title: "" });
 
   // Drag-over state for the page-level drop zone
   const [pageDragOver, setPageDragOver] = useState(false);
@@ -532,7 +590,7 @@ export default function VideosPage() {
   // ── Mutations ──────────────────────────────────────────────────────────────
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, ...body }: Partial<EditForm> & { id: string }) =>
+    mutationFn: ({ id, ...body }: PatchDelta & { id: string }) =>
       api.patch<AdminVideo>(`/admin/videos/${id}`, body),
     onSuccess: (updatedRow) => {
       // Patch every cached page in place so the row updates without a
@@ -581,6 +639,22 @@ export default function VideosPage() {
       setEditError(msg);
       toast.error(msg);
     },
+  });
+
+  const chaptersMutation = useMutation({
+    mutationFn: ({ id, chapters }: { id: string; chapters: { startSecs: number; title: string }[] }) =>
+      api.put<AdminVideo>(`/admin/videos/${id}/chapters`, { chapters }),
+    onSuccess: (updatedRow) => {
+      qc.setQueriesData<VideoListResponse>(
+        { queryKey: ["admin-videos"] },
+        (prev) => prev
+          ? { ...prev, videos: prev.videos.map((v) => v.id === updatedRow.id ? { ...v, ...updatedRow } : v) }
+          : prev,
+      );
+      setEditVideo((v) => v ? { ...v, chapters: updatedRow.chapters } : v);
+      toast.success("Chapters saved");
+    },
+    onError: () => toast.error("Failed to save chapters"),
   });
 
   const deleteMutation = useMutation({
@@ -988,10 +1062,14 @@ export default function VideosPage() {
       featured: v.featured,
       metadataLocked: v.metadataLocked,
       broadcastOnly: v.broadcastOnly,
+      scheduledPublishAt: isoToDatetimeLocal(v.scheduledPublishAt),
+      scheduledUnpublishAt: isoToDatetimeLocal(v.scheduledUnpublishAt),
     };
     setEditForm(initial);
     setEditOriginal(initial);
     setEditError(null);
+    setEditChapters((v.chapters ?? []).map(c => ({ startSecs: String(c.startSecs), title: c.title })));
+    setChapterDraft({ startSecs: "", title: "" });
     setEditVideo(v);
   };
 
@@ -2152,6 +2230,149 @@ export default function VideosPage() {
                       />
                     </div>
                   )}
+
+                  {/* Content Scheduling */}
+                  <div className="rounded-lg border p-3 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <CalendarClock size={14} className="text-muted-foreground" />
+                      <span className="text-sm font-medium">Content Scheduling</span>
+                      <span className="text-[10px] text-muted-foreground ml-auto">Auto-publish / unpublish by time</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label htmlFor="edit-scheduled-publish" className="text-xs text-muted-foreground">Publish at</Label>
+                        <Input
+                          id="edit-scheduled-publish"
+                          type="datetime-local"
+                          className="h-8 text-xs"
+                          value={editForm.scheduledPublishAt}
+                          onChange={(e) => setEditForm(f => ({ ...f, scheduledPublishAt: e.target.value }))}
+                        />
+                        {editForm.scheduledPublishAt && (
+                          <button
+                            type="button"
+                            onClick={() => setEditForm(f => ({ ...f, scheduledPublishAt: "" }))}
+                            className="text-[10px] text-muted-foreground hover:text-foreground"
+                          >
+                            ✕ Clear
+                          </button>
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="edit-scheduled-unpublish" className="text-xs text-muted-foreground">Unpublish at</Label>
+                        <Input
+                          id="edit-scheduled-unpublish"
+                          type="datetime-local"
+                          className="h-8 text-xs"
+                          value={editForm.scheduledUnpublishAt}
+                          onChange={(e) => setEditForm(f => ({ ...f, scheduledUnpublishAt: e.target.value }))}
+                        />
+                        {editForm.scheduledUnpublishAt && (
+                          <button
+                            type="button"
+                            onClick={() => setEditForm(f => ({ ...f, scheduledUnpublishAt: "" }))}
+                            className="text-[10px] text-muted-foreground hover:text-foreground"
+                          >
+                            ✕ Clear
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Chapter Markers */}
+                  <div className="rounded-lg border p-3 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <BookOpen size={14} className="text-muted-foreground" />
+                      <span className="text-sm font-medium">Chapter Markers</span>
+                      <Badge variant="secondary" className="text-[10px] h-4 px-1.5 ml-auto">
+                        {editChapters.length}
+                      </Badge>
+                    </div>
+
+                    {/* Existing chapters */}
+                    {editChapters.length > 0 && (
+                      <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                        {editChapters.map((ch, i) => (
+                          <div key={i} className="flex items-center gap-2 text-xs bg-muted/30 rounded px-2 py-1.5">
+                            <span className="font-mono text-muted-foreground w-12 flex-shrink-0">
+                              {secsToTimecode(parseFloat(ch.startSecs) || 0)}
+                            </span>
+                            <span className="flex-1 truncate">{ch.title}</span>
+                            <button
+                              type="button"
+                              onClick={() => setEditChapters((prev) => prev.filter((_, j) => j !== i))}
+                              className="text-muted-foreground hover:text-destructive flex-shrink-0"
+                              aria-label={`Remove chapter: ${ch.title}`}
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Add new chapter */}
+                    <div className="flex items-center gap-2">
+                      <Input
+                        placeholder="0:00"
+                        value={chapterDraft.startSecs}
+                        onChange={(e) => setChapterDraft(d => ({ ...d, startSecs: e.target.value }))}
+                        className="h-7 text-xs font-mono w-20 flex-shrink-0"
+                        aria-label="Chapter start time (MM:SS)"
+                      />
+                      <Input
+                        placeholder="Chapter title"
+                        value={chapterDraft.title}
+                        onChange={(e) => setChapterDraft(d => ({ ...d, title: e.target.value }))}
+                        className="h-7 text-xs flex-1"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            const secs = timecodeToSecs(chapterDraft.startSecs);
+                            if (secs === null || !chapterDraft.title.trim()) return;
+                            setEditChapters((prev) => [...prev, { startSecs: String(secs), title: chapterDraft.title.trim() }]);
+                            setChapterDraft({ startSecs: "", title: "" });
+                          }
+                        }}
+                        aria-label="Chapter title"
+                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="outline"
+                        className="h-7 w-7 flex-shrink-0"
+                        aria-label="Add chapter"
+                        onClick={() => {
+                          const secs = timecodeToSecs(chapterDraft.startSecs);
+                          if (secs === null || !chapterDraft.title.trim()) return;
+                          setEditChapters((prev) => [...prev, { startSecs: String(secs), title: chapterDraft.title.trim() }]);
+                          setChapterDraft({ startSecs: "", title: "" });
+                        }}
+                      >
+                        <Plus size={12} />
+                      </Button>
+                    </div>
+
+                    {/* Save chapters button */}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="w-full h-7 text-xs gap-1"
+                      disabled={chaptersMutation.isPending || !editVideo}
+                      onClick={() => {
+                        if (!editVideo) return;
+                        const chapters = editChapters
+                          .map(c => ({ startSecs: parseFloat(c.startSecs), title: c.title }))
+                          .filter(c => !isNaN(c.startSecs) && c.title);
+                        chaptersMutation.mutate({ id: editVideo.id, chapters });
+                      }}
+                    >
+                      {chaptersMutation.isPending ? <Loader2 size={11} className="animate-spin" /> : <BookOpen size={11} />}
+                      Save chapters
+                    </Button>
+                  </div>
 
                   {editError && (
                     <div className="rounded-md border border-red-200 dark:border-red-900/50 bg-red-50 dark:bg-red-950/20 px-3 py-2 text-xs text-red-700 dark:text-red-300">

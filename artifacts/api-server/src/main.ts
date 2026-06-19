@@ -279,6 +279,13 @@ async function startWorkers() {
     const { startThumbnailSweepWorker } = await import("./modules/broadcast-v2/engine/thumbnail-sweep-worker.js");
     startThumbnailSweepWorker();
   }
+
+  // Content scheduling worker: auto-publishes/unpublishes videos based on
+  // scheduledPublishAt / scheduledUnpublishAt timestamps. Runs every 60 s.
+  {
+    const { startContentSchedulingWorker } = await import("./modules/broadcast-v2/engine/content-scheduling-worker.js");
+    startContentSchedulingWorker();
+  }
 }
 
 async function stopWorkers() {
