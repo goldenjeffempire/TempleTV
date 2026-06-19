@@ -121,7 +121,7 @@ export function useMediaPlayerState(): MediaPlayerState {
 
   return useMemo((): MediaPlayerState => {
     const lastSnapshot = snapshot.lastServerSnapshot;
-    const rawFsmState = lastSnapshot?.state ?? null;
+    const rawFsmState = snapshot.state ?? null;
 
     // Device offline always wins — no matter what the FSM thinks.
     if (!isOnline) {
@@ -167,7 +167,6 @@ export function useMediaPlayerState(): MediaPlayerState {
     // CTA is visible when we are not already watching the broadcast.
     const isWatchLiveCTAVisible =
       mediaState === "idle" ||
-      mediaState === "offline" ||
       mediaState === "error";
 
     const currentTitle =

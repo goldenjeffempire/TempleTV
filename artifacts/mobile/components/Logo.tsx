@@ -1,5 +1,5 @@
 import React from "react";
-import { Image, type StyleProp, type ViewStyle } from "react-native";
+import { Image, type StyleProp, type ImageStyle } from "react-native";
 
 /**
  * Temple TV official logo image component.
@@ -26,7 +26,7 @@ const HEIGHT: Record<LogoSize, number> = {
 interface LogoProps {
   size?: LogoSize;
   decorative?: boolean;
-  style?: StyleProp<ViewStyle>;
+  style?: StyleProp<ImageStyle>;
 }
 
 export function Logo({

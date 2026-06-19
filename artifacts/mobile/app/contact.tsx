@@ -173,7 +173,7 @@ function ContactRow({ item }: { item: ContactItem }) {
 export default function ContactScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
-  usePageSeo({ title: "Contact" });
+  usePageSeo({ title: "Contact", description: "Get in touch with Temple TV — Jesus Christ Temple Ministry, Ebrumede Roundabout, Effurun, Delta State, Nigeria.", path: "/contact" });
 
   const openMaps = () => {
     const query = encodeURIComponent(

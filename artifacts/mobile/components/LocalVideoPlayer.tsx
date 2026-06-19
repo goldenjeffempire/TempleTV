@@ -1081,13 +1081,13 @@ export function LocalVideoPlayer({
             ref={videoRef}
             source={{ uri: effectiveUrl }}
             style={StyleSheet.absoluteFillObject}
-            resizeMode={coverMode ? (ResizeMode?.COVER ?? "cover") : (ResizeMode?.CONTAIN ?? "contain")}
+            resizeMode={(coverMode ? (ResizeMode?.COVER ?? "cover") : (ResizeMode?.CONTAIN ?? "contain")) as ExpoResizeMode}
             shouldPlay={autoPlay}
             positionMillis={startPositionMs}
             onLoad={(st: AVPlaybackStatus) => {
-              if (st.isLoaded && st.naturalSize) {
-                const { width: vw, height: vh } = st.naturalSize;
-                if (vw > 0 && vh > 0) onAspectRatioChange?.(vw / vh);
+              if (st.isLoaded) {
+                const ns = (st as unknown as { naturalSize?: { width: number; height: number } }).naturalSize;
+                if (ns && ns.width > 0 && ns.height > 0) onAspectRatioChange?.(ns.width / ns.height);
               }
             }}
             onPlaybackStatusUpdate={onPlaybackStatusUpdate}

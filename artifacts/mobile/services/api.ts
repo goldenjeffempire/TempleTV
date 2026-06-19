@@ -572,7 +572,7 @@ export async function fetchPlaylistById(id: string): Promise<ApiPlaylistDetail> 
     videoSource: (v.youtubeId ? "youtube" : "local") as ApiVideo["videoSource"],
     localVideoUrl: v.localVideoUrl ?? null,
     hlsMasterUrl: v.hlsMasterUrl ?? null,
-    youtubeLiveStatus: v.youtubeLiveStatus ?? null,
+    youtubeLiveStatus: (v.youtubeLiveStatus ?? null) as ApiVideo["youtubeLiveStatus"],
   }));
 
   return { ...playlist, videos };

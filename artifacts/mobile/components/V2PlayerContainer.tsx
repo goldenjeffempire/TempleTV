@@ -1865,6 +1865,21 @@ export function V2PlayerContainer({
   const posterFadeAnim = useRef(new Animated.Value(1)).current;
   const prevPosterUrl = useRef<string | null>(null);
 
+  // True during any state where the player is silently loading/recovering
+  // (zero-loading UX: poster shown, no blocking overlay, pulsing status dot).
+  // Used to gate the poster visibility and banner suppression independently
+  // of overlayContent (which is null for these states by design).
+  const isTransientState =
+    snapshot.state === "PREPARING_ACTIVE" ||
+    snapshot.state === "RECOVERING_PRIMARY" ||
+    snapshot.state === "RECOVERING_FAILOVER" ||
+    snapshot.state === "SKIP_PENDING" ||
+    snapshot.state === "SYNCING" ||
+    // LIVE_OVERRIDE_ACTIVE before first frame: buffering silently
+    (snapshot.state === "LIVE_OVERRIDE_ACTIVE" && !videoReady) ||
+    // BOOTSTRAP once we have a snapshot: thumbnail visible while connecting
+    (snapshot.state === "BOOTSTRAP" && !!server);
+
   // Include isTransientState so the poster always shows during silent
   // loading/recovery states — even when overlayContent is null and videoReady
   // is still true from the previous play session (e.g. RECOVERING_PRIMARY
@@ -1917,21 +1932,6 @@ export function V2PlayerContainer({
     // quickly the load-timeout is cleared before it can fire; if the URL truly
     // fails to load within 12 s the timeout is a legitimate recovery signal.
     snapshot.state === "LIVE_OVERRIDE_ACTIVE";
-
-  // True during any state where the player is silently loading/recovering
-  // (zero-loading UX: poster shown, no blocking overlay, pulsing status dot).
-  // Used to gate the poster visibility and banner suppression independently
-  // of overlayContent (which is null for these states by design).
-  const isTransientState =
-    snapshot.state === "PREPARING_ACTIVE" ||
-    snapshot.state === "RECOVERING_PRIMARY" ||
-    snapshot.state === "RECOVERING_FAILOVER" ||
-    snapshot.state === "SKIP_PENDING" ||
-    snapshot.state === "SYNCING" ||
-    // LIVE_OVERRIDE_ACTIVE before first frame: buffering silently
-    (snapshot.state === "LIVE_OVERRIDE_ACTIVE" && !videoReady) ||
-    // BOOTSTRAP once we have a snapshot: thumbnail visible while connecting
-    (snapshot.state === "BOOTSTRAP" && !!server);
 
   // Pulsing opacity animation for the status dot — loops between 0.3 and 1
   // while the player is in a transient state, stops when playing.
