@@ -1397,11 +1397,20 @@ class BroadcastOrchestrator extends EventEmitter {
     //     must continue to the consecutiveEmptyPolls / dead-air logic below.
     //   • A hash mismatch clears _lastQueueHash so the next reload always runs.
     //
-    // Hash format: pipe-separated "id:durationSecs:url" tuples in DB order.
-    // Changes to any item's ID, duration, or primary URL produce a new hash.
+    // Hash format: pipe-separated "id:durationSecs:localVideoUrl:hlsMasterUrl:faststartApplied"
+    // tuples in DB order. Changes to any item's ID, duration, primary URL, or
+    // faststart status produce a new hash and bypass the short-circuit.
+    //
+    // faststartApplied is intentionally included even though upgradeItemSource()
+    // handles the real-time in-place update: if that event is missed (e.g. process
+    // kill between the two bus events, or the companion broadcast-queue-updated
+    // reload races before upgradeItemSource() can run), including faststartApplied
+    // here ensures the next drift-poll reloadInner() does a full re-resolution and
+    // emits queue.changed — preventing connected clients from playing mp4_raw when
+    // the server-side file has already been faststart-optimised.
     if (!opts?.preserveBadUrlCache && rawRows.length > 0) {
       const queueHash = rawRows
-        .map((r) => `${r.id}:${r.durationSecs}:${r.localVideoUrl ?? ""}:${r.hlsMasterUrl ?? ""}`)
+        .map((r) => `${r.id}:${r.durationSecs}:${r.localVideoUrl ?? ""}:${r.hlsMasterUrl ?? ""}:${r.faststartApplied ? "1" : "0"}`)
         .join("|");
       if (queueHash === this._lastQueueHash) {
         // Nothing changed — update diagnostics and return fast.
