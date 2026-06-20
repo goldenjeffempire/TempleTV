@@ -52,6 +52,7 @@ import {
   Bot,
   ShieldOff,
   Wifi as WifiIcon,
+  Search,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
@@ -1287,6 +1288,7 @@ interface SystemHealth {
   transcoder: { enabled: boolean; isRunning: boolean; circuitOpen: boolean; currentJobId: string | null };
   dbPool: { active: number; idle: number; waiting: number; max: number; utilizationPct: number; highUtilAlertActive: boolean; waitingAlertActive: boolean };
   storage: { healthy: boolean; enabled: boolean; consecutiveFailures: number };
+  apiOriginConfigured: boolean;
   contentRotation: { strategy: string; intervalMs: number; lastShuffleAtMs: number; shuffleCount: number };
   ok: boolean;
   issues: string[];
@@ -2520,6 +2522,44 @@ function BroadcastV2PageInner() {
       );
     },
   });
+
+  // Bulk re-probe: fires one reprobe per queue item whose duration is the
+  // 1800 s placeholder (ffprobe was never run or failed) or ≤ 0 (unknown).
+  // Runs sequentially to avoid overwhelming the server.
+  const [reprobeAllProgress, setReprobeAllProgress] = useState<{ done: number; total: number } | null>(null);
+  const reprobeAllHandler = useCallback(async () => {
+    const targets = queueItems.filter(
+      (i) => Math.round(i.durationSecs) === 1800 || i.durationSecs <= 0,
+    );
+    if (targets.length === 0) {
+      toast.info("No items with placeholder duration found.");
+      return;
+    }
+    setReprobeAllProgress({ done: 0, total: targets.length });
+    let done = 0;
+    for (const item of targets) {
+      try {
+        await api.post<{ ok: boolean; oldDurSecs: number; newDurSecs: number }>(
+          `/broadcast-v2/queue/${item.id}/reprobe`,
+          {},
+        );
+      } catch {
+        // individual failures are tolerated — continue with remaining items
+      }
+      done += 1;
+      setReprobeAllProgress({ done, total: targets.length });
+    }
+    setReprobeAllProgress(null);
+    void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+    toast.success(`Re-probed ${done} of ${targets.length} item${targets.length !== 1 ? "s" : ""}.`);
+  }, [queueItems, qc]);
+
+  const placeholderDurationCount = queueItems.filter(
+    (i) => Math.round(i.durationSecs) === 1800 || i.durationSecs <= 0,
+  ).length;
 
   // Remux repair for CORRUPT_SOURCE / structure_invalid items.
   // Calls POST /broadcast-v2/queue/:id/retry-repair which attempts a stream-copy
@@ -4311,6 +4351,28 @@ function BroadcastV2PageInner() {
                 Prepare HLS ({pendingHlsCount} item{pendingHlsCount !== 1 ? "s" : ""})
               </Button>
             )}
+            {/* Reprobe All — fixes items stuck at the 1800 s placeholder duration */}
+            {placeholderDurationCount > 0 && (
+              <Button
+                className="w-full"
+                variant="outline"
+                disabled={reprobeAllProgress !== null || !!busy}
+                onClick={() => { void reprobeAllHandler(); }}
+                title={`Run ffprobe on all ${placeholderDurationCount} queue item${placeholderDurationCount !== 1 ? "s" : ""} showing a "Duration?" placeholder. Updates broadcast timing so schedule markers and "Airs in" countdowns show correct values.`}
+              >
+                {reprobeAllProgress !== null ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Probing {reprobeAllProgress.done}/{reprobeAllProgress.total}…
+                  </>
+                ) : (
+                  <>
+                    <Search className="mr-2 h-4 w-4" />
+                    Reprobe All ({placeholderDurationCount} item{placeholderDurationCount !== 1 ? "s" : ""})
+                  </>
+                )}
+              </Button>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -5148,6 +5210,34 @@ function BroadcastV2PageInner() {
       )}
 
       <TranscodingProgressPanel />
+
+      {/* ── API_ORIGIN misconfiguration banner ───────────────────────────────── */}
+      {/* Shown when the server is in production mode but no public API origin  */}
+      {/* is configured. Uploaded video URLs resolve to http://localhost:PORT    */}
+      {/* which browser clients can never reach — broadcast shows "On Air" but  */}
+      {/* nothing plays. Fix: set API_ORIGIN env var on the production server.  */}
+      {systemHealth && !systemHealth.apiOriginConfigured && (
+        <Card className="border-red-400/60 bg-red-50/60 dark:bg-red-950/20">
+          <CardContent className="flex flex-col items-center gap-5 py-8 text-center sm:flex-row sm:text-left sm:gap-8 sm:px-8">
+            <div className="flex-shrink-0 flex h-14 w-14 items-center justify-center rounded-full bg-red-100 ring-1 ring-red-300 dark:bg-red-900/40 dark:ring-red-700">
+              <AlertTriangle className="h-7 w-7 text-red-600 dark:text-red-400" />
+            </div>
+            <div className="flex-1 space-y-1">
+              <p className="font-semibold text-foreground">
+                API_ORIGIN not configured — uploaded videos will not play
+              </p>
+              <p className="text-sm text-muted-foreground max-w-xl">
+                The server is running in production mode but <code className="font-mono text-xs bg-muted px-1 py-0.5 rounded">API_ORIGIN</code> is not set.
+                Uploaded video URLs are resolving to <code className="font-mono text-xs bg-muted px-1 py-0.5 rounded">http://localhost:…</code> which
+                browser and player clients cannot reach. The broadcast shows <strong>On Air</strong> in the admin console but
+                video playback silently fails for all viewers. To fix: add{" "}
+                <code className="font-mono text-xs bg-muted px-1 py-0.5 rounded">API_ORIGIN=https://api.templetv.org.ng</code>{" "}
+                to the production environment variables and redeploy.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── SUSPENDED / UNPLAYABLE recovery card ────────────────────────────── */}
       {/* Shown when the queue has items but the orchestrator loaded 0 of them. */}

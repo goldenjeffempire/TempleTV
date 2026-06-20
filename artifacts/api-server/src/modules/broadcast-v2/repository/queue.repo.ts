@@ -1154,6 +1154,27 @@ export const queueRepo = {
         ) as typeof resolved.failoverSource)
       : null;
 
+    // CRITICAL: warn when the projected source URL is localhost. This happens
+    // when API_ORIGIN (and RENDER_EXTERNAL_URL/REPLIT_DEV_DOMAIN/DEV_DOMAIN) are
+    // all unset in a production deployment. The broadcast will show "On Air" in
+    // the admin UI (orchestrator has a projected current item) but player clients
+    // (TV, mobile, browser) will silently fail to load http://localhost:PORT/…
+    // because they can never reach the server's loopback address from a browser.
+    //
+    // Fix: set API_ORIGIN=https://api.templetv.org.ng (or the equivalent public
+    // domain) in the production environment variables.
+    if (
+      IS_PROD_NODE_ENV &&
+      (source.url.startsWith("http://localhost") || source.url.startsWith("http://127.0.0.1"))
+    ) {
+      logger.warn(
+        { id: row.id, title: row.title, sourceUrl: source.url },
+        "[broadcast-v2] CRITICAL: projected source URL is localhost — browser player clients " +
+        "cannot reach this URL. Broadcast will show On Air in admin but video will not play. " +
+        "Set API_ORIGIN=https://<your-api-domain> in production environment variables to fix.",
+      );
+    }
+
     const endsAtMs = startsAtMs + row.durationSecs * 1000;
 
     // Absolutize relative thumbnail paths (e.g. /api/hls/…/thumbnail.jpg)

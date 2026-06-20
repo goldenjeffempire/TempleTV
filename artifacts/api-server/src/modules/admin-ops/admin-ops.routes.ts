@@ -4523,6 +4523,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
             lastShuffleAtMs: z.number(),
             shuffleCount: z.number(),
           }),
+          apiOriginConfigured: z.boolean(),
           ok: z.boolean(),
           issues: z.array(z.string()),
         }),
@@ -4626,6 +4627,25 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         shuffleCount: rot.shuffleCount,
       };
 
+      // Detect when no public API origin is configured in production.
+      // Without one, relative upload paths (/api/v1/uploads/…) normalise to
+      // http://localhost:PORT which browser clients can never reach, making
+      // every uploaded video fail silently on the player side even while the
+      // admin console shows "On Air".
+      const IS_PROD = process.env["NODE_ENV"] === "production";
+      const apiOriginConfigured = !IS_PROD || !!(
+        process.env["API_ORIGIN"] ||
+        process.env["RENDER_EXTERNAL_URL"] ||
+        process.env["DEV_DOMAIN"] ||
+        process.env["REPLIT_DEV_DOMAIN"]
+      );
+      if (!apiOriginConfigured) {
+        issues.push(
+          "API_ORIGIN not set — uploaded video URLs resolve to localhost. " +
+          "Set API_ORIGIN=https://api.templetv.org.ng to fix playback.",
+        );
+      }
+
       return {
         checkedAt: new Date().toISOString(),
         broadcast,
@@ -4636,6 +4656,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         dbPool,
         storage: storageResult,
         contentRotation,
+        apiOriginConfigured,
         ok: issues.length === 0,
         issues,
       };
