@@ -30,6 +30,7 @@ import { usePlayer } from "@/context/PlayerContext";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
 import { useFavorites } from "@/hooks/useFavorites";
 import { useNotificationPreferences } from "@/hooks/useNotificationPreferences";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme, type ThemeChoice } from "@/context/ThemeContext";
 import Constants from "expo-constants";
@@ -158,6 +159,7 @@ export default function SettingsScreen() {
 
   const [notifGranted, setNotifGranted] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [limitCellular, setLimitCellular] = useState(false);
   const {
     hasOTAUpdate, hasStoreUpdate, isChecking, isMandatory,
     latestVersion, isApplyingOTA, checkNow, applyOTA, openStore,
@@ -175,6 +177,21 @@ export default function SettingsScreen() {
     "serviceWorker" in navigator &&
     "PushManager" in window &&
     "Notification" in window;
+
+  useEffect(() => {
+    AsyncStorage.getItem("@temple_tv/limit_cellular_quality_v1")
+      .then((v) => { if (v === "1") setLimitCellular(true); })
+      .catch(() => {});
+  }, []);
+
+  const handleToggleCellular = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setLimitCellular((prev) => {
+      const next = !prev;
+      AsyncStorage.setItem("@temple_tv/limit_cellular_quality_v1", next ? "1" : "0").catch(() => {});
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     getNotificationPermissionStatus().then((status) => {
@@ -504,6 +521,33 @@ export default function SettingsScreen() {
           ))}
         </View>
       </GlassCard>
+
+      {/* Streaming */}
+      {Platform.OS !== "web" && (
+        <>
+          <SectionTitle title="STREAMING" />
+          <GlassCard style={styles.card}>
+            <Row
+              icon="wifi"
+              label="Limit Quality on Mobile Data"
+              description={limitCellular ? "Capped to 480p on cellular — saves data" : "Full quality on all connections"}
+              right={
+                <ToggleSwitch
+                  value={limitCellular}
+                  onToggle={handleToggleCellular}
+                  label="Limit quality on mobile data"
+                />
+              }
+            />
+            <Row
+              icon="bell"
+              label="Notification History"
+              description="View recent push notifications"
+              onPress={() => router.push("/notifications")}
+            />
+          </GlassCard>
+        </>
+      )}
 
       {/* My Content */}
       <SectionTitle title="MY CONTENT" />

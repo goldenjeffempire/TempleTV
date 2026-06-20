@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { LiveStatus, BroadcastCurrent } from "../lib/api";
+import { isFireTV, isAndroidTV } from "../lib/platform";
 import { LiveBroadcastV2 } from "./LiveBroadcastV2";
 import { TempleTvLogo } from "./TempleTvLogo";
 import { reportLiveFailure, useLiveFallbackJustTriggered } from "../lib/liveFailureSignal";
@@ -41,6 +42,12 @@ interface LiveHeroProps {
  *  3. Off-air — muted badge, gradient fallback, "Watch Temple TV" CTA
  */
 export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, viewerCount }: LiveHeroProps) {
+  // Fire TV sticks and AndroidTV boxes have limited GPU memory and often run
+  // on underpowered SoCs.  CSS backdrop-filter blur causes frame drops and
+  // can stall the HLS pipeline on these platforms.  Disable ambient blur
+  // entirely so the broadcast video gets full rendering budget.
+  const enableAmbientBlur = !isFireTV && !isAndroidTV;
+
   const isLive = liveStatus?.isLive ?? false;
   const ytVideoId = liveStatus?.videoId;
   // One-shot banner: flashes for ~5 s when the live YouTube embed for this
@@ -210,7 +217,9 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
                 height: "100%",
                 objectFit: "cover",
                 display: "block",
-                filter: "blur(28px) saturate(1.4) brightness(0.55)",
+                filter: enableAmbientBlur
+                  ? "blur(28px) saturate(1.4) brightness(0.55)"
+                  : "brightness(0.4)",
                 transform: "scale(1.08)",
               }}
               onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
@@ -249,7 +258,9 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
               height: "100%",
               objectFit: "cover",
               display: "block",
-              filter: "blur(28px) saturate(1.3) brightness(0.5)",
+              filter: enableAmbientBlur
+                ? "blur(28px) saturate(1.3) brightness(0.5)"
+                : "brightness(0.35)",
               transform: "scale(1.08)",
             }}
             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}

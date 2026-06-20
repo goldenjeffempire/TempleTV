@@ -5,6 +5,7 @@ import type { SeriesItem } from "./hooks/useSeries";
 import type { Sermon } from "./hooks/useData";
 import { saveProgress, getProgress } from "./lib/watchProgress";
 import { usePlatformInit } from "./hooks/usePlatformInit";
+import { useSessionWatchdog } from "./hooks/useSessionWatchdog";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { TempleTvLogo } from "./components/TempleTvLogo";
 import { ConnectivityBanner } from "./components/ConnectivityBanner";
@@ -87,6 +88,7 @@ function OnAirOverlays() {
 
 export default function App() {
   usePlatformInit();
+  useSessionWatchdog();
 
   const [screen, setScreen] = useState<Screen>(getInitialScreen);
   const [player, setPlayer] = useState<{

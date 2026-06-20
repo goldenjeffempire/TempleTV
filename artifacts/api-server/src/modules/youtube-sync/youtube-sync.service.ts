@@ -83,6 +83,40 @@ interface QuotaSnapshot {
 const quotaTracker = new Map<string, QuotaEntry>();
 registerNamedStore("youtube-quota-tracker", () => quotaTracker.size);
 let quotaUsed = 0;
+
+// When the YouTube API key is detected as invalid/revoked (403 + keyInvalid),
+// all Data API calls are suspended for KEY_INVALID_DISABLE_MS to avoid wasting
+// quota budget and log noise. Unlike quota exhaustion (which resets at midnight),
+// key-invalid state stays until the operator updates the key and restarts.
+const KEY_INVALID_DISABLE_MS = 24 * 60 * 60 * 1000; // 24 h
+let _keyInvalidUntil: Date | null = null;
+
+class YouTubeKeyInvalidError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "YouTubeKeyInvalidError";
+  }
+}
+
+function isKeyInvalid(): boolean {
+  if (!_keyInvalidUntil) return false;
+  if (new Date() >= _keyInvalidUntil) { _keyInvalidUntil = null; return false; }
+  return true;
+}
+
+function markKeyInvalid(reason: string): void {
+  _keyInvalidUntil = new Date(Date.now() + KEY_INVALID_DISABLE_MS);
+  logger.error(
+    { reason, disabledUntil: _keyInvalidUntil.toISOString() },
+    "youtube-sync: API key invalid — all Data API calls suspended for 24 h",
+  );
+  adminEventBus.push("ops-alert", {
+    level: "critical",
+    code: "youtube-api-key-invalid",
+    message: `YouTube Data API key is invalid or revoked (reason: ${reason}). All YouTube sync has fallen back to RSS. Update YOUTUBE_API_KEY and restart the server.`,
+    context: { reason, disabledUntil: _keyInvalidUntil.toISOString() },
+  });
+}
 const QUOTA_TOTAL = env.YOUTUBE_QUOTA_DAILY_LIMIT;
 const QUOTA_SNAPSHOT_KEY = "yt:quota:snapshot";
 
@@ -130,6 +164,15 @@ export function trackQuota(operation: string, cost: number): void {
         total: QUOTA_TOTAL,
         pct: Math.round(pct * 100),
         resetsAt: quotaResetAt.toISOString(),
+      });
+      // Also fire an ops-alert so the SMTP escalation system sends an email.
+      // SSE alone only reaches operators who happen to have the admin panel open;
+      // email ensures the on-call person is notified even when off-screen.
+      adminEventBus.push("ops-alert", {
+        level: "critical",
+        code: "youtube-quota-critical",
+        message: `YouTube Data API quota CRITICAL — ${Math.round(pct * 100)}% used (${quotaUsed.toLocaleString()}/${QUOTA_TOTAL.toLocaleString()} units). Sync is falling back to RSS. Quota resets at ${quotaResetAt.toUTCString()}.`,
+        context: { quotaUsed, QUOTA_TOTAL, pct: Math.round(pct * 100), resetsAt: quotaResetAt.toISOString() },
       });
       logger.warn({ quotaUsed, QUOTA_TOTAL }, "youtube-sync: quota CRITICAL — >95% used, falling back to RSS");
     } else if (!_quotaWarnFired && pct >= QUOTA_WARN_PCT) {
@@ -423,11 +466,31 @@ interface VideoDetails {
   viewCount: string;
 }
 
+async function detectYouTubeKeyInvalid(res: Response): Promise<void> {
+  if (res.status !== 403) return;
+  try {
+    const body = await res.clone().json() as {
+      error?: { errors?: { reason?: string; domain?: string }[] };
+    };
+    const reason = body?.error?.errors?.[0]?.reason ?? "";
+    if (reason === "keyInvalid" || reason === "accessNotConfigured" || reason === "keyExpired") {
+      markKeyInvalid(reason);
+      throw new YouTubeKeyInvalidError(`YouTube API key invalid (reason: ${reason})`);
+    }
+  } catch (parseErr) {
+    if (parseErr instanceof YouTubeKeyInvalidError) throw parseErr;
+    // JSON parse failed — fall through to generic HTTP error handling
+  }
+}
+
 async function getUploadsPlaylistId(apiKey: string): Promise<string> {
   trackQuota("channels.list", 1);
   const url = `${YT_API_BASE}/channels?part=contentDetails&id=${CHANNEL_ID}&key=${apiKey}`;
   const res = await fetch(url, { signal: AbortSignal.timeout(12_000) });
-  if (!res.ok) throw new Error(`channels API ${res.status}`);
+  if (!res.ok) {
+    await detectYouTubeKeyInvalid(res);
+    throw new Error(`channels API ${res.status}`);
+  }
   const data = await res.json() as {
     items?: { contentDetails: { relatedPlaylists: { uploads: string } } }[];
   };
@@ -462,7 +525,10 @@ async function getAllPlaylistItems(
       ...(pageToken ? { pageToken } : {}),
     });
     const res = await fetch(`${YT_API_BASE}/playlistItems?${params}`, { signal: AbortSignal.timeout(15_000) });
-    if (!res.ok) throw new Error(`playlistItems API ${res.status}`);
+    if (!res.ok) {
+      await detectYouTubeKeyInvalid(res);
+      throw new Error(`playlistItems API ${res.status}`);
+    }
     const data = await res.json() as {
       nextPageToken?: string;
       items?: {
@@ -583,6 +649,26 @@ interface NormalizedVideo {
 async function fetchAllChannelVideos(
   apiKey: string, cutoff: Date,
 ): Promise<{ videos: NormalizedVideo[]; source: "youtube_api" | "rss"; skipped: number }> {
+  // Skip the Data API entirely if the key has been detected as invalid —
+  // fall back to RSS immediately rather than burning a quota unit on a
+  // request that will 403 again.
+  if (isKeyInvalid()) {
+    logger.warn({ disabledUntil: _keyInvalidUntil?.toISOString() }, "youtube-sync: API key invalid — skipping Data API, using RSS");
+    const rss = await fetchRssVideos();
+    const within = rss.filter((v) => !v.publishedAt || new Date(v.publishedAt) >= cutoff);
+    return {
+      videos: within.map((v) => ({
+        videoId: v.videoId, title: v.title, description: v.description,
+        publishedAt: v.publishedAt, thumbnailUrl: v.thumbnailUrl,
+        durationSecs: 0, viewCount: 0,
+        category: detectCategory(v.title, v.description),
+        preacher: extractPreacher(v.title),
+      })),
+      source: "rss",
+      skipped: rss.length - within.length,
+    };
+  }
+
   try {
     logger.info({ cutoff: cutoff.toISOString() }, "youtube-sync: fetching channel library via Data API v3");
     const playlistId = await getUploadsPlaylistId(apiKey);
@@ -995,9 +1081,10 @@ export async function syncYouTubeChannel(triggeredBy: "scheduler" | "manual" = "
   try {
     // ── Fetch from YouTube / RSS ─────────────────────────────────────────────
     const apiKey = env.YOUTUBE_API_KEY;
-    // Skip the Data API entirely when the daily quota is locally exhausted to
-    // avoid a wasted HTTP round-trip + 403 log noise. RSS is always the fallback.
-    const useApi = apiKey && !isQuotaExhausted();
+    // Skip the Data API entirely when the daily quota is locally exhausted, or
+    // when the key has been detected as invalid (403+keyInvalid), to avoid
+    // wasted round-trips and log noise. RSS is always the fallback.
+    const useApi = apiKey && !isQuotaExhausted() && !isKeyInvalid();
     if (apiKey && !useApi) {
       logger.warn(
         { quotaUsed, QUOTA_TOTAL },

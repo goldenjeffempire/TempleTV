@@ -317,9 +317,26 @@ export default function SearchScreen() {
             <View style={styles.centered}>
               <Feather name="search" size={52} color={c.mutedForeground} />
               <Text style={[styles.emptyTitle, { color: c.foreground }]}>No results</Text>
-              <Text style={[styles.emptyDesc, { color: c.mutedForeground }]}>
-                No sermons match "{query}". Try a different keyword.
-              </Text>
+              {category !== ("All" as SermonCategory) ? (
+                <>
+                  <Text style={[styles.emptyDesc, { color: c.mutedForeground }]}>
+                    No {category} sermons match "{query}".
+                  </Text>
+                  <Pressable
+                    onPress={() => setCategory("All" as SermonCategory)}
+                    style={[styles.clearFilterBtn, { backgroundColor: c.primary + "18", borderColor: c.primary + "44" }]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Clear category filter and search all sermons"
+                  >
+                    <Feather name="x" size={13} color={c.primary} />
+                    <Text style={[styles.clearFilterText, { color: c.primary }]}>Clear category filter</Text>
+                  </Pressable>
+                </>
+              ) : (
+                <Text style={[styles.emptyDesc, { color: c.mutedForeground }]}>
+                  No sermons match "{query}". Try a different keyword.
+                </Text>
+              )}
             </View>
           ) : (
             <FlatList
@@ -478,6 +495,17 @@ const styles = StyleSheet.create({
   loadingText: { fontSize: 14, marginTop: 8 },
   emptyTitle: { fontSize: 18, fontWeight: "700", textAlign: "center" },
   emptyDesc: { fontSize: 14, textAlign: "center", lineHeight: 20 },
+  clearFilterBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    marginTop: 4,
+  },
+  clearFilterText: { fontSize: 14, fontWeight: "600" },
 
   resultCount: {
     fontSize: 12,
