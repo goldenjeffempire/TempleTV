@@ -321,7 +321,7 @@ function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
     const onErr = () => setPlayerError(
       isHls
         ? "HLS stream failed to load in this browser. Try Chrome or Firefox."
-        : "This MP4 could not load. The moov metadata block is likely at the end of the file (faststart not yet applied). This is a browser preview limitation — real viewers receive HLS from the broadcast path and are unaffected.",
+        : "This MP4 could not load. The moov atom may not yet be at the start of the file (faststart not yet applied). If HLS transcoding is not yet complete, the broadcast queue may serve viewers this same raw MP4.",
     );
     el.src = previewUrl;
     el.addEventListener("loadedmetadata", onMeta);
@@ -413,7 +413,10 @@ function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
               {video.transcodingStatus === "hls_ready" || video.transcodingStatus === "ready"
                 ? " HLS is ready — reload the preview to use it."
                 : " HLS transcoding is not yet complete."}
-              {" "}Browser MP4 playback can fail if the moov atom hasn't been relocated via faststart. Real viewers receive HLS from the broadcast path and are unaffected.
+              {" "}Browser MP4 playback can fail if the moov atom hasn't been relocated via faststart.
+              {video.transcodingStatus !== "hls_ready" && video.transcodingStatus !== "ready"
+                ? " Until HLS is ready, the broadcast queue may serve viewers this raw MP4."
+                : " Real viewers receive the optimized HLS stream."}
             </span>
           </>
         )}
