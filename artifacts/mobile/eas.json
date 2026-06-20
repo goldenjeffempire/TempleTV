@@ -133,12 +133,13 @@
       "pnpm": "10.26.1",
       "android": {
         "buildType": "app-bundle",
-        "resourceClass": "large"
+        "resourceClass": "medium"
       },
       "env": {
         "APP_ENV": "production",
         "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng",
         "NODE_OPTIONS": "--max-old-space-size=8192",
+        "METRO_MAX_WORKERS": "1",
         "SENTRY_DISABLE_AUTO_UPLOAD": "true",
         "EXPO_PUBLIC_SENTRY_DSN": "https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504"
       }
