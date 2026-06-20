@@ -38,11 +38,24 @@ type GuideItem = {
   durationSecs: number;
   isCurrent: boolean;
   startMs: number;
+  estimatedStartMs: number;
+  estimatedEndMs: number;
 };
 
-type GuideResponse = {
-  items: GuideItem[];
-  liveOverride: { title: string } | null;
+type V2ProgramGuideResponse = {
+  mode: string;
+  totalActiveItems: number;
+  cycleDurationMs: number;
+  schedule: Array<{
+    id: string;
+    title: string;
+    durationSecs: number;
+    thumbnailUrl: string | null;
+    sourceQuality: string;
+    isPlaying: boolean;
+    estimatedStartMs: number;
+    estimatedEndMs: number;
+  }>;
 };
 
 // ─── Broadcast schedule hook ────────────────────────────────────────────────
@@ -50,6 +63,7 @@ type GuideResponse = {
 function useBroadcastSchedule() {
   const [items, setItems] = useState<GuideItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [engineMode, setEngineMode] = useState<string>("UNKNOWN");
   const mountedRef = useRef(true);
 
   const fetchGuide = useCallback(async (quiet = false) => {
@@ -57,13 +71,38 @@ function useBroadcastSchedule() {
     try {
       const base = getApiBase();
       if (!base) return;
-      const res = await fetch(`${base}/api/broadcast/guide`, {
+      // Use the V2 program-guide endpoint for richer EPG data (progress
+      // timestamps, source quality, deduplication across ring-buffer cycles).
+      const res = await fetch(`${base}/api/broadcast-v2/program-guide?hoursAhead=2`, {
         signal: AbortSignal.timeout(10_000),
       });
       if (!res.ok || !mountedRef.current) return;
-      const data = (await res.json()) as GuideResponse;
-      if (mountedRef.current && Array.isArray(data.items)) {
-        setItems(data.items.slice(0, 5));
+      const data = (await res.json()) as V2ProgramGuideResponse;
+      if (!mountedRef.current) return;
+
+      if (data.mode) setEngineMode(data.mode);
+
+      if (Array.isArray(data.schedule)) {
+        // Deduplicate by id: ring-buffer queues repeat the same item multiple
+        // times within a 2-hour window when total queue duration < 2 h.
+        const seen = new Set<string>();
+        const mapped: GuideItem[] = [];
+        for (const e of data.schedule) {
+          if (seen.has(e.id)) continue;
+          seen.add(e.id);
+          mapped.push({
+            id: e.id,
+            title: e.title,
+            thumbnailUrl: e.thumbnailUrl ?? "",
+            durationSecs: e.durationSecs,
+            isCurrent: e.isPlaying,
+            startMs: e.estimatedStartMs,
+            estimatedStartMs: e.estimatedStartMs,
+            estimatedEndMs: e.estimatedEndMs,
+          });
+          if (mapped.length >= 6) break;
+        }
+        setItems(mapped);
       }
     } catch {
       // Non-critical — silently fall back to an empty schedule
@@ -75,15 +114,15 @@ function useBroadcastSchedule() {
   useEffect(() => {
     mountedRef.current = true;
     void fetchGuide(false);
-    // Refresh every 30 s to track queue progression
-    const interval = setInterval(() => void fetchGuide(true), 30_000);
+    // Refresh every 20 s to track queue progression
+    const interval = setInterval(() => void fetchGuide(true), 20_000);
     return () => {
       mountedRef.current = false;
       clearInterval(interval);
     };
   }, [fetchGuide]);
 
-  return { items, loading };
+  return { items, loading, engineMode };
 }
 
 // ─── Schedule row ────────────────────────────────────────────────────────────
@@ -96,18 +135,63 @@ function formatDuration(secs: number): string {
   return `${m}m`;
 }
 
-function ScheduleCard({ item, index }: { item: GuideItem; index: number }) {
+function formatTimeUntil(ms: number): string {
+  const secs = Math.round(ms / 1000);
+  if (secs < 90) return "Up next";
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `In ${mins}m`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m > 0 ? `In ${h}h ${m}m` : `In ${h}h`;
+}
+
+function ScheduleCard({
+  item,
+  index,
+  onPress,
+}: {
+  item: GuideItem;
+  index: number;
+  onPress?: () => void;
+}) {
   const colors = useColors();
+
+  // Live progress for the currently-airing item (0–1).
+  const progressPct =
+    item.isCurrent &&
+    item.estimatedStartMs > 0 &&
+    item.estimatedEndMs > item.estimatedStartMs
+      ? Math.min(
+          1,
+          Math.max(
+            0,
+            (Date.now() - item.estimatedStartMs) /
+              (item.estimatedEndMs - item.estimatedStartMs),
+          ),
+        )
+      : 0;
+
+  const timeUntilMs =
+    !item.isCurrent && item.estimatedStartMs > Date.now()
+      ? item.estimatedStartMs - Date.now()
+      : null;
+
   return (
-    <View
-      style={[
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [
         styles.scheduleCard,
         {
           backgroundColor: colors.card,
           borderColor: item.isCurrent ? colors.primary + "55" : colors.border,
           borderWidth: item.isCurrent ? 1.5 : StyleSheet.hairlineWidth,
+          opacity: pressed ? 0.82 : 1,
         },
       ]}
+      accessibilityRole="button"
+      accessibilityLabel={
+        item.isCurrent ? `Now playing: ${item.title}` : `Up next: ${item.title}`
+      }
     >
       {item.thumbnailUrl ? (
         <Image
@@ -116,7 +200,13 @@ function ScheduleCard({ item, index }: { item: GuideItem; index: number }) {
           resizeMode="cover"
         />
       ) : (
-        <View style={[styles.scheduleThumb, styles.scheduleThumbPlaceholder, { backgroundColor: colors.muted }]}>
+        <View
+          style={[
+            styles.scheduleThumb,
+            styles.scheduleThumbPlaceholder,
+            { backgroundColor: colors.muted },
+          ]}
+        >
           <Feather name="film" size={20} color={colors.mutedForeground} />
         </View>
       )}
@@ -135,13 +225,33 @@ function ScheduleCard({ item, index }: { item: GuideItem; index: number }) {
         <Text style={[styles.scheduleTitle, { color: colors.text }]} numberOfLines={2}>
           {item.title}
         </Text>
-        {item.durationSecs > 0 && (
-          <Text style={[styles.scheduleDuration, { color: colors.mutedForeground }]}>
-            {formatDuration(item.durationSecs)}
-          </Text>
+        <View style={styles.scheduleMetaRow}>
+          {item.durationSecs > 0 && (
+            <Text style={[styles.scheduleDuration, { color: colors.mutedForeground }]}>
+              {formatDuration(item.durationSecs)}
+            </Text>
+          )}
+          {timeUntilMs !== null && (
+            <Text style={[styles.scheduleTimeChip, { color: colors.primary }]}>
+              {formatTimeUntil(timeUntilMs)}
+            </Text>
+          )}
+        </View>
+        {item.isCurrent && progressPct > 0 && (
+          <View
+            style={[styles.scheduleProgressTrack, { backgroundColor: colors.border }]}
+          >
+            <View
+              style={[
+                styles.scheduleProgressFill,
+                { flex: progressPct, backgroundColor: colors.primary },
+              ]}
+            />
+            <View style={{ flex: Math.max(0.001, 1 - progressPct) }} />
+          </View>
         )}
       </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -448,7 +558,7 @@ export default function ChannelsTab() {
   const insets = useSafeAreaInsets();
   const colors = useColors();
   const { channels, loading, error, isRetrying, refetch } = useChannels();
-  const { items: scheduleItems, loading: scheduleLoading } = useBroadcastSchedule();
+  const { items: scheduleItems, loading: scheduleLoading, engineMode } = useBroadcastSchedule();
   const [tuningId, setTuningId] = useState<string | null>(null);
 
   // Reset the tuning spinner whenever this screen comes back into focus
@@ -587,11 +697,29 @@ export default function ChannelsTab() {
         <SectionHeader live title="Live Channels" />
         {channelsSectionContent}
 
-        {/* ── Up Next / Broadcast Schedule — hidden per product decision */}
-        {false && (scheduleLoading || scheduleItems.length > 0) && (
+        {/* ── Up Next / Broadcast Schedule ──────────────────────────────── */}
+        {(scheduleLoading || scheduleItems.length > 0) && (
           <>
             <View style={[styles.divider, { backgroundColor: colors.border }]} />
-            <SectionHeader icon="list" title="Up Next" />
+            {/* Custom header with engine health badge */}
+            <View style={styles.sectionHeaderRow}>
+              <Feather name="list" size={15} color={colors.primary} />
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>Up Next</Text>
+              {engineMode === "PLAYING" && (
+                <View style={[styles.engineBadge, { backgroundColor: "#22c55e22" }]}>
+                  <View style={[styles.engineDot, { backgroundColor: "#22c55e" }]} />
+                  <Text style={[styles.engineBadgeText, { color: "#22c55e" }]}>On Air</Text>
+                </View>
+              )}
+              {engineMode !== "UNKNOWN" && engineMode !== "PLAYING" && (
+                <View style={[styles.engineBadge, { backgroundColor: colors.muted }]}>
+                  <View style={[styles.engineDot, { backgroundColor: colors.mutedForeground }]} />
+                  <Text style={[styles.engineBadgeText, { color: colors.mutedForeground }]}>
+                    {engineMode === "IDLE" ? "Off Air" : "Standby"}
+                  </Text>
+                </View>
+              )}
+            </View>
             {scheduleLoading && scheduleItems.length === 0 ? (
               <View style={styles.scheduleLoadingRow}>
                 <ActivityIndicator size="small" color={colors.primary} />
@@ -602,7 +730,22 @@ export default function ChannelsTab() {
             ) : (
               <View style={styles.scheduleList}>
                 {scheduleItems.map((item, idx) => (
-                  <ScheduleCard key={item.id} item={item} index={idx + 1} />
+                  <ScheduleCard
+                    key={item.id}
+                    item={item}
+                    index={idx + 1}
+                    onPress={() => {
+                      router.push({
+                        pathname: "/player",
+                        params: {
+                          id: "live",
+                          isLive: "true",
+                          title: item.title,
+                          preacher: "",
+                        },
+                      });
+                    }}
+                  />
                 ))}
               </View>
             )}
@@ -760,6 +903,44 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 0,
+  },
+  scheduleMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  scheduleTimeChip: {
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  scheduleProgressTrack: {
+    height: 2,
+    borderRadius: 1,
+    flexDirection: "row",
+    overflow: "hidden",
+    marginTop: 4,
+  },
+  scheduleProgressFill: {
+    borderRadius: 1,
+  },
+  engineBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    marginLeft: 4,
+  },
+  engineDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+  },
+  engineBadgeText: {
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.3,
   },
   scheduleThumb: {
     width: 100,

@@ -112,6 +112,7 @@ import { ResizeMode, Video, type AVPlaybackStatus } from "expo-av";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { MobileBufferState } from "@workspace/player-core/adapters/mobile";
 import { useNetworkContext } from "@/context/NetworkContext";
+import { postPlaybackTelemetryDelta } from "@/services/broadcast";
 import {
   isInPictureInPictureMode,
   updatePipParams,
@@ -1476,6 +1477,35 @@ export function V2PlayerContainer({
       forceReconnect();
     }
   }, [justRecovered, notifyOnline, forceReconnect]);
+
+  // ── Playback telemetry ────────────────────────────────────────────────────
+  // Report a heartbeat to /api/broadcast/playback-telemetry every 60 s while
+  // the player is in the PLAYING state.  The server aggregates these signals
+  // into a stall-rate and viewer-quality dashboard.
+  //
+  // expo-av does not expose per-frame decoded/dropped counts on React Native,
+  // so we approximate:
+  //   decoded  = 60 s × 30 fps  (nominal frame count for the window)
+  //   dropped  = 0              (we track stalls separately via FSM events)
+  //
+  // This is intentionally best-effort: the interval is skipped on non-primary
+  // consumers (suppressEvents=true) and clears on unmount, so there is no
+  // double-counting risk from the Hero preview running alongside the Player.
+  const snapshotStateRef = useRef(snapshot.state);
+  snapshotStateRef.current = snapshot.state;
+
+  useEffect(() => {
+    if (suppressEvents) return; // Only the primary driver reports telemetry.
+
+    const INTERVAL_MS = 60_000;
+    const id = setInterval(() => {
+      if (snapshotStateRef.current === "PLAYING") {
+        void postPlaybackTelemetryDelta("mobile", 60 * 30, 0);
+      }
+    }, INTERVAL_MS);
+
+    return () => clearInterval(id);
+  }, [suppressEvents]);
 
   const server = snapshot.lastServerSnapshot;
 

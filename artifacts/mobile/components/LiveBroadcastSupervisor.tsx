@@ -4,15 +4,25 @@ import { AppState, type AppStateStatus } from "react-native";
 import { usePlayer } from "@/context/PlayerContext";
 import { subscribeBroadcastEvents } from "@/services/broadcast";
 import { checkLiveStatus } from "@/services/youtube";
+import { getApiBase } from "@/lib/apiBase";
 import { BROADCAST_TITLE, BROADCAST_PREACHER } from "@/lib/broadcastIdentity";
 
 /**
- * LiveBroadcastSupervisor — monitors for genuine LIVE events (YouTube live
- * or an admin-triggered live override) and navigates to the player.
+ * LiveBroadcastSupervisor — monitors for genuine LIVE events and navigates
+ * to the player automatically.
  *
- * Intentionally does NOT react to `broadcast-current-updated` because that
- * event fires every ~2 s from the transition ticker and is not a live signal.
- * Reacts only to explicit control/status events and polls every 60 s.
+ * Watches two independent signal sources:
+ *
+ *  1. YouTube Live (via checkLiveStatus) — when the church streams live on
+ *     YouTube and the admin activates the YouTube override.
+ *
+ *  2. V2 HLS broadcast mode (via /api/broadcast-v2/state) — when the V2
+ *     orchestrator enters PLAYING state for the first time in a session
+ *     (i.e. transitions from IDLE/LOADING to PLAYING). This covers the
+ *     primary broadcast path where the admin queues HLS content.
+ *
+ * Both paths guard against ejecting users already on the player screen
+ * and collapse rapid SSE bursts with a 1.5 s throttle.
  */
 export function LiveBroadcastSupervisor() {
   const { isLive, playLive, isBroadcastMode } = usePlayer();
@@ -21,28 +31,23 @@ export function LiveBroadcastSupervisor() {
   const isLiveRef = useRef(isLive);
   const isBroadcastModeRef = useRef(isBroadcastMode);
   const lastCheckRef = useRef(0);
+  const prevV2ModeRef = useRef<string | null>(null);
+
   isLiveRef.current = isLive;
   isBroadcastModeRef.current = isBroadcastMode;
 
   useEffect(() => {
     let cancelled = false;
 
+    // ── Helper: is the user already on the player screen? ────────────────────
+    const onPlayer = () => segments.includes("player" as never);
+
+    // ── 1. YouTube live detection ─────────────────────────────────────────────
+    //
+    // Burst-coalesce throttle: a single admin action fans out into 3 SSE events
+    // within ~100 ms. 1.5 s collapses bursts while propagating real changes in
+    // under 2 s instead of waiting for the 60 s safety poll.
     const checkForLive = async () => {
-      // Burst-coalesce throttle: a single admin action ("Activate live")
-      // fans out into 3 SSE events back-to-back — `broadcast-control-
-      // updated`, `status`, and (since the cinematic-hero sync fix in
-      // §15) `broadcast-current-updated` via `invalidateBroadcastCache`.
-      // All three arrive within ~50–100 ms. We want exactly ONE
-      // `checkLiveStatus(true)` call per burst (it hits the YouTube
-      // Data API, which is quota-limited).
-      //
-      // The previous 10 s window was a 100×-too-wide overshoot: any
-      // legitimate live event that fired within 10 s of ANY prior
-      // check (including the initial mount-time check at line 69) was
-      // dropped, leaving the user up to ~55 s stale until the 60 s
-      // safety poll caught up. 1.5 s is 30× the burst window — still
-      // collapses bursts, but a real state change after the initial
-      // mount check now propagates in <2 s instead of <60 s.
       const now = Date.now();
       if (now - lastCheckRef.current < 1_500) return;
       lastCheckRef.current = now;
@@ -51,8 +56,6 @@ export function LiveBroadcastSupervisor() {
         const liveStatus = await checkLiveStatus(true);
         if (cancelled) return;
 
-        // Only interrupt for genuine YouTube live streams — NOT for scheduled
-        // "live" content types which are regular pre-recorded broadcasts.
         if (!liveStatus.isLive) return;
 
         const liveVideoChanged =
@@ -61,17 +64,9 @@ export function LiveBroadcastSupervisor() {
         if (!isLiveRef.current || liveVideoChanged) {
           lastLiveVideoRef.current = liveStatus.videoId ?? lastLiveVideoRef.current;
 
-          // Don't forcibly eject the user if they are already on the live player.
-          // Also guard the HLS broadcast mode: if the user is watching the v2
-          // HLS broadcast (isBroadcastMode=true) and YouTube live starts with
-          // the same videoId, don't interrupt — they are already on live content.
-          const onPlayer = segments.includes("player" as never);
-          if (onPlayer && (isLiveRef.current || isBroadcastModeRef.current) && !liveVideoChanged) return;
+          if (onPlayer() && (isLiveRef.current || isBroadcastModeRef.current) && !liveVideoChanged) return;
 
           playLive();
-          // Round 9c: pass the channel identity rather than the per-program
-          // title so the route, share-sheet, and any pre-render glance stay
-          // consistent with the broadcast-clean directive.
           router.push({
             pathname: "/player",
             params: {
@@ -85,33 +80,94 @@ export function LiveBroadcastSupervisor() {
       } catch {}
     };
 
-    checkForLive();
-    // Poll every 60 s (down from 20 s) — SSE events handle the real-time cases
-    const interval = setInterval(checkForLive, 60_000);
+    // ── 2. V2 HLS broadcast mode detection ───────────────────────────────────
+    //
+    // Polls /api/broadcast-v2/state and navigates to the player the first time
+    // the orchestrator transitions into PLAYING mode within this app session.
+    //
+    // Guards:
+    //   - prevV2ModeRef starts as null → first successful poll stores the mode
+    //     WITHOUT navigating (avoids cold-start ejection when the broadcast was
+    //     already running before the app opened).
+    //   - Only fires on the null→PLAYING or non-PLAYING→PLAYING transition.
+    //   - Skips navigation if the user is already on the player.
+    const checkV2Broadcast = async () => {
+      try {
+        const base = getApiBase();
+        if (!base || cancelled) return;
 
-    // Only subscribe to events that signal a genuine live state change
+        const res = await fetch(`${base}/api/broadcast-v2/state`, {
+          signal: AbortSignal.timeout(5_000),
+        });
+        if (!res.ok || cancelled) return;
+
+        const data = (await res.json()) as { mode?: string; sequence?: number };
+        if (cancelled) return;
+
+        const mode = data.mode ?? "UNKNOWN";
+        const prev = prevV2ModeRef.current;
+
+        // Persist the new mode before any early-return so subsequent checks
+        // always compare against the latest known state.
+        prevV2ModeRef.current = mode;
+
+        // First poll: establish baseline without triggering navigation.
+        if (prev === null) return;
+
+        // Transition into PLAYING from a non-playing state.
+        if (mode === "PLAYING" && prev !== "PLAYING") {
+          if (onPlayer()) return;
+          router.push({
+            pathname: "/player",
+            params: {
+              isLive: "true",
+              title: BROADCAST_TITLE,
+              preacher: BROADCAST_PREACHER,
+            },
+          });
+        }
+      } catch {}
+    };
+
+    // ── Initial checks ────────────────────────────────────────────────────────
+    checkForLive();
+    checkV2Broadcast();
+
+    // ── Polling intervals ─────────────────────────────────────────────────────
+    // YouTube: 60 s — SSE events handle real-time, poll is safety net.
+    // V2 state: 30 s — lighter endpoint, catches mode changes between SSE events.
+    const ytInterval = setInterval(checkForLive, 60_000);
+    const v2Interval = setInterval(checkV2Broadcast, 30_000);
+
+    // ── SSE subscription — react only to genuine live-state events ────────────
     const subscription = subscribeBroadcastEvents({
       "broadcast-control-updated": checkForLive,
-      "broadcast-schedule-updated": checkForLive,
+      "broadcast-schedule-updated": () => {
+        checkForLive();
+        checkV2Broadcast();
+      },
       "yt-status": checkForLive,
-      "override-expired": checkForLive,
+      "override-expired": () => {
+        checkForLive();
+        checkV2Broadcast();
+      },
       status: checkForLive,
     });
 
-    // Foreground recovery: a live stream may have started while the user was
-    // away. Bypass the 10s throttle so the very first foreground check is
-    // immediate — important after long backgrounds where a deploy or live
-    // event was missed.
+    // ── Foreground recovery ───────────────────────────────────────────────────
+    // Bypass the 1.5 s throttle so the very first foreground check is immediate.
     const appStateSub = AppState.addEventListener("change", (next: AppStateStatus) => {
       if (next === "active") {
         lastCheckRef.current = 0;
         checkForLive();
+        checkV2Broadcast();
       }
     });
 
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      clearInterval(ytInterval);
+      clearInterval(v2Interval);
       subscription?.close();
       appStateSub.remove();
     };
