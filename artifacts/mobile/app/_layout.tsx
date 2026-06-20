@@ -337,7 +337,7 @@ function RootLayoutNav() {
           // to play; passing only `id` with no hlsUrl/youtubeId leaves the
           // player in a blank "no-source" state.
           const videoId    = data?.videoId as string | undefined;
-          const notifTitle = (data?.title as string | undefined) ?? "Temple TV";
+          const notifTitle = (data?.title as string | undefined) ?? "JCTM";
           if (videoId) {
             (async () => {
               try {

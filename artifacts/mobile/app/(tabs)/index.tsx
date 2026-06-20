@@ -373,7 +373,7 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
           style={styles.heroLogo}
           resizeMode="contain"
           accessible
-          accessibilityLabel="Temple TV"
+          accessibilityLabel="App logo"
         />
       </View>
 

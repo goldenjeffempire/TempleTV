@@ -90,14 +90,14 @@ export default function DonateScreen() {
   usePageSeo({
     title: "Partner With Us — Give to Jesus Christ Temple Ministry",
     description:
-      "Support the work of Jesus Christ Temple Ministry. Give securely online to help us reach more souls through Temple TV's worldwide broadcasting.",
+      "Support the work of Jesus Christ Temple Ministry. Give securely online to help us reach more souls through our worldwide broadcasting.",
     path: "/donate",
     structuredData: {
       "@context": "https://schema.org",
       "@type": "DonateAction",
       recipient: { "@id": "https://templetv.org.ng/#organization" },
-      name: "Partner With Temple TV",
-      description: "Give to support Temple TV's broadcasting mission.",
+      name: "Partner With JCTM",
+      description: "Give to support JCTM's broadcasting mission.",
     },
   });
 

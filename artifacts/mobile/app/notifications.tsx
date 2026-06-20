@@ -256,7 +256,7 @@ export default function NotificationsScreen() {
           <Feather name="bell" size={52} color={c.mutedForeground} />
           <Text style={[styles.emptyTitle, { color: c.foreground }]}>No Notifications</Text>
           <Text style={[styles.emptyDesc, { color: c.mutedForeground }]}>
-            Push notifications sent by Temple TV will appear here.
+            Push notifications will appear here.
           </Text>
         </View>
       ) : (

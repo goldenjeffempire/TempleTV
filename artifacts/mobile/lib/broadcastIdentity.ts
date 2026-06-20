@@ -16,18 +16,18 @@
 
 /** Title shown in route params, system "now playing" metadata, share
  *  sheets, and any chrome that needs a label for the live feed. */
-export const BROADCAST_TITLE = "Temple TV Live";
+export const BROADCAST_TITLE = "Live Broadcast";
 
 /** Slightly more descriptive variant used by the live notification
  *  banner ("LIVE NOW" tease above the hero). */
-export const BROADCAST_LIVE_BANNER_TITLE = "Temple TV is LIVE now";
+export const BROADCAST_LIVE_BANNER_TITLE = "We're LIVE now";
 
 /** Hero headline shown when the channel is live. Replaces the dynamic
  *  `liveStatus.title` so the hero reads as a station landing, not a
  *  sermon-specific landing. */
-export const BROADCAST_HERO_TITLE = "Temple TV";
+export const BROADCAST_HERO_TITLE = "Live";
 
 /** Preacher / artist label paired with `BROADCAST_TITLE` in the player
  *  chrome. Reads as the broadcaster identity rather than a sermon-
  *  specific preacher name. */
-export const BROADCAST_PREACHER = "Temple TV JCTM";
+export const BROADCAST_PREACHER = "JCTM Broadcasting";

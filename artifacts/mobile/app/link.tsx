@@ -36,8 +36,8 @@ import { usePageSeo } from "@/hooks/usePageSeo";
  */
 export default function LinkTvScreen() {
   usePageSeo({
-    title: "Link your TV | Temple TV",
-    description: "Pair your Temple TV smart-TV app with your account by entering the on-screen code.",
+    title: "Link your TV",
+    description: "Pair your smart-TV app with your account by entering the on-screen code.",
     path: "/link",
     noindex: true,
   });
@@ -111,7 +111,7 @@ export default function LinkTvScreen() {
 
         <Text style={[styles.heading, { color: c.foreground }]}>Link your TV</Text>
         <Text style={[styles.sub, { color: c.mutedForeground }]}>
-          Enter the 8-character code shown on your Temple TV smart-TV app.
+          Enter the 8-character code shown on your smart-TV app.
         </Text>
 
         {done ? (

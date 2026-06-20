@@ -1858,7 +1858,7 @@ export function V2PlayerContainer({
       !server.override
     ) {
       return {
-        main: "Temple TV is Off-Air",
+        main: "Off-Air",
         sub: "We'll be back shortly — stay tuned",
         showSpinner: false,
       };
@@ -1894,7 +1894,7 @@ export function V2PlayerContainer({
     ) {
       const nextTitle = server.next?.title;
       return {
-        main: "Temple TV is Off-Air",
+        main: "Off-Air",
         sub: "We'll be back shortly — stay tuned",
         showSpinner: false,
         upNext: nextTitle && nextTitle.length > 0 ? nextTitle : undefined,

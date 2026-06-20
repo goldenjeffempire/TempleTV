@@ -3,7 +3,7 @@ import type { PropsWithChildren } from "react";
 
 const SITE_URL = "https://templetv.org.ng";
 const DESCRIPTION =
-  "Temple TV — Stream live worship, sermons, and teachings from Jesus Christ Temple Ministry. Watch on web, mobile, and Smart TV.";
+  "JCTM — Stream live worship, sermons, and teachings from Jesus Christ Temple Ministry. Watch on web, mobile, and Smart TV.";
 const OG_IMAGE = `${SITE_URL}/og-image.png`;
 
 export default function Root({ children }: PropsWithChildren) {
@@ -17,9 +17,9 @@ export default function Root({ children }: PropsWithChildren) {
           content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"
         />
 
-        <title>Temple TV — Live Worship, Sermons & Teachings</title>
+        <title>JCTM — Live Worship, Sermons & Teachings</title>
         <meta name="description" content={DESCRIPTION} />
-        <meta name="keywords" content="Temple TV, JCTM, Jesus Christ Temple Ministry, live worship, sermons, online church, Christian teachings, Nigeria church, gospel streaming" />
+        <meta name="keywords" content="JCTM, Jesus Christ Temple Ministry, live worship, sermons, online church, Christian teachings, Nigeria church, gospel streaming" />
         <meta name="author" content="Jesus Christ Temple Ministry" />
         <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
         <meta name="googlebot" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
@@ -42,26 +42,26 @@ export default function Root({ children }: PropsWithChildren) {
         <link rel="dns-prefetch" href="https://googlevideo.com" />
 
         <meta name="theme-color" content="#6A0DAD" />
-        <meta name="application-name" content="Temple TV" />
+        <meta name="application-name" content="JCTM" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-        <meta name="apple-mobile-web-app-title" content="Temple TV" />
+        <meta name="apple-mobile-web-app-title" content="JCTM" />
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="format-detection" content="telephone=no" />
 
         <meta property="og:type" content="website" />
-        <meta property="og:site_name" content="Temple TV" />
-        <meta property="og:title" content="Temple TV — Live Worship, Sermons & Teachings" />
+        <meta property="og:site_name" content="JCTM" />
+        <meta property="og:title" content="JCTM — Live Worship, Sermons & Teachings" />
         <meta property="og:description" content={DESCRIPTION} />
         <meta property="og:url" content={SITE_URL} />
         <meta property="og:image" content={OG_IMAGE} />
         <meta property="og:image:width" content="1200" />
         <meta property="og:image:height" content="630" />
-        <meta property="og:image:alt" content="Temple TV — Live Worship & Sermons" />
+        <meta property="og:image:alt" content="JCTM — Live Worship & Sermons" />
         <meta property="og:locale" content="en_US" />
 
         <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content="Temple TV — Live Worship, Sermons & Teachings" />
+        <meta name="twitter:title" content="JCTM — Live Worship, Sermons & Teachings" />
         <meta name="twitter:description" content={DESCRIPTION} />
         <meta name="twitter:image" content={OG_IMAGE} />
 
@@ -89,7 +89,7 @@ export default function Root({ children }: PropsWithChildren) {
                   "@type": "Organization",
                   "@id": `${SITE_URL}/#organization`,
                   name: "Jesus Christ Temple Ministry",
-                  alternateName: "Temple TV",
+                  alternateName: "JCTM",
                   url: SITE_URL,
                   logo: {
                     "@type": "ImageObject",
@@ -106,7 +106,7 @@ export default function Root({ children }: PropsWithChildren) {
                   "@type": "WebSite",
                   "@id": `${SITE_URL}/#website`,
                   url: SITE_URL,
-                  name: "Temple TV",
+                  name: "JCTM",
                   description: DESCRIPTION,
                   publisher: { "@id": `${SITE_URL}/#organization` },
                   inLanguage: "en",
@@ -122,16 +122,16 @@ export default function Root({ children }: PropsWithChildren) {
                 {
                   "@type": "BroadcastService",
                   "@id": `${SITE_URL}/#broadcast`,
-                  name: "Temple TV Live",
+                  name: "JCTM Live",
                   broadcaster: { "@id": `${SITE_URL}/#organization` },
-                  broadcastDisplayName: "Temple TV",
+                  broadcastDisplayName: "JCTM",
                   inLanguage: "en",
                   videoFormat: "HD",
                   url: SITE_URL,
                 },
                 {
                   "@type": "MobileApplication",
-                  name: "Temple TV",
+                  name: "JCTM",
                   operatingSystem: "iOS, Android, Web",
                   applicationCategory: "LifestyleApplication",
                   offers: {
@@ -182,14 +182,14 @@ export default function Root({ children }: PropsWithChildren) {
       <body>
         <noscript>
           <div style={{ padding: 24, fontFamily: "system-ui, sans-serif", textAlign: "center" }}>
-            <h1>Temple TV requires JavaScript</h1>
+            <h1>JavaScript is required</h1>
             <p>Please enable JavaScript in your browser to watch live worship and sermons.</p>
           </div>
         </noscript>
         {children}
         <div id="boot-splash" aria-hidden="true">
           <img src="/icon.png" alt="" />
-          <div className="label">Temple TV</div>
+          <div className="label">JCTM</div>
           <div className="sub">Loading…</div>
         </div>
       </body>

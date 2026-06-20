@@ -595,7 +595,7 @@ export default function SettingsScreen() {
         <Row
           icon="heart"
           label="Support Us"
-          description="Partner with Temple TV JCTM"
+          description="Support JCTM's broadcasting mission"
           onPress={() => router.push("/donate")}
         />
         <Row

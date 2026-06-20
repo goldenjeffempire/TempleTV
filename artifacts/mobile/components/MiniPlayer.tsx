@@ -85,7 +85,7 @@ export function MiniPlayer() {
     setTimeout(() => { navigatingRef.current = false; }, 600);
 
     if (isLive) {
-      navigateToPlayer({ live: "true", title: "Temple TV Live", preacher: "Temple TV JCTM" });
+      navigateToPlayer({ live: "true", title: "Live Broadcast", preacher: "JCTM" });
     } else if (isBroadcastMode) {
       navigateToPlayer({ broadcastMode: "true" });
     } else if (currentSermon) {

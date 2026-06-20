@@ -72,7 +72,7 @@ export function UpdateBanner() {
     ? "Tap to apply now — takes a few seconds"
     : latestVersion
     ? `Version ${latestVersion} is available`
-    : "A new version of Temple TV is available";
+    : "A new version is available";
 
   return (
     <Animated.View

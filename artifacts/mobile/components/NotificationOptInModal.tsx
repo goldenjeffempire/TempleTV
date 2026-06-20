@@ -112,14 +112,14 @@ export function NotificationOptInModal({
             Stay Connected
           </Text>
           <Text style={[styles.subtitle, { color: c.mutedForeground }]}>
-            Enable notifications so you never miss what Temple TV JCTM is sharing.
+            Enable notifications so you never miss what we're sharing.
           </Text>
 
           <View style={styles.benefits}>
             <BenefitRow
               icon="radio"
               title="Live Service Alerts"
-              description="Know the moment Temple TV goes live every Sunday"
+              description="Know the moment we go live every Sunday"
             />
             <BenefitRow
               icon="book-open"

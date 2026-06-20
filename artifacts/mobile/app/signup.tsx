@@ -109,8 +109,8 @@ function AnimatedInput({
 
 export default function SignupScreen() {
   usePageSeo({
-    title: "Create Account | Temple TV",
-    description: "Create a free Temple TV account to save sermons, sync progress, and receive live notifications.",
+    title: "Create Account",
+    description: "Create a free account to save sermons, sync progress, and receive live notifications.",
     path: "/signup",
     noindex: true,
   });

@@ -111,7 +111,7 @@ export function MandatoryUpdateGate() {
           Update Required
         </Text>
         <Text style={[styles.subheading, { color: c.mutedForeground }]}>
-          Please update Temple TV to continue.{"\n"}
+          Please update the app to continue.{"\n"}
           {latestVersion ? `Version ${latestVersion} is now available.` : "A required update is available."}
         </Text>
 

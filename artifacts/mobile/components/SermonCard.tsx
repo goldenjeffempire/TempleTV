@@ -64,7 +64,7 @@ export const SermonCard = memo(function SermonCard({
       }
       await Share.share({
         title: sermon.title,
-        message: `Watch "${sermon.title}"${sermon.preacher ? ` by ${sermon.preacher}` : ""} on Temple TV – JCTM Broadcasting Network`,
+        message: `Watch "${sermon.title}"${sermon.preacher ? ` by ${sermon.preacher}` : ""} on JCTM Broadcasting Network`,
       });
     } catch {
       // User cancelled or share not available

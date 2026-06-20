@@ -78,7 +78,7 @@ export async function setupAndroidNotificationChannel(): Promise<void> {
   if (!N) return;
   try {
     await N.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
-      name: "Temple TV",
+      name: "JCTM Broadcasting",
       importance: N.AndroidImportance.HIGH,
       vibrationPattern: [0, 250, 250, 250],
       lightColor: "#9B30FF",
@@ -86,7 +86,7 @@ export async function setupAndroidNotificationChannel(): Promise<void> {
       enableVibrate: true,
     });
     await N.setNotificationChannelAsync(EMERGENCY_CHANNEL_ID, {
-      name: "Temple TV — Emergency Alerts",
+      name: "JCTM — Emergency Alerts",
       importance: N.AndroidImportance.MAX,
       vibrationPattern: [0, 500, 250, 500],
       lightColor: "#FF3B3B",
@@ -250,8 +250,8 @@ export async function sendLiveServiceNotification(title: string): Promise<void> 
 
     await N.scheduleNotificationAsync({
       content: {
-        title: "🔴 Temple TV is LIVE!",
-        body: title || "Temple TV JCTM is streaming live right now. Tap to join!",
+        title: "🔴 We're LIVE!",
+        body: title || "JCTM Broadcasting is streaming live right now. Tap to join!",
         sound: true,
         data: { type: "live_service" },
         ...(Platform.OS === "android" ? { channelId: ANDROID_CHANNEL_ID } : {}),
@@ -299,7 +299,7 @@ export async function sendEmergencyBroadcastNotification(message: string): Promi
     await N.scheduleNotificationAsync({
       content: {
         title: "🚨 Urgent Announcement",
-        body: message || "Temple TV has an important message. Tap to read it.",
+        body: message || "You have an important message. Tap to read it.",
         sound: true,
         data: { type: "emergency_broadcast" },
         ...(Platform.OS === "android"

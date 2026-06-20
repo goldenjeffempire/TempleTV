@@ -110,8 +110,8 @@ function AnimatedInput({
 
 export default function LoginScreen() {
   usePageSeo({
-    title: "Sign In | Temple TV",
-    description: "Sign in to your Temple TV account to continue watching where you left off.",
+    title: "Sign In",
+    description: "Sign in to your account to continue watching where you left off.",
     path: "/login",
     noindex: true,
   });

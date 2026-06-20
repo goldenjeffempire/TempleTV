@@ -543,7 +543,7 @@ function PrayerTab({ onClose: _onClose }: { onClose: () => void }) {
           <Text style={styles.infoCardTitle}>Your privacy</Text>
         </View>
         <Text style={styles.infoCardBody}>
-          Prayer requests are kept private between you and the Temple TV pastoral
+          Prayer requests are kept private between you and our pastoral
           team. Submissions are never shown publicly in the app or on stream.
         </Text>
       </View>

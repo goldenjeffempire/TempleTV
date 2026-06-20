@@ -87,7 +87,7 @@ const PHONES: ContactItem[] = [
 
 const ONLINE: ContactItem[] = [
   {
-    label: "Temple TV",
+    label: "YouTube",
     value: "youtube.com/@TEMPLETVJCTM",
     icon: "youtube",
     onPress: () =>
@@ -105,7 +105,7 @@ const ONLINE: ContactItem[] = [
 const SERVICE_INFO: ContactItem[] = [
   {
     label: "Sunday Service",
-    value: "Live-streamed via Temple TV · 8:00 AM WAT",
+    value: "Live-streamed · 8:00 AM WAT",
     icon: "tv",
   },
   {
@@ -173,7 +173,7 @@ function ContactRow({ item }: { item: ContactItem }) {
 export default function ContactScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
-  usePageSeo({ title: "Contact", description: "Get in touch with Temple TV — Jesus Christ Temple Ministry, Ebrumede Roundabout, Effurun, Delta State, Nigeria.", path: "/contact" });
+  usePageSeo({ title: "Contact", description: "Get in touch with Jesus Christ Temple Ministry, Ebrumede Roundabout, Effurun, Delta State, Nigeria.", path: "/contact" });
 
   const openMaps = () => {
     const query = encodeURIComponent(

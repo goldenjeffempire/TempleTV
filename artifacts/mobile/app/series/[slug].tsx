@@ -134,8 +134,8 @@ export default function SeriesDetailScreen() {
   // Inject TVSeries structured data for web/PWA contexts.
   // No-op on bare React Native.
   usePageSeo({
-    title: data ? `${data.title} — Temple TV` : "Series — Temple TV",
-    description: data?.description ?? `Watch ${data?.title ?? "this series"} on Temple TV`,
+    title: data ? data.title : "Series",
+    description: data?.description ?? `Watch ${data?.title ?? "this series"} on JCTM`,
     path: `/series/${slug ?? ""}`,
     image: data?.thumbnailUrl ?? undefined,
     structuredData: data
@@ -143,13 +143,13 @@ export default function SeriesDetailScreen() {
           "@context": "https://schema.org",
           "@type": "TVSeries",
           name: data.title,
-          description: data.description || `Watch ${data.title} on Temple TV`,
+          description: data.description || `Watch ${data.title} on JCTM Broadcasting`,
           image: data.thumbnailUrl || undefined,
           numberOfEpisodes: data.episodes?.length ?? 0,
           creator: data.preacher ? { "@type": "Person", name: data.preacher } : undefined,
           publisher: {
             "@type": "Organization",
-            name: "Temple TV",
+            name: "JCTM",
             url: "https://templetv.org.ng",
           },
         }

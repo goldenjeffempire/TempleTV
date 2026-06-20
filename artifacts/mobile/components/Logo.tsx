@@ -42,7 +42,7 @@ export function Logo({
       style={[{ height, width: height * 2.8 }, style]}
       resizeMode="contain"
       accessible={!decorative}
-      accessibilityLabel={decorative ? undefined : "Temple TV"}
+      accessibilityLabel={decorative ? undefined : "App logo"}
     />
   );
 }

@@ -312,14 +312,14 @@ export default function PlayerScreen() {
   usePageSeo(
     isLive
       ? {
-          title: liveTitle || "Temple TV — Live Broadcast",
-          description: "Watch Temple TV live worship broadcast",
+          title: liveTitle || "Live Broadcast",
+          description: "Watch our live worship broadcast",
           path: "/player",
           structuredData: {
             "@context": "https://schema.org",
             "@type": "BroadcastEvent",
-            name: liveTitle || "Temple TV — Live Broadcast",
-            description: "Watch Temple TV live worship broadcast",
+            name: liveTitle || "Live Broadcast",
+            description: "Watch our live worship broadcast",
             isLiveBroadcast: true,
             location: {
               "@type": "VirtualLocation",
@@ -327,26 +327,26 @@ export default function PlayerScreen() {
             },
             broadcaster: {
               "@type": "Organization",
-              name: "Temple TV",
+              name: "JCTM",
               url: "https://templetv.org.ng",
             },
           },
         }
       : {
           title: title || "Sermon",
-          description: description || `Watch ${title ?? "this sermon"} on Temple TV`,
+          description: description || `Watch ${title ?? "this sermon"} on JCTM`,
           path: `/player?id=${videoId}`,
           image: thumbnailUrl || undefined,
           structuredData: {
             "@context": "https://schema.org",
             "@type": "VideoObject",
             name: title,
-            description: description || `Watch ${title} on Temple TV`,
+            description: description || `Watch ${title} on JCTM Broadcasting`,
             thumbnailUrl: thumbnailUrl || undefined,
             creator: preacher ? { "@type": "Person", name: preacher } : undefined,
             publisher: {
               "@type": "Organization",
-              name: "Temple TV",
+              name: "JCTM",
               url: "https://templetv.org.ng",
             },
           },
@@ -1245,8 +1245,8 @@ export default function PlayerScreen() {
           <Pressable
             onPress={() =>
               isLive
-                ? Share.share({ title: "Temple TV Live", message: "Watch Temple TV Live — JCTM Ministries" })
-                : Share.share({ title, message: `Watch "${title}" on Temple TV` })
+                ? Share.share({ title: "Live Broadcast", message: "Watch JCTM Live — Jesus Christ Temple Ministry" })
+                : Share.share({ title, message: `Watch "${title}" on JCTM Broadcasting` })
             }
             style={styles.actionItem}
             accessibilityLabel="Share"

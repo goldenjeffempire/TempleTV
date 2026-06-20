@@ -250,7 +250,7 @@ function WebYoutubePlayer({
       {React.createElement("iframe", {
         ref: iframeRef,
         src,
-        title: "Temple TV video player",
+        title: "Video player",
         // Round 6 (Pass 5): broadcast mode strips fullscreen from the
         // iframe permission policy (the `allow` attribute) AND from
         // `allowFullScreen` so the user has no escape hatch into the

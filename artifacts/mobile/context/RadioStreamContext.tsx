@@ -113,7 +113,7 @@ export function useRadioStream(): RadioStreamContextType {
 export function RadioStreamProvider({ children }: { children: React.ReactNode }) {
   const [config, setConfig] = useState<RadioConfig>({
     streamUrl:   null,
-    title:       "Temple TV Radio",
+    title:       "Live Radio",
     description: "Live 24/7 Christian broadcast",
     isActive:    false,
   });

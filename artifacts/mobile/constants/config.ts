@@ -1,6 +1,6 @@
 export const APP_CONFIG = {
   channelHandle: "templetvjctm",
-  channelName: "Temple TV JCTM",
+  channelName: "JCTM Broadcasting",
   channelUrl: "https://www.youtube.com/@templetvjctm",
   channelLiveUrl: "https://www.youtube.com/@templetvjctm/live",
   rssUrl: "https://www.youtube.com/feeds/videos.xml?channel_id=UCPFFvkE-KGpR37qJgvYriJg",

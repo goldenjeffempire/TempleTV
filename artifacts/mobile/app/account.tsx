@@ -98,7 +98,7 @@ export default function AccountScreen() {
   const handleDeleteAccount = useCallback(() => {
     Alert.alert(
       "Delete account?",
-      "This permanently removes your account, watch history, favourites, and all personal data from Temple TV. This cannot be undone.",
+      "This permanently removes your account, watch history, favourites, and all personal data. This cannot be undone.",
       [
         { text: "Cancel", style: "cancel" },
         {

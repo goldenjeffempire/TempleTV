@@ -133,7 +133,7 @@ function apiVideoToSermon(v: ApiVideo, fallbackIndex: number): Sermon {
     thumbnailUrl: v.thumbnailUrl ?? "",
     duration: formatDuration(v.duration),
     category,
-    preacher: v.preacher || "Temple TV",
+    preacher: v.preacher || "JCTM",
     date: v.publishedAt ?? v.importedAt ?? "",
     views: v.viewCount ?? 0,
     videoSource: isLocal ? "local" : "youtube",

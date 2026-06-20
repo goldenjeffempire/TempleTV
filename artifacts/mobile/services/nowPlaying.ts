@@ -174,7 +174,7 @@ export async function loadAndPlayTrack(track: NowPlayingTrack): Promise<void> {
       id: track.id,
       url: track.url,
       title: track.title,
-      artist: track.artist ?? "Temple TV JCTM",
+      artist: track.artist ?? "JCTM Broadcasting",
       artwork: track.artwork,
       duration: track.duration,
       isLiveStream: track.isLiveStream ?? false,
@@ -231,7 +231,7 @@ export async function updateTrackPlayerMetadata(info: {
   try {
     await TrackPlayer.updateNowPlayingMetadata({
       title: info.title,
-      artist: info.artist ?? "Temple TV JCTM",
+      artist: info.artist ?? "JCTM Broadcasting",
       artwork: info.artwork,
       duration: info.duration,
     });

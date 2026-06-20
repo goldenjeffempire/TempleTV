@@ -53,7 +53,7 @@ export function PrayerSection() {
       <Pressable
         onPress={() => {
           setSending(true);
-          submitPrayerRequest(null, "Praying with Temple TV")
+          submitPrayerRequest(null, "Prayer Request")
             .then((ok) => {
               if (!isMountedRef.current) return;
               setSending(false);
