@@ -61,6 +61,10 @@ export const VideoCard = React.memo(function VideoCard({
   const cardWidth = cardWidthProp ?? getCardWidth(screenWidth);
   const thumbHeight = Math.round(cardWidth / CARD_ASPECT_RATIO);
 
+  // Responsive horizontal thumbnail: 30% of screen width, clamped to [108, 140]
+  const horzThumbW = Math.min(Math.max(108, Math.round(screenWidth * 0.30)), 140);
+  const horzThumbH = Math.round(horzThumbW * (9 / 16));
+
   if (horizontal) {
     return (
       <Pressable
@@ -74,13 +78,12 @@ export const VideoCard = React.memo(function VideoCard({
         accessibilityLabel={`Play ${sermon.title}`}
       >
         {/* Thumbnail */}
-        <View style={styles.horzThumbWrap}>
+        <View style={[styles.horzThumbWrap, { width: horzThumbW, height: horzThumbH }]}>
           <Image
             source={sermon.thumbnailUrl ? { uri: sermon.thumbnailUrl } : PLACEHOLDER}
             placeholder={PLACEHOLDER}
             style={styles.horzThumb}
             contentFit="cover"
-            contentPosition="top"
             transition={150}
           />
           {(sermon.youtubeLiveStatus || showLiveBadge) && (
@@ -226,12 +229,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   horzThumbWrap: {
-    width: 120,
-    height: 68,
     borderRadius: 8,
     overflow: "hidden",
     backgroundColor: "#111",
     flexShrink: 0,
+    // width + height set dynamically via inline style (responsive to screenWidth)
   },
   horzThumb: { width: "100%", height: "100%" },
   horzDetails: { flex: 1, gap: 4, minWidth: 0 },

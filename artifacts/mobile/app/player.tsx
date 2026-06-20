@@ -878,6 +878,7 @@ export default function PlayerScreen() {
         showsVerticalScrollIndicator={false}
         bounces
         overScrollMode="auto"
+        removeClippedSubviews={Platform.OS === "android"}
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 32 }}
       >
         {/* ── 16:9 Player Shell ─────────────────────────────────────────── */}
@@ -1198,7 +1199,7 @@ export default function PlayerScreen() {
                 {!!category && (
                   <>
                     <Text style={[styles.metaSep, { color: c.mutedForeground }]}>·</Text>
-                    <View style={[styles.categoryPill, { backgroundColor: c.primary + "18" }]}>
+                    <View style={[styles.categoryPill, { backgroundColor: c.primary + "18", borderColor: c.primary + "40" }]}>
                       <Text style={[styles.categoryPillText, { color: c.primary }]}>{category}</Text>
                     </View>
                   </>
@@ -1348,7 +1349,7 @@ export default function PlayerScreen() {
               <Text style={[styles.relatedTitle, { color: c.foreground }]}>
                 {category ? `More ${category}` : "More Videos"}
               </Text>
-              <View style={[styles.relatedCountPill, { backgroundColor: c.card }]}>
+              <View style={[styles.relatedCountPill, { backgroundColor: c.card, borderColor: c.border }]}>
                 <Text style={[styles.relatedCountText, { color: c.mutedForeground }]}>{relatedVideos.length}</Text>
               </View>
             </View>
@@ -1691,11 +1692,11 @@ const styles = StyleSheet.create({
   qualityBadgeText: { fontSize: 10, fontWeight: "700", letterSpacing: 0.4 },
   viewerChipText: { fontSize: 11, fontWeight: "600" },
   videoTitle: { fontSize: 19, fontWeight: "800", lineHeight: 26, letterSpacing: -0.4 },
-  metaRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4, marginTop: 1 },
+  metaRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 5, marginTop: 2 },
   preacherText: { fontSize: 13, fontWeight: "500", flexShrink: 1 },
-  metaSep: { fontSize: 13, marginHorizontal: 1 },
+  metaSep: { fontSize: 13, marginHorizontal: 2, opacity: 0.5 },
   metaText: { fontSize: 13 },
-  categoryPill: { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 20 },
+  categoryPill: { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 20, borderWidth: StyleSheet.hairlineWidth },
   categoryPillText: { fontSize: 11, fontWeight: "700", letterSpacing: 0.2 },
 
   // ── Action bar ──────────────────────────────────────────────────────────────
@@ -1732,10 +1733,10 @@ const styles = StyleSheet.create({
   reactionsRow: { flexDirection: "row", justifyContent: "space-around" },
 
 
-  relatedSection: { paddingTop: 16, paddingHorizontal: 16, gap: 12 },
-  relatedHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  relatedSection: { paddingTop: 16 },
+  relatedHeader: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, marginBottom: 6 },
   relatedTitle: { fontSize: 15, fontWeight: "700", flex: 1 },
-  relatedCountPill: { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 20 },
+  relatedCountPill: { paddingHorizontal: 9, paddingVertical: 3, borderRadius: 20, borderWidth: StyleSheet.hairlineWidth },
   relatedCountText: { fontSize: 12, fontWeight: "600" },
 
   // Fullscreen quick-reaction row (live only)
