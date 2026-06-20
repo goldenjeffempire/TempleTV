@@ -174,6 +174,10 @@ export interface FaststartResult {
   elapsedMs: number;
   outputSizeBytes: number;
   durationSecs: number | null;
+  /** True when faststart was intentionally skipped (check skipReason). */
+  skipped?: boolean;
+  /** Machine-readable reason when skipped=true. */
+  skipReason?: "hls_exists";
 }
 
 export interface FaststartOptions {
@@ -271,6 +275,27 @@ export async function runFaststart(
       priorTranscodingStatus = row?.transcodingStatus ?? "none";
     } catch {
       // Non-fatal; priorTranscodingStatus stays "none" which is always admitted.
+    }
+  }
+
+  // ── HLS-gate skip guard ──────────────────────────────────────────────────────
+  // If HLS transcoding has already produced a master playlist, faststart is
+  // unnecessary — the broadcast pipeline exclusively uses the HLS stream, not
+  // the raw/faststarted MP4.  Skip early to avoid redundant ffmpeg work,
+  // storage reads/writes, and scratch-dir allocation for already-processed files.
+  {
+    const [vRow] = await db
+      .select({ hlsMasterUrl: videos.hlsMasterUrl, transcodingStatus: videos.transcodingStatus })
+      .from(videos)
+      .where(eq(videos.id, videoId))
+      .limit(1)
+      .catch(() => [undefined]);
+    if (vRow?.hlsMasterUrl) {
+      log.info(
+        { hlsMasterUrl: vRow.hlsMasterUrl, transcodingStatus: vRow.transcodingStatus },
+        "faststart: HLS stream already exists — skipping faststart (optimization not needed for HLS-only broadcast pipeline)",
+      );
+      return { elapsedMs: 0, outputSizeBytes: 0, durationSecs: null, skipped: true, skipReason: "hls_exists" };
     }
   }
 

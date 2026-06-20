@@ -1221,6 +1221,38 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         WHERE transcoding_error_kind IS NOT NULL
     `);
 
+    // ── bytea_agg custom aggregate — memory-safe multipart assembly ──────────
+    // storage.ts completeMultipartUpload() uses:
+    //   INSERT INTO storage_blobs SELECT bytea_agg(data ORDER BY part_number) …
+    // to assemble upload parts entirely within PostgreSQL.  Node.js never
+    // receives the assembled bytes so peak Node.js RSS = O(1) regardless of
+    // video file size.  byteacat is a built-in PostgreSQL function (the C
+    // implementation underlying the bytea || bytea operator).
+    //
+    // CREATE AGGREGATE IF NOT EXISTS requires PG 16+.  Replit runs PG 14/15, so
+    // we do the same two-step existence check used for the series_id index above:
+    // query pg_proc first, then CREATE only if missing.
+    {
+      const aggCheck = await client.query(`
+        SELECT 1 FROM pg_proc p
+        JOIN pg_namespace n ON p.pronamespace = n.oid
+        WHERE p.proname = 'bytea_agg'
+          AND n.nspname = 'public'
+        LIMIT 1
+      `).catch(() => ({ rows: [] as unknown[] }));
+      if (!(aggCheck as { rows: unknown[] }).rows.length) {
+        await run("bytea_agg", `
+          CREATE AGGREGATE bytea_agg(bytea) (
+            SFUNC    = byteacat,
+            STYPE    = bytea,
+            INITCOND = ''
+          )
+        `);
+      } else {
+        logger.info({ index: "bytea_agg" }, "db: index ensured — bytea_agg (already existed)");
+      }
+    }
+
     logger.info("db: functional and partial indexes ensured");
   } finally {
     client.release();

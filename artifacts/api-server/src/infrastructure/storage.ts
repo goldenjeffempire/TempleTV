@@ -6,19 +6,25 @@ import { logger } from "./logger.js";
 import { env } from "../config/env.js";
 
 /**
- * PostgreSQL BYTEA object storage.
+ * PostgreSQL BYTEA object storage — zero-copy streaming implementation.
  *
  * All video assets (source uploads, HLS segments, playlists, thumbnails) are
  * stored as BYTEA in the storage_blobs PostgreSQL table.  In-progress
- * multipart uploads are staged in storage_upload_parts and concatenated on
+ * multipart uploads are staged in storage_upload_parts and assembled on
  * completion.  No MinIO/S3 dependency required.
  *
- * Memory notes:
- *   - The pg driver decodes BYTEA via hex: an 8 MiB HLS segment uses ~16 MiB
- *     RSS during fetch + decode.  Budget ~12 MiB per concurrent HLS request.
- *   - completeMultipartUpload() loads all parts into Node.js memory for
- *     concat: a 500 MB video (63 × 8 MiB parts) uses ~1 GB RSS during
- *     assembly.  ASSEMBLY_WATCHDOG_MS gates abnormally long assemblies.
+ * Memory model (post streaming refactor):
+ *   - getObject() streams data in STORAGE_READ_CHUNK_BYTES (8 MiB) chunks
+ *     via repeated SUBSTRING queries.  Peak Node.js RSS per stream: ~24 MiB
+ *     (one decoded chunk).  A 5 GB video uses the same Node.js memory as a
+ *     100 MB video — O(1) regardless of blob size.
+ *   - completeMultipartUpload() assembles all parts inside PostgreSQL using the
+ *     bytea_agg(data ORDER BY part_number) custom aggregate.  Node.js sends
+ *     one INSERT…SELECT query and receives nothing back — peak Node.js RSS: ~0.
+ *     The aggregate is created at startup in ensureRuntimeIndexes().
+ *   - getObjectRange() already used SUBSTRING and is unchanged.
+ *   - putObject() accepts a caller-supplied Buffer (small objects: HLS segments
+ *     ≤8 MiB, thumbnails ≤200 KB).  No change needed.
  *
  * Storage key conventions:
  *   uploads/{yyyy}/{mm}/{dd}/{sessionId}.{ext}  — assembled source video
@@ -28,6 +34,12 @@ import { env } from "../config/env.js";
  *   transcoded/{videoId}/thumbnail.jpg          — auto-generated thumbnail
  *   thumbnails/{sessionId}.{ext}                — custom uploaded thumbnail
  */
+
+/** Each SUBSTRING query fetches this many bytes from PostgreSQL.
+ *  8 MiB matches the upload chunk size and is large enough to keep round-trip
+ *  overhead low while small enough that pg's hex decode (~16 MiB RSS per
+ *  in-flight chunk) never threatens the memory watchdog threshold.         */
+const STORAGE_READ_CHUNK_BYTES = 8 * 1024 * 1024;
 
 // ── Active-stream tracking for graceful shutdown ──────────────────────────────
 //
@@ -182,27 +194,91 @@ class PostgresObjectStorage implements ObjectStorage {
     if (_shuttingDown) {
       throw Object.assign(new Error("Storage shutting down"), { code: "STORAGE_SHUTDOWN" });
     }
-    type Row = { data: Buffer; content_type: string; size_bytes: number };
-    const result = await db.execute<Row>(sql`
-      SELECT data, content_type, size_bytes
-      FROM storage_blobs
-      WHERE key = ${key}
-      LIMIT 1
-    `);
-    const row = firstRow<Row>(result);
-    if (!row || row.data == null) {
+
+    // Fetch metadata first — needed to drive chunk boundaries and validate existence.
+    // One extra round-trip vs the old single-query approach, but avoids loading the
+    // entire BYTEA into Node.js memory (critical for multi-gigabyte source videos:
+    // the pg driver hex-decodes BYTEA, so a 1 GB blob produces ~2 GB of transient
+    // allocations causing "invalid memory alloc request size" / OOM crashes).
+    const head = await this.headObject(key);
+    if (!head.exists || head.contentLength === undefined) {
       throw Object.assign(
         new Error(`Object not found in storage: ${key}`),
         { code: "SOURCE_MISSING", $metadata: { httpStatusCode: 404 } },
       );
     }
-    const buf = toBuffer(row.data);
-    const body = Readable.from(buf);
+
+    const totalSize = head.contentLength;
+    const chunkSize = STORAGE_READ_CHUNK_BYTES;
+    const chunkCount = Math.ceil(totalSize / Math.max(1, chunkSize));
+
+    logger.debug(
+      { key, sizeBytes: totalSize, chunkSize, chunkCount },
+      "[storage] getObject: chunked stream start",
+    );
+
+    // Capture for async generator closure (avoids stale `this` / parameter ref).
+    const capturedKey = key;
+
+    // Async generator — each iteration issues one SUBSTRING query fetching
+    // exactly chunkSize bytes.  Only one chunk (~8 MiB) is held in Node.js
+    // memory at a time regardless of total blob size.  Backpressure is handled
+    // automatically by Readable.from(): the generator only advances when the
+    // downstream consumer has drained its internal buffer.
+    async function* readChunks(): AsyncGenerator<Buffer> {
+      let offset = 0;
+      let chunksRead = 0;
+      while (offset < totalSize) {
+        const length = Math.min(chunkSize, totalSize - offset);
+        // PostgreSQL SUBSTRING is 1-indexed; our offset is 0-based.
+        const pgOffset = offset + 1;
+        type ChunkRow = { chunk: Buffer };
+        let row: ChunkRow | undefined;
+        try {
+          const result = await db.execute<ChunkRow>(sql`
+            SELECT SUBSTRING(data FROM ${pgOffset} FOR ${length}) AS chunk
+            FROM storage_blobs
+            WHERE key = ${capturedKey}
+            LIMIT 1
+          `);
+          row = firstRow<ChunkRow>(result);
+        } catch (err) {
+          throw Object.assign(
+            new Error(
+              `[storage] getObject: chunk read failed at byte offset ${offset} for key "${capturedKey}": ${(err as Error).message}`,
+            ),
+            { code: "STORAGE_READ_ERROR", cause: err },
+          );
+        }
+        if (!row?.chunk) {
+          // Key was deleted between headObject and this chunk read.
+          throw Object.assign(
+            new Error(
+              `[storage] getObject: chunk missing at byte offset ${offset} for key "${capturedKey}" ` +
+              `(blob deleted between headObject and chunk read)`,
+            ),
+            { code: "SOURCE_MISSING", $metadata: { httpStatusCode: 404 } },
+          );
+        }
+        const buf = toBuffer(row.chunk);
+        if (buf.length === 0) break; // Defensive: SUBSTRING past EOF returns empty.
+        offset += buf.length;
+        chunksRead++;
+        yield buf;
+      }
+      logger.debug(
+        { key: capturedKey, sizeBytes: totalSize, chunksRead },
+        "[storage] getObject: chunked stream complete",
+      );
+    }
+
+    const body = Readable.from(readChunks(), { objectMode: false });
     _activeStreamCount++;
     const dec = (): void => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); };
     body.once("close", dec);
     body.once("error", dec);
-    return { body, contentType: row.content_type, contentLength: row.size_bytes };
+
+    return { body, contentType: head.contentType, contentLength: totalSize };
   }
 
   async getObjectRange(key: string, start: number, end: number): Promise<{ body: Readable; contentType?: string; contentLength: number } | null> {
@@ -256,12 +332,11 @@ class PostgresObjectStorage implements ObjectStorage {
 
   // ── Multipart upload ────────────────────────────────────────────────────────
   //
-  // Parts are staged in storage_upload_parts (BYTEA rows).
-  // completeMultipartUpload() fetches all parts in order, concatenates in
-  // Node.js memory, and writes the assembled blob to storage_blobs.
-  //
-  // Each part is ~8 MiB (matching the upload engine's chunk size).
-  // Peak RSS during assembly: ~2× the total file size (parts + assembled buf).
+  // Parts are staged in storage_upload_parts (BYTEA rows, ~8 MiB each).
+  // completeMultipartUpload() assembles all parts inside PostgreSQL via the
+  // bytea_agg custom aggregate — Node.js never receives the assembled blob.
+  // Peak Node.js RSS during assembly: ~0 bytes (one INSERT…SELECT round-trip).
+  // Peak PostgreSQL working memory: O(total file size) for the aggregation.
 
   async createMultipartUpload({ key: _key, contentType }: { key: string; contentType?: string }): Promise<{ uploadId: string }> {
     const uploadId = randomUUID();
@@ -289,46 +364,148 @@ class PostgresObjectStorage implements ObjectStorage {
   }
 
   async completeMultipartUpload({ key, uploadId }: { key: string; uploadId: string; parts: MultipartPart[] }): Promise<{ key: string; etag: string | null; location: string | null }> {
-    type PartRow = { data: Buffer; part_number: number };
-    const result = await db.execute<PartRow>(sql`
-      SELECT part_number, data
+    const contentType = this._pendingContentTypes.get(uploadId) ?? "video/mp4";
+    this._pendingContentTypes.delete(uploadId);
+
+    // Pre-flight: verify parts exist and measure total size.
+    // This single COUNT+SUM query is much cheaper than fetching all parts.
+    type StatsRow = { part_count: string; total_bytes: string };
+    const statsResult = await db.execute<StatsRow>(sql`
+      SELECT COUNT(*)::text AS part_count, COALESCE(SUM(octet_length(data)), 0)::text AS total_bytes
       FROM storage_upload_parts
       WHERE upload_id = ${uploadId}
-      ORDER BY part_number ASC
     `);
-    const partRows = allRows<PartRow>(result);
-    if (partRows.length === 0) {
+    const statsRow = firstRow<StatsRow>(statsResult);
+    const partCount = parseInt(statsRow?.part_count ?? "0", 10);
+    const totalBytes = parseInt(statsRow?.total_bytes ?? "0", 10);
+
+    if (partCount === 0) {
       throw new Error(
         `completeMultipartUpload: no parts found in storage_upload_parts for uploadId=${uploadId} key=${key}. ` +
         "Parts may have been cleaned up already (idempotent re-call) or were never uploaded.",
       );
     }
-    const buffers = partRows.map((r) => toBuffer(r.data));
-    const assembled = Buffer.concat(buffers);
 
-    const contentType = this._pendingContentTypes.get(uploadId) ?? "video/mp4";
-    this._pendingContentTypes.delete(uploadId);
+    logger.info(
+      { key, uploadId, partCount, totalBytes },
+      "[storage] completeMultipartUpload: assembling via PostgreSQL bytea_agg — zero bytes transferred to Node.js",
+    );
 
-    await db.execute(sql`
-      INSERT INTO storage_blobs (key, content_type, size_bytes, data, updated_at)
-      VALUES (${key}, ${contentType}, ${assembled.length}, ${assembled}, NOW())
-      ON CONFLICT (key) DO UPDATE SET
-        content_type = EXCLUDED.content_type,
-        size_bytes   = EXCLUDED.size_bytes,
-        data         = EXCLUDED.data,
-        updated_at   = NOW()
-    `);
+    // Assemble entirely within PostgreSQL — Node.js never receives the blob.
+    //
+    // bytea_agg(data ORDER BY part_number) is a custom aggregate (SFUNC=byteacat,
+    // STYPE=bytea) created at startup in ensureRuntimeIndexes().  It concatenates
+    // all parts server-side in a single aggregate pass, then the INSERT writes the
+    // final blob directly into storage_blobs.  Peak Node.js RSS contribution: ~0.
+    //
+    // If bytea_agg is not yet available (first boot before ensureRuntimeIndexes
+    // ran, or a DB that pre-dates the aggregate), we fall back to iterative
+    // per-part appending which is still O(1) Node.js memory.
+    try {
+      await db.execute(sql`
+        INSERT INTO storage_blobs (key, content_type, size_bytes, data, updated_at)
+        SELECT
+          ${key}                                        AS key,
+          ${contentType}                                AS content_type,
+          SUM(octet_length(data))                       AS size_bytes,
+          bytea_agg(data ORDER BY part_number)          AS data,
+          NOW()                                         AS updated_at
+        FROM storage_upload_parts
+        WHERE upload_id = ${uploadId}
+        ON CONFLICT (key) DO UPDATE SET
+          content_type = EXCLUDED.content_type,
+          size_bytes   = EXCLUDED.size_bytes,
+          data         = EXCLUDED.data,
+          updated_at   = NOW()
+      `);
+    } catch (err) {
+      const msg = String((err as Error).message ?? "");
+      const isMissingAggregate = msg.includes("bytea_agg") || (msg.includes("does not exist") && msg.includes("function"));
+      if (isMissingAggregate) {
+        // bytea_agg not yet installed (rare: first boot race) — fall back to
+        // iterative part-by-part append, still O(1) Node.js memory per part.
+        logger.warn(
+          { key, uploadId, partCount, totalBytes },
+          "[storage] completeMultipartUpload: bytea_agg unavailable — falling back to iterative PostgreSQL append (O(1) Node.js memory per part)",
+        );
+        await this._assemblePartsIterative(key, uploadId, contentType);
+      } else {
+        throw err;
+      }
+    }
 
-    // Clean up parts — no longer needed after successful assembly.
+    // Clean up staging parts — no longer needed after successful assembly.
     await db.execute(sql`DELETE FROM storage_upload_parts WHERE upload_id = ${uploadId}`)
       .catch((err) => logger.warn({ err, uploadId }, "[storage] upload-parts cleanup failed (non-fatal)"));
 
-    const etag = `"${createHash("md5").update(assembled).digest("hex")}"`;
+    // Etag: deterministic from uploadId+size.  A full md5(data) would require
+    // reading back the assembled blob — defeating the memory savings — so we
+    // use a compact surrogate that's unique per assembly and stable on retry.
+    const etag = `"${uploadId.slice(0, 8)}-${totalBytes}"`;
     logger.info(
-      { key, uploadId, parts: partRows.length, bytes: assembled.length },
+      { key, uploadId, parts: partCount, bytes: totalBytes },
       "[storage] completeMultipartUpload done",
     );
     return { key, etag, location: this.publicUrl(key) };
+  }
+
+  /**
+   * Fallback assembly: fetches each part individually and appends it to
+   * storage_blobs via PostgreSQL's `||` bytea concatenation operator.
+   * Peak Node.js RSS: one part (~8 MiB) at a time — O(1) regardless of file size.
+   * PostgreSQL I/O is O(n²) in parts (grows the TOAST value n times), but this
+   * path is only reached when the bytea_agg aggregate is unavailable.
+   */
+  private async _assemblePartsIterative(key: string, uploadId: string, contentType: string): Promise<void> {
+    type NumRow = { part_number: number };
+    const nums = allRows<NumRow>(await db.execute<NumRow>(sql`
+      SELECT part_number
+      FROM storage_upload_parts
+      WHERE upload_id = ${uploadId}
+      ORDER BY part_number ASC
+    `));
+
+    let isFirst = true;
+    for (const { part_number: partNum } of nums) {
+      type DataRow = { data: Buffer };
+      const pResult = await db.execute<DataRow>(sql`
+        SELECT data FROM storage_upload_parts
+        WHERE upload_id = ${uploadId} AND part_number = ${partNum}
+        LIMIT 1
+      `);
+      const pRow = firstRow<DataRow>(pResult);
+      if (!pRow?.data) throw new Error(`[storage] _assemblePartsIterative: part ${partNum} missing for uploadId=${uploadId}`);
+      const partBuf = toBuffer(pRow.data);
+
+      if (isFirst) {
+        await db.execute(sql`
+          INSERT INTO storage_blobs (key, content_type, size_bytes, data, updated_at)
+          VALUES (${key}, ${contentType}, 0, ${partBuf}, NOW())
+          ON CONFLICT (key) DO UPDATE SET
+            content_type = EXCLUDED.content_type,
+            size_bytes   = 0,
+            data         = EXCLUDED.data,
+            updated_at   = NOW()
+        `);
+        isFirst = false;
+      } else {
+        // Append part to the growing blob server-side.
+        // data = data || $partBuf transfers one part (~8 MiB) to PostgreSQL,
+        // which concatenates and stores it without returning anything to Node.js.
+        await db.execute(sql`
+          UPDATE storage_blobs
+          SET data = data || ${partBuf}
+          WHERE key = ${key}
+        `);
+      }
+    }
+
+    // Sync size_bytes after all parts are appended.
+    await db.execute(sql`
+      UPDATE storage_blobs
+      SET size_bytes = octet_length(data), updated_at = NOW()
+      WHERE key = ${key}
+    `);
   }
 
   async abortMultipartUpload({ uploadId }: { key: string; uploadId: string }): Promise<void> {
