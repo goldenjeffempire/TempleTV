@@ -3432,18 +3432,20 @@ function BroadcastV2PageInner() {
   const checklistItems = engineHealth != null ? [
     {
       label: "Queue populated",
-      pass: activeQueueCount > 0,
-      warn: false,
+      pass: activeQueueCount > 0 || engineHealth.hasOverride,
+      warn: engineHealth.hasOverride && activeQueueCount === 0,
       detail: activeQueueCount > 0
         ? `${activeQueueCount} active item${activeQueueCount !== 1 ? "s" : ""}`
+        : engineHealth.hasOverride
+        ? "Override is active — broadcast is on air via override source"
         : "No active items — add videos to the queue before going live",
     },
     {
       label: "Engine running",
-      pass: engineHealth.boot.started && (engineHealth.sequence > 0 || engineHealth.uptimeMs < 30_000),
+      pass: engineHealth.boot.started && (engineHealth.sequence > 0 || engineHealth.uptimeMs < 30_000 || engineHealth.hasOverride),
       warn: false,
       detail: engineHealth.boot.started
-        ? `Sequence #${engineHealth.sequence} · uptime ${Math.floor(engineHealth.uptimeMs / 60_000)}m`
+        ? `Sequence #${engineHealth.sequence} · uptime ${Math.floor(engineHealth.uptimeMs / 60_000)}m${engineHealth.hasOverride ? " · override active" : ""}`
         : `Boot failed after ${engineHealth.boot.startAttempts} attempt${engineHealth.boot.startAttempts !== 1 ? "s" : ""}`,
     },
     {
@@ -5049,7 +5051,8 @@ function BroadcastV2PageInner() {
         queueItems.length > 0 &&
         engineHealth &&
         engineHealth.itemCount === 0 &&
-        !engineHealth.hasCurrent && (
+        !engineHealth.hasCurrent &&
+        !engineHealth.hasOverride && (
           <Card className="border-amber-400/50 bg-amber-50/60 dark:bg-amber-950/20">
             <CardContent className="flex flex-col items-center gap-5 py-8 text-center sm:flex-row sm:text-left sm:gap-8 sm:px-8">
               <div className="flex-shrink-0 flex h-14 w-14 items-center justify-center rounded-full bg-amber-100 ring-1 ring-amber-300 dark:bg-amber-900/40 dark:ring-amber-700">
@@ -5098,7 +5101,7 @@ function BroadcastV2PageInner() {
       {/*       the entire library is YouTube-synced metadata (which by design  */}
       {/*       cannot air — no native player on TV/mobile) and there are no    */}
       {/*       uploaded MP4/HLS sources behind it.                             */}
-      {!queueLoading && queueItems.length === 0 && (() => {
+      {!queueLoading && queueItems.length === 0 && engineHealth?.mode !== "override" && (() => {
         // Prefer the uncapped server-side totals (libraryTotal / missingPlayable)
         // over the legacy capped fields. Until queueSyncStatus has loaded we
         // show a neutral "checking…" state instead of asserting upload guidance

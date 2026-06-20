@@ -401,7 +401,7 @@ export function BroadcastUploadPanel({ server, queueItems }: BroadcastUploadPane
 
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-sync-status"] });
-      void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-live-state"] });
     } catch (e) {
       _panelExecutedIds.delete(uploadId);
       const msg =
