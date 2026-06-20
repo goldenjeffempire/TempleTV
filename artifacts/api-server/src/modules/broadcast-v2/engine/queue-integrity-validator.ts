@@ -381,16 +381,37 @@ class QueueIntegrityValidatorImpl {
         }
       }
 
-      // ── MISSING_VIDEO_JOIN — log warning ──────────────────────────────────
+      // ── Auto-fix: deactivate MISSING_VIDEO_JOIN items ────────────────────
+      // Items whose referenced managed_videos row no longer exists are
+      // deactivated so the orchestrator stops serving them. Without this fix,
+      // items whose referenced video was hard-deleted keep entering the
+      // broadcast cycle — they have no playable URL and cause repeated
+      // auto-skip cycles. The reverse pass below re-activates them if the
+      // video row is later restored.
       const missingJoinIds = issues
         .filter((i) => i.severity === "error" && i.code === "MISSING_VIDEO_JOIN" && i.itemId)
         .map((i) => i.itemId!);
       if (missingJoinIds.length > 0) {
-        logger.warn(
-          { count: missingJoinIds.length, itemIds: missingJoinIds },
-          "[queue-validator] MISSING_VIDEO_JOIN detected — referenced managed_videos rows are absent; " +
-          "items remain in broadcast queue and will be auto-skipped at runtime if unresolvable",
-        );
+        try {
+          await db
+            .update(schema.broadcastQueueTable)
+            .set({ isActive: false, validatorDeactivatedReason: "missing_video_join" })
+            .where(inArray(schema.broadcastQueueTable.id, missingJoinIds));
+          logger.warn(
+            { count: missingJoinIds.length, itemIds: missingJoinIds },
+            "[queue-validator] AUTO-FIX: deactivated MISSING_VIDEO_JOIN items — referenced managed_videos rows are absent; " +
+            "re-upload or restore the video to return these items to rotation",
+          );
+          adminEventBus.push("broadcast-queue-updated", {
+            reason: "integrity-fix-missing-video-join",
+            count: missingJoinIds.length,
+          });
+        } catch (fixErr) {
+          logger.warn(
+            { err: fixErr, count: missingJoinIds.length },
+            "[queue-validator] AUTO-FIX: failed to deactivate MISSING_VIDEO_JOIN items (non-fatal)",
+          );
+        }
       }
 
       // ── Auto-fix (reverse): re-activate items deactivated by MISSING_VIDEO_JOIN ──
