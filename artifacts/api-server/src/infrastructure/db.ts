@@ -421,7 +421,7 @@ export async function resetStuckProcessingVideos(): Promise<void> {
         { reset },
         "db: reset stuck 'processing' videos to queued/none — " +
           "these were interrupted mid-faststart by a server crash; " +
-          "they are broadcast-ready at their existing localVideoUrl",
+          "they will join the broadcast queue once HLS transcoding completes (HLS-gate policy)",
       );
     } else {
       logger.info("db: no stuck processing videos found at startup");
