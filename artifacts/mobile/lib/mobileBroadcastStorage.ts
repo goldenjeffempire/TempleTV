@@ -14,6 +14,12 @@
  * survives app kills and cold starts — on the next launch `init()` hydrates the
  * Map before any player session is created.
  *
+ * TTL: Each entry is wrapped with a `{ v, t }` envelope where `t` is the
+ * write timestamp (epoch ms). On hydration, entries older than TTL_MS (24 h)
+ * are discarded and deleted from AsyncStorage. This prevents state from a
+ * previous day's session from being replayed into a fresh session, which can
+ * confuse the FSM into thinking it is mid-stream when it should start fresh.
+ *
  * Usage:
  *   Call `setupMobileBroadcastStorage()` once at module level in app/_layout.tsx
  *   (before any React component mounts). The function is synchronous — it wires
@@ -30,9 +36,37 @@ import { configureMobileStorage } from "@workspace/player-core";
 const MEMORY = new Map<string, string>();
 const AS_KEY_PREFIX = "ttv:transport:";
 
+/** 24-hour TTL — entries older than this are discarded on hydration. */
+const TTL_MS = 24 * 60 * 60 * 1_000;
+
+/** Wrapper stored in AsyncStorage: value + write timestamp. */
+interface StoredEntry {
+  v: string;
+  t: number;
+}
+
+function wrapValue(value: string): string {
+  const entry: StoredEntry = { v: value, t: Date.now() };
+  return JSON.stringify(entry);
+}
+
+function unwrapValue(raw: string): string | null {
+  try {
+    const entry = JSON.parse(raw) as Partial<StoredEntry>;
+    if (typeof entry.v !== "string") return null;
+    // If timestamp is missing (legacy entries without TTL) treat as valid.
+    if (typeof entry.t === "number" && Date.now() - entry.t > TTL_MS) return null;
+    return entry.v;
+  } catch {
+    // Legacy plain-string entries (before TTL was added): treat as valid.
+    return raw;
+  }
+}
+
 /**
  * Hydrate the in-memory store from AsyncStorage.
  * Called asynchronously at startup — safe to fire-and-forget.
+ * Expired entries are cleaned up from AsyncStorage during hydration.
  */
 async function hydrateFromStorage(): Promise<void> {
   try {
@@ -41,11 +75,24 @@ async function hydrateFromStorage(): Promise<void> {
       k.startsWith(AS_KEY_PREFIX),
     );
     if (ttvKeys.length === 0) return;
+
     const pairs = await AsyncStorage.multiGet(ttvKeys as string[]);
-    for (const [rawKey, value] of pairs) {
+    const expiredKeys: string[] = [];
+
+    for (const [rawKey, raw] of pairs) {
+      if (raw === null) continue;
+      const memKey = rawKey.slice(AS_KEY_PREFIX.length);
+      const value = unwrapValue(raw);
       if (value !== null) {
-        MEMORY.set(rawKey.slice(AS_KEY_PREFIX.length), value);
+        MEMORY.set(memKey, value);
+      } else {
+        // Expired — schedule cleanup (fire-and-forget; never block hydration)
+        expiredKeys.push(rawKey);
       }
+    }
+
+    if (expiredKeys.length > 0) {
+      AsyncStorage.multiRemove(expiredKeys as string[]).catch(() => {});
     }
   } catch {
     // best-effort — app still works without persisted cache
@@ -66,7 +113,7 @@ export function setupMobileBroadcastStorage(): void {
     },
     setItem(key: string, value: string): void {
       MEMORY.set(key, value);
-      AsyncStorage.setItem(`${AS_KEY_PREFIX}${key}`, value).catch(() => {});
+      AsyncStorage.setItem(`${AS_KEY_PREFIX}${key}`, wrapValue(value)).catch(() => {});
     },
     removeItem(key: string): void {
       MEMORY.delete(key);

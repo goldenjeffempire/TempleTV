@@ -112,7 +112,7 @@ import { ResizeMode, Video, type AVPlaybackStatus } from "expo-av";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { MobileBufferState } from "@workspace/player-core/adapters/mobile";
 import { useNetworkContext } from "@/context/NetworkContext";
-import { postPlaybackTelemetryDelta } from "@/services/broadcast";
+import { enqueueTelemetry, flushTelemetryBuffer } from "@/lib/telemetryBuffer";
 import {
   isInPictureInPictureMode,
   updatePipParams,
@@ -1471,12 +1471,18 @@ export function V2PlayerContainer({
   // reconnect the transport and notify the FSM. This fires even when the app
   // stays in the foreground during a brief signal drop — the AppState handler
   // above only catches foreground re-entry, not mid-session recovery.
+  // Also flushes any buffered telemetry events that were queued while offline.
   useEffect(() => {
     if (justRecovered) {
       notifyOnline();
       forceReconnect();
+      // Flush buffered telemetry events accumulated while the device was offline.
+      if (!suppressEvents) {
+        const base = effectiveBaseUrl.replace(/\/api\/broadcast-v2$/, "");
+        void flushTelemetryBuffer(base);
+      }
     }
-  }, [justRecovered, notifyOnline, forceReconnect]);
+  }, [justRecovered, notifyOnline, forceReconnect, suppressEvents, effectiveBaseUrl]);
 
   // ── Playback telemetry ────────────────────────────────────────────────────
   // Report a heartbeat to /api/broadcast/playback-telemetry every 60 s while
@@ -1500,12 +1506,21 @@ export function V2PlayerContainer({
     const INTERVAL_MS = 60_000;
     const id = setInterval(() => {
       if (snapshotStateRef.current === "PLAYING") {
-        void postPlaybackTelemetryDelta("mobile", 60 * 30, 0);
+        // Enqueue into the offline-resilient buffer so telemetry events
+        // are preserved and retried even when the device is temporarily
+        // offline. The buffer flushes automatically on network recovery
+        // (see the justRecovered effect below). When the device IS online
+        // the buffer sends immediately on the next flush cycle.
+        enqueueTelemetry({ platform: "mobile", decoded: 60 * 30, dropped: 0 });
+        // Also attempt an immediate send; this is a no-op if offline —
+        // the event stays buffered until flushTelemetryBuffer() is called.
+        const base = effectiveBaseUrl.replace(/\/api\/broadcast-v2$/, "");
+        void flushTelemetryBuffer(base);
       }
     }, INTERVAL_MS);
 
     return () => clearInterval(id);
-  }, [suppressEvents]);
+  }, [suppressEvents, effectiveBaseUrl]);
 
   const server = snapshot.lastServerSnapshot;
 

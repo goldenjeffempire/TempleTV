@@ -23,6 +23,18 @@ import { BROADCAST_TITLE, BROADCAST_PREACHER } from "@/lib/broadcastIdentity";
  *
  * Both paths guard against ejecting users already on the player screen
  * and collapse rapid SSE bursts with a 1.5 s throttle.
+ *
+ * Adaptive polling:
+ *   V2 state polling interval is adaptive — faster (10 s) when the last
+ *   known mode is not PLAYING (we want to detect transitions quickly), and
+ *   slower (60 s) when the broadcast is already PLAYING (stable, SSE
+ *   handles real-time updates on web; WS transport handles it on native).
+ *
+ * Network-aware restart:
+ *   AppState "active" events reset the throttle window so the very first
+ *   foreground check is immediate. A consecutive-failure counter backs off
+ *   V2 polls after 3 failures (API unreachable) and resets on success to
+ *   avoid hammering a temporarily unreachable server.
  */
 export function LiveBroadcastSupervisor() {
   const { isLive, playLive, isBroadcastMode } = usePlayer();
@@ -32,6 +44,10 @@ export function LiveBroadcastSupervisor() {
   const isBroadcastModeRef = useRef(isBroadcastMode);
   const lastCheckRef = useRef(0);
   const prevV2ModeRef = useRef<string | null>(null);
+
+  // Adaptive-polling state
+  const v2FailStreak = useRef(0);
+  const v2IntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   isLiveRef.current = isLive;
   isBroadcastModeRef.current = isBroadcastMode;
@@ -91,6 +107,15 @@ export function LiveBroadcastSupervisor() {
     //     already running before the app opened).
     //   - Only fires on the null→PLAYING or non-PLAYING→PLAYING transition.
     //   - Skips navigation if the user is already on the player.
+    //
+    // Adaptive interval:
+    //   Reschedules itself via v2IntervalRef after each poll so the interval
+    //   can be changed dynamically:
+    //     • 10 s when mode is not PLAYING (fast — want to catch transitions)
+    //     • 60 s when PLAYING (stable — WS transport handles real-time)
+    //     • 30 s when mode unknown / first boot
+    //   After 3 consecutive failures, we double the interval (up to 120 s)
+    //   to avoid hammering a temporarily unreachable server.
     const checkV2Broadcast = async () => {
       try {
         const base = getApiBase();
@@ -99,10 +124,16 @@ export function LiveBroadcastSupervisor() {
         const res = await fetch(`${base}/api/broadcast-v2/state`, {
           signal: AbortSignal.timeout(5_000),
         });
-        if (!res.ok || cancelled) return;
+        if (!res.ok || cancelled) {
+          v2FailStreak.current++;
+          return;
+        }
 
         const data = (await res.json()) as { mode?: string; sequence?: number };
         if (cancelled) return;
+
+        // Success — reset failure streak
+        v2FailStreak.current = 0;
 
         const mode = data.mode ?? "UNKNOWN";
         const prev = prevV2ModeRef.current;
@@ -126,48 +157,102 @@ export function LiveBroadcastSupervisor() {
             },
           });
         }
-      } catch {}
+      } catch {
+        v2FailStreak.current++;
+      } finally {
+        // Reschedule with adaptive interval
+        if (!cancelled) scheduleV2Poll();
+      }
+    };
+
+    /**
+     * Schedule the next V2 poll with an interval derived from the current
+     * broadcast state and failure streak.
+     */
+    const scheduleV2Poll = () => {
+      if (v2IntervalRef.current !== null) return; // already scheduled
+      const mode = prevV2ModeRef.current;
+      let baseMs: number;
+      if (mode === "PLAYING") {
+        baseMs = 60_000; // stable — slow down
+      } else if (mode === null) {
+        baseMs = 15_000; // first boot — moderate
+      } else {
+        baseMs = 10_000; // non-playing — fast to catch transitions
+      }
+      // Exponential backoff on failures (capped at 2× base, max 120 s)
+      const failPenalty = v2FailStreak.current >= 3
+        ? Math.min(baseMs, 60_000)
+        : 0;
+      const intervalMs = Math.min(baseMs + failPenalty, 120_000);
+
+      v2IntervalRef.current = setTimeout(() => {
+        v2IntervalRef.current = null;
+        if (!cancelled) void checkV2Broadcast();
+      }, intervalMs);
     };
 
     // ── Initial checks ────────────────────────────────────────────────────────
-    checkForLive();
-    checkV2Broadcast();
+    void checkForLive();
+    void checkV2Broadcast();
 
-    // ── Polling intervals ─────────────────────────────────────────────────────
-    // YouTube: 60 s — SSE events handle real-time, poll is safety net.
-    // V2 state: 30 s — lighter endpoint, catches mode changes between SSE events.
+    // ── YouTube safety poll — 60 s ────────────────────────────────────────────
+    // V2 polling is self-rescheduling (adaptive). YouTube uses a fixed interval
+    // since SSE handles real-time and the 60 s is just a safety net.
     const ytInterval = setInterval(checkForLive, 60_000);
-    const v2Interval = setInterval(checkV2Broadcast, 30_000);
 
     // ── SSE subscription — react only to genuine live-state events ────────────
     const subscription = subscribeBroadcastEvents({
       "broadcast-control-updated": checkForLive,
       "broadcast-schedule-updated": () => {
-        checkForLive();
-        checkV2Broadcast();
+        void checkForLive();
+        // Reset the adaptive V2 poll interval so we check sooner after a
+        // schedule change (the broadcast might transition to PLAYING).
+        if (v2IntervalRef.current !== null) {
+          clearTimeout(v2IntervalRef.current);
+          v2IntervalRef.current = null;
+        }
+        void checkV2Broadcast();
       },
       "yt-status": checkForLive,
       "override-expired": () => {
-        checkForLive();
-        checkV2Broadcast();
+        void checkForLive();
+        if (v2IntervalRef.current !== null) {
+          clearTimeout(v2IntervalRef.current);
+          v2IntervalRef.current = null;
+        }
+        void checkV2Broadcast();
       },
       status: checkForLive,
     });
 
     // ── Foreground recovery ───────────────────────────────────────────────────
     // Bypass the 1.5 s throttle so the very first foreground check is immediate.
+    // Also cancel any pending V2 poll timer and fire immediately so mode
+    // transitions that happened while backgrounded are detected right away.
     const appStateSub = AppState.addEventListener("change", (next: AppStateStatus) => {
       if (next === "active") {
-        lastCheckRef.current = 0;
-        checkForLive();
-        checkV2Broadcast();
+        lastCheckRef.current = 0; // reset YouTube throttle
+        v2FailStreak.current = 0; // reset backoff on foreground
+
+        // Cancel pending V2 timer → fire immediately
+        if (v2IntervalRef.current !== null) {
+          clearTimeout(v2IntervalRef.current);
+          v2IntervalRef.current = null;
+        }
+
+        void checkForLive();
+        void checkV2Broadcast();
       }
     });
 
     return () => {
       cancelled = true;
       clearInterval(ytInterval);
-      clearInterval(v2Interval);
+      if (v2IntervalRef.current !== null) {
+        clearTimeout(v2IntervalRef.current);
+        v2IntervalRef.current = null;
+      }
       subscription?.close();
       appStateSub.remove();
     };
