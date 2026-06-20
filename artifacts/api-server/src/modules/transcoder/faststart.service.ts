@@ -29,8 +29,11 @@ import { storage } from "../../infrastructure/storage.js";
 import { logger as rootLogger } from "../../infrastructure/logger.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
-// enqueueIfMissing intentionally removed from faststart — HLS-gate policy:
-// only transcoder.dispatcher adds videos to broadcast queue (after HLS ready).
+// MP4-first broadcast policy: enqueueIfMissing is called in the faststart
+// success path so any video with a localVideoUrl enters the broadcast queue
+// immediately after its moov atom is relocated — even if the upload finalize
+// path never had a chance to enqueue it (server restart, migration, recovery).
+import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { boostTranscodePriority } from "./transcoder.queue.js";
 import { detectMdatWithoutMoov, probeContainerIsValid, remuxForFaststart, validateLocalSourceFile } from "./transcoder.service.js";
 
@@ -629,10 +632,14 @@ export async function runFaststart(
     void invalidateVideosCatalogCache().catch(() => {});
     adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-complete" });
 
-    // HLS-gate: do NOT enqueue here. The transcoder dispatcher calls
-    // enqueueIfMissing() after HLS transcoding completes and hlsMasterUrl is
-    // written — that is the only broadcast queue entry point for local uploads.
-    // Faststart is a source-optimization step, not a broadcast gate.
+    // MP4-first broadcast policy: enqueue now if not already in the queue.
+    // This handles videos that missed the upload-finalize enqueue path
+    // (server restart during assembly, migration, operator repair, or recovery).
+    // enqueueIfMissing is idempotent — if the queue row already exists this
+    // is a cheap no-op (single SELECT returns "already-queued").
+    void enqueueIfMissing({ videoId, reason: "faststart-complete" }).catch(
+      (err: unknown) => log.warn({ err, videoId }, "faststart: enqueueIfMissing failed (non-fatal)"),
+    );
 
     // Trigger an orchestrator reload so the faststart-optimised source URL is
     // picked up without waiting for the next scheduled poll cycle.

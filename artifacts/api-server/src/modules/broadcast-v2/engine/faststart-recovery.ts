@@ -40,6 +40,7 @@ import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { sendAdminAlert } from "../../mail/mail.service.js";
 import { runFaststart } from "../../transcoder/faststart.service.js";
 import { probeUploadedDuration } from "../../transcoder/transcoder.service.js";
+import { enqueueIfMissing } from "../../broadcast/auto-enqueue.service.js";
 
 const v = schema.videosTable;
 const q = schema.broadcastQueueTable;
@@ -429,7 +430,13 @@ function dispatchOne(
           title: c.title,
           elapsedMs: Date.now() - jobStart,
         },
-        "faststart-recovery: runFaststart succeeded — row will be admitted on next reload",
+        "faststart-recovery: runFaststart succeeded",
+      );
+      // MP4-first: ensure the video is in the broadcast queue now that faststart
+      // has applied. Videos recovered by this worker may pre-date the upload-
+      // finalize auto-enqueue path — enqueueIfMissing is a cheap idempotent call.
+      void enqueueIfMissing({ videoId: c.videoId, reason: "faststart-recovery-complete" }).catch(
+        (err: unknown) => logger.warn({ err, videoId: c.videoId }, "faststart-recovery: enqueueIfMissing failed (non-fatal)"),
       );
     } catch (err) {
       stats.totalFailed += 1;

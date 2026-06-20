@@ -1761,6 +1761,7 @@ function ProgramGuideCard({ guide }: { guide: ProgramGuide | undefined }) {
   const qualityBadge = (q: string) => {
     if (q === "hls") return <Badge variant="outline" className="text-[9px] py-0 h-4 px-1 border-blue-400 text-blue-600">HLS</Badge>;
     if (q === "mp4_faststart") return <Badge variant="outline" className="text-[9px] py-0 h-4 px-1 border-green-400 text-green-600">MP4</Badge>;
+    if (q === "mp4_raw") return <Badge variant="outline" className="text-[9px] py-0 h-4 px-1 border-orange-400 text-orange-600" title="Raw MP4 — moov atom may be at end-of-file. Faststart will run in background to optimize streaming.">RAW</Badge>;
     return <Badge variant="outline" className="text-[9px] py-0 h-4 px-1">SD</Badge>;
   };
 

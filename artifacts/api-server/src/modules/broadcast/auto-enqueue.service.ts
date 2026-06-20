@@ -30,13 +30,18 @@ import { ConflictError } from "../../shared/errors.js";
  * What counts as "playable" for auto-enqueue:
  *  • YouTube  — excluded from broadcast. YouTube content is library-only and
  *    surfaces only through catalog/search endpoints, never the broadcast queue.
- *  • Local    — MUST have hls_master_url (adaptive bitrate HLS). Raw MP4
- *    uploads are NOT admitted to the broadcast queue — videos wait in the
- *    library until HLS transcoding completes. This guarantees every queued
- *    video delivers uninterrupted 24/7 playback with no player stalls,
- *    dead-air gaps, or auto-skip cycles caused by moov-at-EOF raw uploads.
- *    The transcoder dispatcher calls enqueueIfMissing() after writing
- *    hls_master_url — no operator action required.
+ *  • Local    — admitted as soon as a source URL exists on the video row,
+ *    regardless of transcoding status. This is the MP4-first policy:
+ *      – Raw MP4 (localVideoUrl set, no HLS) airs immediately after upload.
+ *      – Faststart MP4 (faststartApplied=true) streams from byte-0 with
+ *        instant seek — preferred over HLS-first for low-latency on-air.
+ *      – HLS (hlsMasterUrl set) provides adaptive bitrate when available.
+ *    Background workers (faststart, HLS transcoder) upgrade quality
+ *    asynchronously. Runtime playback failures (moov-at-EOF, 404, bad blob)
+ *    are handled by the orchestrator's bad-URL cache and auto-skip logic —
+ *    they never block a video from entering the queue.
+ *    Call sites: upload finalize, faststart completion, transcoder dispatcher,
+ *    faststart-recovery worker, schedule-bridge, manual repair endpoints.
  */
 
 const queueTable = schema.broadcastQueueTable;
@@ -56,7 +61,7 @@ export function isAutoEnqueueEnabled(): boolean {
  */
 export async function enqueueIfMissing(opts: {
   videoId: string;
-  reason: "upload-finalize" | "yt-sync" | "library-scan" | "manual-import" | "upload-recovery-on-restart" | "repair-all" | "enqueue-missing" | "assembly-retry" | "schedule-bridge";
+  reason: "upload-finalize" | "yt-sync" | "library-scan" | "manual-import" | "upload-recovery-on-restart" | "repair-all" | "enqueue-missing" | "assembly-retry" | "schedule-bridge" | "schedule-bridge-fallback" | "faststart-complete" | "faststart-recovery-complete";
 }): Promise<{ enqueued: boolean; queueItemId?: string; skipReason?: string }> {
   if (!isAutoEnqueueEnabled()) {
     return { enqueued: false, skipReason: "auto-enqueue-disabled" };
