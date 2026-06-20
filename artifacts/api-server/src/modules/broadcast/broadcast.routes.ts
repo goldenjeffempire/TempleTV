@@ -336,22 +336,6 @@ export async function broadcastRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      // If the payload references a managed video, enforce READY-only pipeline.
-      if (req.body.videoId) {
-        const [video] = await db
-          .select({
-            id: schema.videosTable.id,
-            title: schema.videosTable.title,
-            transcodingStatus: schema.videosTable.transcodingStatus,
-            hlsMasterUrl: schema.videosTable.hlsMasterUrl,
-            videoSource: schema.videosTable.videoSource,
-          })
-          .from(schema.videosTable)
-          .where(eq(schema.videosTable.id, req.body.videoId))
-          .limit(1);
-        // MP4-only pipeline: any video with a localVideoUrl is immediately
-        // broadcastable — no transcoding gate needed.
-      }
       let created;
       try {
         created = await broadcastService.addToQueue(req.body);

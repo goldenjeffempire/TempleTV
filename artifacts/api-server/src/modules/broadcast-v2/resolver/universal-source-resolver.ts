@@ -108,8 +108,6 @@ const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
   "127.0.0.1",
 ];
 
-const HLS_EXT = /\.m3u8(?:$|\?|#)/i;
-const DASH_EXT = /\.mpd(?:$|\?)/i;
 // Expanded to cover all common video container formats served as progressive
 // download or via a CDN. The player's <video> element handles all of these
 // natively or via MSE — classifying them all as "mp4" is safe because the
@@ -212,11 +210,8 @@ function classify(url: string): V2Source["kind"] | null {
   if (YT_HOST.test(parsed.hostname)) return "youtube";
   // Vimeo player URLs (vimeo.com/123456) are treated like YouTube — the
   // player must handle them via the Vimeo embed API, not a raw <video>.
-  // Vimeo CDN URLs (vimeocdn.com) serve actual HLS/MP4 bytes directly.
+  // Vimeo CDN URLs (vimeocdn.com) serve actual MP4 bytes directly.
   if (VIMEO_HOST.test(parsed.hostname) && !parsed.hostname.includes("cdn")) return "youtube";
-  // HLS — check path first, then full URL string (handles query-param-only manifests)
-  if (HLS_EXT.test(parsed.pathname) || HLS_EXT.test(url)) return "hls";
-  if (DASH_EXT.test(parsed.pathname) || DASH_EXT.test(url)) return "dash";
   if (MP4_EXT.test(parsed.pathname) || MP4_EXT.test(url)) return "mp4";
   // No recognized file extension — default to mp4 for known upload paths.
   // Locally-uploaded videos are served at /api/v1/uploads/{key} (and the
@@ -226,22 +221,6 @@ function classify(url: string): V2Source["kind"] | null {
   // and report an error if the content-type is actually wrong, which
   // triggers the normal RECOVERING path rather than a silent skip.
   if (/\/(?:api\/v1\/)?uploads?\//i.test(parsed.pathname)) return "mp4";
-  // HLS streams delivered via a CDN path are common in self-hosted setups.
-  // "playlist", "manifest", and "master" are unambiguously HLS-specific
-  // terminology — treat any path containing them as HLS.
-  //
-  // "index" and "stream" are intentionally excluded from this broad check:
-  //   • "index" appears in many MP4 paths (e.g. /videos/sermon-index) and
-  //     would cause MP4 files to be misclassified as HLS, sending them to
-  //     hls.js which cannot parse an MP4 bytestream → player stall.
-  //   • "stream" is similarly generic (REST paths, API names, etc.).
-  // Instead, "index" is handled below in a tighter streaming-context check.
-  if (/\/(?:playlist|manifest|master)(?:$|\/|\?)/i.test(parsed.pathname)) return "hls";
-  // "index" is only treated as HLS when it appears after a known streaming
-  // path prefix (/live/, /hls/, /channel/, /broadcast/) — this covers the
-  // canonical CDN HLS delivery pattern (/live/channel/index) without
-  // misidentifying arbitrary paths that happen to contain the word "index".
-  if (/\/(?:live|hls|channel|broadcast)(?:\/[^/]+)?\/index(?:$|\?)/i.test(parsed.pathname)) return "hls";
   return null;
 }
 
@@ -272,8 +251,7 @@ export function resolveSource(input: ResolverInput): ResolvedSource | null {
   }
 
   // MP4-only pipeline: prefer MP4 > YouTube.
-  // HLS items already in the queue still resolve via primaryUrl for back-compat.
-  const order: Record<V2Source["kind"], number> = { mp4: 0, hls: 1, dash: 2, youtube: 3 };
+  const order: Record<V2Source["kind"], number> = { mp4: 0, youtube: 1, hls: 2, dash: 3 };
   candidates.sort((a, b) => order[a.kind] - order[b.kind]);
 
   const primary = candidates[0]!;

@@ -9,8 +9,6 @@
  *                            uploaded)
  *   NO_PLAYABLE_URL        — item has no URL on either the queue row or the
  *                            joined video row after COALESCE
- *   PLACEHOLDER_DURATION   — item still carries the 1800 s upload-time
- *                            placeholder; ffprobe has not run yet
  *   DUPLICATE_SORT_ORDER   — two or more items share the same sort_order;
  *                            queue ordering becomes non-deterministic
  *   EXCESSIVE_DURATION     — item duration > 12 h (likely data corruption)
@@ -270,20 +268,6 @@ class QueueIntegrityValidatorImpl {
             code: "ORPHANED_VIDEO_REF",
             message: `Video '${row.videoId}' exists but has no playable URLs — upload may be incomplete`,
           });
-        }
-
-        if (row.durationSecs === 1800) {
-          const vDur = row.vDuration ? parseFloat(row.vDuration) : 0;
-          const isYoutube = row.vSource === "youtube";
-          if (!isYoutube && (!vDur || isNaN(vDur))) {
-            issues.push({
-              severity: "warn",
-              itemId: row.id,
-              itemTitle: row.title,
-              code: "PLACEHOLDER_DURATION",
-              message: "Item uses 1800 s placeholder — ffprobe has not produced a real duration yet",
-            });
-          }
         }
 
         // Detect suspiciously short probe results — likely a probe-failure from
