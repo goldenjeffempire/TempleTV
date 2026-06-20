@@ -29,6 +29,18 @@ Any local video with a `localVideoUrl` (raw MP4) is admitted to the broadcast qu
 - `chunked-upload.routes.ts` spawnAssemblyRetry: `enqueueIfMissing` called after ffprobe
 - `queue.repo.ts` → `loadActive()`: already admitted MP4-only items (no change needed)
 
+## Admin preview player — MP4 native path
+
+`BroadcastPreviewV2.tsx` `attachHls()` is called by the player-core for ALL non-YouTube sources (both HLS and MP4). It must detect source type by URL:
+- `url.includes(".m3u8") || url.includes("/hls/master")` → HLS.js path
+- Anything else → native `video.src = url` (MP4 / faststart MP4)
+
+HLS.js fatally fails when loaded with an MP4 URL — it immediately pushes the FSM into RECOVERING/FATAL. The native path handles MP4 uploads without issue (faststart-applied files play inline; moov-at-EOF files fail with MEDIA_ERR_SRC_NOT_SUPPORTED, which is a real viewer issue too).
+
+`classifySourceFailure` for `kind==="mp4" && isApiUpload`: now `scope:"likely-all-surfaces"` (was "preview-only"). With MP4-first broadcasting, all surfaces receive the same raw MP4 when HLS isn't ready — a failure here IS a viewer issue.
+
 ## What NOT to revert
 
 Do not re-add `isNotNull(videosTable.hlsMasterUrl)` as the sole admission gate to `scanLibraryAndEnqueue()` or `isPlayableForBroadcast()`. The queue's `loadActive()` function already handled MP4-only items — only the enrollment functions had the HLS gate.
+
+Do not remove the MP4 early-exit from `attachHls()` in `BroadcastPreviewV2.tsx`. The comment block above the function must stay updated to explain the dual-mode behavior.

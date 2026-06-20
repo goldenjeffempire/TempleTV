@@ -69,12 +69,44 @@ interface Props {
   className?: string;
 }
 
-// ── hls.js attachment ─────────────────────────────────────────────────────────
-// Exact mirror of the production attachHls in LiveBroadcastV2.tsx. Keeping these
-// in sync ensures the admin preview uses identical ABR, buffer, stall-recovery,
-// and error-handling behaviour to what real viewers experience on TV / web.
+// ── Source attachment (HLS + raw MP4) ─────────────────────────────────────────
+// Called by the player-core web adapter for ALL non-YouTube sources — both HLS
+// manifests and raw MP4 uploads.  MP4-first broadcast policy means this function
+// must handle both kinds:
+//   • Raw MP4 / faststart-optimised MP4 → native video.src (no HLS.js needed)
+//   • HLS manifest (.m3u8)              → hls.js (mirrors LiveBroadcastV2.tsx)
+// Keep the HLS.js config in sync with LiveBroadcastV2.tsx so the admin preview
+// uses identical ABR, buffer, stall-recovery, and error-handling to what real
+// viewers experience on TV / web.
 
 function attachHls(video: HTMLVideoElement, url: string): () => void {
+  // ── MP4 / non-HLS path (raw MP4 uploads and faststart-optimised files) ───────
+  // The player-core calls this function for ALL non-YouTube sources, including
+  // raw MP4 uploads. HLS.js cannot load MP4 URLs — attempting it immediately
+  // fails and pushes the machine into RECOVERING/FATAL.
+  // Detect HLS manifests by .m3u8 extension. Everything else plays natively.
+  const isHls = url.includes(".m3u8") || url.includes("/hls/master");
+  if (!isHls) {
+    let mp4Retried = false;
+    const handleMp4Error = () => {
+      const code = video.error?.code;
+      // MEDIA_ERR_NETWORK (2): transient network error — one silent reload.
+      if (!mp4Retried && code === MediaError.MEDIA_ERR_NETWORK) {
+        mp4Retried = true;
+        video.load();
+        void video.play().catch(() => {});
+      }
+    };
+    video.addEventListener("error", handleMp4Error);
+    video.src = url;
+    void video.play().catch(() => {});
+    return () => {
+      video.removeEventListener("error", handleMp4Error);
+      video.removeAttribute("src");
+      video.load();
+    };
+  }
+
   // ── Native HLS path (Safari / WebKit-based browsers) ────────────────────────
   if (video.canPlayType("application/vnd.apple.mpegurl")) {
     let nativeRetried = false;
@@ -289,19 +321,19 @@ function classifySourceFailure(
       url.includes("/api/uploads/");
 
     if (isApiUpload) {
-      // Admin browser MP4 failures on uploaded files are always a preview-only
-      // limitation. The moov metadata block is placed at the end of the file
-      // until faststart relocates it — browsers cannot play these via HTTP
-      // range requests. Real viewers receive HLS from the broadcast path
-      // (TV, mobile, web all use the HLS master playlist, not the raw upload).
-      // Classifying this as "likely-all-surfaces" creates a false alarm.
+      // MP4-first policy: TV, mobile, and web all receive the raw MP4 when HLS
+      // is not yet ready. A failure here is NOT preview-only — it likely affects
+      // all viewer surfaces too. The most common cause is moov-atom-at-EOF
+      // (faststart not yet applied). Faststart runs automatically 30–90 s after
+      // upload and relocates the moov atom to the front of the file so browsers
+      // can stream it without buffering the entire file first.
       return {
-        scope: "preview-only",
-        headline: "Preview-only failure",
+        scope: "likely-all-surfaces",
+        headline: "MP4 source issue — may affect viewers",
         reason:
-          "This browser could not load the raw MP4 upload. The most common cause is that the moov metadata block is still at the end of the file — browsers time out waiting to seek it. Faststart relocates it to the beginning (30–90 s after upload).",
+          "The browser could not load this MP4 upload. Most likely the moov metadata block is still at the end of the file (faststart pending — runs automatically 30–90 s after upload). Once Faststart completes, all surfaces will play normally.",
         viewerNote:
-          "Real viewers on TV and mobile receive the HLS stream from the broadcast path, not the raw MP4 upload. This browser preview limitation does not affect them. If the video is actively broadcasting, check the health panel — viewer stalls would indicate an HLS problem, not an MP4 one.",
+          "With MP4-first broadcasting, TV and mobile viewers receive the same MP4 source when HLS is not yet ready. Apply Faststart to fix playback for everyone, or wait for it to complete automatically.",
         urlHint: url,
         typeLabel: "MP4 upload",
       };
