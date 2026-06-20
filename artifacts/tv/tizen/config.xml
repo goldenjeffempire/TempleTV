@@ -14,7 +14,7 @@
 <widget xmlns="http://www.w3.org/ns/widgets"
         xmlns:tizen="http://tizen.org/ns/widgets"
         id="https://tv.templetv.org.ng"
-        version="1.0.28"
+        version="1.0.31"
         viewmodes="maximized">
 
   <!-- Identity -->
