@@ -902,16 +902,14 @@ export const queueRepo = {
           // Source quality classification — reflects the ACTUAL source that
           // toItem() will select as the primary stream (MP4-first policy):
           //
-          //   'mp4_faststart' — faststart applied (moov at byte-0, seekable
-          //                     MP4 preferred over HLS for direct streaming)
-          //   'hls'           — HLS present but faststart not applied (or
-          //                     localVideoUrl absent), adaptive bitrate used
-          //   'mp4_raw'       — no HLS, no faststart (raw MP4, last resort)
+          //   'mp4_faststart' — faststart applied + localVideoUrl present
+          //                     (moov at byte-0, seekable, ideal for streaming)
+          //   'mp4_raw'       — localVideoUrl present but faststart not applied
+          //                     (raw MP4, broadcast-ready immediately post-upload)
+          //   'hls'           — no localVideoUrl, only HLS master URL available
           //
-          // Must stay in sync with toItem()'s `preferMp4Direct` logic:
-          //   preferMp4Direct = faststartApplied === true && localVideoUrl IS NOT NULL
-          //   → actual primary source is localVideoUrl (mp4_faststart)
-          //   → otherwise HLS (if present) or raw MP4 fallback
+          // Must stay in sync with toItem()'s source selection:
+          //   primary = localVideoUrl ?? hlsMasterUrl  (MP4 always wins when present)
           //
           // Mirrors V2SourceQuality and feeds CachedQueueItem.sourceQuality
           // so every snapshot includes quality metadata without an extra query.
@@ -920,6 +918,8 @@ export const queueRepo = {
               WHEN ${faststartExpr} = true
                 AND COALESCE(${v.localVideoUrl}, ${q.localVideoUrl}) IS NOT NULL
                 THEN 'mp4_faststart'
+              WHEN COALESCE(${v.localVideoUrl}, ${q.localVideoUrl}) IS NOT NULL
+                THEN 'mp4_raw'
               WHEN COALESCE(${q.hlsMasterUrl}, ${v.hlsMasterUrl}) IS NOT NULL
                 THEN 'hls'
               ELSE 'mp4_raw'
@@ -1095,24 +1095,18 @@ export const queueRepo = {
     // (dev→prod mirror) or API_ORIGIN (production own-origin), or
     // RENDER_EXTERNAL_URL (zero-config Render self-detection), if configured.
     //
-    // MP4-first policy: when faststart has been applied to the uploaded MP4
-    // (moov atom at byte-0, fully range-seekable), prefer it over the HLS
-    // playlist as the primary source.  This enables direct MP4 streaming from
-    // the production backend without waiting for — or depending on — HLS
-    // transcoding.  Benefits over HLS-first:
-    //   • No manifest round-trips (single HTTP Range request to start playback)
-    //   • Immediately available post-upload (no transcoding pipeline required)
-    //   • Consistent behaviour across all clients (native, web, TV)
-    //   • HLS is still wired as the failover source when available
+    // MP4-first policy: any locally-uploaded video with a URL is broadcast-ready
+    // immediately — no HLS transcoding or faststart required.  Prefer localVideoUrl
+    // (raw or faststart-optimized MP4) as the primary source whenever it is present.
+    // HLS is wired as failover when available, providing adaptive bitrate as an
+    // async upgrade without ever gating broadcast admission.
     //
-    // When faststart has NOT been applied (upload still raw or transcoding
-    // queued), keep HLS as primary so adaptive bitrate is preserved when the
-    // transcode completes.  localVideoUrl still becomes the mp4Url argument so
-    // resolveSource() can wire it as a failover.
-    const preferMp4Direct = row.faststartApplied === true && !!row.localVideoUrl;
-    const primary = preferMp4Direct
-      ? normalizeQueueUrl(row.localVideoUrl ?? row.hlsMasterUrl)
-      : normalizeQueueUrl(row.hlsMasterUrl ?? row.localVideoUrl);
+    // Benefits of MP4-first over HLS-first:
+    //   • Available immediately post-upload (no transcoding pipeline dependency)
+    //   • Single HTTP Range request to start playback (no manifest round-trips)
+    //   • Consistent behaviour across all clients (native, web, TV, mobile)
+    //   • HLS still wired as failover for adaptive bitrate when transcoding completes
+    const primary = normalizeQueueUrl(row.localVideoUrl ?? row.hlsMasterUrl);
     const mp4 = normalizeQueueUrl(row.localVideoUrl);
 
     // NOTE: the bad-URL cache check is intentionally NOT here.
@@ -1135,10 +1129,10 @@ export const queueRepo = {
           id: row.id,
           title: row.title,
           primaryUrl: primary ?? null,
-          rawUrl: (row.hlsMasterUrl ?? row.localVideoUrl) ?? null,
+          rawUrl: (row.localVideoUrl ?? row.hlsMasterUrl) ?? null,
         },
         "[broadcast-v2] item has no playable source — will not air" +
-          (!primary || !/^https?:\/\//i.test(row.hlsMasterUrl ?? row.localVideoUrl ?? "")
+          (!primary || !/^https?:\/\//i.test(row.localVideoUrl ?? row.hlsMasterUrl ?? "")
             ? " (relative URL detected — set API_ORIGIN=https://api.templetv.org.ng in production)"
             : " (URL not in broadcast allowlist — add host to ALLOWED_HOST_SUFFIXES if legitimate)"),
       );

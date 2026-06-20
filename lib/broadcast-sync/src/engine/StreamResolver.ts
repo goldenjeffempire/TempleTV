@@ -1,9 +1,9 @@
 /**
  * StreamResolver — Resolves a queue item to a concrete playable URL.
  *
- * Priority order (mirrors the server's own preference chain):
- *   1. HLS master playlist (.m3u8) — adaptive bitrate, best compatibility
- *   2. Raw MP4 / local video URL   — direct progressive download
+ * Priority order (MP4-first policy — HLS is async optimization, not a gate):
+ *   1. Raw MP4 / local video URL   — immediately available post-upload
+ *   2. HLS master playlist (.m3u8) — only when no MP4 is present
  *   3. YouTube embed ID            — iframe-based, limited platform support
  *
  * This module is a stateless utility — no instances, no side effects.
@@ -31,10 +31,6 @@ export function resolveSource(
 ): ResolvedSource | null {
   if (!item) return null;
 
-  if (item.hlsMasterUrl) {
-    return { kind: "hls", url: item.hlsMasterUrl, isHls: true, isYt: false };
-  }
-
   if (item.localVideoUrl) {
     const isHlsExt = /\.m3u8(\?|$)/i.test(item.localVideoUrl);
     return {
@@ -43,6 +39,10 @@ export function resolveSource(
       isHls: isHlsExt,
       isYt:  false,
     };
+  }
+
+  if (item.hlsMasterUrl) {
+    return { kind: "hls", url: item.hlsMasterUrl, isHls: true, isYt: false };
   }
 
   if (item.youtubeId) {
