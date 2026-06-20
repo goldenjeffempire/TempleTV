@@ -121,7 +121,7 @@
       }
     },
     "production-android": {
-      "autoIncrement": true,
+      "autoIncrement": false,
       "distribution": "store",
       "channel": "production",
       "credentialsSource": "local",
