@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { LiveStatusBadge } from "@/components/live-status-badge";
+import { BroadcastReadyBadge } from "@/components/shared/broadcast-ready-badge";
 import { uploadQueue, useUploadQueue, formatBytes, titleFromFilename } from "@/lib/upload-queue";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -1707,6 +1708,12 @@ export default function VideosPage() {
 
                   {/* Status badge */}
                   <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                    {/* Broadcast-ready badge — shows whether this video can air right now */}
+                    <BroadcastReadyBadge
+                      videoSource={v.videoSource}
+                      localVideoUrl={v.localVideoUrl}
+                      hlsMasterUrl={v.hlsMasterUrl}
+                    />
                     <Badge
                       variant={(STATUS_COLORS[v.transcodingStatus] ?? "outline") as "default" | "secondary" | "outline" | "destructive"}
                       className="capitalize text-[11px]"
