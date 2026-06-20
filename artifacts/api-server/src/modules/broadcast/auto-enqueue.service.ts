@@ -30,14 +30,13 @@ import { ConflictError } from "../../shared/errors.js";
  * What counts as "playable" for auto-enqueue:
  *  • YouTube  — excluded from broadcast. YouTube content is library-only and
  *    surfaces only through catalog/search endpoints, never the broadcast queue.
- *  • Local    — has hls_master_url (preferred — adaptive bitrate) OR any
- *    non-empty local_video_url. Videos are queued immediately after blob
- *    assembly so the broadcast doesn't wait for faststart or HLS transcoding.
- *    Faststart runs in the background and re-uploads the optimised file to the
- *    same storage key; HLS transcoding produces a separate manifest URL. The
- *    queue-integrity-validator upgrades the queue item's source to HLS once
- *    hls_master_url is set, so the broadcast always airs the best available
- *    source without operator action.
+ *  • Local    — MUST have hls_master_url (adaptive bitrate HLS). Raw MP4
+ *    uploads are NOT admitted to the broadcast queue — videos wait in the
+ *    library until HLS transcoding completes. This guarantees every queued
+ *    video delivers uninterrupted 24/7 playback with no player stalls,
+ *    dead-air gaps, or auto-skip cycles caused by moov-at-EOF raw uploads.
+ *    The transcoder dispatcher calls enqueueIfMissing() after writing
+ *    hls_master_url — no operator action required.
  */
 
 const queueTable = schema.broadcastQueueTable;
@@ -345,33 +344,10 @@ export async function scanLibraryAndEnqueue(opts: {
         and(
           // YouTube is library-only — never enters the broadcast queue.
           ne(videosTable.videoSource, "youtube"),
-          // Must have at least one local-playback source. The per-row
-          // isPlayableForBroadcast() check below confirms the video is ready.
-          or(
-            isNotNull(videosTable.hlsMasterUrl),
-            isNotNull(videosTable.localVideoUrl),
-          ),
-          // Pre-filter: exclude unrecoverable/unassembled uploads at the SQL level
-          // to avoid wasting a roundtrip per row inside isPlayableForBroadcast.
-          // CORRUPT_SOURCE = moov atom absent; SOURCE_MISSING = source blob gone;
-          // ASSEMBLY_FAILED = blob never committed (session reset to 'uploading').
-          sql`(${videosTable.transcodingErrorCode} IS NULL OR ${videosTable.transcodingErrorCode} NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING', 'ASSEMBLY_FAILED'))`,
-          // Pre-filter: exclude local videos whose blob has not yet been
-          // committed to storage (pre-committed rows where completeMultipartUpload
-          // is still running in the background). s3_mirrored_at is set only after
-          // completeMultipartUpload succeeds; without this guard the self-heal
-          // scan would add a broadcast-queue entry for a video whose storage blob
-          // does not yet exist, causing the orchestrator to attempt playback of
-          // an empty URL. Non-local sources (e.g. HLS) are excluded from this
-          // guard since they have no s3_mirrored_at stamp.
-          sql`(${videosTable.videoSource} != 'local' OR ${videosTable.s3MirroredAt} IS NOT NULL)`,
-          // Note: transcoding status, faststart status, and moov position are
-          // NOT pre-filtered here. Queue admission depends only on source
-          // availability (localVideoUrl or hlsMasterUrl). The faststart-recovery
-          // worker handles moov relocation in the background; the player watchdog
-          // + bad-URL cache + auto-skip handles playback failures gracefully.
-          // Only truly absent sources (CORRUPT_SOURCE / SOURCE_MISSING /
-          // ASSEMBLY_FAILED error codes, filtered above) are excluded.
+          // HLS is required for broadcast admission — only videos with a
+          // fully-generated HLS manifest are eligible. Raw MP4 uploads without
+          // hlsMasterUrl are held in the library until transcoding completes.
+          isNotNull(videosTable.hlsMasterUrl),
           // NOT EXISTS subquery — keeps the JOIN cheap and the candidate set
           // small; the dedupe inside enqueueIfMissing is the authoritative
           // backstop for the race where two concurrent scans run at once.
@@ -469,34 +445,13 @@ function isPlayableForBroadcast(row: {
   // YouTube is library-only — excluded from broadcast entirely.
   if (row.videoSource === "youtube") return false;
 
-  // HLS is the gold standard (adaptive bitrate, CDN-friendly, moov equivalent
-  // is baked into the playlist manifest). Always safe to broadcast.
+  // HLS is required for broadcast admission. Raw MP4 uploads (no hlsMasterUrl)
+  // are held in the library until HLS transcoding completes — this guarantees
+  // every queued video delivers adaptive bitrate streaming with no moov-at-EOF
+  // stalls, auto-skip cycles, or dead-air caused by unoptimised uploads.
+  // The transcoder dispatcher calls enqueueIfMissing() after setting
+  // hlsMasterUrl, so no operator action is needed.
   if (row.hlsMasterUrl && row.hlsMasterUrl.trim() !== "") return true;
-
-  // Unrecoverable / unassembled uploads:
-  //   CORRUPT_SOURCE  = moov atom absent; the raw MP4 cannot be streamed.
-  //   SOURCE_MISSING  = source blob no longer exists in storage.
-  //   ASSEMBLY_FAILED = blob assembly was interrupted; blob absent / partial.
-  // All three require the operator to retry from the upload panel before the
-  // video can be broadcast.
-  if (
-    row.transcodingErrorCode === "CORRUPT_SOURCE" ||
-    row.transcodingErrorCode === "SOURCE_MISSING" ||
-    row.transcodingErrorCode === "ASSEMBLY_FAILED"
-  ) return false;
-
-  // Raw local MP4 (no HLS yet): any video with a local source URL is
-  // broadcast-eligible. Queue admission depends only on source availability —
-  // moov position, faststart status, and transcoding outcomes do NOT gate
-  // admission. The faststart-recovery worker relocates the moov atom in the
-  // background for un-faststarted files; the player watchdog + bad-URL cache
-  // + auto-skip handles the rare case where a file cannot be range-streamed
-  // before faststart completes. This eliminates "Off Air" windows caused by
-  // admin inaction on videos that are structurally present but technically
-  // imperfect.
-  if (row.localVideoUrl && row.localVideoUrl.trim() !== "") {
-    return true;
-  }
 
   return false;
 }

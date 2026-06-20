@@ -7,10 +7,10 @@
  * have been transcoded (hlsMasterUrl IS NOT NULL) but are not currently
  * active in the broadcast queue.
  *
- * Selection criteria (in order of preference):
- *   1. Videos with hlsMasterUrl (HLS transcoded) — best quality
- *   2. Videos with localVideoUrl (raw MP4 upload) — acceptable fallback
- *   3. Ordered by imported_at DESC — newest content first
+ * Selection criteria:
+ *   1. Videos with hlsMasterUrl AND transcoding_status = 'hls_ready' only
+ *      (raw MP4 uploads without HLS are excluded — HLS-gate policy)
+ *   2. Ordered by imported_at DESC — newest content first
  *
  * YouTube-only library handling: when all library videos are YouTube-sourced,
  * the refill query returns no candidates (YouTube videos are served via the
@@ -107,8 +107,8 @@ async function run(): Promise<void> {
       SELECT mv.id, mv.title
       FROM managed_videos mv
       WHERE
-        mv.transcoding_status IN ('ready', 'hls_ready', 'none')
-        AND (mv.hls_master_url IS NOT NULL OR mv.local_video_url IS NOT NULL)
+        mv.transcoding_status = 'hls_ready'
+        AND mv.hls_master_url IS NOT NULL
         AND mv.video_source != 'youtube'
         AND NOT EXISTS (
           SELECT 1 FROM broadcast_queue bq

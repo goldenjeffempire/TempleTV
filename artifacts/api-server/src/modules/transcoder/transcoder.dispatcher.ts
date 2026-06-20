@@ -1713,20 +1713,21 @@ class TranscoderDispatcher {
           hlsMasterUrl: result.masterPlaylistUrl,
         });
 
-        // Safety-net enqueue: if this video somehow never made it into the
-        // broadcast queue (e.g. faststart was skipped, the server restarted
-        // during the upload pipeline, or the video was imported without going
-        // through the normal upload flow), add it now. HLS is confirmed ready
-        // so isPlayableForBroadcast() will pass and enqueueIfMissing inserts
-        // the row immediately. Idempotent — no-ops if already queued.
-        void enqueueIfMissing({ videoId: job.videoId, reason: "upload-finalize" }).then((res) => {
-          if (res.enqueued) {
+        // Primary broadcast queue enrollment: add the video to the broadcast
+        // queue now that HLS is confirmed ready. isPlayableForBroadcast() gates
+        // on hlsMasterUrl — this is the ONLY place local uploads enter the queue.
+        // Idempotent — no-ops if already queued (e.g. re-transcoded video).
+        try {
+          const enqRes = await enqueueIfMissing({ videoId: job.videoId, reason: "upload-finalize" });
+          if (enqRes.enqueued) {
             logger.info(
-              { videoId: job.videoId, queueItemId: res.queueItemId },
-              "transcoder: safety-net auto-enqueued video after HLS completion",
+              { videoId: job.videoId, queueItemId: enqRes.queueItemId },
+              "transcoder: auto-enqueued video after HLS completion",
             );
           }
-        }).catch(() => { /* non-fatal — orchestrator self-heal covers this case */ });
+        } catch (enqErr) {
+          logger.warn({ err: enqErr, videoId: job.videoId }, "transcoder: enqueueIfMissing after HLS failed (non-fatal — self-heal will recover)");
+        }
 
         logger.info({
           jobId: job.id,

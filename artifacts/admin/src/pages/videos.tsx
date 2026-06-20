@@ -258,7 +258,7 @@ const PAGE_SIZE = 20;
 const STATUS_COLORS: Record<string, string> = {
   hls_ready: "default", ready: "default",
   encoding: "secondary", processing: "secondary",
-  queued: "outline", failed: "destructive",
+  queued: "secondary", failed: "destructive",
   uploaded: "outline", pending: "outline", none: "outline",
 };
 
@@ -1707,11 +1707,36 @@ export default function VideosPage() {
                     <Badge
                       variant={(STATUS_COLORS[v.transcodingStatus] ?? "outline") as "default" | "secondary" | "outline" | "destructive"}
                       className="capitalize text-[11px]"
+                      title={
+                        v.transcodingStatus === "hls_ready" || v.transcodingStatus === "ready"
+                          ? "HLS stream ready — video is in the broadcast queue"
+                          : v.transcodingStatus === "queued"
+                          ? "Queued for HLS conversion — will auto-join broadcast queue when done"
+                          : v.transcodingStatus === "encoding" || v.transcodingStatus === "processing"
+                          ? "Converting to HLS — will auto-join broadcast queue when done"
+                          : v.transcodingStatus === "none"
+                          ? "Uploaded — awaiting HLS conversion to join broadcast queue"
+                          : v.transcodingStatus === "failed"
+                          ? "HLS conversion failed — retry to add to broadcast queue"
+                          : undefined
+                      }
                     >
                       {v.transcodingStatus === "hls_ready" || v.transcodingStatus === "ready"
-                        ? "Ready"
+                        ? "HLS Ready"
+                        : v.transcodingStatus === "queued"
+                        ? "HLS Queued"
+                        : v.transcodingStatus === "encoding" || v.transcodingStatus === "processing"
+                        ? "Converting"
+                        : v.transcodingStatus === "none"
+                        ? "Awaiting HLS"
                         : v.transcodingStatus || "—"}
                     </Badge>
+                    {v.videoSource === "local" && !v.hlsMasterUrl && v.transcodingStatus !== "failed" && (
+                      <span className="text-[9px] text-amber-600 dark:text-amber-400 flex items-center gap-0.5" title="This video will automatically join the broadcast queue once HLS conversion completes">
+                        <Loader2 size={8} className={v.transcodingStatus === "encoding" || v.transcodingStatus === "processing" || v.transcodingStatus === "queued" ? "animate-spin" : ""} />
+                        Pending broadcast
+                      </span>
+                    )}
                     {(v.transcodingStatus === "encoding" || v.transcodingStatus === "processing") && v.transcodingProgress !== null && (
                       <div className="w-24 flex flex-col items-end gap-0.5">
                         <div className="w-full h-1 bg-muted rounded-full overflow-hidden">

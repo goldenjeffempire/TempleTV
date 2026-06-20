@@ -29,7 +29,8 @@ import { storage } from "../../infrastructure/storage.js";
 import { logger as rootLogger } from "../../infrastructure/logger.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
-import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
+// enqueueIfMissing intentionally removed from faststart — HLS-gate policy:
+// only transcoder.dispatcher adds videos to broadcast queue (after HLS ready).
 import { boostTranscodePriority } from "./transcoder.queue.js";
 import { detectMdatWithoutMoov, probeContainerIsValid, remuxForFaststart, validateLocalSourceFile } from "./transcoder.service.js";
 
@@ -451,9 +452,9 @@ export async function runFaststart(
         .catch((dbErr) =>
           log.warn({ dbErr, videoId }, "faststart: FASTSTART_SKIPPED marker write failed (non-fatal)"),
         );
-      // Belt-and-suspenders: ensure the video is in the broadcast queue even if
-      // the caller did not enqueue it before calling runFaststart.
-      void enqueueIfMissing({ videoId, reason: "faststart-skipped" }).catch(() => {});
+      // HLS-gate: do NOT enqueue here. The transcoder dispatcher calls
+      // enqueueIfMissing() after HLS transcoding completes and hlsMasterUrl is
+      // written — that is the only broadcast queue entry point for local uploads.
       // Signal the orchestrator and admin UI so the raw-MP4 source is used
       // immediately without waiting for the next poll cycle.
       adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-skipped" });
@@ -603,23 +604,13 @@ export async function runFaststart(
     void invalidateVideosCatalogCache().catch(() => {});
     adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-complete" });
 
-    // Auto-add to broadcast queue if not already there.
-    // Videos are only enqueued AFTER faststart so the player always receives
-    // a moov-at-byte-0 (seekable) MP4 — never a raw upload with moov at EOF
-    // that causes player timeouts and infinite SKIP_PENDING dead-air loops.
-    // enqueueIfMissing handles de-dup, playability check, and bus signal
-    // internally — no need for a manual EXISTS query here.
-    const enqueueResult = await enqueueIfMissing({ videoId, reason: "upload-finalize" });
-    if (enqueueResult.enqueued) {
-      log.info({ videoId, queueItemId: enqueueResult.queueItemId }, "faststart: auto-added video to broadcast queue");
-    } else {
-      log.debug({ videoId, skipReason: enqueueResult.skipReason }, "faststart: enqueueIfMissing skipped");
-    }
+    // HLS-gate: do NOT enqueue here. The transcoder dispatcher calls
+    // enqueueIfMissing() after HLS transcoding completes and hlsMasterUrl is
+    // written — that is the only broadcast queue entry point for local uploads.
+    // Faststart is a source-optimization step, not a broadcast gate.
 
-    // Trigger an orchestrator reload AFTER enqueueIfMissing so the single
-    // reload always finds the newly-added item in the queue.  Firing before
-    // would cause an extra reload (item not yet present), then a second one
-    // when broadcastService.addToQueue fires its own broadcast-queue-updated.
+    // Trigger an orchestrator reload so the faststart-optimised source URL is
+    // picked up without waiting for the next scheduled poll cycle.
     // The reload clears the bad-URL cache so items that entered SKIP_PENDING
     // while the file was being re-uploaded are unblocked immediately.
     adminEventBus.push("broadcast-queue-updated", { reason: "faststart-complete", videoId });
@@ -708,10 +699,9 @@ export async function runFaststart(
       }
     }
 
-    // Belt-and-suspenders: ensure the video is in the broadcast queue so it
-    // can air as raw MP4 immediately while HLS transcoding runs in the background.
-    // This is idempotent — enqueueIfMissing no-ops if the slot already exists.
-    void enqueueIfMissing({ videoId, reason: "faststart-failed" }).catch(() => {});
+    // HLS-gate: do NOT enqueue here. The transcoder dispatcher calls
+    // enqueueIfMissing() after HLS transcoding completes and hlsMasterUrl is
+    // written — that is the only broadcast queue entry point for local uploads.
 
     // Notify the admin UI that the video's status changed after the failure so
     // the library / broadcast-queue panels refresh without waiting for the next
