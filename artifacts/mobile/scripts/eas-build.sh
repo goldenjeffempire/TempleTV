@@ -76,4 +76,10 @@ export GIT_INDEX_FILE=/tmp/eas-build-index
 echo "=== Starting EAS build ==="
 echo ""
 
+# pnpm forwards args with a leading '--' separator; strip it so eas-cli doesn't
+# receive 'eas build -- --platform ...' which it rejects as unexpected arguments.
+if [[ "${1:-}" == "--" ]]; then
+  shift
+fi
+
 exec eas build "$@"
