@@ -335,6 +335,43 @@ export class WorkerSupervisor {
     return true;
   }
 
+  /**
+   * Restart a named worker: stops it, clears its circuit breaker, then
+   * immediately starts it again. Returns false if the worker is not found.
+   *
+   * Safe to call while the worker is running — the existing execution
+   * is abandoned (its Promise may still resolve, but it will not schedule
+   * another run). The fresh start uses initialDelayMs = 0 for immediate
+   * operator-initiated recovery.
+   */
+  restart(name: string): boolean {
+    const w = this.workers.get(name);
+    if (!w) return false;
+    w.stop();
+    w.start();
+    logger.info({ worker: name }, "[worker-supervisor] worker manually restarted by operator");
+    adminEventBus.push("ops-alert", {
+      level: "info",
+      message: `Worker "${name}" manually restarted by operator.`,
+      context: { worker: name },
+    });
+    return true;
+  }
+
+  /**
+   * Reset the circuit breaker for a named worker without stopping it.
+   * Returns false if the worker is not found.
+   *
+   * Use when a transient error has tripped the circuit and the operator
+   * has confirmed the root cause is resolved.
+   */
+  resetCircuit(name: string): boolean {
+    const w = this.workers.get(name);
+    if (!w) return false;
+    w.resetCircuit();
+    return true;
+  }
+
   stopAll(): void {
     for (const w of this.workers.values()) w.stop();
     this.workers.clear();

@@ -3225,6 +3225,99 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     },
   );
 
+  // ── POST /api/broadcast-v2/workers/:name/restart ─────────────────────────
+  // Manually restart a named supervised background worker. Stops the current
+  // execution (if any), clears the circuit breaker, and schedules an immediate
+  // new run. Auth: admin.
+  app.post<{ Params: { name: string } }>(
+    "/workers/:name/restart",
+    {
+      preHandler: requireAuth("admin"),
+      bodyLimit: 256,
+      schema: { response: { 429: z.object({ error: z.string() }) } },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (req, reply) => {
+      const { name } = req.params as { name: string };
+      const ok = workerSupervisor.restart(name);
+      if (!ok) return reply.code(404).send({ error: `Worker "${name}" not found` });
+      req.log.info({ worker: name }, "[broadcast-v2] worker manually restarted by admin");
+      return reply.send({ ok: true, worker: name, action: "restart" });
+    },
+  );
+
+  // ── POST /api/broadcast-v2/workers/:name/reset-circuit ───────────────────
+  // Reset the circuit breaker for a named worker without fully restarting it.
+  // Auth: admin.
+  app.post<{ Params: { name: string } }>(
+    "/workers/:name/reset-circuit",
+    {
+      preHandler: requireAuth("admin"),
+      bodyLimit: 256,
+      schema: { response: { 429: z.object({ error: z.string() }) } },
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    },
+    async (req, reply) => {
+      const { name } = req.params as { name: string };
+      const ok = workerSupervisor.resetCircuit(name);
+      if (!ok) return reply.code(404).send({ error: `Worker "${name}" not found` });
+      req.log.info({ worker: name }, "[broadcast-v2] worker circuit breaker reset by admin");
+      return reply.send({ ok: true, worker: name, action: "reset-circuit" });
+    },
+  );
+
+  // ── POST /api/broadcast-v2/queue/bulk-deactivate ─────────────────────────
+  // Deactivate multiple queue items in a single request. Items are marked
+  // isActive=false in the DB and the orchestrator reloads to pick up the change.
+  // Auth: editor+. Max 100 items per call.
+  app.post(
+    "/queue/bulk-deactivate",
+    {
+      preHandler: requireAuth("editor"),
+      bodyLimit: 4096,
+      schema: {
+        body: z.object({ ids: z.array(z.string().uuid()).min(1).max(100) }),
+        response: { 429: z.object({ error: z.string() }) },
+      },
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+    },
+    async (req, reply) => {
+      const { ids } = req.body as { ids: string[] };
+      const result = await db
+        .update(schema.broadcastQueueTable)
+        .set({ isActive: false, validatorDeactivatedReason: "operator-bulk-deactivate" })
+        .where(inArray(schema.broadcastQueueTable.id, ids));
+      adminEventBus.push("broadcast-queue-updated", { reason: "bulk-deactivate", count: ids.length });
+      req.log.info({ count: ids.length, ids }, "[broadcast-v2] bulk-deactivate: items deactivated");
+      return reply.send({ ok: true, deactivated: ids.length });
+    },
+  );
+
+  // ── POST /api/broadcast-v2/queue/bulk-remove ─────────────────────────────
+  // Permanently remove multiple queue items from broadcast_queue in a single
+  // request. Auth: admin. Max 100 items per call.
+  app.post(
+    "/queue/bulk-remove",
+    {
+      preHandler: requireAuth("admin"),
+      bodyLimit: 4096,
+      schema: {
+        body: z.object({ ids: z.array(z.string().uuid()).min(1).max(100) }),
+        response: { 429: z.object({ error: z.string() }) },
+      },
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+    },
+    async (req, reply) => {
+      const { ids } = req.body as { ids: string[] };
+      await db
+        .delete(schema.broadcastQueueTable)
+        .where(inArray(schema.broadcastQueueTable.id, ids));
+      adminEventBus.push("broadcast-queue-updated", { reason: "bulk-remove", count: ids.length });
+      req.log.info({ count: ids.length, ids }, "[broadcast-v2] bulk-remove: items permanently removed");
+      return reply.send({ ok: true, removed: ids.length });
+    },
+  );
+
   // ── GET /api/broadcast-v2/remediation-report ─────────────────────────────
   // Returns a structured health report of HLS / transcoding issues in the
   // active broadcast queue. Designed for operator dashboards and uptime

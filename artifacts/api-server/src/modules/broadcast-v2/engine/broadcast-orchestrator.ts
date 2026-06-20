@@ -400,6 +400,22 @@ class BroadcastOrchestrator extends EventEmitter {
    */
   private currentItemProbeTimer: NodeJS.Timeout | null = null;
   private badUrlCacheTimer: NodeJS.Timeout | null = null;
+  /**
+   * One-shot precision timer that fires exactly when the current broadcast
+   * item should end (currentItem.endsAtMs). This supplements the 2 s tick
+   * loop: the tick is correct on average but can fire up to 2 s late, which
+   * means items can run ~2 s over their scheduled duration without anyone
+   * noticing on the server side.
+   *
+   * When this fires it simply calls tick() once — the same work the 2 s loop
+   * would do anyway, just at a more precise moment. If the item already
+   * advanced (client /natural-end arrived first) tick() is a harmless no-op.
+   *
+   * Upper-bound guard: never schedule more than 4 h ahead (items longer than
+   * that are rare and a multi-hour setTimeout can drift significantly on busy
+   * Node event loops).
+   */
+  private itemEndTimer: NodeJS.Timeout | null = null;
   /** Consecutive definitive 4xx failure count for the currently-playing item. */
   private currentItemProbeFailures = 0;
   /**
@@ -986,6 +1002,7 @@ class BroadcastOrchestrator extends EventEmitter {
     if (this.selfHealStaleTimer)      clearInterval(this.selfHealStaleTimer);
     if (this.currentItemProbeTimer)   clearInterval(this.currentItemProbeTimer);
     if (this.badUrlCacheTimer)        clearInterval(this.badUrlCacheTimer);
+    if (this.itemEndTimer)            clearTimeout(this.itemEndTimer);
     // Cancel any pending circuit-breaker reset timer so it cannot fire on a
     // stopped orchestrator and trigger a spurious scheduleSelfHealReload().
     if (this._cbResetTimer)           clearTimeout(this._cbResetTimer);
@@ -997,6 +1014,7 @@ class BroadcastOrchestrator extends EventEmitter {
     this.selfHealStaleTimer      = null;
     this.currentItemProbeTimer   = null;
     this.badUrlCacheTimer        = null;
+    this.itemEndTimer            = null;
     this._cbResetTimer           = null;
     this.started = false;
     // Best-effort final save of bad-URL state on graceful shutdown.
@@ -2585,6 +2603,39 @@ class BroadcastOrchestrator extends EventEmitter {
    * This prevents a persistently broken tick from burning CPU in a tight loop
    * while still allowing automatic recovery when the root cause is transient.
    */
+  /**
+   * Arms a one-shot timer to fire a single tick() exactly when the current
+   * item is scheduled to end. Replaces any previously-armed timer so calling
+   * this on every item advance is safe.
+   *
+   * Rationale: the 2 s tick loop fires every 2 s regardless of where the
+   * item boundary falls, meaning items can run 0–2 s over their scheduled
+   * duration before the server detects the boundary. The precision timer
+   * eliminates this slack by firing tick() at the exact wall-clock moment
+   * the item should end — the tick is then a no-op if a client /natural-end
+   * already advanced the anchor (idempotent).
+   */
+  private scheduleItemEndTimer(endsAtMs: number | null): void {
+    if (this.itemEndTimer !== null) {
+      clearTimeout(this.itemEndTimer);
+      this.itemEndTimer = null;
+    }
+    if (endsAtMs === null) return;
+    const ITEM_END_MAX_LEAD_MS = 4 * 60 * 60 * 1000; // 4 h guard
+    const delayMs = Math.max(0, endsAtMs - Date.now());
+    if (delayMs > ITEM_END_MAX_LEAD_MS) return; // too far away — tick will handle it
+    this.itemEndTimer = setTimeout(() => {
+      this.itemEndTimer = null;
+      if (!this.started) return;
+      try {
+        this.tick();
+      } catch (err) {
+        logger.warn({ err }, "[broadcast-v2] itemEndTimer: tick() threw (non-fatal)");
+      }
+    }, delayMs);
+    this.itemEndTimer.unref?.();
+  }
+
   private tick(): void {
     if (this.tickCircuitOpen) return;
     try {
@@ -2857,6 +2908,9 @@ class BroadcastOrchestrator extends EventEmitter {
       };
       this.lastCurrentItemId = snap.current.id;
       this.preloadFiredForId = null;
+      // Arm the precision item-end timer so the server advances autonomously
+      // at the exact boundary without waiting up to 2 s for the next tick.
+      this.scheduleItemEndTimer(snap.current.endsAtMs);
       // A different item is now current: reset the consecutive-skip counter.
       // Previously this reset only in naturalItemEnd() (confirmed play), but
       // that delays the reset for the entire duration of the next item —

@@ -613,6 +613,10 @@ interface SortableItemProps {
   /** Clear the in-memory bad-URL cache for this item and re-activate it. */
   onClearBadUrl: (itemId: string) => void;
   isClearingBadUrl: boolean;
+  /** Whether this item is selected for bulk operations. */
+  isSelected?: boolean;
+  /** Toggle selection for bulk operations. */
+  onToggleSelect?: (id: string) => void;
 }
 
 const SortableQueueItem = memo(function SortableQueueItem({
@@ -640,6 +644,8 @@ const SortableQueueItem = memo(function SortableQueueItem({
   isRetryingRepair,
   onClearBadUrl,
   isClearingBadUrl,
+  isSelected = false,
+  onToggleSelect,
 }: SortableItemProps) {
   const {
     attributes,
@@ -668,6 +674,29 @@ const SortableQueueItem = memo(function SortableQueueItem({
         .filter(Boolean)
         .join(" ")}
     >
+      {/* Bulk select checkbox */}
+      {onToggleSelect && (
+        <button
+          type="button"
+          className={[
+            "h-4 w-4 shrink-0 rounded border transition-colors",
+            isSelected
+              ? "border-primary bg-primary"
+              : "border-muted-foreground/30 hover:border-muted-foreground/60 bg-transparent",
+            isCurrent ? "opacity-40 cursor-not-allowed" : "cursor-pointer",
+          ].join(" ")}
+          aria-label={isSelected ? "Deselect" : "Select for bulk action"}
+          onClick={() => !isCurrent && onToggleSelect(item.id)}
+          disabled={isCurrent}
+        >
+          {isSelected && (
+            <svg viewBox="0 0 12 12" className="w-full h-full text-primary-foreground p-0.5" fill="currentColor">
+              <path d="M10 3L5 8.5 2 5.5" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          )}
+        </button>
+      )}
+
       {/* Drag handle */}
       <button
         type="button"
@@ -2039,6 +2068,11 @@ function BroadcastV2PageInner() {
   const [showClearFailoverConfirm, setShowClearFailoverConfirm] = useState(false);
   const [showPlayNowConfirm, setShowPlayNowConfirm] = useState(false);
   const [pendingPlayNowId, setPendingPlayNowId] = useState<string | null>(null);
+  // Bulk queue selection
+  const [selectedQueueIds, setSelectedQueueIds] = useState<Set<string>>(new Set());
+  const [showBulkDeactivateConfirm, setShowBulkDeactivateConfirm] = useState(false);
+  // Worker restart pending
+  const [workerRestartPending, setWorkerRestartPending] = useState<string | null>(null);
 
 
   async function adminPost(path: string, body: Record<string, unknown> = {}) {
@@ -2571,6 +2605,51 @@ function BroadcastV2PageInner() {
     },
     onError: (err) => {
       toast.error(err instanceof HttpError ? err.message : "Library sync failed — check server logs.");
+    },
+  });
+
+  // Bulk queue deactivate — deactivates all selected queue items in one call.
+  const bulkDeactivateMutation = useMutation({
+    mutationFn: (ids: string[]) =>
+      api.post<{ ok: boolean; deactivated: number }>("/broadcast-v2/queue/bulk-deactivate", { ids }),
+    onSuccess: (result, ids) => {
+      setSelectedQueueIds(new Set());
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      toast.success(`${result.deactivated} item${result.deactivated !== 1 ? "s" : ""} removed from broadcast queue.`);
+    },
+    onError: (err) => {
+      toast.error(err instanceof HttpError ? err.message : "Bulk deactivate failed.");
+    },
+  });
+
+  // Worker restart — stops, clears circuit, and restarts a supervised worker.
+  const workerRestartMutation = useMutation({
+    mutationFn: (name: string) =>
+      api.post<{ ok: boolean; worker: string; action: string }>(`/broadcast-v2/workers/${encodeURIComponent(name)}/restart`, {}),
+    onSuccess: (_, name) => {
+      setWorkerRestartPending(null);
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      toast.success(`Worker "${name}" restarted.`);
+    },
+    onError: (err) => {
+      setWorkerRestartPending(null);
+      toast.error(err instanceof HttpError ? err.message : "Worker restart failed.");
+    },
+  });
+
+  // Worker reset-circuit — resets the circuit breaker without a full restart.
+  const workerResetCircuitMutation = useMutation({
+    mutationFn: (name: string) =>
+      api.post<{ ok: boolean; worker: string; action: string }>(`/broadcast-v2/workers/${encodeURIComponent(name)}/reset-circuit`, {}),
+    onSuccess: (_, name) => {
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
+      toast.success(`Circuit breaker for "${name}" reset.`);
+    },
+    onError: (err) => {
+      toast.error(err instanceof HttpError ? err.message : "Circuit reset failed.");
     },
   });
 
@@ -4535,7 +4614,7 @@ function BroadcastV2PageInner() {
                       const isHealthy = w.running && !w.circuitOpen;
                       const nextIn = w.nextRunAtMs ? Math.max(0, Math.round((w.nextRunAtMs - Date.now()) / 1000)) : null;
                       return (
-                        <div key={w.name} className="flex items-center gap-3 px-3 py-2">
+                        <div key={w.name} className="group flex items-center gap-3 px-3 py-2">
                           {isHealthy ? (
                             <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
                           ) : w.circuitOpen ? (
@@ -4564,6 +4643,35 @@ function BroadcastV2PageInner() {
                                 next {nextIn < 60 ? `${nextIn}s` : `${Math.round(nextIn / 60)}m`}
                               </span>
                             )}
+                            {/* Worker restart/reset-circuit controls */}
+                            {w.circuitOpen ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-5 px-1.5 text-[10px] gap-0.5 border-amber-300 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-400 dark:hover:bg-amber-950/30"
+                                title={`Reset circuit breaker for "${w.name}" — worker will resume on next tick`}
+                                disabled={workerResetCircuitMutation.isPending}
+                                onClick={() => workerResetCircuitMutation.mutate(w.name)}
+                              >
+                                <RotateCw className="h-2.5 w-2.5" />
+                                Reset
+                              </Button>
+                            ) : null}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-5 px-1.5 text-[10px] gap-0.5 opacity-0 group-hover:opacity-100"
+                              title={`Restart worker "${w.name}"`}
+                              disabled={workerRestartMutation.isPending && workerRestartPending === w.name}
+                              onClick={() => { setWorkerRestartPending(w.name); workerRestartMutation.mutate(w.name); }}
+                            >
+                              {workerRestartMutation.isPending && workerRestartPending === w.name ? (
+                                <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                              ) : (
+                                <RotateCw className="h-2.5 w-2.5" />
+                              )}
+                              Restart
+                            </Button>
                           </div>
                         </div>
                       );
@@ -5196,6 +5304,40 @@ function BroadcastV2PageInner() {
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {selectedQueueIds.size > 0 && (
+              <>
+                <span className="text-xs text-muted-foreground">{selectedQueueIds.size} selected</span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 gap-1 px-2 text-xs text-destructive border-destructive/40 hover:bg-destructive/10"
+                  onClick={() => setShowBulkDeactivateConfirm(true)}
+                  disabled={bulkDeactivateMutation.isPending}
+                >
+                  {bulkDeactivateMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
+                  Remove selected
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => setSelectedQueueIds(new Set())}
+                >
+                  Clear
+                </Button>
+              </>
+            )}
+            {selectedQueueIds.size === 0 && orderedQueueItems.length > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 gap-1 px-2 text-xs"
+                onClick={() => setSelectedQueueIds(new Set(orderedQueueItems.filter((i) => !server?.current || i.id !== server.current.id).map((i) => i.id)))}
+                title="Select all non-playing items"
+              >
+                Select all
+              </Button>
+            )}
             <Button
               size="sm"
               variant="outline"
@@ -5238,6 +5380,7 @@ function BroadcastV2PageInner() {
                   {orderedQueueItems.map((item, idx) => {
                     const isCurrent = server?.current?.id === item.id;
                     const isNext = server?.next?.id === item.id;
+                    const isSelected = selectedQueueIds.has(item.id);
                     return (
                       <SortableQueueItem
                         key={item.id}
@@ -5265,6 +5408,12 @@ function BroadcastV2PageInner() {
                         isRetryingRepair={retryRepairMutation.isPending}
                         onClearBadUrl={(itemId) => clearBadUrlMutation.mutate(itemId)}
                         isClearingBadUrl={clearBadUrlMutation.isPending}
+                        isSelected={isSelected}
+                        onToggleSelect={(id) => setSelectedQueueIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(id)) next.delete(id); else next.add(id);
+                          return next;
+                        })}
                       />
                     );
                   })}
@@ -5389,6 +5538,30 @@ function BroadcastV2PageInner() {
             onClick={() => { setShowReloadConfirm(false); void adminPost("/broadcast-v2/reload"); }}
           >
             Reload
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    <AlertDialog open={showBulkDeactivateConfirm} onOpenChange={setShowBulkDeactivateConfirm}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Remove {selectedQueueIds.size} item{selectedQueueIds.size !== 1 ? "s" : ""} from the queue?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This will deactivate the selected broadcast queue items. They will not air until
+            re-activated. The currently-playing item cannot be removed.
+            This action can be undone by re-activating the items individually.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            onClick={() => {
+              setShowBulkDeactivateConfirm(false);
+              bulkDeactivateMutation.mutate(Array.from(selectedQueueIds));
+            }}
+          >
+            Remove {selectedQueueIds.size} item{selectedQueueIds.size !== 1 ? "s" : ""}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
