@@ -298,6 +298,102 @@ function RootLayoutNav() {
     let subscription: { remove: () => void } | null = null;
     let foregroundSubscription: { remove: () => void } | null = null;
 
+    /**
+     * Shared routing logic for a notification tap response.
+     * Called both from the live subscription listener AND from the
+     * getLastNotificationResponseAsync() cold-start check so that tapping
+     * a notification while the app is killed produces the same navigation
+     * as tapping one while the app is backgrounded.
+     */
+    function handleNotificationResponse(
+      data: Record<string, unknown>,
+      type: string | undefined,
+    ): void {
+      if (!type) return;
+
+      switch (type) {
+        case "live_started":
+        case "live_now":
+        case "live": {
+          // Live-stream alert — open the player in live mode immediately.
+          // IMPORTANT: player.tsx reads `params.isLive` (not `params.live`).
+          // Using the wrong key leaves isLive=false and the player shows a
+          // blank placeholder instead of the live broadcast.
+          router.push({
+            pathname: "/player",
+            params: {
+              isLive: "true",
+              title: "Live Broadcast",
+              preacher: "JCTM Ministries",
+            },
+          });
+          break;
+        }
+        case "new_video":
+        case "new_sermon":
+        case "video": {
+          // New-content alert — deep-link directly into the player.
+          // We must fetch the full video record first so the player has a URL
+          // to play; passing only `id` with no hlsUrl/youtubeId leaves the
+          // player in a blank "no-source" state.
+          const videoId    = data?.videoId as string | undefined;
+          const notifTitle = (data?.title as string | undefined) ?? "Temple TV";
+          if (videoId) {
+            (async () => {
+              try {
+                const { fetchVideoById } = await import("@/services/api");
+                const video = await fetchVideoById(videoId);
+                router.push({
+                  pathname: "/player",
+                  params: {
+                    id:           videoId,
+                    title:        video.title ?? notifTitle,
+                    youtubeId:    video.videoSource === "youtube" ? (video.youtubeId ?? "") : "",
+                    hlsUrl:       video.hlsMasterUrl ?? "",
+                    localVideoUrl: video.localVideoUrl ?? "",
+                    thumbnailUrl: video.thumbnailUrl ?? "",
+                    preacher:     video.preacher ?? "",
+                    duration:     video.duration ?? "",
+                    category:     video.category ?? "",
+                    description:  video.description ?? "",
+                  },
+                });
+              } catch {
+                // Fallback: take the user to Library where they can find the new content.
+                router.push("/(tabs)/library");
+              }
+            })();
+          } else {
+            router.push("/(tabs)/library");
+          }
+          break;
+        }
+        case "emergency_broadcast": {
+          // Emergency alert — surface the channel hub where the OMEGA banner
+          // is displayed. The player might not be running yet on a cold start,
+          // so routing to channels guarantees the user sees the live alert
+          // even before the broadcast hero initialises.
+          router.push("/(tabs)/channels");
+          break;
+        }
+        case "app_update": {
+          // Clear the rate-limit so UpdateContext's AppState-active listener
+          // (or a direct runVersionCheck call) fires immediately when the
+          // app foregrounds. Do NOT call markVersionCheckDone here — that
+          // would set LAST_CHECK_KEY = now and block the upcoming check.
+          import("@/services/appUpdate")
+            .then(({ clearVersionCheckTimestamp }) => clearVersionCheckTimestamp())
+            .catch(() => {});
+          break;
+        }
+        case "prayer":
+        case "announcement":
+        default:
+          // General or unrecognised type — land on the channel hub.
+          router.push("/(tabs)/channels");
+      }
+    }
+
     import("expo-notifications").then((Notifications) => {
       // ── Foreground notification handler ─────────────────────────────────────
       // When the app is open and a push arrives, the system banner shows but
@@ -321,86 +417,27 @@ function RootLayoutNav() {
         }
       });
 
+      // ── Background/killed-state tap handler ─────────────────────────────────
+      // addNotificationResponseReceivedListener only fires when the app is
+      // already in memory (foregrounded or backgrounded). When the user taps a
+      // notification that relaunches a killed app, this listener never sees the
+      // response. getLastNotificationResponseAsync() covers that gap: it returns
+      // the response that triggered the cold launch (cleared after first read),
+      // so the routing logic runs whether the app was alive or killed.
+      Notifications.getLastNotificationResponseAsync().then((lastResponse) => {
+        if (lastResponse) {
+          const data = lastResponse.notification.request.content.data as Record<string, unknown>;
+          const type = data?.type as string | undefined;
+          // Small delay so Expo Router's navigation stack has mounted and is
+          // ready to receive router.push() calls before we fire them.
+          setTimeout(() => handleNotificationResponse(data, type), 500);
+        }
+      }).catch(() => {/* getLastNotificationResponseAsync can fail on old builds */});
+
       subscription = Notifications.addNotificationResponseReceivedListener((response) => {
         const data = response.notification.request.content.data as Record<string, unknown>;
         const type = data?.type as string | undefined;
-
-        if (!type) return;
-
-        // Route the user to the most relevant screen based on notification type.
-        switch (type) {
-          case "live_started":
-          case "live_now":
-          case "live": {
-            // Live-stream alert — open the player in live mode immediately.
-            // IMPORTANT: player.tsx reads `params.isLive` (not `params.live`).
-            // Using the wrong key leaves isLive=false and the player shows a
-            // blank placeholder instead of the live broadcast.
-            router.push({
-              pathname: "/player",
-              params: {
-                isLive: "true",
-                title: "Live Broadcast",
-                preacher: "JCTM Ministries",
-              },
-            });
-            break;
-          }
-          case "new_video":
-          case "new_sermon":
-          case "video": {
-            // New-content alert — deep-link directly into the player.
-            // We must fetch the full video record first so the player has a URL
-            // to play; passing only `id` with no hlsUrl/youtubeId leaves the
-            // player in a blank "no-source" state.
-            const videoId    = data?.videoId as string | undefined;
-            const notifTitle = (data?.title as string | undefined) ?? "Temple TV";
-            if (videoId) {
-              (async () => {
-                try {
-                  const { fetchVideoById } = await import("@/services/api");
-                  const video = await fetchVideoById(videoId);
-                  router.push({
-                    pathname: "/player",
-                    params: {
-                      id:           videoId,
-                      title:        video.title ?? notifTitle,
-                      youtubeId:    video.videoSource === "youtube" ? (video.youtubeId ?? "") : "",
-                      hlsUrl:       video.hlsMasterUrl ?? "",
-                      localVideoUrl: video.localVideoUrl ?? "",
-                      thumbnailUrl: video.thumbnailUrl ?? "",
-                      preacher:     video.preacher ?? "",
-                      duration:     video.duration ?? "",
-                      category:     video.category ?? "",
-                      description:  video.description ?? "",
-                    },
-                  });
-                } catch {
-                  // Fallback: take the user to Library where they can find the new content.
-                  router.push("/(tabs)/library");
-                }
-              })();
-            } else {
-              router.push("/(tabs)/library");
-            }
-            break;
-          }
-          case "app_update": {
-            // Clear the rate-limit so UpdateContext's AppState-active listener
-            // (or a direct runVersionCheck call) fires immediately when the
-            // app foregrounds. Do NOT call markVersionCheckDone here — that
-            // would set LAST_CHECK_KEY = now and block the upcoming check.
-            import("@/services/appUpdate")
-              .then(({ clearVersionCheckTimestamp }) => clearVersionCheckTimestamp())
-              .catch(() => {});
-            break;
-          }
-          case "prayer":
-          case "announcement":
-          default:
-            // General or unrecognised type — land on the channel hub.
-            router.push("/(tabs)/channels");
-        }
+        handleNotificationResponse(data, type);
       });
     });
 

@@ -52,6 +52,7 @@ import { usePlayer } from "@/context/PlayerContext";
 import { useBroadcastSync } from "@/hooks/useBroadcastSync";
 import { useMediaPlayerState } from "@/hooks/useMediaPlayerState";
 import type { Sermon, SermonCategory } from "@/types";
+import { useWatchProgress, type ContinueWatchingItem } from "@/hooks/useWatchProgress";
 
 const CATEGORY_ROWS: SermonCategory[] = [
   "Live Service",
@@ -418,6 +419,134 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
   );
 });
 
+// ─── Continue Watching Row ────────────────────────────────────────────────────
+
+function formatProgress(pct: number): string {
+  return `${Math.round(pct * 100)}% watched`;
+}
+
+function formatSecondsLeft(position: number, duration: number): string {
+  const left = Math.max(0, duration - position);
+  if (left < 60) return `${Math.round(left)}s left`;
+  if (left < 3600) return `${Math.round(left / 60)}m left`;
+  return `${Math.floor(left / 3600)}h ${Math.round((left % 3600) / 60)}m left`;
+}
+
+interface ContinueWatchingRowProps {
+  items: ContinueWatchingItem[];
+}
+
+const ContinueWatchingRow = React.memo(function ContinueWatchingRow({
+  items,
+}: ContinueWatchingRowProps) {
+  const c = useColors();
+  const { width: screenWidth } = useWindowDimensions();
+
+  if (items.length === 0) return null;
+
+  // Card is wider than category cards: one-and-a-half cards visible so the
+  // user knows there's more to scroll. Clamp to reasonable bounds.
+  const cardWidth = Math.min(Math.max(200, Math.round(screenWidth * 0.52)), 280);
+  const thumbHeight = Math.round(cardWidth * (9 / 16));
+
+  return (
+    <View style={styles.rowContainer}>
+      <SectionHeader title="Continue Watching" />
+      <FlatList
+        horizontal
+        data={items}
+        keyExtractor={(item) => item.videoKey}
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.rowContent}
+        ItemSeparatorComponent={() => <View style={{ width: 12 }} />}
+        renderItem={({ item }) => {
+          const hasThumb = !!item.thumbnailUrl;
+          return (
+            <Pressable
+              onPress={() => {
+                if (item.hlsMasterUrl || item.localVideoUrl) {
+                  router.push({
+                    pathname: "/player",
+                    params: {
+                      id: item.videoKey,
+                      title: item.title ?? "Continue watching",
+                      hlsUrl: item.hlsMasterUrl ?? "",
+                      localVideoUrl: item.localVideoUrl ?? "",
+                      youtubeId: item.youtubeId ?? "",
+                      thumbnailUrl: item.thumbnailUrl ?? "",
+                      startPositionSecs: String(Math.max(0, Math.round(item.position - 3))),
+                    },
+                  });
+                } else if (item.youtubeId) {
+                  router.push({
+                    pathname: "/player",
+                    params: {
+                      id: item.videoKey,
+                      title: item.title ?? "Continue watching",
+                      youtubeId: item.youtubeId,
+                      thumbnailUrl: item.thumbnailUrl ?? "",
+                      startPositionSecs: String(Math.max(0, Math.round(item.position - 3))),
+                    },
+                  });
+                }
+              }}
+              style={({ pressed }) => [
+                styles.cwCard,
+                { width: cardWidth, backgroundColor: c.card, opacity: pressed ? 0.82 : 1 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel={`Continue watching ${item.title ?? "video"}, ${formatProgress(item.pct)}`}
+            >
+              {/* Thumbnail */}
+              <View style={[styles.cwThumb, { width: cardWidth, height: thumbHeight }]}>
+                {hasThumb ? (
+                  <Image
+                    source={{ uri: item.thumbnailUrl }}
+                    style={StyleSheet.absoluteFill}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View style={[StyleSheet.absoluteFill, { backgroundColor: c.muted, alignItems: "center", justifyContent: "center" }]}>
+                    <Feather name="video" size={28} color={c.mutedForeground} />
+                  </View>
+                )}
+                {/* Play icon overlay */}
+                <View style={styles.cwPlayOverlay}>
+                  <View style={[styles.cwPlayBtn, { backgroundColor: "rgba(0,0,0,0.68)" }]}>
+                    <Feather name="play" size={16} color="#fff" />
+                  </View>
+                </View>
+                {/* Time remaining chip */}
+                {item.duration > 0 && (
+                  <View style={styles.cwTimeChip}>
+                    <Text style={styles.cwTimeText}>
+                      {formatSecondsLeft(item.position, item.duration)}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              {/* Progress bar — flex-based so no pixel math required */}
+              <View style={[styles.cwProgressTrack, { backgroundColor: c.border }]}>
+                <View style={{ flex: item.pct, height: 3, backgroundColor: c.primary, borderRadius: 2 }} />
+                <View style={{ flex: 1 - item.pct, height: 3 }} />
+              </View>
+              {/* Title */}
+              {!!item.title && (
+                <Text
+                  style={[styles.cwTitle, { color: c.foreground }]}
+                  numberOfLines={2}
+                >
+                  {item.title}
+                </Text>
+              )}
+            </Pressable>
+          );
+        }}
+      />
+    </View>
+  );
+});
+
 // ─── Category Row ─────────────────────────────────────────────────────────────
 
 const CategoryRow = React.memo(function CategoryRow({
@@ -484,6 +613,7 @@ export default function WatchScreen() {
   const { isOnline: networkConnected } = useNetworkStatus();
 
   const { sermons, byCategory, loading, error, refetch, isStale, refreshFailed } = useVideos();
+  const { continueWatching } = useWatchProgress();
 
   // Hero fallback — prefer a local sermon with a thumbnail so the hero is
   // never a bare gradient. YouTube-sourced items are explicitly excluded.
@@ -589,6 +719,11 @@ export default function WatchScreen() {
             <SkeletonRows />
           ) : (
             <>
+              {/* Continue Watching — shown before category rows whenever the
+                  user has partially-watched videos saved locally. Hidden when
+                  the list is empty (hook returns [] by default). */}
+              <ContinueWatchingRow items={continueWatching} />
+
               {categoryRows.map(({ category, sermons: catSermons }) => (
                 <CategoryRow
                   key={category}
@@ -800,6 +935,56 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#dc2626",
     textDecorationLine: "underline",
+  },
+
+  // ── Continue Watching ────────────────────────────────────────────────────────
+  cwCard: {
+    borderRadius: 10,
+    overflow: "hidden",
+  },
+  cwThumb: {
+    borderRadius: 10,
+    overflow: "hidden",
+    backgroundColor: "rgba(128,128,128,0.12)",
+  },
+  cwPlayOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cwPlayBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cwTimeChip: {
+    position: "absolute",
+    bottom: 6,
+    right: 6,
+    backgroundColor: "rgba(0,0,0,0.72)",
+    borderRadius: 5,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  cwTimeText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "600",
+  },
+  cwProgressTrack: {
+    height: 3,
+    borderRadius: 2,
+    overflow: "hidden",
+    flexDirection: "row",
+  },
+  cwTitle: {
+    fontSize: 12,
+    fontWeight: "500",
+    marginTop: 5,
+    lineHeight: 16,
+    paddingHorizontal: 2,
   },
 
   // ── Empty state ──────────────────────────────────────────────────────────────
