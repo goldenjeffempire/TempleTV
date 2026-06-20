@@ -140,6 +140,9 @@ class TranscoderDispatcher {
   }
 
   start(): void {
+    // HLS transcoding disabled — MP4-only pipeline. Dispatcher is a no-op.
+    logger.info("transcoder: dispatcher start() called but HLS transcoding is disabled (MP4-only pipeline) — skipping");
+    return;
     if (this.timer) return;
     this.started = true;
     this.stopped = false;

@@ -7,9 +7,7 @@ import { db, schema } from "../../infrastructure/db.js";
 import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { uploadSessions, type UploadSession } from "./upload-sessions.js";
-import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
-import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
-import { generateQuickThumbnail, probeUploadedContainerValidity, probeUploadedDuration } from "../transcoder/transcoder.service.js";
+import { generateQuickThumbnail, probeUploadedDuration } from "../transcoder/transcoder.service.js";
 import { env } from "../../config/env.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
@@ -452,45 +450,6 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
         );
       }
 
-      // Container validity gate — rejects corrupt MP4s (missing/zeroed moov
-      // atom) BEFORE the videos row is inserted, so they never reach the
-      // broadcast queue and never burn skip budget. The size check above only
-      // catches truncation; a full-size file can still have an unreadable
-      // container. Mirrors the early gate in the chunked-upload path. The probe
-      // returns valid=true on any infrastructure error (download/ffprobe), so
-      // this only rejects on genuine, confirmed corruption.
-      const containerProbe = await probeUploadedContainerValidity(body.objectKey);
-      if (!containerProbe.valid && containerProbe.unrecoverable === true) {
-        // File is genuinely unrecoverable (moov absent, wrong file type, etc.).
-        // Reject before the DB row is created — no point starting the pipeline.
-        req.log.error(
-          { objectKey: body.objectKey, sizeBytes: body.sizeBytes, kind: containerProbe.kind },
-          "[s3-multipart-complete] container validation failed (unrecoverable) — rejecting before DB insert",
-        );
-        uploadTelemetry.serverFail(
-          body.sessionId,
-          body.sizeBytes,
-          "corrupt_container",
-          containerProbe.error ?? "Upload rejected: moov atom absent or file type invalid",
-        );
-        // The multipart object was already assembled by completeMultipartUpload
-        // above, so remove the orphan blob + session before bailing out.
-        await cleanupRejectedUpload(body.sessionId, body.objectKey, "corrupt-container");
-        throw Object.assign(
-          new Error(
-            containerProbe.kind === "moov_absent"
-              ? "Upload rejected: the recording was interrupted before the codec configuration could be written (moov atom absent). " +
-                "Please re-record or re-export the video and upload again."
-              : (containerProbe.error
-                  ? `Upload rejected: ${containerProbe.error}`
-                  : "Upload rejected: the video container is unrecoverable. Please re-export and upload again."),
-          ),
-          { statusCode: 422 },
-        );
-      }
-      // If the container probe soft-failed (valid: false, unrecoverable: false),
-      // allow the upload through — faststart's remux strategies will attempt repair.
-
       const localVideoUrl = completed.location || storage().publicUrl(body.objectKey);
       const videoId = randomUUID();
       // Guard: if the DB insert fails after storage assembly succeeded, the object
@@ -567,40 +526,6 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
       adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "upload-finalize" });
       adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId: row.id });
       uploadTelemetry.success(body.sessionId, row.id, body.sizeBytes, 0);
-
-      // Enqueue HLS transcoding job. The in-process dispatcher
-      // (artifacts/api-server/src/modules/transcoder/transcoder.dispatcher.ts)
-      // will pick this up on its next tick and produce the multi-rendition
-      // master playlist; the videos row's `transcoding_status` flips from
-      // queued → processing → ready as the job advances. Failure here
-      // doesn't block the upload — admins can re-enqueue from the
-      // Operations tab.
-      let transcodingWarning: string | null = null;
-      try {
-        await enqueueTranscode({
-          videoId: row.id,
-          videoPath: body.objectKey,
-        });
-        if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
-      } catch (err) {
-        transcodingWarning =
-          err instanceof Error ? err.message : "Transcoding job could not be queued — re-enqueue from the Operations tab.";
-        req.log.warn(
-          { err, videoId: row.id, objectKey: body.objectKey, errorMessage: err instanceof Error ? err.message : String(err) },
-          "[s3-multipart-complete] enqueueTranscode failed — marking video transcodingStatus=failed",
-        );
-        try {
-          await db
-            .update(schema.videosTable)
-            .set({ transcodingStatus: "failed" })
-            .where(eq(schema.videosTable.id, row.id));
-        } catch (dbErr) {
-          req.log.error(
-            { dbErr, videoId: row.id },
-            "[s3-multipart-complete] could not set transcodingStatus=failed after enqueue error",
-          );
-        }
-      }
 
       // Fire quick thumbnail extraction and duration probing in parallel —
       // both are non-blocking background tasks. Thumbnail extracts a frame
@@ -867,30 +792,7 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
       adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "upload-finalize" });
       adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId: row.id });
 
-      let transcodingWarning: string | null = null;
-      try {
-        await enqueueTranscode({ videoId: row.id, videoPath: body.objectKey });
-      } catch (err) {
-        transcodingWarning =
-          err instanceof Error
-            ? err.message
-            : "Transcoding job could not be queued — re-enqueue from the Operations tab.";
-        req.log.warn(
-          { err, videoId: row.id, objectKey: body.objectKey, errorMessage: err instanceof Error ? err.message : String(err) },
-          "[s3-finalize] enqueueTranscode failed — marking video transcodingStatus=failed",
-        );
-        try {
-          await db
-            .update(schema.videosTable)
-            .set({ transcodingStatus: "failed" })
-            .where(eq(schema.videosTable.id, row.id));
-        } catch (dbErr) {
-          req.log.error(
-            { dbErr, videoId: row.id },
-            "[s3-finalize] could not set transcodingStatus=failed after enqueue error",
-          );
-        }
-      }
+      const transcodingWarning: string | null = null;
 
       req.log.info(
         {

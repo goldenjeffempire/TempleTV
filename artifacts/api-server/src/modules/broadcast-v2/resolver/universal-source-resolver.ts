@@ -271,8 +271,9 @@ export function resolveSource(input: ResolverInput): ResolvedSource | null {
     return null; // no classifiable URL — caller logs and skips this item
   }
 
-  // Prefer HLS > DASH > MP4 > YouTube (explicit watch URL stored in primaryUrl)
-  const order: Record<V2Source["kind"], number> = { hls: 0, dash: 1, mp4: 2, youtube: 3 };
+  // MP4-only pipeline: prefer MP4 > HLS > DASH > YouTube.
+  // HLS items already in the queue still resolve correctly; new uploads are MP4.
+  const order: Record<V2Source["kind"], number> = { mp4: 0, hls: 1, dash: 2, youtube: 3 };
   candidates.sort((a, b) => order[a.kind] - order[b.kind]);
 
   const primary = candidates[0]!;

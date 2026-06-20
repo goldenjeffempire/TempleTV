@@ -246,7 +246,6 @@ export async function repairMissingS3MirroredAt(): Promise<{ repaired: number }>
           ne(videosTable.videoSource, "youtube"),
           isNull(videosTable.s3MirroredAt),
           isNotNull(videosTable.localVideoUrl),
-          sql`(${videosTable.transcodingErrorCode} IS NULL OR ${videosTable.transcodingErrorCode} NOT IN ('ASSEMBLY_FAILED', 'CORRUPT_SOURCE', 'SOURCE_MISSING'))`,
         ),
       )
       .limit(500);

@@ -603,6 +603,9 @@ class MediaIntegrityScannerImpl {
   }
 
   async scan(): Promise<MediaScanReport> {
+    // Media integrity scanner disabled — MP4-only pipeline.
+    // No HLS manifests or segment probing needed.
+    return this.getReport();
     if (this.scanning) return this.getReport();
     this.scanning = true;
     const startMs = Date.now();

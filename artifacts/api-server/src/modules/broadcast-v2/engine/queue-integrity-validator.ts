@@ -237,9 +237,6 @@ class QueueIntegrityValidatorImpl {
       // Items with SUSPICIOUS_DURATION collected here for background reprobe
       // after the main issue-detection loop (max 3 per cycle).
       const suspiciousDurationItems: Array<{ id: string; videoId: string; localUrl: string }> = [];
-      // Gap 4: HLS-ready items still carrying 1800-s upload-time placeholder
-      // duration. ffprobe can recover the real duration from the VOD manifest.
-      const hlsPlaceholderDurationItems: Array<{ id: string; videoId: string; hlsUrl: string }> = [];
 
       for (const row of rows) {
         const hasAnyUrl =
@@ -275,143 +272,10 @@ class QueueIntegrityValidatorImpl {
           });
         }
 
-        // UNPLAYABLE_CORRUPT_UPLOAD: video transcoding permanently failed AND
-        // there is genuinely no playable URL — neither HLS nor raw MP4.
-        //
-        // Broadcast-first policy: an item is only deactivated when the playback
-        // engine has nothing to serve.  If a localVideoUrl exists the player
-        // can always fall back to progressive MP4 playback, so we admit the
-        // item to rotation even when HLS transcoding failed or the container
-        // was tagged CORRUPT_SOURCE by the transcoder.
-        //
-        // Deactivation triggers only for:
-        //   SOURCE_MISSING  — storage blob was deleted; no bytes to serve
-        //                     regardless of what the URL column says.
-        //   CORRUPT_SOURCE  — HLS transcoding failed AND no raw MP4 URL exists
-        //                     at all (never uploaded or was purged).
-        //
-        // NOT deactivated (admitted to broadcast, shown as warnings):
-        //   CORRUPT_SOURCE + localVideoUrl present — HLS failed but raw MP4
-        //               exists; orchestrator falls back to progressive playback.
-        //   DISK_FULL — transcoding failed due to disk space; source intact.
-        //   faststartApplied=false — moov at EOF; faststart-recovery retries.
-        //   ASSEMBLY_FAILED — blob assembly interrupted; recoverable.
-        //   Any other transient failure code — retry/DLQ handles recovery.
-        //
-        // IMPORTANT: noFaststart uses === false (NOT the ! operator).
-        // faststartApplied is a nullable boolean: NULL = never attempted (may
-        // still stream as a raw MP4); false = explicitly run and failed (moov
-        // at EOF). !null === true would flag every unprocessed video.
-        if (
-          row.videoId &&
-          row.videoId2 !== null &&
-          !row.qHlsUrl &&
-          !row.vHlsUrl &&
-          row.vStatus === "failed"
-        ) {
-          const isCorrupt = row.vErrCode === "CORRUPT_SOURCE";
-          const isSourceMissing = row.vErrCode === "SOURCE_MISSING";
-          const isDiskFull = row.vErrCode === "DISK_FULL";
-          const isAssemblyFailed = row.vErrCode === "ASSEMBLY_FAILED";
-          const noFaststart = row.vFaststart === false;
-          // A raw MP4 URL means progressive playback is available — only flag
-          // unplayable when no URL exists anywhere on the queue or video row.
-          const hasAnyLocalUrl = !!(row.qLocalUrl || row.vLocalUrl);
-
-          // SOURCE_MISSING is always unplayable (blob is gone regardless of URL).
-          // CORRUPT_SOURCE is unplayable only if there is also no raw MP4 URL —
-          // if localVideoUrl exists the player can fall back to progressive MP4.
-          if (isSourceMissing || (isCorrupt && !hasAnyLocalUrl)) {
-            issues.push({
-              severity: "error",
-              itemId: row.id,
-              itemTitle: row.title,
-              code: "UNPLAYABLE_CORRUPT_UPLOAD",
-              message:
-                `Video '${row.videoId}' has transcodingStatus='failed' with ` +
-                (isSourceMissing
-                  ? "SOURCE_MISSING error — source blob deleted from storage. Re-upload the source file to restore."
-                  : "CORRUPT_SOURCE error — HLS transcoding failed and no raw MP4 URL exists. Re-upload the source file to restore.") +
-                " No HLS or MP4 fallback. Item is deactivated from broadcast until re-uploaded.",
-            });
-          }
-
-          // CORRUPT_SOURCE but raw MP4 exists — admit to broadcast as warning.
-          // The orchestrator will fall back to progressive MP4 playback.
-          if (isCorrupt && hasAnyLocalUrl) {
-            issues.push({
-              severity: "warn",
-              itemId: row.id,
-              itemTitle: row.title,
-              code: "HLS_TRANSCODE_FAILED_MP4_FALLBACK",
-              message:
-                `Video '${row.videoId}' has transcodingStatus='failed' with CORRUPT_SOURCE — ` +
-                "HLS transcoding failed but a raw MP4 source is available. " +
-                "The item is admitted to broadcast using progressive MP4 playback. " +
-                "Re-upload for a clean HLS encode.",
-            });
-          }
-
-          // Source file exists but moov may be at EOF — admitted to broadcast.
-          // Faststart-recovery worker retries moov relocation in background.
-          if (isDiskFull) {
-            issues.push({
-              severity: "warn",
-              itemId: row.id,
-              itemTitle: row.title,
-              code: "DISK_FULL_TRANSCODE_FAILED",
-              message:
-                `Video '${row.videoId}' has transcodingStatus='failed' with DISK_FULL error — ` +
-                "transcoding failed due to insufficient disk space. The source file is intact and the item " +
-                "is admitted to broadcast. Free disk space and use Retry to re-transcode, or run faststart " +
-                "to ensure progressive streaming.",
-            });
-          }
-
-          // Moov at EOF — file exists but range-streaming may stall.
-          // Admitted to broadcast; faststart-recovery worker actively retries.
-          if (noFaststart) {
-            issues.push({
-              severity: "warn",
-              itemId: row.id,
-              itemTitle: row.title,
-              code: "FASTSTART_FAILED_NO_HLS",
-              message:
-                `Video '${row.videoId}' has transcodingStatus='failed' and faststartApplied=false — ` +
-                "moov atom is at EOF, which may cause slow initial buffering on some clients. " +
-                "The item is admitted to broadcast and the faststart-recovery worker will retry " +
-                "moov relocation. Re-transcode via HLS to eliminate the issue permanently.",
-            });
-          }
-
-          // ASSEMBLY_FAILED: blob assembly was interrupted mid-upload (DB lock,
-          // disk pressure, watchdog timeout). Unlike CORRUPT_SOURCE this is
-          // recoverable — the upload session was reset to 'uploading' so the
-          // operator can retry finalization from the upload panel.
-          if (isAssemblyFailed) {
-            issues.push({
-              severity: "warn",
-              itemId: row.id,
-              itemTitle: row.title,
-              code: "ASSEMBLY_FAILED",
-              message:
-                `Video '${row.videoId}' has transcodingStatus='failed' with ASSEMBLY_FAILED — ` +
-                "blob assembly was interrupted. The upload session has been reset; " +
-                "retry finalization from the upload panel to recover this video.",
-            });
-          }
-        }
-
         if (row.durationSecs === 1800) {
           const vDur = row.vDuration ? parseFloat(row.vDuration) : 0;
-          // HLS and DASH items self-report duration via their manifests; the
-          // 1800 s stored value is an expected placeholder that the orchestrator
-          // never relies on for scheduling (it uses live playback telemetry for
-          // HLS transitions). YouTube items similarly have no local ffprobe
-          // target. Only flag the warning for local MP4-only items.
-          const hasHls = !!(row.qHlsUrl || row.vHlsUrl);
           const isYoutube = row.vSource === "youtube";
-          if (!hasHls && !isYoutube && (!vDur || isNaN(vDur))) {
+          if (!isYoutube && (!vDur || isNaN(vDur))) {
             issues.push({
               severity: "warn",
               itemId: row.id,
@@ -419,15 +283,6 @@ class QueueIntegrityValidatorImpl {
               code: "PLACEHOLDER_DURATION",
               message: "Item uses 1800 s placeholder — ffprobe has not produced a real duration yet",
             });
-          }
-          // Gap 4: HLS-ready items with placeholder duration — the real duration
-          // can be recovered by re-probing the HLS VOD manifest via ffprobe.
-          // Collect for background reprobe after the main detection loop.
-          if (hasHls && !isYoutube && row.videoId2 !== null) {
-            const hlsUrl = row.qHlsUrl ?? row.vHlsUrl;
-            if (hlsUrl) {
-              hlsPlaceholderDurationItems.push({ id: row.id, videoId: row.videoId2, hlsUrl });
-            }
           }
         }
 
@@ -482,38 +337,6 @@ class QueueIntegrityValidatorImpl {
           });
         }
 
-        // UNSTARTED_FASTSTART: raw MP4 whose moov atom has not yet been
-        // relocated to byte 0 (faststartApplied=false). HTTP range-based
-        // streaming requires the moov at the start of the file; with it at
-        // EOF, browsers must download the entire file before playback begins,
-        // causing multi-second stalls or player timeouts. The faststart-
-        // recovery worker runs in the background and will fix this within
-        // the next worker cycle — this warning is informational. Items that
-        // have an HLS manifest, are YouTube-sourced, or are actively being
-        // transcoded are excluded (they have an alternative playback path).
-        {
-          const hasHlsNow = !!(row.qHlsUrl || row.vHlsUrl);
-          const isYtNow = row.vSource === "youtube";
-          const isActivelyTranscoding =
-            row.vStatus === "queued" || row.vStatus === "encoding" || row.vStatus === "processing";
-          if (
-            !hasHlsNow &&
-            !isYtNow &&
-            !isActivelyTranscoding &&
-            row.vFaststart === false &&
-            (row.qLocalUrl || row.vLocalUrl)
-          ) {
-            issues.push({
-              severity: "warn",
-              itemId: row.id,
-              itemTitle: row.title,
-              code: "UNSTARTED_FASTSTART",
-              message:
-                "Raw MP4 — moov atom not yet relocated to byte 0 (faststartApplied=false). " +
-                "Viewers may experience long startup buffering. Faststart recovery runs in the background and will fix this automatically.",
-            });
-          }
-        }
       }
 
       const sortOrders = new Map<number, string[]>();
@@ -1183,57 +1006,6 @@ class QueueIntegrityValidatorImpl {
         }
       }
 
-      // ── Gap 4: Background reprobe of HLS-placeholder duration items ────────
-      // HLS-ready items still carrying the 1800-s upload-time placeholder
-      // duration are re-probed via ffprobe on the HLS manifest URL. VOD HLS
-      // manifests contain EXTINF tags that sum to the exact content duration.
-      // Runs ≤3 per cycle to avoid blocking the validate() loop.
-      if (hlsPlaceholderDurationItems.length > 0) {
-        const toReprobe = hlsPlaceholderDurationItems.slice(0, 5);
-        for (const item of toReprobe) {
-          void (async () => {
-            try {
-              const absUrl = normalizeQueueUrl(item.hlsUrl);
-              if (!absUrl) return;
-              const dur = await probeDurationFromUrl(absUrl);
-              // Ignore if ffprobe failed or returned the same 1800-s value.
-              if (!dur || dur < 1 || Math.round(dur) === 1800) {
-                logger.debug(
-                  { itemId: item.id, url: absUrl, dur },
-                  "[queue-validator] HLS-placeholder duration reprobe returned no valid duration (non-fatal)",
-                );
-                return;
-              }
-              await db.execute(sql`
-                UPDATE managed_videos SET duration = ${String(Math.ceil(dur))} WHERE id = ${item.videoId}
-              `);
-              await db.execute(sql`
-                UPDATE broadcast_queue SET duration_secs = ${Math.ceil(dur)} WHERE id = ${item.id}
-              `);
-              logger.info(
-                { itemId: item.id, videoId: item.videoId, newDurSecs: Math.ceil(dur) },
-                "[queue-validator] AUTO-FIX: HLS-placeholder duration reprobe corrected duration — " +
-                "managed_videos.duration and broadcast_queue.duration_secs updated",
-              );
-              adminEventBus.push("broadcast-queue-updated", {
-                reason: "integrity-fix-hls-placeholder-duration-reprobe",
-                itemId: item.id,
-                videoId: item.videoId,
-              });
-              adminEventBus.push("videos-library-updated", {
-                reason: "integrity-fix-hls-placeholder-duration-reprobe",
-                itemId: item.id,
-                videoId: item.videoId,
-              });
-            } catch (err) {
-              logger.warn(
-                { err, itemId: item.id },
-                "[queue-validator] HLS-placeholder duration reprobe failed (non-fatal)",
-              );
-            }
-          })();
-        }
-      }
 
       // ── Gap 1: HLS_STORAGE_MISSING — detect, auto-fix, and reverse pass ───
       // Active queue items whose video is marked hls_ready but whose HLS master
