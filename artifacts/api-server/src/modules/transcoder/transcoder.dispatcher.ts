@@ -1713,10 +1713,11 @@ class TranscoderDispatcher {
           hlsMasterUrl: result.masterPlaylistUrl,
         });
 
-        // Primary broadcast queue enrollment: add the video to the broadcast
-        // queue now that HLS is confirmed ready. isPlayableForBroadcast() gates
-        // on hlsMasterUrl — this is the ONLY place local uploads enter the queue.
-        // Idempotent — no-ops if already queued (e.g. re-transcoded video).
+        // Fallback broadcast queue enrollment: videos are normally enrolled
+        // immediately after upload (MP4-first). This call is a safety net for
+        // any video that was not yet enrolled (e.g. uploaded before the MP4-first
+        // policy was active, or re-transcoded from scratch). Idempotent — no-ops
+        // if already queued.
         try {
           const enqRes = await enqueueIfMissing({ videoId: job.videoId, reason: "upload-finalize" });
           if (enqRes.enqueued) {

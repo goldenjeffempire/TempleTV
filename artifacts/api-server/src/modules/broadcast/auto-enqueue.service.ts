@@ -344,10 +344,10 @@ export async function scanLibraryAndEnqueue(opts: {
         and(
           // YouTube is library-only — never enters the broadcast queue.
           ne(videosTable.videoSource, "youtube"),
-          // HLS is required for broadcast admission — only videos with a
-          // fully-generated HLS manifest are eligible. Raw MP4 uploads without
-          // hlsMasterUrl are held in the library until transcoding completes.
-          isNotNull(videosTable.hlsMasterUrl),
+          // MP4-first admission: any local video with a source URL is eligible.
+          // HLS is preferred (and always admitted) but raw MP4 uploads are not
+          // held back — they air immediately and upgrade when transcoding completes.
+          or(isNotNull(videosTable.hlsMasterUrl), isNotNull(videosTable.localVideoUrl)),
           // NOT EXISTS subquery — keeps the JOIN cheap and the candidate set
           // small; the dedupe inside enqueueIfMissing is the authoritative
           // backstop for the race where two concurrent scans run at once.
@@ -445,13 +445,15 @@ function isPlayableForBroadcast(row: {
   // YouTube is library-only — excluded from broadcast entirely.
   if (row.videoSource === "youtube") return false;
 
-  // HLS is required for broadcast admission. Raw MP4 uploads (no hlsMasterUrl)
-  // are held in the library until HLS transcoding completes — this guarantees
-  // every queued video delivers adaptive bitrate streaming with no moov-at-EOF
-  // stalls, auto-skip cycles, or dead-air caused by unoptimised uploads.
-  // The transcoder dispatcher calls enqueueIfMissing() after setting
-  // hlsMasterUrl, so no operator action is needed.
+  // HLS is preferred — always admitted when available.
   if (row.hlsMasterUrl && row.hlsMasterUrl.trim() !== "") return true;
+
+  // MP4-first: any locally-uploaded video with a source URL is admitted
+  // immediately. Playback failures (moov-at-EOF, missing blob, 404) are
+  // handled at runtime by the orchestrator's bad-URL cache and auto-skip
+  // logic. Background workers (faststart, HLS transcoder) upgrade quality
+  // asynchronously without ever blocking broadcast admission.
+  if (row.localVideoUrl && row.localVideoUrl.trim() !== "") return true;
 
   return false;
 }

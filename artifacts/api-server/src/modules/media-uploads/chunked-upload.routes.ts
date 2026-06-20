@@ -37,7 +37,7 @@ import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { uploadTelemetry } from "./upload-telemetry.service.js";
-import { enqueueIfMissing as _enqueueIfMissing } from "../broadcast/auto-enqueue.service.js"; // kept for future callers; unused after HLS-gate
+import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { ServiceUnavailableError } from "../../shared/errors.js";
 import { quarantineVideo } from "../broadcast/quarantine.service.js";
 
@@ -373,9 +373,17 @@ async function spawnAssemblyRetry(
         log.warn({ err: probeErr, videoId }, "[assembly-retry] ffprobe failed (non-fatal) — using existing duration");
       }
 
-      // HLS-gate: do NOT enqueue here — the transcoder dispatcher calls
-      // enqueueIfMissing() after writing hlsMasterUrl so every broadcast
-      // queue entry is guaranteed to have a valid HLS stream.
+      // MP4-first broadcast enrollment: enqueue immediately with raw MP4 source.
+      // The transcoder dispatcher will upgrade to HLS when transcoding completes.
+      try {
+        const enqRes = await enqueueIfMissing({ videoId, reason: "assembly-retry" });
+        if (enqRes.enqueued) {
+          log.info({ videoId, queueItemId: enqRes.queueItemId }, "[assembly-retry] video enrolled in broadcast queue (MP4-first)");
+          adminEventBus.push("broadcast-queue-updated", { reason: "assembly-retry", videoId });
+        }
+      } catch (enqErr) {
+        log.warn({ err: enqErr, videoId }, "[assembly-retry] enqueueIfMissing failed (non-fatal)");
+      }
 
       if (!vRow.faststartApplied) {
         try {
@@ -2069,10 +2077,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           );
         }
 
-        // The video will be added to the broadcast queue by the transcoder
-        // dispatcher AFTER HLS transcoding completes (hlsMasterUrl is set).
-        // Raw MP4 uploads are held in the library until HLS is ready —
-        // this guarantees every queued video delivers adaptive-bitrate HLS.
+        // The video will be enrolled in the broadcast queue (MP4-first) by the
+        // background assembly task once the blob is confirmed in storage.
+        // The transcoder dispatcher upgrades the queue row to HLS automatically
+        // when transcoding completes — no re-enqueue needed.
 
         // Notify connected clients that the library has a new entry.
         void invalidateVideosCatalogCache();
@@ -2346,19 +2354,51 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               capturedLog.warn({ err, videoId }, "[finalize:bg] post-upload probes failed (non-fatal)");
             }
 
+            // ── MP4-first broadcast enrollment ────────────────────────────────
+            // Enqueue as soon as the blob is confirmed in storage and probed.
+            // The item airs immediately via raw MP4 (or faststart MP4 / HLS once
+            // those background workers complete). The transcoder dispatcher will
+            // stamp hls_master_url on the queue row and fire a reload once HLS
+            // is ready — no re-enqueue needed.
+            //
+            // Sequence: probe (done above) → enqueue → update duration → faststart → HLS.
+            // ffprobeDurSecs is hoisted above so we can update the queue row
+            // with the accurate duration immediately after the row is created.
+            try {
+              const enqRes = await enqueueIfMissing({ videoId, reason: "upload-finalize" });
+              if (enqRes.enqueued) {
+                capturedLog.info(
+                  { videoId, queueItemId: enqRes.queueItemId },
+                  "[finalize:bg] video enrolled in broadcast queue (MP4-first)",
+                );
+                // Stamp the accurate ffprobe duration on the new queue row.
+                // The row is inserted with durationSecs = 1800 (upload-time
+                // placeholder). Correcting it now prevents dead-air gaps when
+                // the video ends before its slot expires.
+                if (ffprobeDurSecs != null && ffprobeDurSecs > 10) {
+                  await db
+                    .update(schema.broadcastQueueTable)
+                    .set({ durationSecs: Math.round(ffprobeDurSecs) })
+                    .where(eq(schema.broadcastQueueTable.videoId, videoId))
+                    .catch((err: unknown) =>
+                      capturedLog.warn(
+                        { err, videoId },
+                        "[finalize:bg] queue duration_secs update failed (non-fatal)",
+                      ),
+                    );
+                }
+                adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId });
+              }
+            } catch (enqErr) {
+              capturedLog.warn({ err: enqErr, videoId }, "[finalize:bg] enqueueIfMissing failed (non-fatal)");
+            }
+
             // CRITICAL ORDERING: faststart MUST complete before enqueueTranscode.
             //
             // faststart.service.ts replaces the source blob via a multipart
             // re-upload. If the transcoder downloads the source while that
             // assembly is still in progress it fetches a partial file and
             // ffprobe reports "moov atom not found", killing the transcode job.
-
-            // ── HLS-gate: no broadcast queue entry yet ───────────────────────
-            // Videos are NOT added to the broadcast queue immediately after
-            // assembly. The transcoder dispatcher calls enqueueIfMissing() once
-            // HLS transcoding succeeds and hlsMasterUrl is written, guaranteeing
-            // every queued video delivers adaptive-bitrate HLS with no moov-at-EOF
-            // stalls, dead-air, or auto-skip cycles caused by raw MP4 uploads.
 
             try {
               await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
