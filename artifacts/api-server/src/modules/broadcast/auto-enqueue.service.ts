@@ -449,14 +449,9 @@ function isPlayableForBroadcast(row: {
   // YouTube is library-only — excluded from broadcast entirely.
   if (row.videoSource === "youtube") return false;
 
-  // HLS is preferred — always admitted when available.
-  if (row.hlsMasterUrl && row.hlsMasterUrl.trim() !== "") return true;
-
-  // MP4-first: any locally-uploaded video with a source URL is admitted
-  // immediately. Playback failures (moov-at-EOF, missing blob, 404) are
-  // handled at runtime by the orchestrator's bad-URL cache and auto-skip
-  // logic. Background workers (faststart, HLS transcoder) upgrade quality
-  // asynchronously without ever blocking broadcast admission.
+  // MP4-only pipeline: any locally-uploaded video with a source URL is
+  // admitted immediately. Playback failures are handled at runtime by the
+  // orchestrator's bad-URL cache and auto-skip logic.
   if (row.localVideoUrl && row.localVideoUrl.trim() !== "") return true;
 
   return false;

@@ -265,14 +265,14 @@ export function resolveSource(input: ResolverInput): ResolvedSource | null {
   }
   if (input.mp4Url) {
     const kind = classify(input.mp4Url);
-    if (kind === "mp4" || kind === "hls") candidates.push({ url: input.mp4Url, kind });
+    if (kind === "mp4") candidates.push({ url: input.mp4Url, kind });
   }
   if (candidates.length === 0) {
     return null; // no classifiable URL — caller logs and skips this item
   }
 
-  // MP4-only pipeline: prefer MP4 > HLS > DASH > YouTube.
-  // HLS items already in the queue still resolve correctly; new uploads are MP4.
+  // MP4-only pipeline: prefer MP4 > YouTube.
+  // HLS items already in the queue still resolve via primaryUrl for back-compat.
   const order: Record<V2Source["kind"], number> = { mp4: 0, hls: 1, dash: 2, youtube: 3 };
   candidates.sort((a, b) => order[a.kind] - order[b.kind]);
 

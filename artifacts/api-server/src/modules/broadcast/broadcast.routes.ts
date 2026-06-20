@@ -349,19 +349,8 @@ export async function broadcastRoutes(app: FastifyInstance) {
           .from(schema.videosTable)
           .where(eq(schema.videosTable.id, req.body.videoId))
           .limit(1);
-        if (video) {
-          const inFlight = ["queued", "encoding", "processing"] as const;
-          if (
-            video.videoSource !== "youtube" &&
-            inFlight.includes(video.transcodingStatus as (typeof inFlight)[number]) &&
-            !video.hlsMasterUrl
-          ) {
-            return reply.code(422).send({
-              error: `Video "${video.title}" is currently ${video.transcodingStatus} — ` +
-                "wait for transcoding to complete before adding it to the broadcast queue.",
-            });
-          }
-        }
+        // MP4-only pipeline: any video with a localVideoUrl is immediately
+        // broadcastable — no transcoding gate needed.
       }
       let created;
       try {
