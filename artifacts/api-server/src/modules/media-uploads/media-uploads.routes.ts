@@ -691,43 +691,6 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
         );
       }
 
-      // Container validity gate — rejects corrupt MP4s (missing/zeroed moov
-      // atom) BEFORE the videos row is inserted, so they never reach the
-      // broadcast queue. Mirrors the chunked-upload early gate. The probe
-      // returns valid=true on any infrastructure error, so this only rejects
-      // on genuine, confirmed corruption.
-      const containerProbeS3 = await probeUploadedContainerValidity(body.objectKey);
-      if (!containerProbeS3.valid && containerProbeS3.unrecoverable === true) {
-        // File is genuinely unrecoverable (moov absent, wrong file type, etc.).
-        // Reject before the DB row is created.
-        req.log.error(
-          { objectKey: body.objectKey, sizeBytes: body.sizeBytes, kind: containerProbeS3.kind },
-          "[s3-finalize] container validation failed (unrecoverable) — rejecting before DB insert",
-        );
-        uploadTelemetry.serverFail(
-          body.sessionId,
-          body.sizeBytes,
-          "corrupt_container",
-          containerProbeS3.error ?? "Upload rejected: moov atom absent or file type invalid",
-        );
-        // The object is already in storage; remove the orphan blob + session
-        // before bailing out so a rejected upload leaves no residue.
-        await cleanupRejectedUpload(body.sessionId, body.objectKey, "corrupt-container");
-        throw Object.assign(
-          new Error(
-            containerProbeS3.kind === "moov_absent"
-              ? "Upload rejected: the recording was interrupted before the codec configuration could be written (moov atom absent). " +
-                "Please re-record or re-export the video and upload again."
-              : (containerProbeS3.error
-                  ? `Upload rejected: ${containerProbeS3.error}`
-                  : "Upload rejected: the video container is unrecoverable. Please re-export and upload again."),
-          ),
-          { statusCode: 422 },
-        );
-      }
-      // If the container probe soft-failed (valid: false, unrecoverable: false),
-      // allow the upload through — faststart's remux strategies will attempt repair.
-
       const localVideoUrl = storage().publicUrl(body.objectKey);
       const videoId = randomUUID();
       // Guard: if the DB insert fails after the object is already in storage,
