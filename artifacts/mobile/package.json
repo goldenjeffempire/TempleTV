@@ -2,6 +2,7 @@
   "name": "@workspace/mobile",
   "version": "1.0.29",
   "private": true,
+  "packageManager": "pnpm@10.26.1",
   "main": "./index.ts",
   "scripts": {
     "dev": "CI=1 NODE_OPTIONS=--max-old-space-size=8192 EXPO_BASE_URL=/mobile pnpm exec expo start --port 18115",
