@@ -1709,15 +1709,15 @@ export default function VideosPage() {
                       className="capitalize text-[11px]"
                       title={
                         v.transcodingStatus === "hls_ready" || v.transcodingStatus === "ready"
-                          ? "HLS stream ready — video is in the broadcast queue"
+                          ? "HLS stream ready — video is live in the broadcast queue"
                           : v.transcodingStatus === "queued"
-                          ? "Queued for HLS conversion — will auto-join broadcast queue when done"
+                          ? "HLS transcoding queued — video is already live in the broadcast queue via MP4"
                           : v.transcodingStatus === "encoding" || v.transcodingStatus === "processing"
-                          ? "Converting to HLS — will auto-join broadcast queue when done"
+                          ? "Converting to HLS — video is already live in the broadcast queue via MP4"
                           : v.transcodingStatus === "none"
-                          ? "Uploaded — awaiting HLS conversion to join broadcast queue"
+                          ? "Uploaded — video is in the broadcast queue via MP4; HLS transcoding pending"
                           : v.transcodingStatus === "failed"
-                          ? "HLS conversion failed — retry to add to broadcast queue"
+                          ? "HLS conversion failed — video remains in broadcast queue via MP4 (retry to get HLS quality)"
                           : undefined
                       }
                     >
@@ -1728,13 +1728,13 @@ export default function VideosPage() {
                         : v.transcodingStatus === "encoding" || v.transcodingStatus === "processing"
                         ? "Converting"
                         : v.transcodingStatus === "none"
-                        ? "Awaiting HLS"
+                        ? "MP4 Ready"
                         : v.transcodingStatus || "—"}
                     </Badge>
                     {v.videoSource === "local" && !v.hlsMasterUrl && v.transcodingStatus !== "failed" && (
-                      <span className="text-[9px] text-amber-600 dark:text-amber-400 flex items-center gap-0.5" title="This video will automatically join the broadcast queue once HLS conversion completes">
+                      <span className="text-[9px] text-emerald-600 dark:text-emerald-400 flex items-center gap-0.5" title="Video is live in the broadcast queue via MP4. HLS upgrade in progress for adaptive quality.">
                         <Loader2 size={8} className={v.transcodingStatus === "encoding" || v.transcodingStatus === "processing" || v.transcodingStatus === "queued" ? "animate-spin" : ""} />
-                        Pending broadcast
+                        {v.transcodingStatus === "encoding" || v.transcodingStatus === "processing" || v.transcodingStatus === "queued" ? "In queue • HLS upgrading" : "In queue (MP4)"}
                       </span>
                     )}
                     {(v.transcodingStatus === "encoding" || v.transcodingStatus === "processing") && v.transcodingProgress !== null && (

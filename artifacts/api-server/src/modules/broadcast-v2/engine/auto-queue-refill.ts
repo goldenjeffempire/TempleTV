@@ -3,14 +3,18 @@
  *
  * When the broadcast queue's estimated remaining duration falls below
  * QUEUE_REFILL_TRIGGER_MS (default 30 min), this worker automatically
- * activates up to QUEUE_REFILL_BATCH (default 5) library videos that
- * have been transcoded (hlsMasterUrl IS NOT NULL) but are not currently
+ * adds up to QUEUE_REFILL_BATCH (default 5) library videos that have a
+ * playable source (localVideoUrl OR hlsMasterUrl) but are not currently
  * active in the broadcast queue.
  *
- * Selection criteria:
- *   1. Videos with hlsMasterUrl AND transcoding_status = 'hls_ready' only
- *      (raw MP4 uploads without HLS are excluded — HLS-gate policy)
- *   2. Ordered by imported_at DESC — newest content first
+ * Selection criteria (MP4-first policy — HLS-gate removed):
+ *   1. Videos with localVideoUrl OR hlsMasterUrl (raw MP4 is admitted immediately)
+ *   2. Excludes YouTube-sourced videos (served via ytShuffleFallback override)
+ *   3. Ordered by imported_at DESC — newest content first
+ *
+ * Enrollment is delegated to enqueueIfMissing() which correctly handles
+ * id generation, localVideoUrl/hlsMasterUrl population, duplicate detection,
+ * and the broadcast-queue-updated event.
  *
  * YouTube-only library handling: when all library videos are YouTube-sourced,
  * the refill query returns no candidates (YouTube videos are served via the
@@ -26,6 +30,7 @@ import { sql } from "drizzle-orm";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { queueAutoRefillTotal } from "../../../infrastructure/metrics.js";
+import { enqueueIfMissing } from "../../broadcast/auto-enqueue.service.js";
 
 const TRIGGER_MS = Number(process.env["QUEUE_REFILL_TRIGGER_MS"] ?? 30 * 60 * 1000);
 const BATCH = Math.max(1, Math.min(20, Number(process.env["QUEUE_REFILL_BATCH"] ?? 5)));
@@ -99,7 +104,9 @@ async function run(): Promise<void> {
       "[auto-refill] queue running low — attempting auto-refill",
     );
 
-    // Find library videos that are transcoded/uploadable but NOT currently active in queue.
+    // Find library videos with a playable source (MP4 or HLS) that are NOT currently
+    // active in the broadcast queue.  MP4-first policy: raw MP4 uploads (localVideoUrl)
+    // are admitted immediately — HLS is an async upgrade, not a gate.
     // Excludes YouTube-sourced videos — those are served through the ytShuffleFallback
     // override mechanism (activated when the local queue is empty) and should never be
     // inserted into the broadcast_queue directly.
@@ -107,8 +114,7 @@ async function run(): Promise<void> {
       SELECT mv.id, mv.title
       FROM managed_videos mv
       WHERE
-        mv.transcoding_status = 'hls_ready'
-        AND mv.hls_master_url IS NOT NULL
+        (mv.hls_master_url IS NOT NULL OR mv.local_video_url IS NOT NULL)
         AND mv.video_source != 'youtube'
         AND NOT EXISTS (
           SELECT 1 FROM broadcast_queue bq
@@ -180,26 +186,15 @@ async function run(): Promise<void> {
     // Reset YouTube-only flag since we found candidates.
     _status.libraryIsYouTubeOnly = false;
 
+    // Delegate enrollment to enqueueIfMissing() — it handles id generation,
+    // localVideoUrl/hlsMasterUrl population, duplicate detection (23505 guard),
+    // and the broadcast-queue-updated event.  The raw-SQL INSERT previously used
+    // here was missing the `id` PK field, silently failing for new videos.
     let added = 0;
     for (const row of rows) {
       try {
-        // Re-activate existing inactive queue row OR insert a new one.
-        await db.execute(sql`
-          INSERT INTO broadcast_queue (video_id, title, duration_secs, is_active, created_at, updated_at)
-          SELECT
-            mv.id,
-            mv.title,
-            COALESCE(mv.duration::float, 1800),
-            true,
-            NOW(),
-            NOW()
-          FROM managed_videos mv
-          WHERE mv.id = ${row.id}
-          ON CONFLICT (video_id) DO UPDATE
-            SET is_active = true, updated_at = NOW()
-          WHERE broadcast_queue.is_active = false
-        `);
-        added++;
+        const result = await enqueueIfMissing({ videoId: row.id, reason: "library-scan" });
+        if (result.enqueued) added++;
       } catch (err) {
         logger.warn({ err, videoId: row.id }, "[auto-refill] failed to enqueue video (non-fatal)");
       }
@@ -221,6 +216,8 @@ async function run(): Promise<void> {
         message: `Auto-refill added ${added} video(s) to the broadcast queue (${Math.floor(timeToEmptyMs / 60000)} min remaining before trigger).`,
         context: { added, timeToEmptyMs },
       });
+      // enqueueIfMissing already fires broadcast-queue-updated per item;
+      // emit one more coalesced event so the admin SSE channel sees a single refresh.
       adminEventBus.push("broadcast-queue-updated");
 
       logger.info({ added, timeToEmptyMs }, "[auto-refill] refill complete");
