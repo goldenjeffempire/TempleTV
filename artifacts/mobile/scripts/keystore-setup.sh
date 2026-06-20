@@ -26,8 +26,13 @@ warn() { echo -e "${YELLOW}⚠${NC}  $*"; }
 err()  { echo -e "${RED}✖${NC}  $*"; }
 
 # ── require keytool ──────────────────────────────────────────────────────────
-if ! command -v keytool &>/dev/null; then
-  err "keytool not found. Install a JDK: brew install temurin  (macOS) or apt install default-jdk (Linux)"
+# Prefer PATH, then fall back to the Nix openjdk store location on Replit.
+KEYTOOL="$(command -v keytool 2>/dev/null || true)"
+if [[ -z "$KEYTOOL" ]]; then
+  KEYTOOL="$(find /nix/store -maxdepth 3 -name keytool -path "*/openjdk*/bin/keytool" 2>/dev/null | sort | tail -1 || true)"
+fi
+if [[ -z "$KEYTOOL" ]]; then
+  err "keytool not found. On Replit it is installed via replit.nix (pkgs.jdk). Open a fresh shell and retry."
   exit 1
 fi
 
@@ -51,12 +56,12 @@ verify() {
   read -rsp "Enter keystore password: " KS_PASS; echo ""
 
   local sha1
-  sha1=$(keytool -list -v -keystore "$ks" -alias "$KEY_ALIAS" -storepass "$KS_PASS" 2>/dev/null \
+  sha1=$("$KEYTOOL" -list -v -keystore "$ks" -alias "$KEY_ALIAS" -storepass "$KS_PASS" 2>/dev/null \
     | grep "SHA1:" | awk '{print $2}' | tr -d '[:space:]')
 
   if [[ -z "$sha1" ]]; then
     warn "Could not read SHA1. The alias may be different. Listing all aliases:"
-    keytool -list -keystore "$ks" -storepass "$KS_PASS" 2>/dev/null | grep "Alias name:" || true
+    "$KEYTOOL" -list -keystore "$ks" -storepass "$KS_PASS" 2>/dev/null | grep "Alias name:" || true
     exit 1
   fi
 
@@ -93,7 +98,7 @@ generate() {
   echo "You will be prompted to set passwords. Record them in your password manager."
   echo ""
 
-  keytool -genkeypair \
+  "$KEYTOOL" -genkeypair \
     -alias "$KEY_ALIAS" \
     -keyalg RSA \
     -keysize 4096 \
@@ -108,7 +113,7 @@ generate() {
   echo "Exporting public certificate …"
   read -rsp "Enter keystore password again: " KS_PASS; echo ""
 
-  keytool -export \
+  "$KEYTOOL" -export \
     -alias "$KEY_ALIAS" \
     -keystore "$out_ks" \
     -storepass "$KS_PASS" \
@@ -118,7 +123,7 @@ generate() {
   ok "Certificate exported: $out_pem"
 
   local sha1
-  sha1=$(keytool -list -v -keystore "$out_ks" -alias "$KEY_ALIAS" -storepass "$KS_PASS" 2>/dev/null \
+  sha1=$("$KEYTOOL" -list -v -keystore "$out_ks" -alias "$KEY_ALIAS" -storepass "$KS_PASS" 2>/dev/null \
     | grep "SHA1:" | awk '{print $2}' | tr -d '[:space:]')
 
   echo ""
