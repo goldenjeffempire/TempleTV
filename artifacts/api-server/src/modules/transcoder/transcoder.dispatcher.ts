@@ -223,7 +223,11 @@ class TranscoderDispatcher {
       } catch {
         return; // root doesn't exist yet — nothing to clean
       }
-      const cutoffMs = Date.now() - 3_600_000; // 1 hour
+      // Use a 6-hour window (was 1 hour) to avoid deleting the scratch dir of a
+      // long-running 4K encode still in progress on another replica. A 6-hour
+      // encode is far outside normal operating range; anything older than that
+      // is genuinely orphaned and safe to remove.
+      const cutoffMs = Date.now() - 6 * 3_600_000; // 6 hours
       const results = await Promise.allSettled(
         entries.map(async (entry) => {
           const full = path.join(scratchRoot, entry);
@@ -342,9 +346,12 @@ class TranscoderDispatcher {
 
   // Faststart-orphan watchdog: sweeps managed_videos for rows stuck in
   // transcodingStatus='processing'/'queued' with no backing transcoding_jobs
-  // row and updated_at older than faststartOrphanTicks × poll interval
-  // (~45 min). This catches faststart crashes that leave the video status
-  // permanently stuck while the job row was already cleaned up.
+  // row and updated_at older than 90 minutes. This catches faststart crashes
+  // that leave the video status permanently stuck while the job row was
+  // already cleaned up. The 90-min threshold (see resetFaststartOrphans)
+  // safely covers large files without false-resetting active operations.
+  // The scan cadence runs every ~45 min (half the threshold) so stuck videos
+  // are caught within one scan period after the threshold is crossed.
   private faststartOrphanCounter = 0;
   // Target cadence: ~45 min. Computed from poll interval.
   private get faststartOrphanTicks(): number {
@@ -1252,7 +1259,11 @@ class TranscoderDispatcher {
    * resetStuckJobs) because the cause is infrastructure failure, not a bad job.
    */
   private async resetFaststartOrphans(): Promise<void> {
-    const ORPHAN_AGE_MS = 45 * 60_000;
+    // Use a 90-minute threshold (was 45 min) so that large files undergoing
+    // ffprobe or a slow faststart pass are not falsely reset mid-operation,
+    // which would cause a retry-loop. 90 minutes safely covers the largest
+    // practical files (several GB 1080p sermon recordings).
+    const ORPHAN_AGE_MS = 90 * 60_000;
     const cutoff = new Date(Date.now() - ORPHAN_AGE_MS);
     try {
       // Select object_path and hls_master_url alongside id so we can create
@@ -1448,6 +1459,12 @@ class TranscoderDispatcher {
           videoId: job.videoId,
           sourceObjectKey: job.videoPath,
           skipRenditions,
+          // Adaptive thread allocation: divide the configured thread budget by the
+          // number of concurrently running jobs so that two jobs each get half the
+          // threads instead of both claiming the full count (e.g. 2×4=8 threads on
+          // a 4-core shared host starves the Fastify event loop and degrades both
+          // encodes). activeJobs.size is already incremented above the claim block.
+          threads: Math.max(1, Math.floor(env.TRANSCODER_THREADS / Math.max(1, this.activeJobs.size))),
           onProgress: async (pct) => {
             const now = Date.now();
             if (now - lastProgressUpdate < 5000 && pct < 100) return;
@@ -2119,16 +2136,24 @@ class TranscoderDispatcher {
       // unhandled rejection.
       const message = err instanceof Error ? err.message : String(err);
       const errCode = (err as NodeJS.ErrnoException).code;
+      // Exclude item-specific errors (404, source-missing) from the circuit
+      // breaker — they indicate a bad video, not an infrastructure outage, and
+      // should not count toward the consecutive-failure threshold that pauses
+      // ALL job dispatch. Only connection/pool errors trip the circuit.
+      const isSourceMissingPreClaim =
+        errCode === "SOURCE_MISSING" || /object not found in storage/i.test(message);
       const isStorageError =
-        errCode === "ECONNREFUSED" ||
-        errCode === "ECONNRESET" ||
-        errCode === "ETIMEDOUT" ||
-        errCode === "EPIPE" ||
-        message.includes("Connection terminated") ||
-        message.includes("pool") ||
-        message.includes("ECONNREFUSED") ||
-        message.includes("connection refused") ||
-        message.includes("Failed query");
+        !isSourceMissingPreClaim && (
+          errCode === "ECONNREFUSED" ||
+          errCode === "ECONNRESET" ||
+          errCode === "ETIMEDOUT" ||
+          errCode === "EPIPE" ||
+          message.includes("Connection terminated") ||
+          message.includes("pool") ||
+          message.includes("ECONNREFUSED") ||
+          message.includes("connection refused") ||
+          message.includes("Failed query")
+        );
       if (isStorageError) {
         this.storageErrorStreak++;
         if (this.storageErrorStreak >= TranscoderDispatcher.STORAGE_ERROR_THRESHOLD) {

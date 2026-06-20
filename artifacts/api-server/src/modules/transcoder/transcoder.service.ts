@@ -54,6 +54,17 @@ export interface TranscodeRequest {
    * can skip already-uploaded renditions.
    */
   onRenditionUploaded?: (renditionName: string, renditionIndex: number) => Promise<void>;
+  /**
+   * Override the FFmpeg thread count for this job.
+   *
+   * The dispatcher computes this adaptively as:
+   *   max(1, floor(TRANSCODER_THREADS / activeJobCount))
+   *
+   * so that two concurrent jobs each get half the thread budget instead of
+   * both claiming the full count and starving the event loop and each other
+   * on a shared-CPU host. Defaults to TRANSCODER_THREADS when omitted.
+   */
+  threads?: number;
 }
 
 export interface TranscodeResult {
@@ -161,6 +172,7 @@ function buildFfmpegArgs(
   renditions: RenditionSpec[],
   hasAudio: boolean = true,
   isInterlaced: boolean = false,
+  threads: number = env.TRANSCODER_THREADS,
 ): string[] {
   const filterParts: string[] = [];
   filterParts.push(`[0:v]split=${renditions.length}` + renditions.map((_, i) => `[vsplit${i}]`).join(""));
@@ -202,7 +214,7 @@ function buildFfmpegArgs(
     // during active transcoding. Default 4 keeps encode speed reasonable while
     // leaving enough headroom for the API and DB pool. Override per-deployment
     // via TRANSCODER_THREADS env var (e.g. set to "8" on a dedicated worker).
-    "-threads", String(env.TRANSCODER_THREADS),
+    "-threads", String(threads),
     "-i", input,
     // Prevent "Too many packets buffered for output stream" muxer errors that
     // occur when input audio/video streams have high bitrate-mismatch. Raises
@@ -406,6 +418,18 @@ function injectCodecsIntoMaster(
     "3.1": "1F",
     "4.0": "28",
     "4.1": "29",
+    // 4.2 (0x2A): 1080p60 / high-framerate 1080p. Emitted by some encoders
+    // for 1080p sources with 60fps — not in the standard rendition ladder but
+    // may appear in checkpoint-resume or custom-rendition scenarios.
+    "4.2": "2A",
+    // 5.0 (0x32) and 5.1 (0x33): 4K sources. The pipeline targets 1080p max
+    // but a high-bitrate source may cause some encoders to signal level 5.0.
+    // Providing the correct hex here prevents the fallback from emitting level
+    // 3.1 (0x1F) in the CODECS string for a level-5 stream — a mismatch that
+    // makes strict TV decoders (Samsung, LG) reject the rendition entirely.
+    "5.0": "32",
+    "5.1": "33",
+    "5.2": "34",
   };
   function h264CodecStr(level: string, profile: "main" | "high"): string {
     if (profile === "high") {
@@ -431,7 +455,23 @@ function injectCodecsIntoMaster(
       if (resMatch) {
         const w = parseInt(resMatch[1]!, 10);
         const h = parseInt(resMatch[2]!, 10);
-        const rendition = renditions.find((r) => r.width === w && r.height === h);
+
+        // First try exact width+height match, then fall back to height-only
+        // (handles minor FFmpeg rounding of width for odd-dimension sources),
+        // then fall back to nearest height (closest rendition). This ensures
+        // CODECS is always injected rather than silently omitted, which causes
+        // black screens on Samsung Tizen 2.x/3.x and LG webOS 3.x.
+        let rendition = renditions.find((r) => r.width === w && r.height === h);
+        if (!rendition) {
+          rendition = renditions.find((r) => r.height === h);
+        }
+        if (!rendition && renditions.length > 0) {
+          // Nearest height fallback — prevents silent omission for any non-standard resolution.
+          rendition = renditions.reduce((best, r) =>
+            Math.abs(r.height - h) < Math.abs(best.height - h) ? r : best,
+          );
+        }
+
         if (rendition) {
           // Mirror the FFmpeg encoder profile selection in buildFfmpegArgs:
           // 720p and above use -profile:v high; below that use -profile:v main.
@@ -442,6 +482,16 @@ function injectCodecsIntoMaster(
           continue;
         }
       }
+
+      // Ultimate fallback: if there is no RESOLUTION attribute at all (malformed
+      // FFmpeg output) inject a safe catch-all CODECS string for H.264 Main 4.0
+      // + AAC-LC. Any compliant player will accept this and attempt decoding.
+      if (hasAudio) {
+        out.push(`${trimmed},CODECS="avc1.4D4028,mp4a.40.2"`);
+      } else {
+        out.push(`${trimmed},CODECS="avc1.4D4028"`);
+      }
+      continue;
     }
     out.push(line);
   }
@@ -2144,7 +2194,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
       logger.warn({ err: diskErr, videoId: req.videoId }, "transcoder: disk space pre-flight unavailable (non-fatal)");
     }
 
-    const args = buildFfmpegArgs(activeSourcePath, scratchDir, renditionsToUse, hasAudio, isInterlaced);
+    const args = buildFfmpegArgs(activeSourcePath, scratchDir, renditionsToUse, hasAudio, isInterlaced, req.threads ?? env.TRANSCODER_THREADS);
 
     // Run HLS transcoding and thumbnail extraction in parallel.
     const hlsPromise = new Promise<void>((resolve, reject) => {
@@ -2320,7 +2370,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
         // throws (e.g. unsupported rendition config), fallbackProgressiveLoop
         // would otherwise start and run indefinitely because the error escapes
         // to the outer catch block without ever setting progressiveActive=false.
-        const fallbackArgs = buildFfmpegArgs(activeSourcePath, scratchDir, renditionsToUse, hasAudio, isInterlaced);
+        const fallbackArgs = buildFfmpegArgs(activeSourcePath, scratchDir, renditionsToUse, hasAudio, isInterlaced, req.threads ?? env.TRANSCODER_THREADS);
         progressiveActive = true;
         const fallbackProgressiveLoop = (async () => {
           while (progressiveActive) {

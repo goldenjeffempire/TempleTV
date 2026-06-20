@@ -310,10 +310,26 @@ class QueueHealthGuardImpl {
       return;
     }
 
-    logger.warn(
-      { activeCount, threshold, added },
-      "[queue-reconcile] queue still below threshold after reconciliation — library may have too few eligible videos",
-    );
+    // Check whether ytShuffleFallback is active — if the library is YouTube-only
+    // the queue will always be empty locally (0 HLS videos), which is the expected
+    // operational state. Downgrade the log to INFO to reduce noise in that case.
+    let ytShuffleActive = false;
+    try {
+      const { ytShuffleFallback } = await import("./youtube-shuffle-fallback.js");
+      ytShuffleActive = ytShuffleFallback.isActive;
+    } catch { /* non-fatal — shuffle module may not be initialised yet */ }
+
+    if (ytShuffleActive) {
+      logger.info(
+        { activeCount, threshold, added },
+        "[queue-reconcile] local queue below threshold — ytShuffleFallback is active (YouTube-only library); no action needed",
+      );
+    } else {
+      logger.warn(
+        { activeCount, threshold, added },
+        "[queue-reconcile] queue still below threshold after reconciliation — library may have too few eligible videos",
+      );
+    }
 
     // ── Adaptive follow-up scan ─────────────────────────────────────────────
     // Schedule a faster follow-up scan when the queue is below threshold so
