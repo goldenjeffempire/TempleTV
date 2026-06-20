@@ -36,7 +36,7 @@ import {
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { LiveStatusBadge } from "@/components/live-status-badge";
-import { BroadcastReadyBadge } from "@/components/shared/broadcast-ready-badge";
+import { BroadcastReadyBadge, getBroadcastReadiness } from "@/components/shared/broadcast-ready-badge";
 import { uploadQueue, useUploadQueue, formatBytes, titleFromFilename } from "@/lib/upload-queue";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -449,6 +449,7 @@ export default function VideosPage() {
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [broadcastFilter, setBroadcastFilter] = useState("all");
   // Source is always "local" — YouTube content lives in the YouTube Library page.
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [sortOrder, setSortOrder] = useState("newest");
@@ -1122,7 +1123,15 @@ export default function VideosPage() {
       return next;
     });
 
-  const currentPageIds = data?.videos?.map((v) => v.id) ?? [];
+  // Client-side broadcast-readiness filter applied after the server page is fetched.
+  // Operates on at most PAGE_SIZE (20) items so no performance concern.
+  const displayVideos = broadcastFilter === "all"
+    ? (data?.videos ?? [])
+    : (data?.videos ?? []).filter(
+        (v) => getBroadcastReadiness(v.videoSource, v.localVideoUrl, v.hlsMasterUrl) === broadcastFilter,
+      );
+
+  const currentPageIds = displayVideos.map((v) => v.id);
   const allOnPageSelected =
     currentPageIds.length > 0 && currentPageIds.every((id) => selectedIds.has(id));
   const someOnPageSelected = currentPageIds.some((id) => selectedIds.has(id));
@@ -1143,11 +1152,11 @@ export default function VideosPage() {
   const handleSearch = () => { setSearch(searchInput); setPage(1); setSelectedIds(new Set()); };
 
   const resetFilters = () => {
-    setSearch(""); setSearchInput(""); setStatusFilter("all");
+    setSearch(""); setSearchInput(""); setStatusFilter("all"); setBroadcastFilter("all");
     setCategoryFilter("all"); setSortOrder("newest"); setTagFilter(""); setPage(1);
     setSelectedIds(new Set());
   };
-  const hasActiveFilters = search || statusFilter !== "all" || categoryFilter !== "all" || sortOrder !== "newest" || tagFilter;
+  const hasActiveFilters = search || statusFilter !== "all" || broadcastFilter !== "all" || categoryFilter !== "all" || sortOrder !== "newest" || tagFilter;
 
   // ── Multi-file upload helpers ──────────────────────────────────────────────
 
@@ -1421,6 +1430,21 @@ export default function VideosPage() {
           </SelectContent>
         </Select>
 
+        {/* Broadcast readiness — client-side filter on current page */}
+        <Select value={broadcastFilter} onValueChange={(v) => { setBroadcastFilter(v); setSelectedIds(new Set()); }}>
+          <SelectTrigger className="h-8 text-sm w-44">
+            <SelectValue placeholder="Broadcast readiness" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All readiness</SelectItem>
+            <SelectItem value="mp4_and_hls">MP4 + HLS</SelectItem>
+            <SelectItem value="mp4_only">MP4 only</SelectItem>
+            <SelectItem value="hls_only">HLS only</SelectItem>
+            <SelectItem value="library_only">Library only (YouTube)</SelectItem>
+            <SelectItem value="not_ready">Not ready</SelectItem>
+          </SelectContent>
+        </Select>
+
         {/* Sort */}
         <Select value={sortOrder} onValueChange={(v) => { setSortOrder(v); setPage(1); setSelectedIds(new Set()); }}>
           <SelectTrigger className="h-8 text-sm w-40">
@@ -1604,23 +1628,32 @@ export default function VideosPage() {
                 </div>
               ))}
             </div>
-          ) : (data?.videos?.length ?? 0) === 0 ? (
+          ) : displayVideos.length === 0 ? (
             <div className="flex flex-col items-center gap-3 py-16 text-center">
               <Film size={36} className="text-muted-foreground/20" />
               <p className="font-medium">No videos found</p>
               <p className="text-sm text-muted-foreground">
-                {hasActiveFilters ? "Try adjusting your filters." : "Upload a video or drag files here to get started."}
+                {broadcastFilter !== "all"
+                  ? "No videos on this page match the selected broadcast readiness. Try a different filter or page."
+                  : hasActiveFilters
+                  ? "Try adjusting your filters."
+                  : "Upload a video or drag files here to get started."}
               </p>
               {!hasActiveFilters && (
                 <Button size="sm" onClick={() => setUploadOpen(true)} className="gap-1.5 mt-1">
                   <UploadCloud size={14} /> Upload Video
                 </Button>
               )}
+              {broadcastFilter !== "all" && (
+                <Button size="sm" variant="ghost" onClick={() => setBroadcastFilter("all")} className="gap-1 text-muted-foreground">
+                  Clear readiness filter
+                </Button>
+              )}
             </div>
           ) : (
             <div className="divide-y">
               {/* Select-all row header — shows only while data is present */}
-              {(data?.videos?.length ?? 0) > 0 && (
+              {displayVideos.length > 0 && (
                 <div className="flex items-center gap-3 px-4 py-2 bg-muted/20 border-b">
                   <Checkbox
                     checked={allOnPageSelected ? true : someOnPageSelected ? "indeterminate" : false}
@@ -1635,9 +1668,14 @@ export default function VideosPage() {
                       ? `${selectedIds.size} selected`
                       : "Select all on this page"}
                   </span>
+                  {broadcastFilter !== "all" && (data?.videos?.length ?? 0) > displayVideos.length && (
+                    <span className="text-xs text-muted-foreground ml-auto">
+                      {displayVideos.length} of {data!.videos.length} on this page
+                    </span>
+                  )}
                 </div>
               )}
-              {data!.videos.map((v) => (
+              {displayVideos.map((v) => (
                 <div key={v.id} className={`flex items-center gap-3 px-4 py-3 hover:bg-muted/30 transition-colors group ${selectedIds.has(v.id) ? "bg-primary/5" : ""}`}>
                   {/* Row checkbox */}
                   <Checkbox
