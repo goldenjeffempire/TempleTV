@@ -149,27 +149,93 @@ export async function buildApp(): Promise<FastifyInstance> {
   // production with that combination so the misconfiguration is loud.
   const wildcardOriginRaw = env.CORS_ORIGINS === "*";
   // When CORS_ORIGINS='*' arrives in a non-development environment, do NOT
-  // crash the server. Instead: log a severe error, clear the wildcard flag,
-  // and fall back to the APP_BASE_URL-derived safe origin so the server stays
-  // up while the operator fixes the configuration. Crashing on misconfiguration
-  // is strictly worse than degraded-but-running with a logged alert.
+  // crash the server. Instead: auto-derive a safe allowed-origin set from all
+  // available environment signals, log a severe error, and continue. This
+  // prevents the most common misconfiguration — no CORS_ORIGINS set, default
+  // '*' detected, old fallback only added APP_BASE_URL (which defaulted to
+  // http://localhost:5000), so every cross-origin request from
+  // admin.templetv.org.ng was blocked → fetch() threw → "Could not reach the
+  // server" for every user in production.
   let wildcardOrigin = wildcardOriginRaw;
   if (wildcardOriginRaw && env.NODE_ENV !== "development") {
-    const fallback = env.APP_BASE_URL
-      ? env.APP_BASE_URL.replace(/\/$/, "")
-      : "";
+    const fallbackOrigins: string[] = [];
+
+    // 1. APP_BASE_URL — skip if it is localhost/empty (that is the default and
+    //    should not be permitted cross-origin in production).
+    const appBase = env.APP_BASE_URL?.replace(/\/$/, "");
+    if (
+      appBase &&
+      !appBase.includes("localhost") &&
+      !appBase.includes("127.0.0.1")
+    ) {
+      fallbackOrigins.push(appBase);
+    }
+
+    // 2. Derive admin + wildcard origins from API_ORIGIN.
+    //    api.templetv.org.ng → admin.templetv.org.ng,
+    //                           templetv.org.ng,
+    //                           www.templetv.org.ng,
+    //                           *.templetv.org.ng
+    //    This is the key fix: as long as API_ORIGIN is set (which it must be
+    //    for broadcast to work at all), the admin SPA origin is auto-allowed
+    //    without requiring CORS_ORIGINS to be explicitly configured.
+    if (env.API_ORIGIN) {
+      const apiParsed = (() => {
+        try { return new URL(env.API_ORIGIN); } catch { return null; }
+      })();
+      if (apiParsed) {
+        const h = apiParsed.hostname;
+        if (h.startsWith("api.")) {
+          const rest = h.slice("api.".length); // e.g. "templetv.org.ng"
+          fallbackOrigins.push(`https://admin.${rest}`);
+          fallbackOrigins.push(`https://${rest}`);
+          fallbackOrigins.push(`https://www.${rest}`);
+          // *.templetv.org.ng matches every subdomain with one dot in it —
+          // parseCorsOrigin() converts this to a tight regex below.
+          fallbackOrigins.push(`https://*.${rest}`);
+        } else {
+          // Non-api.* origin: allow the hostname and its subdomains.
+          fallbackOrigins.push(`https://${h}`);
+          fallbackOrigins.push(`https://*.${h}`);
+        }
+      }
+    }
+
+    // 3. RENDER_EXTERNAL_URL — the Render-assigned <service>.onrender.com URL.
+    //    Auto-allowed so preview deploys work before a custom domain is added.
+    const renderExternal = process.env["RENDER_EXTERNAL_URL"];
+    if (renderExternal) {
+      fallbackOrigins.push(renderExternal.replace(/\/$/, ""));
+    }
+
+    // 4. REPLIT_DEV_DOMAIN — the proxied *.replit.app URL in Replit environments.
+    const replitDomain = process.env["REPLIT_DEV_DOMAIN"];
+    if (replitDomain) {
+      fallbackOrigins.push(`https://${replitDomain}`);
+    }
+
+    // De-duplicate before logging/using.
+    const unique = [...new Set(fallbackOrigins)];
+
     logger.error(
-      { fallbackOrigin: fallback || "(none — APP_BASE_URL unset)" },
+      {
+        fallbackOrigins: unique.length > 0
+          ? unique
+          : "(none — set API_ORIGIN or CORS_ORIGINS to fix cross-origin requests)",
+      },
       "CORS_ORIGINS='*' is set in a non-development environment — security misconfiguration. " +
       "Update the CORS_ORIGINS secret/env-var to an explicit comma-separated allowlist " +
       "(e.g. https://admin.templetv.org.ng,https://*.templetv.org.ng). " +
-      "Falling back to APP_BASE_URL-derived origin to avoid crashing.",
+      `Auto-derived ${unique.length} origin(s) as temporary fallback. ` +
+      "Set CORS_ORIGINS explicitly to silence this error and lock down the allowlist.",
     );
-    // Override: treat as a non-wildcard env with just APP_BASE_URL so the
-    // normal allowlist path runs below and auto-adds localhost origins.
+
     wildcardOrigin = false;
-    // Temporarily override the env value in-scope so split() below works.
-    (env as { CORS_ORIGINS: string }).CORS_ORIGINS = fallback;
+    // Override env.CORS_ORIGINS so the split() call below builds parsedOrigins
+    // from the auto-derived list. Joining with commas works because all
+    // entries are plain URLs or https://*.domain strings — parseCorsOrigin()
+    // handles the wildcard → RegExp conversion correctly.
+    (env as { CORS_ORIGINS: string }).CORS_ORIGINS = unique.join(",");
   }
   // F05: also warn loudly in development so the open wildcard is never silent.
   if (wildcardOrigin) {

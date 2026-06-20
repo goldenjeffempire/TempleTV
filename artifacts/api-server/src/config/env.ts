@@ -480,8 +480,10 @@ const Env = z.object({
     .default(false),
 
   // Base URL used to build clickable links in outbound emails.
-  // Must be set in production (e.g. https://temple.tv).
-  APP_BASE_URL: z.string().default("http://localhost:5000"),
+  // Must be set in production (e.g. https://templetv.org.ng).
+  // Default is empty so the CORS fallback in app.ts does not accidentally
+  // permit http://localhost:5000 when running in production without this set.
+  APP_BASE_URL: z.string().default(""),
 
   // ── Web Push / VAPID ─────────────────────────────────────────────────────
   // Required for browser (service worker) push notification delivery.
