@@ -21,12 +21,13 @@ import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
-import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { storage } from "../../infrastructure/storage.js";
 import { logger as rootLogger } from "../../infrastructure/logger.js";
+import { storagePaths } from "../../infrastructure/storage-paths.js";
+import { isDiskConstrained } from "../../infrastructure/disk-watchdog.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 // MP4-first broadcast policy: enqueueIfMissing is called in the faststart
@@ -259,7 +260,7 @@ export async function runFaststart(
   }
 
   const log = rootLogger.child({ module: "faststart", videoId, objectKey, skipStatusUpdate: options.skipStatusUpdate ?? false });
-  const scratchDir = path.join(os.tmpdir(), `faststart-${randomUUID()}`);
+  const scratchDir = path.join(storagePaths.scratch, `faststart-${randomUUID()}`);
   const inputPath = path.join(scratchDir, "input.mp4");
   const outputPath = path.join(scratchDir, "output.mp4");
   const startMs = Date.now();
@@ -300,6 +301,19 @@ export async function runFaststart(
       );
       return { elapsedMs: 0, outputSizeBytes: 0, durationSecs: null, skipped: true, skipReason: "hls_exists" };
     }
+  }
+
+  // Pre-flight: abort if the scratch partition is critically full. Faststart
+  // downloads the full source + writes the output (2× source size) — starting
+  // on an almost-full disk would guarantee an ENOSPC mid-write and leave a
+  // partial file in the scratch dir. The disk watchdog clears the flag once
+  // its emergency sweep recovers enough space.
+  if (isDiskConstrained()) {
+    log.warn(
+      { scratchPath: storagePaths.scratch },
+      "faststart: scratch partition constrained — skipping until disk pressure clears",
+    );
+    return { elapsedMs: 0, outputSizeBytes: 0, durationSecs: null, skipped: true, skipReason: "disk_constrained" };
   }
 
   try {

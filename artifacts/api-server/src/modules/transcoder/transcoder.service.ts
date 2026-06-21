@@ -2663,7 +2663,7 @@ export async function probeVideoMetadata(sourceObjectKey: string): Promise<Video
   };
   const s = storage();
   if (!s.enabled) return empty;
-  const tmpDir = path.join(os.tmpdir(), `meta-probe-${randomUUID()}`);
+  const tmpDir = path.join(storagePaths.scratch, `meta-probe-${randomUUID()}`);
   try {
     await mkdir(tmpDir, { recursive: true });
     const ext = path.extname(sourceObjectKey) || ".mp4";
@@ -2759,7 +2759,7 @@ export async function probeVideoMetadata(sourceObjectKey: string): Promise<Video
 export async function probeUploadedDuration(sourceObjectKey: string): Promise<number | null> {
   const s = storage();
   if (!s.enabled) return null;
-  const tmpDir = path.join(os.tmpdir(), `probe-${randomUUID()}`);
+  const tmpDir = path.join(storagePaths.scratch, `probe-${randomUUID()}`);
   try {
     await mkdir(tmpDir, { recursive: true });
     const ext = path.extname(sourceObjectKey) || ".mp4";
@@ -2812,7 +2812,7 @@ export async function probeUploadedContainerValidity(
 ): Promise<{ valid: boolean; unrecoverable?: boolean; kind?: string; error?: string }> {
   const s = storage();
   if (!s.enabled) return { valid: true };
-  const tmpDir = path.join(os.tmpdir(), `container-probe-${randomUUID()}`);
+  const tmpDir = path.join(storagePaths.scratch, `container-probe-${randomUUID()}`);
   try {
     await mkdir(tmpDir, { recursive: true });
     const extRaw = path.extname(objectKey).replace(/[^a-z0-9.]/gi, "");
@@ -2978,7 +2978,7 @@ export async function generateQuickThumbnail(
  * Returns null (non-fatal) if ffmpeg is unavailable or the conversion fails.
  */
 export async function normalizeThumbnailBuffer(input: Buffer): Promise<Buffer | null> {
-  const tmpDir = path.join(os.tmpdir(), `thumb-norm-${randomUUID()}`);
+  const tmpDir = path.join(storagePaths.scratch, `thumb-norm-${randomUUID()}`);
   try {
     await mkdir(tmpDir, { recursive: true });
     const srcPath = path.join(tmpDir, "input.jpg");

@@ -39,7 +39,7 @@
 
 import os from "node:os";
 import path from "node:path";
-import { access, mkdir, writeFile, unlink, constants } from "node:fs/promises";
+import { access, mkdir, readdir, rm, stat, writeFile, unlink, constants } from "node:fs/promises";
 import { logger } from "./logger.js";
 import { env } from "../config/env.js";
 
@@ -165,6 +165,64 @@ export async function ensureStorageDirectories(): Promise<void> {
       "transcoder and broadcast state persistence may be degraded; set STORAGE_PATH to a writable mount",
     );
   }
+}
+
+// ── Stale temp directory sweep ────────────────────────────────────────────────
+
+/**
+ * Directory name prefixes created by the API's own temp-file operations.
+ * All such dirs now resolve under storagePaths.scratch; this pattern is used
+ * both at startup (crash-orphan cleanup) and by the disk watchdog emergency
+ * sweep when the partition is critically full.
+ */
+const STALE_DIR_PATTERN = /^(faststart-|probe-|meta-probe-|container-probe-|thumb-norm-|thumb-|transcoder-job-)/;
+
+/**
+ * Sweep stale temp directories from storagePaths.scratch.
+ *
+ * Removes any subdirectory whose name matches STALE_DIR_PATTERN and whose
+ * mtime is older than maxAgeMs (default: 2 h for startup, 30 min for
+ * emergency disk-pressure sweeps triggered by the disk watchdog).
+ *
+ * Returns the count of directories removed.  Non-fatal: per-dir failures are
+ * swallowed so one stuck directory never prevents the rest from being cleaned.
+ */
+export async function sweepStaleTempDirs(opts: { maxAgeMs?: number } = {}): Promise<number> {
+  const { maxAgeMs = 2 * 60 * 60_000 } = opts;
+  const now = Date.now();
+  let removed = 0;
+
+  try {
+    const entries = await readdir(storagePaths.scratch, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (!STALE_DIR_PATTERN.test(entry.name)) continue;
+      const dirPath = path.join(storagePaths.scratch, entry.name);
+      try {
+        const info = await stat(dirPath);
+        const ageMs = now - info.mtimeMs;
+        if (ageMs < maxAgeMs) continue;
+        await rm(dirPath, { recursive: true, force: true });
+        removed++;
+        logger.info(
+          { dirPath, ageSecs: Math.round(ageMs / 1000) },
+          "[storage-paths] swept stale temp dir",
+        );
+      } catch {
+        /* per-dir failure — skip silently */
+      }
+    }
+  } catch {
+    /* scratch dir may not exist yet on first boot — non-fatal */
+  }
+
+  if (removed > 0) {
+    logger.info(
+      { removed, scratchPath: storagePaths.scratch },
+      "[storage-paths] stale temp dir sweep complete",
+    );
+  }
+  return removed;
 }
 
 /**

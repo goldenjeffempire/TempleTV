@@ -7,6 +7,7 @@ import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
 import { storagePaths } from "../../infrastructure/storage-paths.js";
+import { isDiskConstrained } from "../../infrastructure/disk-watchdog.js";
 import {
   transcodingQueueDepth,
   transcoderActiveJobCount,
@@ -1367,6 +1368,17 @@ class TranscoderDispatcher {
     // outages so healthy jobs don't burn retries against an infrastructure
     // failure that will resolve on its own within the cool-down window.
     if (this.storageCircuitOpenUntil > Date.now()) return { ran: false };
+    // Disk constrained — scratch partition is ≥ SCRATCH_ALERT_PERCENT full.
+    // Decline new jobs until the disk watchdog emergency sweep recovers space.
+    // This prevents an encode from writing gigabytes mid-job and crashing the
+    // process with ENOSPC when /tmp or the Render Disk is nearly full.
+    if (isDiskConstrained()) {
+      logger.warn(
+        { scratchPath: storagePaths.scratch },
+        "transcoder: scratch partition constrained — deferring new job until disk pressure clears",
+      );
+      return { ran: false };
+    }
 
     // Claim a job via the lease manager — atomically stamps lease_expires_at
     // and leased_by so dead workers can be detected and their jobs reclaimed.

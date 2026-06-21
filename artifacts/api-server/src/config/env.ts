@@ -865,6 +865,19 @@ const Env = z.object({
   UPLOAD_DIR: z.string().optional(),
   HLS_DIR: z.string().optional(),
   THUMBNAIL_DIR: z.string().optional(),
+
+  // ── Disk watchdog ──────────────────────────────────────────────────────────
+  // Periodic disk-usage monitor for the scratch partition (storagePaths.scratch).
+  //
+  //   DISK_WATCHDOG_INTERVAL_MS — how often to sample statfs (default 60 s).
+  //   SCRATCH_WARN_PERCENT      — log warn when scratch usage ≥ this % (default 70).
+  //   SCRATCH_ALERT_PERCENT     — log error + fire ops-alert + emergency stale-dir
+  //                               sweep when ≥ this % (default 85).
+  //                               Also marks isDiskConstrained()=true so
+  //                               transcoder/faststart pre-flight can abort.
+  DISK_WATCHDOG_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+  SCRATCH_WARN_PERCENT:  z.coerce.number().int().min(1).max(99).default(70),
+  SCRATCH_ALERT_PERCENT: z.coerce.number().int().min(1).max(99).default(85),
 });
 
 export type AppEnv = z.infer<typeof Env>;

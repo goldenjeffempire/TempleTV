@@ -24,7 +24,8 @@ import { startMemoryWatchdog, stopMemoryWatchdog } from "./infrastructure/memory
 import { startEventLoopLagMonitor, stopEventLoopLagMonitor } from "./infrastructure/event-loop-lag.js";
 import { installDbPoolHealthMonitor, uninstallDbPoolHealthMonitor } from "./infrastructure/db-pool-health.js";
 import { markShuttingDown, markStartupComplete } from "./infrastructure/shutdown-flag.js";
-import { ensureStorageDirectories, logStoragePathConfig } from "./infrastructure/storage-paths.js";
+import { ensureStorageDirectories, logStoragePathConfig, sweepStaleTempDirs } from "./infrastructure/storage-paths.js";
+import { startDiskWatchdog, stopDiskWatchdog } from "./infrastructure/disk-watchdog.js";
 import { runHlsStartupIntegrityScan } from "./modules/broadcast-v2/engine/hls-startup-integrity.js";
 import { schema } from "./infrastructure/db.js";
 import { hashPassword } from "./modules/auth/password.js";
@@ -341,6 +342,11 @@ async function main() {
   // write permissions. Non-fatal — services have graceful-degradation paths.
   logStoragePathConfig();
   await ensureStorageDirectories();
+  // Sweep crash-orphaned temp dirs left by a previous process that was killed
+  // before its finally-block could clean up. Covers faststart-*, probe-*,
+  // meta-probe-*, container-probe-*, thumb-norm-* and transcoder-job-* dirs
+  // that now all resolve under storagePaths.scratch instead of os.tmpdir().
+  await sweepStaleTempDirs({ maxAgeMs: 2 * 60 * 60_000 });
 
   logger.info({ runMode: mode }, "process starting");
   // Log the effective V8 heap limit immediately so production operators can
@@ -1101,6 +1107,10 @@ async function main() {
     // Monitor event-loop lag so CPU starvation on constrained hosts (0.1 vCPU
     // Render free tier) is visible before health-check timeouts trigger SIGTERM.
     startEventLoopLagMonitor();
+    // Monitor scratch partition disk usage; fires ops-alert + emergency stale-dir
+    // sweep when > SCRATCH_ALERT_PERCENT (default 85 %). Exports isDiskConstrained()
+    // for transcoder / faststart pre-flight gates.
+    startDiskWatchdog();
     // Monitor pg connection pool utilization; emits ops-alert SSE on saturation.
     installDbPoolHealthMonitor();
     logger.info({ port: env.PORT }, "API ready — http://0.0.0.0:" + env.PORT);
@@ -1283,6 +1293,7 @@ async function main() {
       stopKeepAlive();
       stopMemoryWatchdog();
       stopEventLoopLagMonitor();
+      stopDiskWatchdog();
       uninstallDbPoolHealthMonitor();
       // Stop the viewer-slope monitor (1-min setInterval) so it does not
       // keep the event loop alive after all other subsystems have shut down.
