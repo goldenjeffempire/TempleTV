@@ -21,7 +21,7 @@ import {
 import { requireAuth } from "../../../middleware/auth.js";
 import { broadcastService } from "../../broadcast/broadcast.service.js";
 import { scanLibraryAndEnqueue, listMissingFromQueue } from "../../broadcast/auto-enqueue.service.js";
-import { markBadUrl, clearAllBadUrls, clearBadUrl, getItemsHealth, getBadUrlStats, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl, getUrlBadSourceSetsSize } from "../repository/queue.repo.js";
+import { markBadUrl, clearAllBadUrls, clearBadUrl, getItemsHealth, getBadUrlStats, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl, getUrlBadSourceSetsSize, persistBadUrlCache } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
@@ -313,6 +313,7 @@ export async function restRoutes(app: FastifyInstance) {
   // Defined once at the top of the function (not module scope) to avoid
   // the temporal dead zone when referenced by the first routes registered.
   const _400err = z.object({ error: z.string() });
+  const _401err = z.object({ error: z.string() });
   const _429err = z.object({ error: z.string() });
   const _200ok = z.object({ ok: z.literal(true), duplicate: z.boolean().optional() });
   const _200okSeq = z.object({
@@ -1446,12 +1447,17 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   app.post("/clear-bad-urls", {
     ...adminGuard,
     bodyLimit: 1048576,
-    schema: { body: StopOverrideCommand, response: { 200: _200okSeq, 400: _400err, 429: _429err } },
+    schema: { body: StopOverrideCommand, response: { 200: _200okSeq, 400: _400err, 401: _401err, 429: _429err } },
     config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
   }, async (req, _reply) => {
     const body = req.body as z.infer<typeof StopOverrideCommand>;
     if (!checkIdempotency(body.idempotencyKey)) return { ok: true, sequence: broadcastOrchestrator.getSequence(), duplicate: true };
     clearAllBadUrls();
+    // Persist cleared state to DB immediately so the next process restart
+    // doesn't re-hydrate the old blocked URLs from broadcast_runtime_state.
+    void persistBadUrlCache("main").catch((err: unknown) =>
+      logger.warn({ err }, "[broadcast-v2] clear-bad-urls: persist failed (non-fatal)"),
+    );
     // Reload the orchestrator so it immediately re-evaluates all items now
     // that the cache is empty — without this the orchestrator's next drift-
     // poll would be up to 10 s away and the operator would see no change.
@@ -1503,6 +1509,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
             duplicate: z.boolean().optional(),
           }),
           400: _400err,
+          401: _401err,
           429: _429err,
         },
       },
@@ -1519,6 +1526,11 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
 
       // Step 2: Clear bad-URL cache + skip counters (clearAllBadUrls resets counts too).
       clearAllBadUrls();
+      // Persist cleared state immediately so the next restart doesn't re-hydrate
+      // the old blocked URLs from broadcast_runtime_state.bad_url_cache.
+      void persistBadUrlCache("main").catch((err: unknown) =>
+        logger.warn({ err }, "[broadcast-v2] revalidate-sources: persist failed (non-fatal)"),
+      );
 
       // Step 3: Reset queue hash so reloadInner() re-resolves everything.
       broadcastOrchestrator.resetQueueHash();
