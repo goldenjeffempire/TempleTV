@@ -493,8 +493,6 @@ export default function PlayerScreen() {
   const playerHeight = isLandscape
     ? height
     : Math.min(Math.round(width / videoAspectRatio), MAX_PORTRAIT_HEIGHT);
-  const playerControlTop = Math.max(insets.top, 8) + 10;
-
   const handleAspectRatioChange = useCallback((ratio: number) => {
     // Clamp to sane range — ignore garbage values from corrupt streams.
     if (ratio > 0.1 && ratio < 10) setVideoAspectRatio(ratio);
@@ -874,6 +872,33 @@ export default function PlayerScreen() {
     <View style={[styles.root, { backgroundColor: c.background }]}>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
       <StatusBar barStyle="light-content" />
+
+      {/* ── Page header: back button + title ───────────────────────── */}
+      <View
+        style={[
+          styles.pageHeader,
+          { paddingTop: insets.top + 8, backgroundColor: c.background, borderBottomColor: c.border },
+        ]}
+      >
+        <Pressable
+          onPress={() => router.canGoBack() ? router.back() : router.replace("/")}
+          style={[styles.pageHeaderBack, { backgroundColor: c.card, borderColor: c.border }]}
+          hitSlop={12}
+          accessibilityLabel="Go back"
+          accessibilityRole="button"
+        >
+          <Feather name="arrow-left" size={18} color={c.foreground} />
+        </Pressable>
+        <Text
+          style={[styles.pageHeaderTitle, { color: c.foreground }]}
+          numberOfLines={2}
+          accessibilityRole="header"
+        >
+          {isLive ? (liveTitle || "Live Broadcast") : title}
+        </Text>
+        {isLive && <LiveBadge size="small" />}
+      </View>
+
       <ScrollView
         showsVerticalScrollIndicator={false}
         bounces
@@ -947,28 +972,6 @@ export default function PlayerScreen() {
               style={StyleSheet.absoluteFill}
               resizeMode="contain"
             />
-          )}
-
-          {/* Back arrow */}
-          <Pressable
-            onPress={() =>
-              router.canGoBack()
-                ? router.back()
-                : router.replace("/")
-            }
-            style={[styles.backBtn, { top: playerControlTop }]}
-            hitSlop={16}
-            accessibilityLabel="Go back"
-            accessibilityRole="button"
-          >
-            <Feather name="arrow-left" size={18} color="#fff" />
-          </Pressable>
-
-          {/* LIVE badge */}
-          {isLive && (
-            <View style={[styles.liveBadgePos, { top: playerControlTop + 2 }]}>
-              <LiveBadge />
-            </View>
           )}
 
           {/* Fullscreen expand — hidden for YouTube (has its own native button) */}
@@ -1097,14 +1100,6 @@ export default function PlayerScreen() {
                     </View>
                   )}
 
-                  {/* Program / channel name — live-updating from V2 snapshot */}
-                  <Text
-                    style={[styles.liveChannelName, { color: c.foreground }]}
-                    numberOfLines={2}
-                  >
-                    {liveTitle || "Live Broadcast"}
-                  </Text>
-
                   {/* Sub-row: badge + ministry + quality badge + viewer count */}
                   <View style={styles.liveSubRow}>
                     <LiveBadge size="small" />
@@ -1178,13 +1173,6 @@ export default function PlayerScreen() {
             </View>
           ) : (
             <>
-              <Text
-                style={[styles.videoTitle, { color: c.foreground }]}
-                numberOfLines={3}
-                accessibilityRole="header"
-              >
-                {title}
-              </Text>
               <View style={styles.metaRow}>
                 <Text style={[styles.preacherText, { color: c.mutedForeground }]} numberOfLines={1}>
                   {preacher}
@@ -1628,6 +1616,31 @@ export default function PlayerScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+
+  pageHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingBottom: 10,
+    gap: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  pageHeaderBack: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  pageHeaderTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: "700",
+    lineHeight: 22,
+    letterSpacing: -0.2,
+  },
 
   playerShell: { width: "100%", backgroundColor: "#000", position: "relative", overflow: "hidden" },
   backBtn: { position: "absolute", left: 12, zIndex: 20, width: 38, height: 38, borderRadius: 19, backgroundColor: "rgba(0,0,0,0.50)", alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.4, shadowRadius: 4, elevation: 5 },
