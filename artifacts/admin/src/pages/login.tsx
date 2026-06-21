@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, useRef, type FormEvent } from "react";
 import { useAuth } from "@/contexts/use-auth";
 import { HttpError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -6,7 +6,21 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle, Loader2, Eye, EyeOff, Radio, ShieldCheck, ArrowLeft } from "lucide-react";
+import { AlertCircle, Loader2, Eye, EyeOff, Radio, ShieldCheck, ArrowLeft, Wifi } from "lucide-react";
+
+// How many times to silently retry a network-level failure before surfacing
+// an error. A graceful API restart (memory-watchdog SIGTERM → drain → boot)
+// takes ~30 s on the Render free tier. 4 retries × 8 s delay = 32 s window,
+// enough to cover one full restart cycle without the user seeing an error.
+const MAX_NETWORK_RETRIES = 4;
+const RETRY_DELAY_MS = 8000;
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const id = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => { clearTimeout(id); reject(new DOMException("aborted", "AbortError")); }, { once: true });
+  });
+}
 
 export default function LoginPage() {
   const { login, mfaPendingToken, verifyMfa, clearMfaPending } = useAuth();
@@ -23,29 +37,89 @@ export default function LoginPage() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Transient "connecting…" message shown while retrying after a network error
+  const [connectingMsg, setConnectingMsg] = useState<string | null>(null);
+
+  // Lets the user cancel an in-progress retry sequence by pressing Sign in again
+  const abortRef = useRef<AbortController | null>(null);
 
   // ── Step 1: Credentials ────────────────────────────────────────────────────
 
   const handleCredentials = async (e: FormEvent) => {
     e.preventDefault();
     if (!email.trim() || !password) return;
+
+    // Cancel any previous in-flight retry
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+
     setLoading(true);
     setError(null);
-    try {
-      await login(email.trim(), password);
-      // If mfaPendingToken is now set in auth context, the component re-renders
-      // and shows the MFA step. If login succeeded fully, the router redirects.
-    } catch (err) {
-      if (err instanceof HttpError) {
-        if (err.status === 401) setError("Invalid email or password.");
-        else if (err.status === 403) setError(err.message);
-        else setError(err.message || "Login failed. Please try again.");
-      } else {
-        setError("Unable to reach the server. Please check your connection.");
+    setConnectingMsg(null);
+
+    let lastNetworkError: HttpError | null = null;
+
+    for (let attempt = 0; attempt <= MAX_NETWORK_RETRIES; attempt++) {
+      if (ac.signal.aborted) break;
+
+      if (attempt > 0) {
+        // Show warm feedback during the wait — never show a hard error for
+        // transient network issues while retries are still in progress.
+        const remaining = MAX_NETWORK_RETRIES - attempt + 1;
+        setConnectingMsg(
+          attempt === 1
+            ? "Server is warming up, connecting…"
+            : `Still connecting… (${remaining} attempt${remaining !== 1 ? "s" : ""} left)`,
+        );
+        try {
+          await sleep(RETRY_DELAY_MS, ac.signal);
+        } catch {
+          break; // aborted by user re-submit or unmount
+        }
+        setConnectingMsg(null);
+        if (ac.signal.aborted) break;
       }
-    } finally {
-      setLoading(false);
+
+      try {
+        await login(email.trim(), password);
+        // Success — router redirect handled by auth context
+        return;
+      } catch (err) {
+        if (err instanceof HttpError) {
+          if (err.status === 0) {
+            // Pure network failure — retry silently up to MAX_NETWORK_RETRIES
+            lastNetworkError = err;
+            continue;
+          }
+          // Definitive server response — stop retrying immediately
+          if (err.status === 401) {
+            setError("Invalid email or password.");
+          } else if (err.status === 403) {
+            setError(err.message);
+          } else {
+            setError(err.message || "Login failed. Please try again.");
+          }
+          lastNetworkError = null;
+          break;
+        } else {
+          // Unexpected JS error (not a network issue)
+          setError("An unexpected error occurred. Please refresh and try again.");
+          lastNetworkError = null;
+          break;
+        }
+      }
     }
+
+    // All retries exhausted on network errors
+    if (lastNetworkError) {
+      setError(
+        "Unable to reach the server. The service may be temporarily unavailable — please wait a moment and try again.",
+      );
+    }
+
+    setConnectingMsg(null);
+    setLoading(false);
   };
 
   // ── Step 2: TOTP verification ──────────────────────────────────────────────
@@ -184,10 +258,21 @@ export default function LoginPage() {
             </CardHeader>
             <CardContent>
               <form onSubmit={handleCredentials} className="space-y-4">
+                {/* Hard error — shown only after all retries are exhausted */}
                 {error && (
                   <Alert variant="destructive">
                     <AlertCircle className="h-4 w-4" />
                     <AlertDescription>{error}</AlertDescription>
+                  </Alert>
+                )}
+
+                {/* Soft connecting state — shown during network-error retries */}
+                {connectingMsg && !error && (
+                  <Alert className="border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/40">
+                    <Wifi className="h-4 w-4 text-blue-500 animate-pulse" />
+                    <AlertDescription className="text-blue-700 dark:text-blue-300">
+                      {connectingMsg}
+                    </AlertDescription>
                   </Alert>
                 )}
 
@@ -232,7 +317,9 @@ export default function LoginPage() {
 
                 <Button type="submit" className="w-full" disabled={loading || !email || !password}>
                   {loading ? (
-                    <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Signing in…</>
+                    <><Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      {connectingMsg ? "Connecting…" : "Signing in…"}
+                    </>
                   ) : (
                     "Sign in"
                   )}
