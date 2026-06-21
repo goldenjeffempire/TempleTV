@@ -14,8 +14,8 @@
     "react": { "optional": true }
   },
   "devDependencies": {
-    "@types/react": "catalog:",
-    "react": "catalog:"
+    "@types/react": "19.2.14",
+    "react": "19.1.0"
   },
   "main": "./src/index.ts",
   "types": "./src/index.ts",

@@ -525,17 +525,17 @@ importers:
         specifier: ^1.3.1
         version: 1.3.1
       '@workspace/api-client-react':
-        specifier: workspace:*
-        version: link:../../lib/api-client-react
+        specifier: file:./vendor/api-client-react
+        version: file:artifacts/mobile/vendor/api-client-react(@tanstack/react-query@5.90.21(react@19.1.0))(react@19.1.0)
       '@workspace/broadcast-sync':
-        specifier: workspace:*
-        version: link:../../lib/broadcast-sync
+        specifier: file:./vendor/broadcast-sync
+        version: file:artifacts/mobile/vendor/broadcast-sync(react@19.1.0)
       '@workspace/broadcast-types':
-        specifier: workspace:*
-        version: link:../../lib/broadcast-types
+        specifier: file:./vendor/broadcast-types
+        version: file:artifacts/mobile/vendor/broadcast-types
       '@workspace/player-core':
-        specifier: workspace:*
-        version: link:../../lib/player-core
+        specifier: file:./vendor/player-core
+        version: file:artifacts/mobile/vendor/player-core(react@19.1.0)
       babel-plugin-react-compiler:
         specifier: ^19.0.0-beta-e993439-20250117
         version: 19.0.0-beta-ebf51a3-20250411
@@ -4457,6 +4457,31 @@ packages:
     engines: {node: ^20.19.0 || >=22.12.0}
     peerDependencies:
       vite: '>=7.3.2'
+
+  '@workspace/api-client-react@file:artifacts/mobile/vendor/api-client-react':
+    resolution: {directory: artifacts/mobile/vendor/api-client-react, type: directory}
+    peerDependencies:
+      '@tanstack/react-query': ^5.0.0
+      react: '>=18'
+
+  '@workspace/api-zod@file:artifacts/mobile/vendor/api-zod':
+    resolution: {directory: artifacts/mobile/vendor/api-zod, type: directory}
+
+  '@workspace/broadcast-sync@file:artifacts/mobile/vendor/broadcast-sync':
+    resolution: {directory: artifacts/mobile/vendor/broadcast-sync, type: directory}
+    peerDependencies:
+      react: '>=18.0.0'
+
+  '@workspace/broadcast-types@file:artifacts/mobile/vendor/broadcast-types':
+    resolution: {directory: artifacts/mobile/vendor/broadcast-types, type: directory}
+
+  '@workspace/player-core@file:artifacts/mobile/vendor/player-core':
+    resolution: {directory: artifacts/mobile/vendor/player-core, type: directory}
+    peerDependencies:
+      react: '*'
+    peerDependenciesMeta:
+      react:
+        optional: true
 
   '@xmldom/xmldom@0.9.10':
     resolution: {integrity: sha512-A9gOqLdi6cV4ibazAjcQufGj0B1y/vDqYrcuP6d/6x8P27gRS8643Dj9o1dEKtB6O7fwxb2FgBmJS2mX7gpvdw==}
@@ -12488,6 +12513,27 @@ snapshots:
       vite: 8.0.10(@types/node@25.3.5)(esbuild@0.27.3)(jiti@2.6.1)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3)
     transitivePeerDependencies:
       - supports-color
+
+  '@workspace/api-client-react@file:artifacts/mobile/vendor/api-client-react(@tanstack/react-query@5.90.21(react@19.1.0))(react@19.1.0)':
+    dependencies:
+      '@tanstack/react-query': 5.90.21(react@19.1.0)
+      '@workspace/api-zod': file:artifacts/mobile/vendor/api-zod
+      react: 19.1.0
+
+  '@workspace/api-zod@file:artifacts/mobile/vendor/api-zod':
+    dependencies:
+      zod: 3.25.76
+
+  '@workspace/broadcast-sync@file:artifacts/mobile/vendor/broadcast-sync(react@19.1.0)':
+    dependencies:
+      '@workspace/broadcast-types': file:artifacts/mobile/vendor/broadcast-types
+      react: 19.1.0
+
+  '@workspace/broadcast-types@file:artifacts/mobile/vendor/broadcast-types': {}
+
+  '@workspace/player-core@file:artifacts/mobile/vendor/player-core(react@19.1.0)':
+    optionalDependencies:
+      react: 19.1.0
 
   '@xmldom/xmldom@0.9.10': {}
 

@@ -20,7 +20,7 @@
     "react": ">=18"
   },
   "devDependencies": {
-    "@tanstack/react-query": "catalog:",
-    "@types/react": "catalog:"
+    "@tanstack/react-query": "^5.90.21",
+    "@types/react": "19.2.14"
   }
 }
