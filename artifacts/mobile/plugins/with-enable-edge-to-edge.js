@@ -12,8 +12,10 @@
 // into the generated MainActivity.kt so Google Play no longer flags deprecated
 // edge-to-edge API usage for apps targeting API 35+.
 //
-// Works alongside with-edge-to-edge.js which retains only the non-deprecated
-// theme items (windowLayoutInDisplayCutoutMode, windowOptOutEdgeToEdgeEnforcement).
+// Works alongside with-edge-to-edge.js which:
+//   • retains android:windowLayoutInDisplayCutoutMode="always" (still valid in API 36)
+//   • strips android:windowOptOutEdgeToEdgeEnforcement (deprecated in API 36)
+//   • strips android:statusBarColor / android:navigationBarColor (deprecated in API 35)
 
 const { withMainActivity } = require("@expo/config-plugins");
 
