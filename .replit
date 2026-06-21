@@ -1,4 +1,4 @@
-modules = ["bash", "web", "nodejs-22", "python-3.11", "postgresql-16"]
+modules = ["nodejs-20", "bash", "web"]
 
 [deployment]
 router = "application"
@@ -35,7 +35,7 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "PORT=5000 pnpm --filter @workspace/admin run dev"
+args = "export PATH=\"/home/runner/workspace/node_modules/.bin:$PATH\" && PORT=5000 pnpm --filter @workspace/admin run dev"
 waitForPort = 5000
 
 [[workflows.workflow]]
@@ -47,7 +47,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "PORT=8080 node --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
+args = "export PATH=\"/home/runner/workspace/node_modules/.bin:$PATH\" && PORT=8080 node --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
 waitForPort = 8080
 
 [agent]
