@@ -1,0 +1,49 @@
+{
+  "name": "@workspace/player-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "echo 'vitest not available in Replit environment'",
+    "test:watch": "echo 'vitest not available in Replit environment'"
+  },
+  "peerDependencies": {
+    "react": "*"
+  },
+  "peerDependenciesMeta": {
+    "react": { "optional": true }
+  },
+  "devDependencies": {
+    "@types/react": "catalog:",
+    "react": "catalog:"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "workspace": "./src/index.ts",
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./react": {
+      "workspace": "./src/react.ts",
+      "types": "./src/react.ts",
+      "default": "./src/react.ts"
+    },
+    "./react-native": {
+      "workspace": "./src/react-native.ts",
+      "types": "./src/react-native.ts",
+      "default": "./src/react-native.ts"
+    },
+    "./adapters/web": {
+      "workspace": "./src/adapters/web.ts",
+      "types": "./src/adapters/web.ts",
+      "default": "./src/adapters/web.ts"
+    },
+    "./adapters/mobile": {
+      "workspace": "./src/adapters/mobile.ts",
+      "types": "./src/adapters/mobile.ts",
+      "default": "./src/adapters/mobile.ts"
+    }
+  }
+}

@@ -1,21 +1,222 @@
 {
   "cli": {
-    "version": ">= 19.0.8",
-    "appVersionSource": "remote"
+    "version": ">= 10.0.0",
+    "appVersionSource": "local",
+    "requireCommit": false,
+    "promptToConfigurePushNotifications": false
   },
   "build": {
     "development": {
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "node": "22.14.0",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleDebug"
+      },
+      "ios": {
+        "simulator": true,
+        "buildConfiguration": "Debug"
+      },
+      "env": {
+        "APP_ENV": "development",
+        "EXPO_PUBLIC_API_URL": "http://10.0.2.2:8080",
+        "NODE_OPTIONS": "--max-old-space-size=6144"
+      }
+    },
+    "development-device": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "node": "22.14.0",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleDebug"
+      },
+      "ios": {
+        "simulator": false,
+        "buildConfiguration": "Debug"
+      },
+      "env": {
+        "APP_ENV": "development",
+        "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng",
+        "NODE_OPTIONS": "--max-old-space-size=6144"
+      }
     },
     "preview": {
-      "distribution": "internal"
+      "distribution": "internal",
+      "channel": "preview",
+      "credentialsSource": "remote",
+      "node": "22.14.0",
+      "android": {
+        "buildType": "apk",
+        "resourceClass": "medium"
+      },
+      "ios": {
+        "resourceClass": "m1-medium",
+        "buildConfiguration": "Release"
+      },
+      "env": {
+        "APP_ENV": "staging",
+        "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng",
+        "NODE_OPTIONS": "--max-old-space-size=8192",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true",
+        "EXPO_PUBLIC_SENTRY_DSN": "https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504"
+      }
+    },
+    "staging": {
+      "distribution": "internal",
+      "channel": "staging",
+      "credentialsSource": "remote",
+      "node": "22.14.0",
+      "android": {
+        "buildType": "apk",
+        "resourceClass": "medium"
+      },
+      "ios": {
+        "resourceClass": "m1-medium",
+        "buildConfiguration": "Release"
+      },
+      "env": {
+        "APP_ENV": "staging",
+        "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng",
+        "NODE_OPTIONS": "--max-old-space-size=8192",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true",
+        "EXPO_PUBLIC_SENTRY_DSN": "https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504"
+      }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "distribution": "store",
+      "channel": "production",
+      "credentialsSource": "remote",
+      "node": "22.14.0",
+      "ios": {
+        "resourceClass": "m1-medium",
+        "buildConfiguration": "Release"
+      },
+      "env": {
+        "APP_ENV": "production",
+        "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng",
+        "NODE_OPTIONS": "--max-old-space-size=8192",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true",
+        "EXPO_PUBLIC_SENTRY_DSN": "https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504"
+      }
+    },
+    "production-ios": {
+      "autoIncrement": true,
+      "distribution": "store",
+      "channel": "production",
+      "credentialsSource": "remote",
+      "node": "22.14.0",
+      "ios": {
+        "resourceClass": "m1-medium",
+        "buildConfiguration": "Release"
+      },
+      "env": {
+        "APP_ENV": "production",
+        "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng",
+        "NODE_OPTIONS": "--max-old-space-size=8192",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true",
+        "EXPO_PUBLIC_SENTRY_DSN": "https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504"
+      }
+    },
+    "production-android": {
+      "autoIncrement": false,
+      "distribution": "store",
+      "channel": "production",
+      "credentialsSource": "local",
+      "node": "22.14.0",
+      "pnpm": "10.26.1",
+      "android": {
+        "buildType": "app-bundle",
+        "resourceClass": "medium"
+      },
+      "env": {
+        "APP_ENV": "production",
+        "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng",
+        "NODE_OPTIONS": "--max-old-space-size=8192",
+        "METRO_MAX_WORKERS": "1",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true",
+        "EXPO_PUBLIC_SENTRY_DSN": "https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504"
+      }
+    },
+    "firetv": {
+      "autoIncrement": true,
+      "channel": "firetv",
+      "credentialsSource": "remote",
+      "node": "22.14.0",
+      "android": {
+        "buildType": "apk",
+        "resourceClass": "medium"
+      },
+      "env": {
+        "APP_ENV": "production",
+        "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng",
+        "EXPO_PUBLIC_PLATFORM": "firetv",
+        "NODE_OPTIONS": "--max-old-space-size=8192",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
+      }
+    },
+    "androidtv": {
+      "autoIncrement": true,
+      "channel": "androidtv",
+      "credentialsSource": "remote",
+      "node": "22.14.0",
+      "android": {
+        "buildType": "app-bundle",
+        "resourceClass": "medium"
+      },
+      "env": {
+        "APP_ENV": "production",
+        "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng",
+        "EXPO_PUBLIC_PLATFORM": "androidtv",
+        "NODE_OPTIONS": "--max-old-space-size=8192",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
+      }
+    },
+    "appletv": {
+      "autoIncrement": true,
+      "channel": "appletv",
+      "credentialsSource": "remote",
+      "node": "22.14.0",
+      "ios": {
+        "resourceClass": "m1-medium",
+        "buildConfiguration": "Release",
+        "scheme": "TempleTv-tvOS"
+      },
+      "env": {
+        "APP_ENV": "production",
+        "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng",
+        "EXPO_PUBLIC_PLATFORM": "appletv",
+        "NODE_OPTIONS": "--max-old-space-size=8192",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
+      }
     }
   },
   "submit": {
-    "production": {}
+    "production": {
+      "android": {
+        "serviceAccountKeyPath": "./google-service-account.json",
+        "track": "internal",
+        "releaseStatus": "completed",
+        "changesNotSentForReview": true
+      },
+      "ios": {
+        "bundleIdentifier": "com.templetv.app",
+        "ascApiKeyPath": "/tmp/asc-api-key.p8"
+      }
+    },
+    "staging": {
+      "android": {
+        "serviceAccountKeyPath": "./google-service-account.json",
+        "track": "internal",
+        "releaseStatus": "draft",
+        "changesNotSentForReview": true
+      },
+      "ios": {
+        "bundleIdentifier": "com.templetv.app",
+        "ascApiKeyPath": "/tmp/asc-api-key.p8"
+      }
+    }
   }
 }
