@@ -146,7 +146,7 @@ class OrphanCleanupWorkerImpl {
         try {
           await db
             .update(q)
-            .set({ isActive: false })
+            .set({ isActive: false, validatorDeactivatedReason: "orphan_cleanup_deleted_video" })
             .where(inArray(q.id, ids));
           deactivatedCount = candidates.length;
           logger.warn(

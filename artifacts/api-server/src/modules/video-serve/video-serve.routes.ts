@@ -77,6 +77,16 @@ class HlsSegmentLru {
 
   get enabled() { return this.maxBytes > 0; }
 
+  /**
+   * Returns true if a segment of this byte length can be written to the cache.
+   * Used by the route handler to decide whether to buffer or stream directly:
+   * buffering a segment that would immediately be rejected by write() wastes
+   * peak RSS equal to the full segment size with no caching benefit.
+   */
+  canCache(byteLength: number): boolean {
+    return this.enabled && byteLength <= this.maxEntryBytes;
+  }
+
   read(key: string): { data: Buffer; ct: string } | null {
     if (!this.enabled) return null;
     const entry = this.map.get(key);
@@ -1102,6 +1112,49 @@ export async function videoServeRoutes(app: FastifyInstance) {
       // For range requests (handled above) we already returned early; this branch
       // only executes for full-segment non-range fetches and manifests (A1).
       const contentType = obj.contentType ?? "video/mp2t";
+
+      // A6-fast: Streaming bypass for oversized segments.
+      //
+      // When the storage layer already knows the segment size (contentLength is
+      // set) and that size exceeds the LRU per-entry cap, buffering the entire
+      // segment into a `chunks[]` array just for `hlsSegments().write()` to
+      // silently reject it wastes peak RSS equal to the full segment length —
+      // up to 16 MiB of unnecessary heap pressure per concurrent request.
+      //
+      // We detect this early using `canCache()` (which mirrors write()'s guard)
+      // and stream directly from the DB async-generator instead.  The caller
+      // still gets full Cache-Control / CORS headers; only the in-process LRU
+      // cache is skipped (X-Cache: MISS as usual).
+      //
+      // Typical HLS segments (250 KB – 4 MB) are far below the 16 MB cap for
+      // the default 64 MB cache, so this path only fires for unusually large
+      // segments (4K / very high bitrate content or misconfigured transcoders).
+      if (obj.contentLength && !hlsSegments().canCache(obj.contentLength)) {
+        req.raw.once("close", () => { try { obj.body.destroy(); } catch { /* ignore */ } });
+        obj.body.on("error", (e) => {
+          const code = (e as NodeJS.ErrnoException).code ?? "";
+          if (code === "ERR_STREAM_DESTROYED" || code === "ECONNRESET" || code === "ERR_STREAM_PREMATURE_CLOSE") return;
+          req.log.debug({ err: e, videoId, wildcard }, "[hls-proxy] oversized segment stream error");
+        });
+        return reply
+          .header("Content-Type", contentType)
+          .header("Content-Length", String(obj.contentLength))
+          .header("Cache-Control", "public, max-age=604800, immutable")
+          .header("CDN-Cache-Control", "max-age=604800, immutable")
+          .header("Surrogate-Key", `hls hls-${videoId}`)
+          .header("Cache-Tag", `hls,hls-${videoId}`)
+          .header("Accept-Ranges", "bytes")
+          .header("Access-Control-Allow-Origin", "*")
+          .header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+          .header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+          .header("Cross-Origin-Resource-Policy", "cross-origin")
+          .header("Timing-Allow-Origin", "*")
+          .header("X-Accel-Buffering", "no")
+          .header("X-Cache", "MISS")
+          .header("X-Queue-Depth", String(hlsConcurrent))
+          .send(obj.body);
+      }
+
       // Collect the body stream into a Buffer for caching.  Individual .ts
       // segments are 250 KB–4 MB so the memory overhead is bounded and brief
       // (data is released once reply.send() drains the TCP write buffer).
