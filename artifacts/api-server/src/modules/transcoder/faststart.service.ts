@@ -181,7 +181,7 @@ export interface FaststartResult {
   /** True when faststart was intentionally skipped (check skipReason). */
   skipped?: boolean;
   /** Machine-readable reason when skipped=true. */
-  skipReason?: "hls_exists";
+  skipReason?: "hls_exists" | "disk_constrained" | "memory_constrained";
 }
 
 export interface FaststartOptions {
@@ -314,6 +314,25 @@ export async function runFaststart(
       "faststart: scratch partition constrained — skipping until disk pressure clears",
     );
     return { elapsedMs: 0, outputSizeBytes: 0, durationSecs: null, skipped: true, skipReason: "disk_constrained" };
+  }
+
+  // Pre-flight: abort if the process RSS is already at or above the memory
+  // warn threshold. Faststart downloads the entire source blob from PostgreSQL
+  // BYTEA (adds ~file-size to external/arrayBuffers) then spawns an ffmpeg
+  // child process — together this typically adds 80–150 MB of RSS.  Starting
+  // when the server is already memory-pressured (RSS ≥ MEMORY_WARN_RSS_MB)
+  // guarantees crossing the restart threshold and triggering a watchdog
+  // SIGTERM.  Skipping here is safe: the broadcast queue item is unaffected,
+  // HLS transcoding will follow, and the admin UI shows FASTSTART_SKIPPED.
+  {
+    const currentRssMb = Math.round(process.memoryUsage().rss / (1024 * 1024));
+    if (currentRssMb >= env.MEMORY_WARN_RSS_MB) {
+      log.warn(
+        { currentRssMb, memoryWarnRssMb: env.MEMORY_WARN_RSS_MB },
+        "faststart: RSS at or above warn threshold — skipping to prevent memory-watchdog restart",
+      );
+      return { elapsedMs: 0, outputSizeBytes: 0, durationSecs: null, skipped: true, skipReason: "memory_constrained" };
+    }
   }
 
   try {

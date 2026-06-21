@@ -293,7 +293,7 @@ function sample() {
     // avoid crossing the restart threshold entirely.
     void import("../modules/video-serve/video-serve.routes.js")
       .then(({ trimHlsSegmentCache }) => {
-        const hlsCacheMb = Number(process.env.HLS_SEGMENT_CACHE_MB ?? 64);
+        const hlsCacheMb = env.HLS_SEGMENT_CACHE_MB;
         const freed = trimHlsSegmentCache(hlsCacheMb / 2);
         if (freed > 0) {
           logger.info(
@@ -435,7 +435,7 @@ function sample() {
       // trigger unnecessary ops noise if the cache self-corrects.
       void import("../modules/video-serve/video-serve.routes.js")
         .then(({ trimHlsSegmentCache }) => {
-          const hlsCacheMb = Number(process.env.HLS_SEGMENT_CACHE_MB ?? 64);
+          const hlsCacheMb = env.HLS_SEGMENT_CACHE_MB;
           const freed = trimHlsSegmentCache(hlsCacheMb / 2);
           if (freed > 0) {
             logger.info(
@@ -494,7 +494,7 @@ function sample() {
     const purgedV8 = purgeExpiredCacheEntries();
     void import("../modules/video-serve/video-serve.routes.js")
       .then(({ trimHlsSegmentCache }) => {
-        const hlsCacheMb = Number(process.env.HLS_SEGMENT_CACHE_MB ?? 64);
+        const hlsCacheMb = env.HLS_SEGMENT_CACHE_MB;
         trimHlsSegmentCache(heapUsedPct >= V8_HEAP_CRITICAL_PCT ? 0 : hlsCacheMb / 2);
       })
       .catch(() => {});
