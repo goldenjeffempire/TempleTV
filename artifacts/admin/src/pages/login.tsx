@@ -8,12 +8,23 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, Loader2, Eye, EyeOff, Radio, ShieldCheck, ArrowLeft, Wifi } from "lucide-react";
 
-// How many times to silently retry a network-level failure before surfacing
-// an error. A graceful API restart (memory-watchdog SIGTERM → drain → boot)
-// takes ~30 s on the Render free tier. 4 retries × 8 s delay = 32 s window,
-// enough to cover one full restart cycle without the user seeing an error.
-const MAX_NETWORK_RETRIES = 4;
+// How many times to silently retry a transient failure before surfacing an
+// error.  Two scenarios drive the window:
+//   • Graceful API restart (memory-watchdog SIGTERM → drain → boot): ~30 s
+//   • Render free-tier cold start (service sleeping → waking): 45-60 s
+// 6 retries × 8 s = 48 s — covers both without the user seeing an error.
+const MAX_NETWORK_RETRIES = 6;
 const RETRY_DELAY_MS = 8000;
+
+/**
+ * Returns true for errors that are worth retrying automatically.
+ *   status === 0   — fetch threw (DNS/TLS/offline/CORS preflight failure)
+ *   status 502/503/504 — Render/proxy gateway error during cold start or restart
+ *   status 408     — upstream request timeout (also transient)
+ */
+function isTransientError(status: number): boolean {
+  return status === 0 || status === 502 || status === 503 || status === 504 || status === 408;
+}
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -87,8 +98,11 @@ export default function LoginPage() {
         return;
       } catch (err) {
         if (err instanceof HttpError) {
-          if (err.status === 0) {
-            // Pure network failure — retry silently up to MAX_NETWORK_RETRIES
+          if (isTransientError(err.status)) {
+            // Network failure or gateway error (502/503/504/408) — retry
+            // silently.  Render's 502 during cold start is HTML, not JSON,
+            // so the API client normalises it to HttpError(502); we treat it
+            // identically to a pure fetch failure (status 0).
             lastNetworkError = err;
             continue;
           }
