@@ -591,6 +591,20 @@ export async function videoServeRoutes(app: FastifyInstance) {
       // ── Full-file path ────────────────────────────────────────────────
       try {
         const obj = await s.getObject(key);
+
+        // A contentLength of 0 means the blob row exists but size_bytes is
+        // still zero — this happens during faststart's multipart assembly
+        // window.  Serving a 200 with an empty body would look like a corrupt
+        // or missing file to video players.  Return 503 Retry-After instead
+        // so clients back off and retry once assembly is done.
+        if (obj.contentLength === 0) {
+          try { obj.body.destroy(); } catch { /* ignore */ }
+          return reply
+            .code(503)
+            .header("Retry-After", "5")
+            .send({ error: "File is temporarily being assembled; please retry shortly" });
+        }
+
         const contentType = resolveUploadMime(key, obj.contentType);
         // Abort the upstream DB stream when the client disconnects so
         // the chunked streaming generator stops issuing SUBSTRING queries.

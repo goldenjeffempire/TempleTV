@@ -283,26 +283,66 @@ class PostgresObjectStorage implements ObjectStorage {
 
   async getObjectRange(key: string, start: number, end: number): Promise<{ body: Readable; contentType?: string; contentLength: number } | null> {
     if (_shuttingDown) return null;
-    const length = end - start + 1;
-    // Use PostgreSQL SUBSTRING for efficient byte-range extraction so only the
-    // requested slice is transferred over the DB connection, not the full blob.
-    type Row = { chunk: Buffer; content_type: string };
-    const result = await db.execute<Row>(sql`
-      SELECT SUBSTRING(data FROM ${start + 1} FOR ${length}) AS chunk, content_type
-      FROM storage_blobs
-      WHERE key = ${key}
-      LIMIT 1
-    `).catch(() => null);
-    if (!result) return null;
-    const row = firstRow<Row>(result);
-    if (!row || row.chunk == null) return null;
-    const buf = toBuffer(row.chunk);
-    const body = Readable.from(buf);
+    const rangeLength = end - start + 1;
+
+    // Fetch metadata first (content-type + existence check) without pulling
+    // any BYTEA data.  A single headObject() query is much cheaper than
+    // including content_type in every SUBSTRING chunk query.
+    const head = await this.headObject(key).catch(() => null);
+    if (!head?.exists) return null;
+
+    // Stream the requested byte range in STORAGE_READ_CHUNK_BYTES (8 MiB)
+    // sub-ranges, exactly like getObject().
+    //
+    // WHY CHUNKED:  The old single-query approach —
+    //   SELECT SUBSTRING(data FROM start FOR length)
+    // — makes the pg driver allocate a hex string of `length * 2` bytes
+    // internally before handing a Buffer to Node.js.  For a 50 MB Range
+    // request that is a 100 MB intermediate hex string; on a 268 MiB V8
+    // heap (Replit free tier) it throws ERR_STRING_TOO_LONG, which triggers
+    // an unhandledRejection → process crash → "Cannot use a pool after
+    // calling end on the pool" during in-flight uploads → server restart
+    // → mobile black screen.
+    //
+    // Each 8 MiB chunk produces only a 16 MiB hex string — safe on any
+    // host.  Memory per concurrent range-stream: ~24 MiB (one decoded
+    // chunk held between yield and GC).
+    const chunkSize = STORAGE_READ_CHUNK_BYTES;
+    const capturedKey = key;
+
+    async function* readRangeChunks(): AsyncGenerator<Buffer> {
+      let pos = start; // current 0-indexed file position
+      while (pos <= end) {
+        if (_shuttingDown) break;
+        const chunkLen = Math.min(chunkSize, end - pos + 1);
+        // PostgreSQL SUBSTRING is 1-indexed.
+        const pgFrom = pos + 1;
+        type ChunkRow = { chunk: Buffer };
+        const result = await db.execute<ChunkRow>(sql`
+          SELECT SUBSTRING(data FROM ${pgFrom} FOR ${chunkLen}) AS chunk
+          FROM storage_blobs
+          WHERE key = ${capturedKey}
+          LIMIT 1
+        `).catch(() => null);
+        if (!result) break;
+        const row = firstRow<ChunkRow>(result);
+        if (!row?.chunk) break;
+        const buf = toBuffer(row.chunk);
+        if (buf.length === 0) break; // past end of blob
+        yield buf;
+        pos += chunkLen;
+      }
+    }
+
+    const body = Readable.from(readRangeChunks(), { objectMode: false });
     _activeStreamCount++;
     const dec = (): void => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); };
     body.once("close", dec);
     body.once("error", dec);
-    return { body, contentType: row.content_type, contentLength: buf.length };
+    // contentLength reports the nominal range length so callers can set the
+    // correct Content-Length / Content-Range headers.  The actual bytes
+    // yielded match this unless the blob is shorter than expected.
+    return { body, contentType: head.contentType, contentLength: rangeLength };
   }
 
   async headObject(key: string): Promise<{ exists: boolean; contentLength?: number; contentType?: string }> {
@@ -352,6 +392,9 @@ class PostgresObjectStorage implements ObjectStorage {
   }
 
   async uploadPart({ uploadId, partNumber, body }: { key: string; uploadId: string; partNumber: number; body: Buffer }): Promise<{ etag: string }> {
+    if (_shuttingDown) {
+      throw Object.assign(new Error("Storage is shutting down — upload rejected"), { code: "STORAGE_SHUTDOWN" });
+    }
     const etag = `"${createHash("md5").update(body).digest("hex")}"`;
     await db.execute(sql`
       INSERT INTO storage_upload_parts (upload_id, part_number, etag, data, created_at)
@@ -364,6 +407,9 @@ class PostgresObjectStorage implements ObjectStorage {
   }
 
   async completeMultipartUpload({ key, uploadId }: { key: string; uploadId: string; parts: MultipartPart[] }): Promise<{ key: string; etag: string | null; location: string | null }> {
+    if (_shuttingDown) {
+      throw Object.assign(new Error("Storage is shutting down — multipart assembly rejected"), { code: "STORAGE_SHUTDOWN" });
+    }
     const contentType = this._pendingContentTypes.get(uploadId) ?? "video/mp4";
     this._pendingContentTypes.delete(uploadId);
 
