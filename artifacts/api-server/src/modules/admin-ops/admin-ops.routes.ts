@@ -136,6 +136,38 @@ export function closeAllAdminSseSessions(): void {
   }
 }
 
+// ── Admin SSE concurrent-per-IP connection guard ─────────────────────────────
+//
+// Why NOT a rate limit plugin:
+//   Rate-limit plugins count requests per time-window. For a long-lived SSE
+//   connection (one connection per admin tab, held open for the entire session),
+//   the counter increments exactly once per connection — so 10 concurrent
+//   admins each with 1 tab consume 10 slots in that window, which is fine.
+//   BUT during server restarts (OOM, deploy) ALL connections drop at once and
+//   ALL tabs try to reconnect within milliseconds, potentially burning through
+//   20 rate-limit slots before the window resets.  Once the limit fires, the
+//   client receives 429 → onerror → scheduleReconnect → 429 → … a death spiral
+//   that keeps the "Reconnecting" banner up for the full 60-second window.
+//
+// Solution: track concurrent connections per source IP instead (same approach
+// as realtime/sse.gateway.ts).  We allow MAX_ADMIN_SSE_PER_IP simultaneous
+// SSE streams from one IP — generous enough for all normal multi-tab/multi-
+// admin scenarios, strict enough to block accidental runaway loops.
+const MAX_ADMIN_SSE_PER_IP = 20;
+const adminSseConnections = new Map<string, number>();
+
+function adminSseIncrement(ip: string): number {
+  const cur = adminSseConnections.get(ip) ?? 0;
+  adminSseConnections.set(ip, cur + 1);
+  return cur + 1;
+}
+
+function adminSseDecrement(ip: string): void {
+  const cur = adminSseConnections.get(ip) ?? 1;
+  if (cur <= 1) adminSseConnections.delete(ip);
+  else adminSseConnections.set(ip, cur - 1);
+}
+
 function uptimeSec(): number {
   return Math.round((Date.now() - startedAtMs) / 1000);
 }
@@ -3908,7 +3940,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   // Requires a valid Bearer admin token in the Authorization header.
   app.post(
     "/sse-token",
-    { preHandler: [requireAuth("editor")], config: { rateLimit: { max: 30, timeWindow: "1 minute" } }, schema: { response: { 201: z.object({ token: z.string(), expiresAt: z.string(), ttlMs: z.number() }), 429: z.object({ error: z.string() }) } } },
+    { preHandler: [requireAuth("editor")], config: { rateLimit: { max: 120, timeWindow: "1 minute" } }, schema: { response: { 201: z.object({ token: z.string(), expiresAt: z.string(), ttlMs: z.number() }), 429: z.object({ error: z.string() }) } } },
     async (_req, reply) => {
       const subToken = crypto.randomUUID();
       // F04: persist sub-token in Redis (when available) so it survives across
@@ -3952,8 +3984,28 @@ export async function adminOpsRoutes(app: FastifyInstance) {
   //      clients should migrate to the sub-token flow above.
   app.get<{ Querystring: { platform?: string; token?: string; sseToken?: string } }>(
     "/live/events",
-    { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } },
+    // No rate-limit plugin here. SSE connections are long-lived (one per tab,
+    // held open for the entire session). A per-minute rate limit is the wrong
+    // primitive: during server restarts ALL tabs reconnect within milliseconds,
+    // burning through the limit and triggering 429 → onerror → reconnect →
+    // 429 → … a death spiral that keeps "Reconnecting" up for a full minute.
+    // Instead we enforce MAX_ADMIN_SSE_PER_IP concurrent connections (tracked
+    // in adminSseConnections map) which is immune to reconnect storms.
+    {},
     async (req, reply) => {
+      // Concurrent-per-IP guard: reject if this source IP already holds too
+      // many open admin SSE sockets.  Release the slot in the cleanup function.
+      const ip = req.ip ?? "unknown";
+      const concurrentCount = adminSseIncrement(ip);
+      if (concurrentCount > MAX_ADMIN_SSE_PER_IP) {
+        adminSseDecrement(ip);
+        reply.code(429).header("Content-Type", "application/json").send({
+          error: "Too many concurrent admin SSE connections from this address",
+          max: MAX_ADMIN_SSE_PER_IP,
+        });
+        return;
+      }
+
       // Inline auth check that supports query param auth for EventSource.
       // Can't use requireAuth() here — that helper only reads the header.
       const headerToken = (() => {
@@ -3963,6 +4015,13 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       })();
       const rawSseToken = typeof req.query?.sseToken === "string" ? req.query.sseToken : null;
       const rawQueryToken = typeof req.query?.token === "string" ? req.query.token : null;
+
+      // Helper: release the concurrent-connection slot and send an auth error.
+      // Called on every early-return auth failure so the slot isn't leaked.
+      const rejectAuth = (code: 401, msg: string) => {
+        adminSseDecrement(ip);
+        reply.code(code).send({ error: msg });
+      };
 
       // Path 1: header bearer (most secure, used when proxying via fetch)
       if (headerToken) {
@@ -3974,7 +4033,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
             requireRole(decoded.role, "editor");
           }
         } catch {
-          reply.code(401).send({ error: "invalid token" });
+          rejectAuth(401, "invalid token");
           return;
         }
       }
@@ -3985,7 +4044,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         if (redis) {
           const exists = await redis.exists(`SSETOK:${rawSseToken}`);
           if (!exists) {
-            reply.code(401).send({ error: "sseToken invalid or expired" });
+            rejectAuth(401, "sseToken invalid or expired");
             return;
           }
           // Single-use: delete immediately after validation.
@@ -3993,7 +4052,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         } else {
           const stored = sseTokenStore.get(rawSseToken);
           if (!stored || stored.expiresAt < Date.now()) {
-            reply.code(401).send({ error: "sseToken invalid or expired" });
+            rejectAuth(401, "sseToken invalid or expired");
             return;
           }
           // Consume the sub-token — one-time use reduces replay window
@@ -4010,7 +4069,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
             requireRole(decoded.role, "editor");
           }
         } catch {
-          reply.code(401).send({ error: "invalid token" });
+          rejectAuth(401, "invalid token");
           return;
         }
       }
@@ -4031,11 +4090,11 @@ export async function adminOpsRoutes(app: FastifyInstance) {
               requireRole(decoded.role, "editor");
             }
           } catch {
-            reply.code(401).send({ error: "invalid session" });
+            rejectAuth(401, "invalid session");
             return;
           }
         } else {
-          reply.code(401).send({ error: "missing bearer token" });
+          rejectAuth(401, "missing bearer token");
           return;
         }
       }
@@ -4158,12 +4217,12 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       const zombieCheck = setInterval(() => {
         const idleMs = Date.now() - lastAdminSseWriteOkMs;
         const writable = !reply.raw.socket?.destroyed && reply.raw.socket?.writable;
-        if (!writable || idleMs > 90_000) cleanup();
+        if (!writable || idleMs > 90_000) cleanup("zombie");
       }, 30_000);
       zombieCheck.unref?.();
 
       let adminSseClosed = false;
-      const cleanup = () => {
+      const cleanup = (reason = "client-close") => {
         if (adminSseClosed) return;
         adminSseClosed = true;
         openAdminSseCleanups.delete(cleanup);
@@ -4172,7 +4231,9 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         clearInterval(viewerBreakdownInterval);
         broadcastEngine.off("event", onEvent);
         adminEventBus.off("admin-event", onAdminEvent);
+        adminSseDecrement(ip);
         sseCounter.dec();
+        req.log.debug({ reason, ip }, "[admin-sse] connection closed");
         try {
           reply.raw.end();
         } catch {
@@ -4181,8 +4242,8 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       };
 
       openAdminSseCleanups.add(cleanup);
-      req.raw.on("close", cleanup);
-      req.raw.on("error", cleanup);
+      req.raw.on("close", () => cleanup("client-close"));
+      req.raw.on("error", () => cleanup("socket-error"));
     },
   );
 

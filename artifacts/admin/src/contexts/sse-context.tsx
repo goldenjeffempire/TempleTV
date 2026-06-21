@@ -96,10 +96,10 @@ const RECONNECTING_AFTER_ATTEMPTS = 3;
 // close it and schedule a reconnect. Guards against silent proxy hangs
 // (Vite dev proxy accepting the TCP connection but never forwarding it)
 // which otherwise keep the connection stuck for 5-11 seconds per attempt.
-// 20 s gives the Replit preview proxy → Vite → API 3-hop chain enough
-// time to complete the SSE handshake on cold starts and slow environments
-// without falsely cycling into "reconnecting" during normal operation.
-const OPEN_TIMEOUT_MS = 20_000;
+// 45 s gives Render cold-starts (30 s spin-up) + Redis auth round-trips +
+// the Replit preview proxy → Vite → API 3-hop chain enough time to
+// complete the SSE handshake without falsely cycling into "reconnecting".
+const OPEN_TIMEOUT_MS = 45_000;
 
 // How many failed SSE attempts before we query the HTTP health endpoint.
 // 8 attempts × up to 15 s each = up to ~120 s — covers Render cold starts.
