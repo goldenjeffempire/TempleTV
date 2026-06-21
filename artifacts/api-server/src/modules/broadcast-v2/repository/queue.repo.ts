@@ -729,7 +729,7 @@ export function getItemsHealth(
   const ownBase = getOwnBase();
   const result: Record<string, ItemHealthEntry> = {};
   for (const row of rows) {
-    const primary = normalizeQueueUrl(row.hlsMasterUrl ?? row.localVideoUrl);
+    const primary = normalizeQueueUrl(row.localVideoUrl ?? row.hlsMasterUrl);
 
     // For external MP4 sources the cache entry is the proxied URL.
     // For locally-hosted or HLS sources the cache entry is the raw URL.

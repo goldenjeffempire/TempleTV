@@ -29,8 +29,6 @@ import { db, schema } from "../../infrastructure/db.js";
 import { env } from "../../config/env.js";
 import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
-import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
-import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
 import { generateQuickThumbnail, normalizeThumbnailBuffer, probeUploadedContainerValidity, probeUploadedDuration, probeVideoMetadata } from "../transcoder/transcoder.service.js";
 import { runFaststart } from "../transcoder/faststart.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
@@ -391,16 +389,6 @@ async function spawnAssemblyRetry(
           log.info({ videoId }, "[assembly-retry] faststart applied");
         } catch (fsErr) {
           log.warn({ err: fsErr, videoId }, "[assembly-retry] faststart failed (non-fatal)");
-        }
-      }
-
-      if (!vRow.hlsMasterUrl) {
-        try {
-          await enqueueTranscode({ videoId, videoPath: vRow.objectPath });
-          if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
-          log.info({ videoId }, "[assembly-retry] HLS transcoding queued");
-        } catch (txErr) {
-          log.warn({ err: txErr, videoId }, "[assembly-retry] enqueueTranscode failed (non-fatal)");
         }
       }
 
@@ -816,19 +804,6 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   }
                 }
 
-                // Step 6: HLS transcoding.
-                if (!vRow.hlsMasterUrl) {
-                  try {
-                    await enqueueTranscode({ videoId, videoPath: vRow.objectPath });
-                    if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
-                    app.log.info({ videoId }, "[upload] recovery: HLS transcoding queued for recovered video");
-                  } catch (txErr) {
-                    app.log.warn(
-                      { err: txErr, videoId },
-                      "[upload] recovery: enqueueTranscode failed for recovered video (non-fatal)",
-                    );
-                  }
-                }
               } catch (err) {
                 app.log.warn(
                   { err, videoId },
@@ -2393,39 +2368,14 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               capturedLog.warn({ err: enqErr, videoId }, "[finalize:bg] enqueueIfMissing failed (non-fatal)");
             }
 
-            // CRITICAL ORDERING: faststart MUST complete before enqueueTranscode.
-            //
-            // faststart.service.ts replaces the source blob via a multipart
-            // re-upload. If the transcoder downloads the source while that
-            // assembly is still in progress it fetches a partial file and
-            // ffprobe reports "moov atom not found", killing the transcode job.
-
+            // MP4-only pipeline: run faststart to move the moov atom to byte-0
+            // for instant playback. No HLS transcoding — the raw MP4 (or the
+            // faststart-optimized copy) is the final broadcast source.
             try {
               await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
               capturedLog.info({ sessionId, videoId }, "[finalize:bg] faststart done");
             } catch (err) {
               capturedLog.warn({ err, videoId }, "[finalize:bg] faststart failed (non-fatal) — broadcasting as raw MP4");
-            }
-
-            // Enqueue HLS transcoding AFTER faststart is complete.
-            {
-              try {
-                await enqueueTranscode({ videoId, videoPath: objectKey });
-                capturedLog.info({ sessionId, videoId }, "[finalize:bg] HLS transcode job queued");
-                // Immediately wake the dispatcher so encoding starts within
-                // milliseconds rather than waiting for the next poll tick
-                // (up to TRANSCODER_POLL_MS = 10 s). This eliminates the
-                // visible "HLS queued" window in the broadcast queue UI.
-                // Guard: nudge() is a no-op when the dispatcher was never
-                // started (TRANSCODER_DISABLE=1), but we also check here as
-                // belt-and-suspenders so grep can confirm the call site is safe.
-                if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
-              } catch (err) {
-                capturedLog.warn(
-                  { err, videoId },
-                  "[finalize:bg] enqueueTranscode failed (non-fatal) — faststart-applied video is still broadcast-ready",
-                );
-              }
             }
 
             capturedLog.info(

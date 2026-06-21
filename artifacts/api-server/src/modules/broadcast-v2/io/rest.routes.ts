@@ -167,70 +167,10 @@ async function autoEnqueueMissingHls(): Promise<{ triggered: number }> {
 // HLS URL is bad-URL-blocked. No URL suppression is needed at this layer.
 
 async function _doAutoEnqueueMissingHls(): Promise<{ triggered: number }> {
-  const q = schema.broadcastQueueTable;
-  const v = schema.videosTable;
-  let rows: Array<{
-    videoId: string | null;
-    localVideoUrl: string | null;
-    hlsMasterUrl: string | null;
-    transcodingStatus: string | null;
-  }>;
-  try {
-    rows = await db
-      .select({
-        videoId: q.videoId,
-        localVideoUrl: v.localVideoUrl,
-        hlsMasterUrl: v.hlsMasterUrl,
-        transcodingStatus: v.transcodingStatus,
-      })
-      .from(q)
-      .leftJoin(v, eq(q.videoId, v.id))
-      .where(
-        and(
-          eq(q.isActive, true),
-          isNotNull(q.videoId),
-          isNull(v.hlsMasterUrl),
-        ),
-      );
-  } catch (err) {
-    logger.warn({ err }, "[broadcast-v2] auto-enqueue-missing-hls: DB query failed (non-fatal)");
-    return { triggered: 0 };
-  }
-
-  let triggered = 0;
-  for (const row of rows) {
-    if (!row.videoId || !row.localVideoUrl) continue;
-    if (row.transcodingStatus === "hls_ready") continue;
-    await enqueueTranscode({
-      videoId: row.videoId,
-      videoPath: row.localVideoUrl,
-      priority: 10,
-    }).catch((err: unknown) => {
-      logger.warn({ err, videoId: row.videoId }, "[broadcast-v2] auto-enqueue-missing-hls: enqueueTranscode error (non-fatal)");
-    });
-    // Also boost any already-queued job — enqueueTranscode doesn't change
-    // priority on existing queued rows so we need the explicit boost.
-    void boostTranscodePriority(row.videoId, 10).catch((err: unknown) => {
-      logger.warn({ err, videoId: row.videoId }, "[broadcast-v2] auto-enqueue-missing-hls: boostTranscodePriority error (non-fatal)");
-    });
-
-    // NOTE: We intentionally do NOT suppress the raw localVideoUrl in the
-    // bad-URL cache here. The orchestrator's projectItem() now promotes
-    // failoverSource (MP4) when the primary HLS URL is blocked, allowing
-    // items to broadcast via MP4 while HLS transcoding is in progress.
-    // If the MP4 itself fails, the bad-URL exponential-backoff handles it
-    // gracefully (20 s → 3 min → 5 min) without a blanket 5-minute silence
-    // that would cause guaranteed dead air for every item being transcoded.
-    triggered++;
-  }
-  if (triggered > 0) {
-    void broadcastOrchestrator.reload().catch((err) => {
-      logger.warn({ err }, "[broadcast-v2] auto-enqueue-missing-hls: background reload failed (non-fatal)");
-    });
-    transcoderDispatcher.nudge();
-  }
-  logger.info({ triggered }, "[broadcast-v2] auto-enqueue-missing-hls: scan complete");
-  return { triggered };
+  // MP4-only pipeline: HLS transcoding is disabled. All uploads broadcast
+  // immediately as raw MP4 (or faststart-optimized MP4). No HLS jobs needed.
+  logger.info("[broadcast-v2] auto-enqueue-missing-hls: skipped (MP4-only pipeline)");
+  return { triggered: 0 };
 }
 
 // ── Remote-transcode disk pre-flight ────────────────────────────────────────

@@ -61,6 +61,9 @@ export function getTranscodingAutoRetryStatus(): TranscodingAutoRetryStatus {
 }
 
 export async function transcodingAutoRetryScan(): Promise<void> {
+  // MP4-only pipeline: HLS transcoding is disabled. Skip retry scan.
+  return;
+  // eslint-disable-next-line no-unreachable
   if (process.env["TRANSCODING_AUTO_RETRY_DISABLE"]) return;
 
   _status.lastRunAtMs = Date.now();
