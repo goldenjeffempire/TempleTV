@@ -327,6 +327,13 @@ export async function videoServeRoutes(app: FastifyInstance) {
   }
 
   function headCacheSet(key: string, contentLength?: number, contentType?: string) {
+    // Never cache a size-zero entry.  This occurs when faststart's
+    // completeMultipartUpload is mid-assembly: the storage_blobs row briefly
+    // holds size_bytes=0 while parts are being appended.  Caching that zero
+    // would cause all subsequent Range requests for the file to receive 416
+    // "Range Not Satisfiable" for up to HEAD_CACHE_TTL_MS (60 s) even after
+    // the blob is fully written.
+    if (contentLength === 0) return;
     // Simple FIFO eviction — Map preserves insertion order; delete the oldest
     // entry when the cache is full before inserting the new one.
     if (headMetaCache.size >= HEAD_CACHE_MAX) {
@@ -533,6 +540,16 @@ export async function videoServeRoutes(app: FastifyInstance) {
             const start = Math.max(0, rawStart);
             const end = Math.min(rawEnd, total - 1);
 
+            if (total === 0) {
+              // Blob is temporarily size-zero — faststart multipart assembly
+              // is in progress. Return 503 Retry-After so the client retries
+              // in a few seconds instead of treating this as a permanent error.
+              return reply
+                .code(503)
+                .header("Retry-After", "5")
+                .header("Content-Range", `bytes */${total}`)
+                .send({ error: "File is temporarily being assembled; please retry shortly" });
+            }
             if (start > end || start >= total) {
               // Range Not Satisfiable
               return reply

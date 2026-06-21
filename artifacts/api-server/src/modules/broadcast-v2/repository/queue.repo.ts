@@ -991,7 +991,9 @@ export const queueRepo = {
     // logged (not silently dropped) so operators can fix the root cause.
     const validated: typeof rows = [];
     for (const r of rows) {
-      const primaryUrl = r.hlsMasterUrl ?? r.localVideoUrl;
+      // MP4-first: prefer localVideoUrl (raw or faststart-optimised MP4) over
+      // hlsMasterUrl so the validation check matches toItem()'s source priority.
+      const primaryUrl = r.localVideoUrl ?? r.hlsMasterUrl;
       if (!primaryUrl || primaryUrl.trim() === "") {
         logger.warn(
           { itemId: r.id, title: r.title, videoId: r.videoId },

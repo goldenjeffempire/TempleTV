@@ -1844,7 +1844,7 @@ export function V2PlayerContainer({
         main: "Connecting to Broadcast",
         sub: "Establishing secure connection…",
         showSpinner: true,
-        onRetry: loadingPhase >= 3 ? forceRebind : undefined,
+        onRetry: loadingPhase >= 2 ? forceRebind : undefined,
       };
     }
 
