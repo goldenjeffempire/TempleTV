@@ -34,7 +34,8 @@ const body = Readable.from(readChunks(), { objectMode: false });
 ```
 
 Peak Node.js RSS: one chunk (~24 MiB with pg hex decode). O(1) regardless of blob size.
-headObject() is called first to get totalSize — one extra round-trip, acceptable.
+`headObject()` is called first to get totalSize — one extra round-trip, acceptable.
+**Important**: `offset += buf.length` (not `offset += length`) — advance by ACTUAL bytes returned.
 
 ## Fix: completeMultipartUpload() — PostgreSQL-side assembly via bytea_agg
 
@@ -72,7 +73,41 @@ if (!aggCheck.rows.length) {
 
 `byteacat` is a built-in PostgreSQL function (underlying `bytea || bytea`). Works as SFUNC.
 
+## getObjectRange() — avoid redundant headObject()
+
+The Range request handler (video-serve.routes.ts) already calls `headObject()` to get total
+size for clamping and Content-Range. `getObjectRange()` must NOT call `headObject()` again.
+
+**Pattern**: include `content_type` in the FIRST SUBSTRING chunk query to get existence
+check + content type in one round-trip, then stream remaining chunks without it:
+
+```typescript
+const firstResult = await db.execute<{ chunk: Buffer; content_type: string }>(sql`
+  SELECT SUBSTRING(data FROM ${start + 1} FOR ${firstChunkLen}) AS chunk, content_type
+  FROM storage_blobs WHERE key = ${key} LIMIT 1
+`).catch(() => null);
+if (!firstResult || !firstRow(firstResult)) return null; // key not found
+```
+
+Subsequent chunks skip `content_type`. Saves 1 SELECT per Range request.
+`pos += buf.length` (not `pos += chunkLen`) in subsequent chunks for correctness.
+
+## Mobile ExoPlayer MP4 format hint
+
+For MP4 broadcast sources in expo-av `<Video>`, always include
+`overrideFileExtensionWithValue: 'mp4'`. Without it, ExoPlayer may misclassify streams
+served through proxy paths (no `.mp4` extension), disabling Range-based seeking and
+causing distorted frames when the moov atom is fetched out of sequence.
+
+```typescript
+const avSource = isHls
+  ? { uri: url, overrideFileExtensionWithValue: "m3u8" as const }
+  : { uri: url, overrideFileExtensionWithValue: "mp4" as const };
+```
+
 ## How to apply
 - Any future custom aggregate creation: use pg_proc existence check, not IF NOT EXISTS
 - Any large BYTEA reads: use SUBSTRING chunked generator, not `SELECT data`
 - Any multipart assembly: use bytea_agg INSERT…SELECT, not Buffer.concat
+- getObjectRange(): first chunk includes content_type; subsequent chunks data-only; pos += buf.length
+- Mobile Video source: always set overrideFileExtensionWithValue for both HLS and MP4

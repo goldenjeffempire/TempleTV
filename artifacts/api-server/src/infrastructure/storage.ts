@@ -22,7 +22,9 @@ import { env } from "../config/env.js";
  *     bytea_agg(data ORDER BY part_number) custom aggregate.  Node.js sends
  *     one INSERT…SELECT query and receives nothing back — peak Node.js RSS: ~0.
  *     The aggregate is created at startup in ensureRuntimeIndexes().
- *   - getObjectRange() already used SUBSTRING and is unchanged.
+ *   - getObjectRange() streams in STORAGE_READ_CHUNK_BYTES sub-ranges. The
+ *     first chunk query also fetches content_type (no separate headObject()
+ *     round-trip — saves one SELECT per Range request).
  *   - putObject() accepts a caller-supplied Buffer (small objects: HLS segments
  *     ≤8 MiB, thumbnails ≤200 KB).  No change needed.
  *
@@ -285,12 +287,6 @@ class PostgresObjectStorage implements ObjectStorage {
     if (_shuttingDown) return null;
     const rangeLength = end - start + 1;
 
-    // Fetch metadata first (content-type + existence check) without pulling
-    // any BYTEA data.  A single headObject() query is much cheaper than
-    // including content_type in every SUBSTRING chunk query.
-    const head = await this.headObject(key).catch(() => null);
-    if (!head?.exists) return null;
-
     // Stream the requested byte range in STORAGE_READ_CHUNK_BYTES (8 MiB)
     // sub-ranges, exactly like getObject().
     //
@@ -307,11 +303,49 @@ class PostgresObjectStorage implements ObjectStorage {
     // Each 8 MiB chunk produces only a 16 MiB hex string — safe on any
     // host.  Memory per concurrent range-stream: ~24 MiB (one decoded
     // chunk held between yield and GC).
+    //
+    // WHY NO SEPARATE headObject():  The Range request handler (caller) has
+    // already called headObject() to validate the range and determine total
+    // file size.  A second headObject() inside getObjectRange() was redundant
+    // — an extra SELECT per Range request.  Instead, we include content_type
+    // in the first SUBSTRING query, which simultaneously checks existence,
+    // captures the content type, and fetches the first data chunk in one
+    // round-trip.
     const chunkSize = STORAGE_READ_CHUNK_BYTES;
     const capturedKey = key;
 
+    // Pre-fetch the first chunk together with content_type.  This combines
+    // the existence check, content-type resolution, and first data read into
+    // a single DB round-trip (saves one SELECT vs a prior headObject() call).
+    const firstChunkLen = Math.min(chunkSize, rangeLength);
+    const firstPgFrom = start + 1; // SUBSTRING is 1-indexed; start is 0-indexed
+    type FirstRow = { chunk: Buffer; content_type: string };
+    const firstResult = await db.execute<FirstRow>(sql`
+      SELECT SUBSTRING(data FROM ${firstPgFrom} FOR ${firstChunkLen}) AS chunk,
+             content_type
+      FROM storage_blobs
+      WHERE key = ${capturedKey}
+      LIMIT 1
+    `).catch(() => null);
+    if (!firstResult) return null;
+    const firstRowData = firstRow<FirstRow>(firstResult);
+    if (!firstRowData) return null; // key does not exist
+
+    const resolvedContentType = firstRowData.content_type;
+    const firstBuf = toBuffer(firstRowData.chunk);
+
     async function* readRangeChunks(): AsyncGenerator<Buffer> {
-      let pos = start; // current 0-indexed file position
+      // Yield the pre-fetched first chunk (may be empty if start ≥ blob end).
+      if (firstBuf.length === 0) return;
+      yield firstBuf;
+
+      // Advance by ACTUAL bytes returned, not the intended chunkLen.
+      // When SUBSTRING returns fewer bytes than requested (only possible if
+      // size_bytes in the DB over-reports the real data length), advancing by
+      // buf.length keeps pos accurate so the next query starts at the correct
+      // position rather than skipping a gap.  This mirrors getObject()'s
+      // `offset += buf.length` pattern.
+      let pos = start + firstBuf.length;
       while (pos <= end) {
         if (_shuttingDown) break;
         const chunkLen = Math.min(chunkSize, end - pos + 1);
@@ -330,7 +364,7 @@ class PostgresObjectStorage implements ObjectStorage {
         const buf = toBuffer(row.chunk);
         if (buf.length === 0) break; // past end of blob
         yield buf;
-        pos += chunkLen;
+        pos += buf.length; // advance by actual bytes, not intended chunkLen
       }
     }
 
@@ -341,8 +375,9 @@ class PostgresObjectStorage implements ObjectStorage {
     body.once("error", dec);
     // contentLength reports the nominal range length so callers can set the
     // correct Content-Length / Content-Range headers.  The actual bytes
-    // yielded match this unless the blob is shorter than expected.
-    return { body, contentType: head.contentType, contentLength: rangeLength };
+    // yielded match this for all intact blobs (SUBSTRING at a valid position
+    // returns exactly the requested byte count).
+    return { body, contentType: resolvedContentType, contentLength: rangeLength };
   }
 
   async headObject(key: string): Promise<{ exists: boolean; contentLength?: number; contentType?: string }> {

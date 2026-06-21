@@ -912,18 +912,27 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
     return <View style={[styles.video, { zIndex: state.active ? 2 : 1 }]} />;
   }
 
-  // Build the expo-av source object. For HLS sources, include
-  // `overrideFileExtensionWithValue: 'm3u8'` to guarantee Android
-  // ExoPlayer recognises the content type as HLS even when the URL
+  // Build the expo-av source object.
+  //
+  // For HLS sources, `overrideFileExtensionWithValue: 'm3u8'` guarantees
+  // Android ExoPlayer recognises the content type as HLS even when the URL
   // passes through a proxy path that doesn't end in `.m3u8` (e.g.
-  // `/api/hls/videoId/v0/playlist.m3u8?token=…` with a long query
-  // string). Without the hint, some ExoPlayer 2.x builds fall back to
-  // progressive download mode, causing manifest parse failures or
-  // segment looping that produce a permanently black video surface
-  // while audio continues from the demuxed audio track.
+  // `/api/hls/videoId/v0/playlist.m3u8?token=…` with a long query string).
+  // Without the hint, some ExoPlayer 2.x builds fall back to progressive
+  // download mode, causing manifest parse failures or segment looping that
+  // produce a permanently black video surface while audio continues.
+  //
+  // For MP4 sources (mp4_faststart or mp4_raw), `overrideFileExtensionWithValue:
+  // 'mp4'` is included for the same reason: when the URL passes through the
+  // media-proxy (e.g. `/api/v1/media-proxy?url=…`) the path has no extension,
+  // and ExoPlayer may mis-classify the stream.  For local upload URLs that
+  // already end in `.mp4` the hint is a no-op; for proxied URLs it prevents
+  // ExoPlayer falling back to a progressive streaming mode that disables
+  // Range-based seeking and can produce distorted or blurred frames because
+  // the moov atom is fetched out of sequence.
   const avSource = isHls
     ? { uri: url, overrideFileExtensionWithValue: "m3u8" as const }
-    : { uri: url };
+    : { uri: url, overrideFileExtensionWithValue: "mp4" as const };
 
   return (
     <Video
