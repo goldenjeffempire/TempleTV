@@ -141,7 +141,20 @@ export default function Dashboard() {
     engineHealth.boot.busBridgeInstalled;
 
   return (
-    <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6">
+    <div className="max-w-7xl mx-auto">
+      {/* Ministry header banner */}
+      <div className="px-4 sm:px-6 pt-6 pb-5 border-b border-border/60">
+        <div className="flex flex-col gap-0.5">
+          <p className="text-[11px] font-semibold tracking-[0.18em] uppercase text-muted-foreground/70">
+            Broadcasting System
+          </p>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
+            Jesus Christ Temple Ministry
+          </h1>
+        </div>
+      </div>
+
+      <div className="p-4 sm:p-6 space-y-6 mt-2">
       <PageHeader
         title="Dashboard"
         description={`${DAY_NAMES[new Date().getDay()]}, ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`}
@@ -502,6 +515,7 @@ export default function Dashboard() {
             </CardContent>
           </Card>
         </Link>
+      </div>
       </div>
     </div>
   );
