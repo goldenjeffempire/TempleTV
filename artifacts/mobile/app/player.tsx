@@ -41,12 +41,12 @@ import {
   Pressable,
   ScrollView,
   Share,
-  StatusBar,
   StyleSheet,
   Text,
   View,
   useWindowDimensions,
 } from "react-native";
+import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { parseBoolParam, parseNumberParam } from "@/lib/params";
@@ -871,7 +871,7 @@ export default function PlayerScreen() {
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
-      <StatusBar barStyle="light-content" />
+      <StatusBar style="light" />
 
       {/* ── Page header: back button + title ───────────────────────── */}
       <View

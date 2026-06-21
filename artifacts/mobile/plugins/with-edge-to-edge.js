@@ -1,21 +1,22 @@
-// Expo Config Plugin — Android Edge-to-Edge Theme Items (non-deprecated)
+// Expo Config Plugin — Android Edge-to-Edge Theme Items
 //
 // Android 15 (API 35) deprecated the old attribute-based approach:
-//   • android:statusBarColor          → deprecated API 35
-//   • android:navigationBarColor      → deprecated API 35
-//   • android:windowTranslucentStatus → deprecated
-//   • android:windowTranslucentNavigation → deprecated
-//   • android:windowDrawsSystemBarBackgrounds → deprecated
+//   • android:statusBarColor                     → deprecated API 35
+//   • android:navigationBarColor                 → deprecated API 35
+//   • android:windowTranslucentStatus            → deprecated
+//   • android:windowTranslucentNavigation        → deprecated
+//   • android:windowDrawsSystemBarBackgrounds    → deprecated
+//   • android:windowOptOutEdgeToEdgeEnforcement  → deprecated API 36
 //
-// Those are now handled by enableEdgeToEdge() called in MainActivity.onCreate()
-// via the companion with-enable-edge-to-edge.js plugin.
+// All of the above are handled by enableEdgeToEdge() called in
+// MainActivity.onCreate() via the companion with-enable-edge-to-edge.js plugin.
 //
-// This plugin retains ONLY the two attributes that are still valid and required:
-//   • android:windowLayoutInDisplayCutoutMode = shortEdges
-//       → content fills the notch/punch-hole area in landscape (video fullscreen)
-//   • android:windowOptOutEdgeToEdgeEnforcement = false
-//       → explicitly opt IN to Android 15 edge-to-edge enforcement (the default,
-//         but declared here so it survives future Expo theme regenerations)
+// This plugin retains ONLY the one attribute that is still valid and required:
+//   • android:windowLayoutInDisplayCutoutMode = always
+//       → content extends into the display cutout (notch/punch-hole) in EVERY
+//         orientation (portrait AND landscape).  "shortEdges" only applied the
+//         cutout extension in landscape — "always" is the correct value for a
+//         fully immersive edge-to-edge video app on Android 9+ (API 28+).
 //
 // NOTE: SafeAreaProvider at the app root (app/_layout.tsx) + useSafeAreaInsets()
 // in player.tsx continue to supply insets that keep interactive UI clear of bars.
@@ -34,14 +35,12 @@ module.exports = function withEdgeToEdge(config) {
 
     if (!Array.isArray(appTheme.item)) appTheme.item = [];
 
-    // Items to keep / add (non-deprecated in API 35+).
+    // Items to keep / add (valid in API 28+ through API 36+).
     const EDGE_TO_EDGE_ITEMS = [
-      // Display cutout: content extends into notch area in landscape so the
-      // video player fills the full screen including the camera cutout zone.
-      { name: "android:windowLayoutInDisplayCutoutMode", value: "shortEdges" },
-      // Android 15 edge-to-edge enforcement: false = opt IN (do not opt out).
-      // This attribute is no-op on API < 35 (safely ignored by older frameworks).
-      { name: "android:windowOptOutEdgeToEdgeEnforcement", value: "false" },
+      // Display cutout: content extends into notch/punch-hole in ALL orientations
+      // so the video player fills the full screen edge-to-edge.  "always" is the
+      // modern value (API 28+); the deprecated "shortEdges" only worked landscape.
+      { name: "android:windowLayoutInDisplayCutoutMode", value: "always" },
     ];
 
     // Deprecated attributes replaced by enableEdgeToEdge() — remove them if
@@ -52,6 +51,12 @@ module.exports = function withEdgeToEdge(config) {
       "android:windowTranslucentStatus",
       "android:windowTranslucentNavigation",
       "android:windowDrawsSystemBarBackgrounds",
+      // Deprecated in Android API 36 (compileSdkVersion 36).  The attribute
+      // was a temporary opt-out escape hatch for Android 15's enforcement.
+      // On API 36+ it is silently ignored; leaving it in the theme triggers
+      // lint warnings and Google Play's "deprecated edge-to-edge parameters"
+      // warning.  enableEdgeToEdge() in MainActivity is the correct signal.
+      "android:windowOptOutEdgeToEdgeEnforcement",
     ]);
 
     const MANAGED_NAMES = new Set(EDGE_TO_EDGE_ITEMS.map((i) => i.name));

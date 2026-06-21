@@ -26,12 +26,12 @@ import {
   Platform,
   Pressable,
   ScrollView,
-  StatusBar,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
+import { StatusBar } from "expo-status-bar";
 import { Feather } from "@expo/vector-icons";
 import { router, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -194,7 +194,7 @@ export default function SearchScreen() {
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
-      <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
+      <StatusBar style={c.isMidnightTheme ? "light" : "dark"} />
 
       {/* ── Top bar ─────────────────────────────────────────────────────── */}
       <View

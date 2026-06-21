@@ -16,6 +16,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { AppState, AppStateStatus, Linking, Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { StatusBar } from "expo-status-bar";
 import { setupMobileBroadcastStorage } from "@/lib/mobileBroadcastStorage";
 
 // ── Mobile broadcast storage ──────────────────────────────────────────────────
@@ -696,6 +697,7 @@ function RootLayout() {
               <LiveBroadcastSupervisor />
               <GestureHandlerRootView style={{ flex: 1 }}>
                 <SafeKeyboardProvider>
+                  <StatusBar style="auto" />
                   <RootLayoutNav />
                   <PersistentAudioPlayer />
                   {/*

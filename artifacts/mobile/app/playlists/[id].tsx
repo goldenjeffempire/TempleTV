@@ -18,11 +18,11 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
-  StatusBar,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import { StatusBar } from "expo-status-bar";
 import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
 import { router, Stack, useLocalSearchParams } from "expo-router";
@@ -163,7 +163,7 @@ export default function PlaylistDetailScreen() {
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
-      <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
+      <StatusBar style={c.isMidnightTheme ? "light" : "dark"} />
       <AppHeader title={headerTitle} />
 
       {loading && !playlist ? (

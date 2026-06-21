@@ -21,12 +21,12 @@ import {
   Platform,
   Pressable,
   ScrollView,
-  StatusBar,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
+import { StatusBar } from "expo-status-bar";
 import { Feather } from "@expo/vector-icons";
 import { router, Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -172,7 +172,7 @@ export default function AccountScreen() {
     return (
       <View style={[styles.root, { backgroundColor: c.background }]}>
         <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
-        <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
+        <StatusBar style={c.isMidnightTheme ? "light" : "dark"} />
         <AppHeader title="Account" />
         <View style={styles.centered}>
           <Feather name="user" size={52} color={c.mutedForeground} />
@@ -205,7 +205,7 @@ export default function AccountScreen() {
       behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
-      <StatusBar barStyle={c.isMidnightTheme ? "light-content" : "dark-content"} />
+      <StatusBar style={c.isMidnightTheme ? "light" : "dark"} />
       <AppHeader
         title="Edit Profile"
         rightElement={dirty ? (
