@@ -677,7 +677,20 @@ class BroadcastOrchestrator extends EventEmitter {
             bootRevalidateAttempts += 1;
             try {
               if (!this.started) return;
-              if (this.items.length > 0) return; // already playing — nothing to do
+              // Check actual playability, not just item count.
+              // Items can be loaded (this.items.length > 0) but ALL blocked by the
+              // bad-URL cache that was re-hydrated from DB after a restart.  In that
+              // state the channel is OFF_AIR even though items technically exist.
+              // Previously returning early here meant dead air persisted until the
+              // 90 s allBlockedSinceMs TTL fired — but on memory-constrained hosts
+              // (MEMORY_RESTART_RSS_MB ≤ 430 MB) the watchdog restarts the process
+              // in ~80 s, beating the TTL and creating an infinite restart ↔ dead-air
+              // loop.  Fix: skip early-return only when at least one item is not
+              // blocked; if all items are bad-URL cached, proceed to clear and reload.
+              const anyPlayable = this.items.some(
+                (item) => !!item.primaryUrl && !isKnownBadUrl(item.primaryUrl),
+              );
+              if (anyPlayable) return; // at least one source is live — nothing to do
               const dbCount = await countActiveRaw();
               if (dbCount === 0) return; // truly empty — library scan handles it
               logger.warn(
@@ -2801,23 +2814,30 @@ class BroadcastOrchestrator extends EventEmitter {
       }
       // All-sources-blocked auto-recovery: when items are loaded but every URL
       // is in the bad-URL cache, track how long we've been in this state.
-      // Once BAD_URL_TTL_MS has elapsed the cache entries would naturally
-      // expire on the next isKnownBadUrl() call, but that call only happens
-      // inside snapshot() which is driven by this same tick — so we proactively
-      // clear the cache and reload here to resume playing without operator action.
+      // Once ALL_BLOCKED_RECOVERY_MS has elapsed we proactively clear the cache
+      // and reload here to resume playing without operator action.
+      //
+      // IMPORTANT: this threshold must be SHORTER than the memory-watchdog restart
+      // window (MEMORY_RESTART_RSS_MB sustained for CRITICAL_SAMPLES_FOR_EXIT × 10 s
+      // = typically 80 s on constrained hosts).  Using BAD_URL_TTL_MS (90 s) here
+      // caused an infinite loop on memory-constrained deployments: the watchdog
+      // restarted the process at ~80 s, the bad-URL cache was re-hydrated from DB,
+      // and the 90 s recovery never fired.  45 s gives ample time for a single
+      // probe retry cycle while reliably beating the watchdog restart window.
+      const ALL_BLOCKED_RECOVERY_MS = 45_000;
       if (this.items.length > 0) {
         const now = Date.now();
         if (this.allBlockedSinceMs === null) {
           this.allBlockedSinceMs = now;
           // First tick where every source URL is blocked — emit a structured
           // warning so operators and monitoring see the exact moment the queue
-          // becomes non-playable. The TTL recovery fires after BAD_URL_TTL_MS
+          // becomes non-playable. The TTL recovery fires after ALL_BLOCKED_RECOVERY_MS
           // but an operator can clear blocks immediately from Stream Health.
           logger.warn(
             {
               channel: this.channelId,
               itemCount: this.items.length,
-              badUrlTtlMs: BAD_URL_TTL_MS,
+              allBlockedRecoveryMs: ALL_BLOCKED_RECOVERY_MS,
             },
             "[broadcast-v2] ALL queue source URLs are blocked — broadcast will be off-air until TTL expires or operator clears blocks via Stream Health",
           );
@@ -2825,7 +2845,7 @@ class BroadcastOrchestrator extends EventEmitter {
             channel: this.channelId,
             itemCount: this.items.length,
           }).catch((err: unknown) => logger.warn({ err }, "[broadcast-v2] tick: all_sources_blocked bump failed (non-fatal)"));
-        } else if (now - this.allBlockedSinceMs >= BAD_URL_TTL_MS) {
+        } else if (now - this.allBlockedSinceMs >= ALL_BLOCKED_RECOVERY_MS) {
           this.allBlockedSinceMs = null;
           // Reset autoSkipAttempts so the next tick can attempt skipping again.
           // Without this reset, queues with more than 5 items (the cap) would
