@@ -332,6 +332,13 @@ services:
       # Formula: 24 × HLS_MAX_CONCURRENT + 280 + 78 margin = 24×3+280+78=430.
       # The watchdog catches excessive RSS early enough for a clean graceful
       # restart (SIGTERM → 10 s drain → exit) well before the OOM killer fires.
+      #
+      # !! IMPORTANT: if your Render dashboard shows MEMORY_RESTART_RSS_MB=470
+      # (or any value above 430), reset it to 430 in the Render dashboard under
+      # Environment. At 470 MiB the server waits until RSS is ~557 MiB — already
+      # 45 MiB above Render's 512 MiB hard ceiling — before restarting, causing
+      # the OOM killer to fire first and producing the crash-loop that shows
+      # "Can't reach the server" in the admin panel.
       - key: MEMORY_RESTART_RSS_MB
         value: "430"
 

@@ -8,6 +8,12 @@ interface ProblemDetails {
   title: string;
   status: number;
   code: string;
+  // Included on all 4xx responses so routes whose response schema declares
+  // `{ error: z.string() }` (the common shorthand for error routes) pass
+  // Fastify's Zod serializer without a ResponseSerializationError.
+  // Without this field, every rate-limit (429) and auth (401) response was
+  // serialised as a 500 because the serializer saw `error: undefined`.
+  error?: string;
   detail?: string;
   errors?: unknown;
   requestId: string;
@@ -30,6 +36,7 @@ export function registerErrorHandler(app: FastifyInstance) {
         title: "Validation failed",
         status: 400,
         code: "VALIDATION_ERROR",
+        error: "Validation failed",
         errors: sanitizedErrors,
         requestId,
       };
@@ -42,6 +49,7 @@ export function registerErrorHandler(app: FastifyInstance) {
         title: err.message,
         status: err.statusCode,
         code: err.code,
+        error: err.message,
         detail: err.message,
         errors: err.details,
         requestId,
@@ -74,6 +82,11 @@ export function registerErrorHandler(app: FastifyInstance) {
       title: status >= 500 ? "Internal server error" : err.message,
       status,
       code: status >= 500 ? "INTERNAL" : ((err as FastifyError).code ?? "INTERNAL"),
+      // `error` satisfies route response schemas that declare `{ error: z.string() }`
+      // (the shorthand used for 4xx responses across many routes). Without it,
+      // Fastify's Zod serializer rejects the response and escalates to a 500
+      // ResponseSerializationError — turning every 429 rate-limit into a 500.
+      error: status < 500 ? err.message : undefined,
       detail: status >= 500 ? undefined : err.message,
       requestId,
     };
