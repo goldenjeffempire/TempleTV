@@ -991,9 +991,10 @@ export const queueRepo = {
     // logged (not silently dropped) so operators can fix the root cause.
     const validated: typeof rows = [];
     for (const r of rows) {
-      // MP4-first: prefer localVideoUrl (raw or faststart-optimised MP4) over
-      // hlsMasterUrl so the validation check matches toItem()'s source priority.
-      const primaryUrl = r.localVideoUrl ?? r.hlsMasterUrl;
+      // HLS-first: prefer hlsMasterUrl (adaptive HLS) over localVideoUrl (MP4)
+      // to match toItem()'s source priority. Videos not yet transcoded fall back
+      // to localVideoUrl so they still air immediately post-upload.
+      const primaryUrl = r.hlsMasterUrl ?? r.localVideoUrl;
       if (!primaryUrl || primaryUrl.trim() === "") {
         logger.warn(
           { itemId: r.id, title: r.title, videoId: r.videoId },
@@ -1097,18 +1098,18 @@ export const queueRepo = {
     // (dev→prod mirror) or API_ORIGIN (production own-origin), or
     // RENDER_EXTERNAL_URL (zero-config Render self-detection), if configured.
     //
-    // MP4-first policy: any locally-uploaded video with a URL is broadcast-ready
-    // immediately — no HLS transcoding or faststart required.  Prefer localVideoUrl
-    // (raw or faststart-optimized MP4) as the primary source whenever it is present.
-    // HLS is wired as failover when available, providing adaptive bitrate as an
-    // async upgrade without ever gating broadcast admission.
+    // HLS-first policy: prefer hlsMasterUrl (adaptive HLS) as the primary source
+    // when available — HLS provides ABR quality switching, segment-level seeking,
+    // and gapless pre-fetch that are essential for a smooth 24/7 broadcast.
+    // localVideoUrl (raw or faststart-optimized MP4) is wired as the failover so
+    // videos that are not yet transcoded still air immediately post-upload.
     //
-    // Benefits of MP4-first over HLS-first:
-    //   • Available immediately post-upload (no transcoding pipeline dependency)
-    //   • Single HTTP Range request to start playback (no manifest round-trips)
-    //   • Consistent behaviour across all clients (native, web, TV, mobile)
-    //   • HLS still wired as failover for adaptive bitrate when transcoding completes
-    const primary = normalizeQueueUrl(row.localVideoUrl ?? row.hlsMasterUrl);
+    // Benefits of HLS-first over MP4-first:
+    //   • Adaptive bitrate: quality drops gracefully on slow connections
+    //   • Segment-level seeking: no moov-atom hunting on large files
+    //   • Gapless segment pre-fetch: eliminates the blank-screen gap at item transitions
+    //   • MP4 still wired as failover so brand-new uploads broadcast before HLS is ready
+    const primary = normalizeQueueUrl(row.hlsMasterUrl ?? row.localVideoUrl);
     const mp4 = normalizeQueueUrl(row.localVideoUrl);
 
     // NOTE: the bad-URL cache check is intentionally NOT here.

@@ -108,6 +108,17 @@ const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
   "127.0.0.1",
 ];
 
+// HLS master/variant playlist extension. Must be checked BEFORE MP4_EXT because
+// .ts (MPEG-2 transport stream) appears in MP4_EXT but is a segment URL, not a
+// full HLS source. The playlist (.m3u8 / .m3u) is the entry point for hls.js
+// and native HLS — only that URL should be classified as "hls".
+const HLS_MANIFEST_EXT = /\.m3u8?(?:$|\?|#)/i;
+// Internal HLS path pattern: transcoder outputs playlists at
+// /api/v1/hls/{videoId}/{level}/playlist.m3u8. Matching by path ensures that
+// HLS master playlists served from this server's own transcoding pipeline are
+// always classified as "hls" even if the URL is constructed without a file
+// extension (e.g. a CDN rewrite layer strips extensions).
+const HLS_PATH_RE = /\/api\/v1\/hls\//i;
 // Expanded to cover all common video container formats served as progressive
 // download or via a CDN. The player's <video> element handles all of these
 // natively or via MSE — classifying them all as "mp4" is safe because the
@@ -212,6 +223,13 @@ function classify(url: string): V2Source["kind"] | null {
   // player must handle them via the Vimeo embed API, not a raw <video>.
   // Vimeo CDN URLs (vimeocdn.com) serve actual MP4 bytes directly.
   if (VIMEO_HOST.test(parsed.hostname) && !parsed.hostname.includes("cdn")) return "youtube";
+  // HLS master/variant playlists — checked BEFORE MP4_EXT because .ts is in
+  // MP4_EXT (transport stream segments) but a .m3u8/.m3u playlist URL is the
+  // entry point that hls.js and native HLS players actually require. Without
+  // this check, transcoded videos whose only URL is an HLS master playlist
+  // (/api/v1/hls/…/playlist.m3u8) would fall through to `return null` and be
+  // silently rejected from the broadcast queue.
+  if (HLS_MANIFEST_EXT.test(parsed.pathname) || HLS_PATH_RE.test(parsed.pathname)) return "hls";
   if (MP4_EXT.test(parsed.pathname) || MP4_EXT.test(url)) return "mp4";
   // No recognized file extension — default to mp4 for known upload paths.
   // Locally-uploaded videos are served at /api/v1/uploads/{key} (and the
@@ -250,8 +268,12 @@ export function resolveSource(input: ResolverInput): ResolvedSource | null {
     return null; // no classifiable URL — caller logs and skips this item
   }
 
-  // MP4-only pipeline: prefer MP4 > YouTube.
-  const order: Record<V2Source["kind"], number> = { mp4: 0, youtube: 1, hls: 2, dash: 3 };
+  // Prefer adaptive HLS over progressive MP4, then DASH, then YouTube iframe.
+  // HLS provides segment-level seeking, ABR quality switching, and gapless
+  // segment pre-fetch — essential for a smooth 24/7 broadcast experience.
+  // MP4 is the fallback for videos not yet transcoded or for clients that need
+  // a direct byte-range stream (e.g. non-hls.js mobile downloads).
+  const order: Record<V2Source["kind"], number> = { hls: 0, mp4: 1, dash: 2, youtube: 3 };
   candidates.sort((a, b) => order[a.kind] - order[b.kind]);
 
   const primary = candidates[0]!;

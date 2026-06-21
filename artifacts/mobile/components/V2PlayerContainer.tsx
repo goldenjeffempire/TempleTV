@@ -799,9 +799,9 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
           // segment at the new position.
           //
           // Suppress the re-seek when the playhead is already within
-          // HLS_SMALL_DRIFT_SKIP_MS (30 s) of the target — the viewer is
+          // HLS_SMALL_DRIFT_SKIP_MS (8 s) of the target — the viewer is
           // watching the correct content and the minor desync is imperceptible.
-          // Allow the seek when the drift is large (> 30 s), which indicates a
+          // Allow the seek when the drift is large (> 8 s), which indicates a
           // genuine broadcast restart or a severely skewed device clock.
           //
           // The guard requires playStartMsRef to be set (i.e. we have already

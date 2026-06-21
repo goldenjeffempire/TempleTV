@@ -10,28 +10,6 @@ import type {
 /**
  * Determine the playback start position (seconds) for a `play` intent.
  *
- * HLS supports efficient segment-level seeking via the manifest — use the
- * wall-clock position so all viewers stay in sync regardless of when they
- * connect.
- *
- * MP4 / DASH / YouTube: always return 0.
- *
- * Why: seeking in a large non-faststart MP4 requires the browser to first
- * locate the moov atom, which is typically at the END of the file. The
- * browser must issue multiple Range requests through the media proxy to
- * find it; on a high-latency proxy chain (dev → API server → CDN) this
- * sequence routinely exhausts the stall watchdog before `loadedmetadata`
- * fires, triggering RECOVERING_PRIMARY → RECOVERING_FAILOVER → SKIP_PENDING
- * → `/report-stall` → source blacklisted → "Off Air".
- *
- * Playing from position 0 sidesteps moov-seeking entirely. The
- * `naturalItemEnd` callback writes the real duration back to the DB on the
- * first natural play-through, so all subsequent loops are scheduled
- * correctly without any operator action.
- */
-/**
- * Determine the playback start position (seconds) for a `play` intent.
- *
  * @param clockOffsetMs  Server-client clock offset: serverTimeMs − Date.now(),
  *   measured at the last hello/heartbeat/snapshot frame. Positive = server clock
  *   ahead of local clock. Applied to Date.now() so the position calculation uses
