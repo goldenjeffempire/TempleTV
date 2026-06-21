@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
+import { storagePaths } from "../../infrastructure/storage-paths.js";
 import {
   transcodingQueueDepth,
   transcoderActiveJobCount,
@@ -219,7 +220,7 @@ class TranscoderDispatcher {
 
   private async purgeOrphanedScratchDirs(): Promise<void> {
     try {
-      const scratchRoot = env.TRANSCODER_SCRATCH_DIR ?? path.join(os.tmpdir(), "transcoder");
+      const scratchRoot = storagePaths.scratch;
       let entries: string[];
       try {
         entries = await readdir(scratchRoot);
@@ -270,7 +271,7 @@ class TranscoderDispatcher {
    */
   private async scanAndKillOrphanedFfmpegProcesses(): Promise<void> {
     if (process.platform !== "linux") return;
-    const scratchRoot = env.TRANSCODER_SCRATCH_DIR ?? path.join(os.tmpdir(), "transcoder");
+    const scratchRoot = storagePaths.scratch;
     try {
       let entries: string[];
       try {

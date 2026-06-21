@@ -828,7 +828,43 @@ const Env = z.object({
   // Directory to write the tertiary disk-state backup JSON file.
   // Default: /tmp (always writable in Node.js containers).
   // The file is named broadcast-state-<channelId>.json.
+  // When STORAGE_PATH is set, storage-paths.ts overrides this at runtime.
   BROADCAST_STATE_BACKUP_PATH: z.string().default("/tmp"),
+
+  // ── Persistent storage root (Render Disk / any mounted volume) ────────────
+  //
+  // All media content (uploads, HLS segments, thumbnails) is stored in
+  // PostgreSQL BYTEA blobs — it survives container restarts automatically.
+  // This path is used for filesystem-resident data that BENEFITS from a
+  // persistent mount:
+  //
+  //   $STORAGE_PATH/scratch      — FFmpeg transcoder workspace per job
+  //                                (Render /tmp is often only 500 MB; large
+  //                                 1080p encodes need up to 4× source size)
+  //   $STORAGE_PATH/             — broadcast state + queue backup JSON files
+  //   $STORAGE_PATH/uploads      — informational; created for future local use
+  //   $STORAGE_PATH/hls          — informational; created for future local use
+  //   $STORAGE_PATH/thumbnails   — informational; created for future local use
+  //
+  // Render Disk quick-start:
+  //   1. Create a Render Disk mounted at /var/data (Dashboard → Disks).
+  //   2. Set STORAGE_PATH=/var/data in your Render service Environment.
+  //   3. All sub-paths derive automatically; no other changes needed.
+  //
+  // Individual overrides (highest priority):
+  //   TRANSCODER_SCRATCH_DIR  — override only the FFmpeg workspace
+  //   UPLOAD_DIR              — informational uploads path
+  //   HLS_DIR                 — informational HLS path
+  //   THUMBNAIL_DIR           — informational thumbnails path
+  //   BROADCAST_STATE_BACKUP_PATH  — override only the state backup dir
+  //   BROADCAST_QUEUE_BACKUP_DIR   — override only the queue backup dir
+  STORAGE_PATH: z.string().optional(),
+
+  // Informational paths — actual media is in PostgreSQL; these are created
+  // on startup when STORAGE_PATH is set and available for future use.
+  UPLOAD_DIR: z.string().optional(),
+  HLS_DIR: z.string().optional(),
+  THUMBNAIL_DIR: z.string().optional(),
 });
 
 export type AppEnv = z.infer<typeof Env>;

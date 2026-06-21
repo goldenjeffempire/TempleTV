@@ -8,6 +8,7 @@ import { getStorageHealthStatus } from "../../../infrastructure/storage-health-m
 import { prodQueueSync } from "../../prod-sync/prod-queue-sync.js";
 import { getViewerSlopeStatus } from "../../admin-ops/viewer-slope-monitor.js";
 import { registerNamedStore } from "../../../infrastructure/cache.js";
+import { storagePaths } from "../../../infrastructure/storage-paths.js";
 import { getYouTubeAutoOverrideStats } from "../../youtube-live/auto-override.js";
 import {
   ForceFailoverCommand,
@@ -210,7 +211,7 @@ async function checkRemoteTranscodeDiskSpace(
 
     // Check the filesystem where the transcoder scratch dir lives.
     // Fall back to os.tmpdir() if the scratch root doesn't exist yet (first boot).
-    const scratchRoot = env.TRANSCODER_SCRATCH_DIR ?? path.join(os.tmpdir(), "transcoder");
+    const scratchRoot = storagePaths.scratch;
     const fsInfo = await statfs(scratchRoot).catch(() => statfs(os.tmpdir()));
     const availableBytes = fsInfo.bavail * fsInfo.bsize;
     const requiredBytes = remoteBytes * REMOTE_TRANSCODE_DISK_MULTIPLIER;

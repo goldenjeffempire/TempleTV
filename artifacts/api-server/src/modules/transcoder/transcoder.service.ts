@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { storage } from "../../infrastructure/storage.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
+import { storagePaths } from "../../infrastructure/storage-paths.js";
 import { registerNamedStore } from "../../infrastructure/cache.js";
 
 // ── Download pipeline reliability constants ───────────────────────────────
@@ -1922,7 +1923,7 @@ export async function runTranscode(req: TranscodeRequest): Promise<TranscodeResu
     throw new Error("Object storage is disabled — cannot run transcoder");
   }
 
-  const scratchRoot = env.TRANSCODER_SCRATCH_DIR ?? path.join(os.tmpdir(), "transcoder");
+  const scratchRoot = storagePaths.scratch;
   const scratchDir = path.join(scratchRoot, req.jobId);
   await rm(scratchDir, { recursive: true, force: true }).catch(() => undefined);
   await mkdir(scratchDir, { recursive: true });
@@ -2937,7 +2938,7 @@ export async function generateQuickThumbnail(
   const s = storage();
   if (!s.enabled) return null;
 
-  const scratchRoot = env.TRANSCODER_SCRATCH_DIR ?? path.join(os.tmpdir(), "transcoder");
+  const scratchRoot = storagePaths.scratch;
   const scratchDir = path.join(scratchRoot, `thumb-${videoId}`);
   try {
     await mkdir(scratchDir, { recursive: true });

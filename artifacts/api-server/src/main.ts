@@ -24,6 +24,7 @@ import { startMemoryWatchdog, stopMemoryWatchdog } from "./infrastructure/memory
 import { startEventLoopLagMonitor, stopEventLoopLagMonitor } from "./infrastructure/event-loop-lag.js";
 import { installDbPoolHealthMonitor, uninstallDbPoolHealthMonitor } from "./infrastructure/db-pool-health.js";
 import { markShuttingDown, markStartupComplete } from "./infrastructure/shutdown-flag.js";
+import { ensureStorageDirectories, logStoragePathConfig } from "./infrastructure/storage-paths.js";
 import { runHlsStartupIntegrityScan } from "./modules/broadcast-v2/engine/hls-startup-integrity.js";
 import { schema } from "./infrastructure/db.js";
 import { hashPassword } from "./modules/auth/password.js";
@@ -333,6 +334,13 @@ async function main() {
     if (!startupComplete) { process.exit(1); return; }
     void shutdown("uncaughtException", 1);
   });
+
+  // ── Persistent storage directories ─────────────────────────────────────
+  // Must run before any service that uses the filesystem (transcoder, broadcast
+  // state backup, queue backup). Creates scratch / backup dirs and validates
+  // write permissions. Non-fatal — services have graceful-degradation paths.
+  logStoragePathConfig();
+  await ensureStorageDirectories();
 
   logger.info({ runMode: mode }, "process starting");
   // Log the effective V8 heap limit immediately so production operators can

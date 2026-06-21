@@ -17,8 +17,9 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { logger } from "../../../infrastructure/logger.js";
+import { storagePaths } from "../../../infrastructure/storage-paths.js";
 
-const BACKUP_DIR = process.env["BROADCAST_STATE_BACKUP_PATH"] ?? "/tmp";
+const BACKUP_DIR = storagePaths.stateBackup;
 
 function filePath(channelId: string): string {
   return path.join(BACKUP_DIR, `broadcast-state-${channelId}.json`);

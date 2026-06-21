@@ -12,6 +12,7 @@ import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, 
 import { faststartRecoveryWorker } from "./faststart-recovery.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { saveDiskBackup, loadDiskBackup } from "../repository/disk-state-backup.js";
+import { storagePaths } from "../../../infrastructure/storage-paths.js";
 import { ytShuffleFallback } from "./youtube-shuffle-fallback.js";
 import { playbackAnalytics } from "./playback-analytics.js";
 import { scanLibraryAndEnqueue } from "../../broadcast/auto-enqueue.service.js";
@@ -1286,7 +1287,7 @@ class BroadcastOrchestrator extends EventEmitter {
   // storage or local upload paths don't expire and work indefinitely.
 
   private static queueBackupPath(channelId: string): string {
-    const dir = process.env.BROADCAST_QUEUE_BACKUP_DIR ?? "/tmp";
+    const dir = process.env["BROADCAST_QUEUE_BACKUP_DIR"] ?? storagePaths.queueBackup;
     return path.join(dir, `broadcast-v2-queue-backup-${channelId}.json`);
   }
 
