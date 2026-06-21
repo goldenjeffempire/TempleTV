@@ -2129,6 +2129,7 @@ function BroadcastV2PageInner() {
     staleTime: 15_000,
     refetchInterval: sseGated60s,
   });
+  const queueItems = queueData?.items ?? [];
 
   // Engine health — polls every 30 s. SSE events (broadcast-queue-updated,
   // transcoding-update) trigger immediate invalidation for real-time accuracy;
@@ -3180,7 +3181,6 @@ function BroadcastV2PageInner() {
   });
 
   const server = v2LiveState?.state ?? null;
-  const queueItems = queueData?.items ?? [];
   const activeQueueCount = queueItems.filter((i) => i.isActive).length;
 
   // Items in drag-reorder local order — instantly reflects drag operations
