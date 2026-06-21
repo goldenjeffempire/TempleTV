@@ -84,6 +84,26 @@ export default defineConfig({
         target: "http://localhost:8080",
         changeOrigin: true,
         ws: true,
+        // Disable proxy-level timeout for long-lived SSE connections.
+        // Without this, Vite's http-proxy library applies a default
+        // proxyTimeout that silently drops SSE streams after the proxy
+        // sees no data from the target for the timeout window — even
+        // when the server is healthy and actively sending heartbeats
+        // (which flow at the write() level, past the proxy's read
+        // timeout).  0 = no timeout; the server-side zombie-check and
+        // client-side watchdog handle dead connections instead.
+        proxyTimeout: 0,
+        configure: (proxy) => {
+          // For SSE responses: mark the proxy socket as persistent and
+          // disable Nagle so small heartbeat frames are flushed promptly
+          // through the Vite proxy → Replit external proxy chain.
+          proxy.on("proxyRes", (proxyRes, req) => {
+            if ((req.headers["accept"] as string | undefined)?.includes("text/event-stream")) {
+              proxyRes.socket?.setKeepAlive?.(true, 30_000);
+              proxyRes.socket?.setNoDelay?.(true);
+            }
+          });
+        },
       },
     },
     fs: {

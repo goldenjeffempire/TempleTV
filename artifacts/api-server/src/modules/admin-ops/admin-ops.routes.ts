@@ -130,7 +130,24 @@ registerNamedStore("sse-sub-tokens", () => sseTokenStore.size);
 // connection. closeAllAdminSseSessions() is called during graceful shutdown so
 // the drain loop completes in O(ms) instead of hitting the drain timeout.
 const openAdminSseCleanups = new Set<() => void>();
+
+// Parallel send-function registry: used by closeAllAdminSseSessions() to
+// broadcast a graceful-restart `reconnect` hint to all open admin tabs
+// BEFORE tearing down their streams. This mirrors the behaviour of
+// broadcastReconnectHint() in the broadcast-v2 SSE gateway: clients receive
+// a named `reconnect` event, immediately close the EventSource themselves,
+// and schedule a fast reconnect — rather than waiting for their zombie
+// watchdog (45 s) to detect the dead socket after the server exits.
+const openAdminSseSends = new Set<(event: string, data: unknown) => void>();
+
 export function closeAllAdminSseSessions(): void {
+  // 1. Notify all connected admin tabs so they reconnect proactively.
+  //    retryMs=1500 gives the server ~1.5 s to finish booting before clients
+  //    start hammering the new instance (same heuristic as broadcast-v2).
+  for (const send of openAdminSseSends) {
+    try { send("reconnect", { retryMs: 1500 }); } catch { /* ignore */ }
+  }
+  // 2. Tear down the streams so the graceful-shutdown drain completes quickly.
   for (const cleanup of openAdminSseCleanups) {
     try { cleanup(); } catch { /* ignore */ }
   }
@@ -4108,6 +4125,20 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       // makes the admin connection indicator flicker on idle streams.
       reply.raw.socket?.setNoDelay(true);
 
+      // Enable OS-level TCP keepalives (probe every 30 s).  This keeps
+      // the NAT/proxy connection-table entries alive on intermediate hops
+      // (Replit external proxy, nginx, Vite dev proxy) that would otherwise
+      // silently drop connections they classify as idle.  Different from the
+      // application-level heartbeat — these are TCP SYN probes invisible to
+      // the application layer.
+      reply.raw.socket?.setKeepAlive(true, 30_000);
+
+      // Disable any socket-level inactivity timeout inherited from the HTTP
+      // server configuration (keepAliveTimeout affects idle keep-alive sockets
+      // waiting for the next request — but belt-and-suspenders: set to 0 so
+      // an SSE stream is never closed by a socket timeout).
+      reply.raw.socket?.setTimeout(0);
+
       reply.raw.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache, no-transform",
@@ -4226,6 +4257,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         if (adminSseClosed) return;
         adminSseClosed = true;
         openAdminSseCleanups.delete(cleanup);
+        openAdminSseSends.delete(send);
         clearInterval(heartbeat);
         clearInterval(zombieCheck);
         clearInterval(viewerBreakdownInterval);
@@ -4242,6 +4274,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       };
 
       openAdminSseCleanups.add(cleanup);
+      openAdminSseSends.add(send);
       req.raw.on("close", () => cleanup("client-close"));
       req.raw.on("error", () => cleanup("socket-error"));
     },

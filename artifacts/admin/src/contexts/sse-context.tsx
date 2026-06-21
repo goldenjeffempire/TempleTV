@@ -548,6 +548,31 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
           });
         });
 
+        // ── Graceful-restart reconnect hint ───────────────────────────────────
+        // The server broadcasts a named `reconnect` event to all open admin
+        // SSE connections just before it closes them during a graceful
+        // shutdown (deploy, OOM restart, etc.).  Receiving this frame lets
+        // the client proactively close the stale EventSource and schedule a
+        // fast reconnect using the server-supplied `retryMs` delay — instead
+        // of waiting up to 45 s for the zombie watchdog to fire.
+        es.addEventListener("reconnect", (e: MessageEvent) => {
+          if (esRef.current !== es) return;
+          clearTimeout(openTimeout);
+          let retryMs = 2_000;
+          try {
+            const parsed = JSON.parse(e.data as string) as { retryMs?: number };
+            if (typeof parsed?.retryMs === "number") retryMs = parsed.retryMs;
+          } catch { /* use default */ }
+          es.close();
+          esRef.current = null;
+          // Reset attempt counter: the server told us it's restarting, so
+          // treat this as a first attempt rather than a failure.
+          attempt.current = 0;
+          reconnectTimer.current = setTimeout(() => {
+            if (mounted.current) connect();
+          }, retryMs) as unknown as NodeJS.Timeout;
+        });
+
         es.onerror = () => {
           clearTimeout(openTimeout);
           // ── Stale-closure guard (critical) ────────────────────────────────
