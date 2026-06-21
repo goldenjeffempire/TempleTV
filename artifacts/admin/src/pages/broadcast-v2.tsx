@@ -2047,6 +2047,10 @@ function BroadcastV2PageInner() {
   // Dismissible dead-air banner. Auto-reset when a current item is found so
   // the banner reappears if the broadcast drops to dead air again.
   const [deadAirDismissed, setDeadAirDismissed] = useState(false);
+  // Latest all-blocked recovery cycle count from dead-air-escalation SSE events.
+  // Drives the cycle counter in the dead-air banner and auto-reopen logic.
+  const [allBlockedCycles, setAllBlockedCycles] = useState(0);
+  const [ytShuffleAutoActivated, setYtShuffleAutoActivated] = useState(false);
   // Dismissible consecutive-skips banner. Auto-reset when consecutiveSkips
   // drops back to 0 (a successful item play).
   const [consecutiveSkipsDismissed, setConsecutiveSkipsDismissed] = useState(false);
@@ -3099,13 +3103,22 @@ function BroadcastV2PageInner() {
   // Each cycle the orchestrator clears the bad-URL cache and retries — if it
   // keeps firing the operator needs to intervene (broken sources or empty queue).
   useSSEEvent("dead-air-escalation", (data: unknown) => {
-    const d = data as { allBlockedRecoveryCycles?: number; itemCount?: number } | null;
+    const d = data as {
+      allBlockedRecoveryCycles?: number;
+      itemCount?: number;
+      ytShuffleActivated?: boolean;
+    } | null;
     const cycles = d?.allBlockedRecoveryCycles ?? 1;
+    setAllBlockedCycles(cycles);
+    if (d?.ytShuffleActivated) setYtShuffleAutoActivated(true);
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
     // Dead-air escalation may trigger auto-suspend of problematic items —
     // the remediation report reflects suspended/blocked item health.
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+    // Re-open the dead-air banner so the operator sees it even if they
+    // previously dismissed it — escalating cycles demand attention.
+    if (cycles >= 2) setDeadAirDismissed(false);
     if (cycles >= 3) {
       toast.error(
         `All broadcast sources blocked for ${cycles} recovery cycles — operator action needed.`,
@@ -3363,7 +3376,11 @@ function BroadcastV2PageInner() {
   // Only surface after a brief warmup window so we don't flash on cold boot.
   const isDeadAir = engineHealth?.deadAir === true && !isStuck;
   useEffect(() => {
-    if (!isDeadAir) setDeadAirDismissed(false);
+    if (!isDeadAir) {
+      setDeadAirDismissed(false);
+      setAllBlockedCycles(0);
+      setYtShuffleAutoActivated(false);
+    }
   }, [isDeadAir]);
 
   // Drift alert: cycle anchor is more than the threshold ahead/behind the
@@ -4111,35 +4128,74 @@ function BroadcastV2PageInner() {
       )}
 
       {/* Dead-air alert strip — queue has content but nothing is broadcasting.
-          This condition is distinct from "stuck" (seq=0) and "all-blocked"
-          (every URL banned). It fires when the engine is healthy but no item
-          is selected as current — typically after all items were skipped or
-          the cycle position landed past the last item in an undersized queue. */}
+          Covers two sub-states: (1) "all_blocked" — every source URL is in the
+          bad-URL cache, and (2) generic dead air — cycle exhausted all items or
+          the broadcast position landed past the last item. */}
       {isDeadAir && !deadAirDismissed && (
         <div
           role="alert"
-          className="flex items-start gap-3 rounded-md border border-orange-300/60 bg-orange-50 px-4 py-3 text-sm text-orange-900 dark:border-orange-700/60 dark:bg-orange-950/30 dark:text-orange-200"
+          className={`flex items-start gap-3 rounded-md border px-4 py-3 text-sm ${
+            engineHealth?.offAirReason === "all_blocked"
+              ? "border-red-300/70 bg-red-50 text-red-900 dark:border-red-700/60 dark:bg-red-950/30 dark:text-red-200"
+              : "border-orange-300/60 bg-orange-50 text-orange-900 dark:border-orange-700/60 dark:bg-orange-950/30 dark:text-orange-200"
+          }`}
         >
-          <Radio className="mt-0.5 h-4 w-4 shrink-0 text-orange-500" />
-          <div className="flex-1">
-            <strong>Dead air — content in queue but not playing.</strong>{" "}
-            {engineHealth?.itemCount === 1
-              ? "1 item is"
-              : `${engineHealth?.itemCount ?? 0} item(s) are`}
-            {" "}queued but nothing is on air.{" "}
-            {engineHealth?.offAirReason === "all_blocked"
-              ? "Sources may be blocked — check Stream Health."
-              : "Sources may be blocked or the broadcast cycle has exhausted all items."}
-            {" "}Use <strong>Repair Queue</strong> to clear URL blocks and resync, or{" "}
-            <strong>Reload</strong> to restart the broadcast cycle.
+          <Radio className={`mt-0.5 h-4 w-4 shrink-0 ${engineHealth?.offAirReason === "all_blocked" ? "text-red-500" : "text-orange-500"}`} />
+          <div className="flex-1 space-y-1.5">
+            {engineHealth?.offAirReason === "all_blocked" ? (
+              <>
+                <div>
+                  <strong>All sources blocked{allBlockedCycles > 0 ? ` — recovery cycle ${allBlockedCycles}` : ""}.</strong>{" "}
+                  {engineHealth?.itemCount === 1 ? "1 item is" : `${engineHealth?.itemCount ?? 0} items are`}{" "}
+                  queued but every URL is in the bad-URL block list.
+                  {" "}The engine auto-clears blocks every 45 s and retries.
+                </div>
+                {ytShuffleAutoActivated && (
+                  <div className="text-xs text-red-700 dark:text-red-300">
+                    YouTube shuffle auto-activated as fallback — viewers are seeing content. Local sources will resume automatically when reachable.
+                  </div>
+                )}
+                <div className="text-xs opacity-75">
+                  Use <strong>Revalidate Sources</strong> to immediately clear blocks and re-probe all URLs, or <strong>Repair Queue</strong> for a full URL audit.
+                </div>
+              </>
+            ) : (
+              <div>
+                <strong>Dead air — content in queue but not playing.</strong>{" "}
+                {engineHealth?.itemCount === 1 ? "1 item is" : `${engineHealth?.itemCount ?? 0} item(s) are`}{" "}
+                queued but nothing is on air — the broadcast cycle may have exhausted all items.{" "}
+                Use <strong>Repair Queue</strong> to clear URL blocks and resync, or <strong>Reload</strong> to restart the broadcast cycle.
+              </div>
+            )}
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            {engineHealth?.offAirReason === "all_blocked" && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!!busy}
+                onClick={() => adminPost("/broadcast-v2/revalidate-sources")}
+                className="h-7 px-2 text-xs border-red-400/70 text-red-800 hover:bg-red-100 dark:text-red-200 dark:border-red-600/70 dark:hover:bg-red-900/30"
+                title="Clears the bad-URL block list, re-enables suspended items, and immediately re-probes all source URLs."
+              >
+                {busy === "/broadcast-v2/revalidate-sources" ? (
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                ) : (
+                  <ShieldCheck className="mr-1 h-3 w-3" />
+                )}
+                Revalidate Sources
+              </Button>
+            )}
             <Button
               size="sm"
               variant="outline"
               disabled={!!busy}
               onClick={() => void repairQueue()}
-              className="h-7 px-2 text-xs border-orange-400/70 text-orange-800 hover:bg-orange-100 dark:text-orange-200 dark:border-orange-600/70 dark:hover:bg-orange-900/30"
+              className={`h-7 px-2 text-xs ${
+                engineHealth?.offAirReason === "all_blocked"
+                  ? "border-red-400/70 text-red-800 hover:bg-red-100 dark:text-red-200 dark:border-red-600/70 dark:hover:bg-red-900/30"
+                  : "border-orange-400/70 text-orange-800 hover:bg-orange-100 dark:text-orange-200 dark:border-orange-600/70 dark:hover:bg-orange-900/30"
+              }`}
             >
               {busy === "repair-queue" ? (
                 <Loader2 className="mr-1 h-3 w-3 animate-spin" />
@@ -4153,7 +4209,11 @@ function BroadcastV2PageInner() {
               variant="outline"
               disabled={!!busy}
               onClick={() => void adminPost("/broadcast-v2/reload")}
-              className="h-7 px-2 text-xs border-orange-400/70 text-orange-800 hover:bg-orange-100 dark:text-orange-200 dark:border-orange-600/70 dark:hover:bg-orange-900/30"
+              className={`h-7 px-2 text-xs ${
+                engineHealth?.offAirReason === "all_blocked"
+                  ? "border-red-400/70 text-red-800 hover:bg-red-100 dark:text-red-200 dark:border-red-600/70 dark:hover:bg-red-900/30"
+                  : "border-orange-400/70 text-orange-800 hover:bg-orange-100 dark:text-orange-200 dark:border-orange-600/70 dark:hover:bg-orange-900/30"
+              }`}
             >
               {busy === "/broadcast-v2/reload" ? (
                 <Loader2 className="mr-1 h-3 w-3 animate-spin" />
@@ -4166,7 +4226,11 @@ function BroadcastV2PageInner() {
               type="button"
               aria-label="Dismiss dead-air alert"
               onClick={() => setDeadAirDismissed(true)}
-              className="shrink-0 rounded p-0.5 hover:bg-orange-200/60 dark:hover:bg-orange-800/40"
+              className={`shrink-0 rounded p-0.5 ${
+                engineHealth?.offAirReason === "all_blocked"
+                  ? "hover:bg-red-200/60 dark:hover:bg-red-800/40"
+                  : "hover:bg-orange-200/60 dark:hover:bg-orange-800/40"
+              }`}
             >
               <X className="h-4 w-4" />
             </button>

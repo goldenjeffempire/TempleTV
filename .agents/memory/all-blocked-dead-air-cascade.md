@@ -35,8 +35,24 @@ if (anyPlayable) return;
 
 The bad-URL cache is persisted to the DB (via `persistBadUrlCache`) and re-hydrated on every restart (via `hydrateBadUrlCache`). A single probe failure before a crash stores the blocked URL in the DB. Without both fixes, every subsequent restart inherits the blocked state and can never clear it autonomously.
 
+## Auto-escalation to YouTube shuffle (added)
+
+After `allBlockedRecoveryCycles >= 2` (~90 s of persistent dead air), the orchestrator
+automatically calls `ytShuffleFallback.activate()` as an emergency escape:
+
+- Guard: `!ytShuffleFallback.isActive && this.mode !== "override" && !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE`
+- `dead-air-escalation` SSE payload now includes `ytShuffleActivated: boolean`
+- Admin banner (`broadcast-v2.tsx`) shows red "All sources blocked — recovery cycle N" with a
+  "Revalidate Sources" button (lighter, targeted fix) plus "Repair Queue" (full audit)
+- Banner auto-reopens when cycles ≥ 2 even if previously dismissed
+- `allBlockedCycles` and `ytShuffleAutoActivated` reset to 0/false when dead air clears
+
+The ytShuffleFallback deactivates automatically in `reloadInner` when any local item becomes
+playable again (guard at ~line 1732 of broadcast-orchestrator.ts).
+
 ## How to apply
 
 - Any time you touch boot revalidation logic: verify the playability check uses `isKnownBadUrl(item.primaryUrl)`, not `items.length > 0`.
 - Any all-blocked recovery threshold: must be measurably less than `MEMORY_RESTART_RSS_MB` sustained-samples window (samples × interval).  For 8 × 10 s = 80 s, use ≤ 60 s.
 - `clearAllBadUrls()` resets `badUrlFailureCounts` too — items start with fresh 20 s TTL after a manual or auto clear, not the escalated 10 min TTL from repeated failures.
+- The `dead-air-escalation` SSE event fires on every 45 s recovery cycle — downstream code (admin UI, monitoring alerts) should be idempotent on repeated delivery.

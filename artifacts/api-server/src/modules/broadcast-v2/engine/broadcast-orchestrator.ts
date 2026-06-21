@@ -2855,6 +2855,35 @@ class BroadcastOrchestrator extends EventEmitter {
           this.autoSkipAttempts = 0;
           this.consecutiveSkips = 0;       // clear admin banner on TTL-based recovery too
           this.allBlockedRecoveryCycles += 1;
+
+          // After 2 consecutive recovery cycles with no progress (~90 s of dead
+          // air), auto-activate the YouTube shuffle so viewers see content while
+          // local source issues self-heal or an operator intervenes.  The shuffle
+          // deactivates automatically in reloadInner the moment any local item
+          // becomes playable again (see ytShuffleFallback deactivation guard at
+          // ~line 1732).  Guard: skip if a manual override is active, the shuffle
+          // itself is already running, or it has been explicitly disabled.
+          const ytShuffleEscalated =
+            this.allBlockedRecoveryCycles >= 2 &&
+            !ytShuffleFallback.isActive &&
+            this.mode !== "override" &&
+            !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE;
+
+          if (ytShuffleEscalated) {
+            logger.warn(
+              { cycles: this.allBlockedRecoveryCycles, items: this.items.length },
+              "[broadcast-v2] persistent all-blocked dead air — auto-activating YouTube shuffle fallback to maintain broadcast continuity",
+            );
+            void ytShuffleFallback
+              .activate((opts) => this.startOverride(opts))
+              .catch((err: unknown) =>
+                logger.warn(
+                  { err },
+                  "[broadcast-v2] all-blocked ytShuffleFallback activation failed (non-fatal)",
+                ),
+              );
+          }
+
           // Push a dead-air escalation event on EVERY blocked TTL cycle so
           // the admin dashboard can surface a banner. External monitors also
           // key off this.
@@ -2862,9 +2891,10 @@ class BroadcastOrchestrator extends EventEmitter {
             channel: this.channelId,
             allBlockedRecoveryCycles: this.allBlockedRecoveryCycles,
             itemCount: this.items.length,
+            ytShuffleActivated: ytShuffleEscalated,
           });
           logger.info(
-            { items: this.items.length, recoveryCycles: this.allBlockedRecoveryCycles },
+            { items: this.items.length, recoveryCycles: this.allBlockedRecoveryCycles, ytShuffleActivated: ytShuffleEscalated },
             "[broadcast-v2] all-sources-blocked TTL expired — auto-clearing bad-URL cache and reloading",
           );
           clearAllBadUrls();
