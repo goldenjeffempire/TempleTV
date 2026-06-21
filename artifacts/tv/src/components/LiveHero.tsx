@@ -148,6 +148,36 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
       }}
       data-testid="live-hero"
     >
+      {/* Broadcasting identity banner — top of hero, always visible */}
+      <div
+        aria-label="Jesus Christ Temple Ministry Broadcasting Now"
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 18,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "clamp(10px, 1.4vh, 18px) var(--tv-safe-h, 60px)",
+          pointerEvents: "none",
+        }}
+      >
+        <span
+          style={{
+            fontSize: "clamp(11px, 1vw, 14px)",
+            fontWeight: 700,
+            letterSpacing: "0.18em",
+            textTransform: "uppercase",
+            color: "rgba(255,255,255,0.82)",
+            textShadow: "0 1px 8px rgba(0,0,0,0.7)",
+          }}
+        >
+          ✝&nbsp; Jesus Christ Temple Ministry Broadcasting Now
+        </span>
+      </div>
+
       {/* Live-fallback flash banner — see useLiveFallbackJustTriggered. */}
       {showFallbackBanner && (
         <div

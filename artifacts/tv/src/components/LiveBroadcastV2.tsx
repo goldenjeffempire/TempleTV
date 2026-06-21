@@ -925,12 +925,19 @@ export function LiveBroadcastV2({
         // Check active override first (LIVE_OVERRIDE_ACTIVE with YouTube kind).
         const overrideKind = server?.override?.kind;
         const overrideUrl  = server?.override?.url;
+        // hero → muted ambient preview, no controls, keyboard disabled.
+        // player → unmuted fullscreen experience, controls visible so the
+        // viewer can pause / seek / fullscreen / adjust volume.
+        const isPlayer = variant === "player";
+        const ytMute     = isPlayer ? 0 : 1;
+        const ytControls = isPlayer ? 1 : 0;
+        const ytDisableKb = isPlayer ? "" : "&disablekb=1";
         if (overrideKind === "youtube" && overrideUrl) {
           const ytId = extractYouTubeId(overrideUrl);
           if (ytId) return (
             <iframe
-              key={`override-${ytId}`}
-              src={`https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3&disablekb=1&enablejsapi=1`}
+              key={`override-${ytId}-${variant}`}
+              src={`https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&mute=${ytMute}&controls=${ytControls}&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3${ytDisableKb}&enablejsapi=1`}
               allow="autoplay; encrypted-media; fullscreen"
               allowFullScreen
               style={{
@@ -952,8 +959,8 @@ export function LiveBroadcastV2({
         if (!ytId) return null;
         return (
           <iframe
-            key={ytId}
-            src={`https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3&disablekb=1&enablejsapi=1`}
+            key={`${ytId}-${variant}`}
+            src={`https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&mute=${ytMute}&controls=${ytControls}&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3${ytDisableKb}&enablejsapi=1`}
             allow="autoplay; encrypted-media; fullscreen"
             allowFullScreen
             style={{

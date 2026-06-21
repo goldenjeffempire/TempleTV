@@ -470,7 +470,7 @@ export function Home({ onNavigateSearch, onNavigateHistory, onNavigateSettings, 
       {/* Scrollable content */}
       <div ref={scrollRef} style={{ position: "absolute", inset: 0, overflowY: "auto", overflowX: "hidden", paddingBottom: "max(40px, calc(var(--mobile-nav-h) + env(safe-area-inset-bottom, 0px) + 12px))" }}>
         {/* Hero */}
-        <div style={{ marginBottom: 24 }}>
+        <div style={{ marginBottom: 24, marginTop: 32 }}>
           <LiveHero
             liveStatus={liveStatus}
             broadcastCurrent={broadcastCurrent}
