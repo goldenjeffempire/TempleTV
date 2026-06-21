@@ -108,14 +108,37 @@ function navigateToLive(
   });
 }
 
+// ─── Ministry Header ──────────────────────────────────────────────────────────
+// Sits above the hero, owns the safe-area top inset so the hero no longer
+// extends under the status bar. Provides clear brand identity at the very top.
+
+interface MinistryHeaderProps {
+  topInset: number;
+}
+
+function MinistryHeader({ topInset }: MinistryHeaderProps) {
+  const c = useColors();
+  return (
+    <View
+      style={[
+        styles.ministryHeader,
+        { paddingTop: topInset + 10, backgroundColor: c.background },
+      ]}
+    >
+      <Text style={[styles.ministryTitle, { color: c.foreground }]}>
+        Jesus Christ Temple Ministry
+      </Text>
+      <View style={[styles.ministryDivider, { backgroundColor: c.primary }]} />
+    </View>
+  );
+}
+
 // ─── Hero Section ─────────────────────────────────────────────────────────────
-// Fully immersive: the hero begins at y=0 (behind the system status bar).
-// topInset is the safe-area top inset used to:
-//  • Extend the hero height so it fills the notch/status-bar area.
-//  • Position the floating logo overlay below the notch.
-//  • Position the emergency banner below the notch.
-// The content below the hero (category rows) scrolls normally — only the hero
-// extends under the status bar.
+// The hero sits below the MinistryHeader — topInset is 0 because the header
+// above already handles the safe-area top inset.
+// topInset is kept as a prop (always 0 from WatchScreen) so the internal
+// overlay positioning logic (logo, emergency banner, gradient) still reads
+// consistently without requiring a wider refactor.
 
 interface HeroSectionProps {
   fallbackSermon: Sermon | null;
@@ -655,8 +678,11 @@ export default function WatchScreen() {
           />
         }
       >
-        {/* Immersive hero — occupies (statusBarHeight + 16:9 video) pixels */}
-        <HeroSection fallbackSermon={fallbackSermon} topInset={insets.top} />
+        {/* Ministry header — owns the safe-area top inset; hero sits below */}
+        <MinistryHeader topInset={insets.top} />
+
+        {/* Hero — topInset=0 because the header above handles the safe area */}
+        <HeroSection fallbackSermon={fallbackSermon} topInset={0} />
 
         {/* Stale cache banner — inside ScrollView so it never floats over video.
             Three states:
@@ -753,6 +779,26 @@ export default function WatchScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+
+  // ── Ministry Header ───────────────────────────────────────────────────────────
+  ministryHeader: {
+    paddingHorizontal: 20,
+    paddingBottom: 16,
+    alignItems: "center",
+  },
+  ministryTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    letterSpacing: 0.4,
+    textAlign: "center",
+    textTransform: "uppercase",
+  },
+  ministryDivider: {
+    marginTop: 8,
+    width: 40,
+    height: 3,
+    borderRadius: 2,
+  },
 
   // ── OMEGA emergency banner ───────────────────────────────────────────────────
   // `top` is set dynamically via topInset so it never clips behind the notch.
