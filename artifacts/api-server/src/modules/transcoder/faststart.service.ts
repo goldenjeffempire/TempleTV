@@ -317,20 +317,33 @@ export async function runFaststart(
     return { elapsedMs: 0, outputSizeBytes: 0, durationSecs: null, skipped: true, skipReason: "disk_constrained" };
   }
 
-  // Pre-flight: abort if the process RSS is already at or above the memory
-  // warn threshold. Faststart downloads the entire source blob from PostgreSQL
-  // BYTEA (adds ~file-size to external/arrayBuffers) then spawns an ffmpeg
-  // child process — together this typically adds 80–150 MB of RSS.  Starting
-  // when the server is already memory-pressured (RSS ≥ MEMORY_WARN_RSS_MB)
-  // guarantees crossing the restart threshold and triggering a watchdog
-  // SIGTERM.  Skipping here is safe: the broadcast queue item is unaffected,
-  // HLS transcoding will follow, and the admin UI shows FASTSTART_SKIPPED.
+  // Pre-flight: abort if RSS is too close to the restart threshold.
+  //
+  // Faststart spawns an ffmpeg child process and (on failure paths) reads
+  // the full source blob from PostgreSQL — together this typically adds
+  // 80–150 MB of RSS ABOVE whatever the server is currently at.  On
+  // memory-constrained hosts (≤ 1 GiB) that spike can easily cross
+  // MEMORY_RESTART_RSS_MB and trigger the watchdog SIGTERM mid-job.
+  //
+  // Crucially the gate must account for headroom, not just the warn
+  // threshold.  If MEMORY_WARN_RSS_MB = 400 and the server is at 395 MB
+  // (just below the gate), spawning ffmpeg pushes RSS to ~475 MB — above
+  // MEMORY_RESTART_RSS_MB = 470 → instant restart.  The gate must be at
+  // least FASTSTART_SPAWN_OVERHEAD_MB below the restart threshold.
+  //
+  // Gate formula:  min(MEMORY_WARN_RSS_MB, MEMORY_RESTART_RSS_MB − 100)
+  //   • 512 MiB host (WARN=380, RESTART=430): gate = min(380, 330) = 330 MB
+  //   • 1 GiB host   (WARN=700, RESTART=900): gate = min(700, 800) = 700 MB
+  //   • 2 GiB host   (WARN=1024,RESTART=1536):gate = min(1024,1436)= 1024 MB
+  // On constrained hosts the restart − 100 formula is the binding limit,
+  // on large hosts the warn threshold is the binding limit — both are safe.
   {
     const currentRssMb = Math.round(process.memoryUsage().rss / (1024 * 1024));
-    if (currentRssMb >= env.MEMORY_WARN_RSS_MB) {
+    const rssCeilingMb = Math.min(env.MEMORY_WARN_RSS_MB, env.MEMORY_RESTART_RSS_MB - 100);
+    if (currentRssMb >= rssCeilingMb) {
       log.warn(
-        { currentRssMb, memoryWarnRssMb: env.MEMORY_WARN_RSS_MB },
-        "faststart: RSS at or above warn threshold — skipping to prevent memory-watchdog restart",
+        { currentRssMb, rssCeilingMb, memoryWarnRssMb: env.MEMORY_WARN_RSS_MB, memoryRestartRssMb: env.MEMORY_RESTART_RSS_MB },
+        "faststart: RSS within 100 MB of restart threshold — skipping to prevent watchdog SIGTERM during ffmpeg spawn",
       );
       return { elapsedMs: 0, outputSizeBytes: 0, durationSecs: null, skipped: true, skipReason: "memory_constrained" };
     }
