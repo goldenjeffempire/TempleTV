@@ -28,6 +28,7 @@ import { storage } from "../../infrastructure/storage.js";
 import { logger as rootLogger } from "../../infrastructure/logger.js";
 import { storagePaths } from "../../infrastructure/storage-paths.js";
 import { isDiskConstrained } from "../../infrastructure/disk-watchdog.js";
+import { env } from "../../config/env.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 // MP4-first broadcast policy: enqueueIfMissing is called in the faststart
