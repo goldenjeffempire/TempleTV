@@ -1,7 +1,22 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useSSE } from "@/contexts/sse-context";
 import { WifiOff, Loader2, X, RotateCw } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+/**
+ * Format a duration in milliseconds as a human-readable "X ago" string.
+ * Ticks are driven by a 15-second interval so the display stays current
+ * without hammering the renderer every second.
+ */
+function formatAgo(ms: number): string {
+  const secs = Math.floor(ms / 1000);
+  if (secs < 10) return "just now";
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins} min${mins !== 1 ? "s" : ""} ago`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs} hr${hrs !== 1 ? "s" : ""} ago`;
+}
 
 /**
  * Persistent banner rendered between the header and page content whenever the
@@ -10,22 +25,50 @@ import { cn } from "@/lib/utils";
  * where stale queue or broadcast state must never go unnoticed.
  *
  * States:
- *   offline      → red   "Disconnected — live updates paused."
+ *   offline      → red   "Disconnected — live updates paused. Last synced X ago."
  *   reconnecting → amber "Reconnecting to live updates…"
  *   degraded     → amber "Live updates degraded — data may be delayed."
  *
  * Auto-dismisses (re-shows without interaction) when SSE reconnects so the
  * operator never needs to manually hide it after recovery.
+ *
+ * Offline state additionally shows when data was last successfully synced so
+ * operators can assess staleness at a glance without navigating to another page.
  */
 export function ConnectionStatusBanner() {
   const { state, forceReconnect } = useSSE();
   const [dismissed, setDismissed] = useState(false);
 
-  // Auto-reset the dismissed flag on every reconnect so the banner re-appears
-  // if SSE drops again later in the same session.
+  // Track the wall-clock time at which SSE last transitioned to "connected".
+  // Initialised to Date.now() so on first render the label reads "just now"
+  // rather than a confusingly large duration. A ref holds the canonical value;
+  // the state copy drives the 15-second live re-render.
+  const lastConnectedRef = useRef<number>(Date.now());
+  const [lastConnected, setLastConnected] = useState<number>(Date.now());
+
+  // Capture when we successfully reconnect.
   useEffect(() => {
-    if (state === "connected") setDismissed(false);
+    if (state === "connected") {
+      const now = Date.now();
+      lastConnectedRef.current = now;
+      setLastConnected(now);
+      setDismissed(false);
+    }
   }, [state]);
+
+  // Live-update the "X ago" label every 15 s while the banner is visible.
+  // Using 15 s instead of 1 s avoids unnecessary re-renders — the granularity
+  // is still fine enough that operators see meaningful changes.
+  useEffect(() => {
+    const visible =
+      state === "offline" || state === "degraded" || state === "reconnecting";
+    if (!visible || dismissed) return;
+
+    const id = setInterval(() => {
+      setLastConnected(lastConnectedRef.current);
+    }, 15_000);
+    return () => clearInterval(id);
+  }, [state, dismissed]);
 
   const visible =
     !dismissed &&
@@ -35,6 +78,7 @@ export function ConnectionStatusBanner() {
 
   const isOffline = state === "offline";
   const isReconnecting = state === "reconnecting";
+  const syncAge = Date.now() - lastConnected;
 
   return (
     <div
@@ -54,11 +98,18 @@ export function ConnectionStatusBanner() {
       )}
 
       <span className="flex-1 min-w-0 leading-snug">
-        {isOffline
-          ? "Disconnected — live updates paused. Data on screen may be stale."
-          : isReconnecting
-            ? "Reconnecting to live updates…"
-            : "Live updates degraded — some data may be delayed."}
+        {isOffline ? (
+          <>
+            Disconnected — live updates paused.
+            <span className="opacity-75 ml-1">
+              Last synced {formatAgo(syncAge)}.
+            </span>
+          </>
+        ) : isReconnecting ? (
+          "Reconnecting to live updates…"
+        ) : (
+          "Live updates degraded — some data may be delayed."
+        )}
       </span>
 
       {!isReconnecting && (
