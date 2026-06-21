@@ -335,6 +335,18 @@ services:
       - key: MEMORY_RESTART_RSS_MB
         value: "430"
 
+      # Layer 5: hard RSS ceiling — SIGTERM fires IMMEDIATELY (no 80-second
+      # consecutive-count wait) when RSS hits this value. Prevents the
+      # 470 → 821 MiB balloon seen in production when concurrent uploads +
+      # HLS streams caused sustained memory growth while the watchdog waited
+      # 3 min (18 × 10 s) before acting. 460 MiB is ~90 % of the 512 MiB
+      # Render ceiling, giving a clean 52 MiB margin before the OOM killer.
+      # The 30 MiB gap above MEMORY_RESTART_RSS_MB (430) means small transient
+      # spikes are handled by the graceful 80 s count-down; only truly runaway
+      # allocations hit the hard ceiling.
+      - key: MEMORY_ABSOLUTE_MAX_RSS_MB
+        value: "460"
+
       # ── Graceful shutdown timing ───────────────────────────────────────────
       # SIGTERM (rolling deploy / scale-in) starts a two-phase drain:
       #   Phase 1: /api/healthz → 503 draining for SHUTDOWN_DRAIN_MS,

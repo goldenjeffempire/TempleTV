@@ -149,9 +149,11 @@ const Env = z.object({
   //   8 GiB host:  MEMORY_WARN_RSS_MB=4096  MEMORY_RESTART_RSS_MB=6144
   //
   // Constrained host overrides (free tier / shared instances):
-  //   512 MiB:     MEMORY_WARN_RSS_MB=420   MEMORY_RESTART_RSS_MB=465
-  //                (assumes DB_POOL_MAX=8, HLS_SEGMENT_CACHE_MB=16,
-  //                 HLS_MAX_CONCURRENT=5 — baseline ~388 MiB, peak ~435 MiB)
+  //   512 MiB:     MEMORY_WARN_RSS_MB=380   MEMORY_RESTART_RSS_MB=430
+  //                MEMORY_ABSOLUTE_MAX_RSS_MB=460
+  //                (assumes DB_POOL_MAX=5, HLS_SEGMENT_CACHE_MB=8,
+  //                 HLS_MAX_CONCURRENT=3, MALLOC_ARENA_MAX=2
+  //                 — baseline ~373 MiB, peak ~352 MiB on 3 HLS streams)
   //   1 GiB:       MEMORY_WARN_RSS_MB=700   MEMORY_RESTART_RSS_MB=900
   //
   // RSS formula for sizing: baseline_mb + (24 × HLS_MAX_CONCURRENT) + transcode_peak_mb
@@ -161,6 +163,10 @@ const Env = z.object({
   //   transcode ≈ 200–800 MB per active FFmpeg job (depends on resolution/codec)
   MEMORY_WARN_RSS_MB: z.coerce.number().int().positive().default(1024),
   MEMORY_RESTART_RSS_MB: z.coerce.number().int().positive().default(1536),
+  // Hard RSS ceiling — SIGTERM fires immediately (no consecutive-count wait)
+  // when RSS reaches this value. 0 = disabled (default). On the 512 MiB Render
+  // free tier set to 460 so the process exits before the OOM killer fires.
+  MEMORY_ABSOLUTE_MAX_RSS_MB: z.coerce.number().int().nonnegative().default(0),
 
   // pg connection pool maximum. Each replica holds at most this many live
   // connections to Postgres/Neon. Raised from 25 → 40 after pool saturation

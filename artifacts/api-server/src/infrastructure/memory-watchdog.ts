@@ -54,11 +54,15 @@ const SAMPLE_INTERVAL_MS = 10_000;
 const SUSTAIN_SAMPLES = 6;
 /**
  * Consecutive RESTART-threshold samples before a graceful exit is triggered.
- * 18 × 10 s = 3 min (down from 5 min at 30 s × 10).  3 min is still long
- * enough to distinguish a transient load spike from a genuine leak, while
- * giving the process 3+ minutes less runway to hit the V8 hard limit.
+ * 8 × 10 s = 80 s — down from 18 × 10 s (3 min).  3 min was long enough for
+ * RSS to climb from 470 → 821 MiB on the Render 512 MiB free tier during a
+ * concurrent-upload + HLS spike.  80 s still distinguishes a brief spike from
+ * genuine sustained pressure (a transient spike that lasts > 80 s IS genuine
+ * pressure on a memory-constrained host) while cutting the balloon window by
+ * ~2 min.  MEMORY_ABSOLUTE_MAX_RSS_MB provides an additional hard ceiling for
+ * true emergency escalation without any consecutive-count requirement.
  */
-const CRITICAL_SAMPLES_FOR_EXIT = 18;
+const CRITICAL_SAMPLES_FOR_EXIT = 8;
 // Grace period between process.kill(SIGTERM) and the hard process.exit(1)
 // fallback. Must exceed the longest realistic shutdown drain sequence:
 //   • SSE force-close + drain   ≈ 0-2 s
@@ -129,6 +133,7 @@ export interface WatchdogState {
   thresholds: {
     rssAlertMb: number;
     rssRestartMb: number;
+    rssAbsoluteMaxMb: number;
     rssRecoveryMb: number;
     externalGrowthAlertMbPerMin: number;
     externalGrowthRecoveryMbPerMin: number;
@@ -600,6 +605,54 @@ function sample() {
     );
   }
 
+  // ── Immediate hard-ceiling restart (no consecutive count needed) ─────────
+  // If RSS reaches MEMORY_ABSOLUTE_MAX_RSS_MB (default 0 = disabled) we fire
+  // SIGTERM immediately, skipping the CRITICAL_SAMPLES_FOR_EXIT countdown.
+  // This prevents the 470 → 821 MiB balloon seen in production when the
+  // watchdog waited 3 min of sustained-over-threshold samples before acting.
+  // On a 512 MiB Render free-tier host set this to 460 MiB so the process
+  // exits cleanly before the OOM killer fires at 512 MiB.
+  const absoluteMaxMb = env.MEMORY_ABSOLUTE_MAX_RSS_MB;
+  if (
+    env.NODE_ENV === "production" &&
+    absoluteMaxMb > 0 &&
+    rssMb >= absoluteMaxMb &&
+    !criticalExitInFlight
+  ) {
+    criticalExitInFlight = true;
+    const heapUsedMbHC  = Math.round(mem.heapUsed  / (1024 * 1024));
+    const heapTotalMbHC = Math.round(mem.heapTotal  / (1024 * 1024));
+    const externalMbHC  = Math.round(mem.external   / (1024 * 1024));
+    logger.fatal(
+      {
+        rssMb,
+        heapUsedMb: heapUsedMbHC,
+        heapTotalMb: heapTotalMbHC,
+        externalMb: externalMbHC,
+        arrayBuffersMb: Math.round(mem.arrayBuffers / (1024 * 1024)),
+        absoluteMaxMb,
+      },
+      "[memory-watchdog] HARD CEILING exceeded — immediate SIGTERM (no wait)",
+    );
+    void import("./sentry.js").then(({ captureEvent }) =>
+      captureEvent(
+        `[memory-watchdog] HARD CEILING: RSS ${rssMb} MiB ≥ absolute max ${absoluteMaxMb} MiB — immediate SIGTERM`,
+        "fatal",
+        { rssMb, absoluteMaxMb },
+      ),
+    ).catch(() => {});
+    adminEventBus.push("ops-alert", {
+      level: "fatal",
+      code: "memory-hard-ceiling",
+      message: `RSS ${rssMb} MiB hit hard ceiling ${absoluteMaxMb} MiB — immediate restart (no drain delay)`,
+      rssMb,
+      absoluteMaxMb,
+    });
+    process.kill(process.pid, "SIGTERM");
+    const hardCeilingTimer = setTimeout(() => { process.exit(1); }, FORCE_EXIT_GRACE_MS);
+    hardCeilingTimer.unref();
+  }
+
   // ── Critical escalation (production only) ────────────────────────────────
   // Uses consecutiveRssOverRestart (RSS ≥ MEMORY_RESTART_RSS_MB) rather than
   // consecutiveRssOver (RSS ≥ MEMORY_WARN_RSS_MB) so a low warn threshold
@@ -835,6 +888,7 @@ export function getWatchdogState(): WatchdogState {
     thresholds: {
       rssAlertMb: env.MEMORY_WARN_RSS_MB,
       rssRestartMb: restartMb,
+      rssAbsoluteMaxMb: env.MEMORY_ABSOLUTE_MAX_RSS_MB,
       rssRecoveryMb: env.MEMORY_WARN_RSS_MB - 200,
       externalGrowthAlertMbPerMin: EXTERNAL_GROWTH_ALERT_MB_PER_MIN,
       externalGrowthRecoveryMbPerMin: EXTERNAL_GROWTH_RECOVERY_MB_PER_MIN,
