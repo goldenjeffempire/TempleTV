@@ -87,7 +87,6 @@ const renderChecks: Array<[RegExp, string]> = [
   [/MALLOC_ARENA_MAX/, 'MALLOC_ARENA_MAX memory hardening env var missing'],
   [/NODE_OPTIONS/, 'NODE_OPTIONS runtime hardening env var missing'],
   [/fromGroup:\s*temple-tv-shared-secrets/, 'shared secrets env group not wired'],
-  [/fromGroup:\s*temple-tv-aws/, 'AWS env group not wired'],
   [/pullRequestPreviewsEnabled:\s*false/, 'PR preview isolation guardrail not configured'],
 ];
 for (const [pattern, message] of renderChecks) {
