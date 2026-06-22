@@ -241,6 +241,12 @@ const Env = z.object({
   // instances. Set to 0 for unlimited (claims all cores — not recommended on
   // shared hosting). Override per-deployment: TRANSCODER_THREADS=8.
   TRANSCODER_THREADS: z.coerce.number().int().min(0).max(64).default(4),
+  // Max number of simultaneous faststart (moov-atom relocation) FFmpeg jobs.
+  // Each job downloads the source file to disk and spawns an ffmpeg process,
+  // consuming 80–150 MiB of additional RSS.  Default 2 caps the spike at
+  // ~300 MiB; excess jobs wait in a queue instead of being dropped.
+  // Raise cautiously: 4 concurrent jobs ≈ 600 MiB additional RSS.
+  FASTSTART_MAX_CONCURRENT: z.coerce.number().int().min(1).max(16).default(2),
   TRANSCODER_DISABLE: z
     .union([z.boolean(), z.string()])
     .transform((v) => v === true || v === "true" || v === "1")

@@ -1,9 +1,9 @@
 ---
 name: Production restart-loop root causes + fixes
-description: Memory restart cascade on 2 GiB host — root causes, correct thresholds, self-healing relief pass, and process isolation pattern.
+description: Memory restart cascade on 2 GiB host — root causes, correct thresholds, log-only watchdog, faststart concurrency semaphore, process isolation.
 ---
 
-## Root causes
+## Root causes (original)
 
 | Setting | Was | Safe | Impact |
 |---|---|---|---|
@@ -12,6 +12,7 @@ description: Memory restart cascade on 2 GiB host — root causes, correct thres
 | `MEMORY_ABSOLUTE_MAX_RSS_MB` | 0 (disabled) | 2000 MiB | No hard ceiling → OS kills before watchdog fires |
 | `--max-old-space-size` | 2048 | 1536 | V8 heap cap above safe RSS budget |
 | `STORAGE_READ_CHUNK_BYTES` | 8 MiB | 4 MiB | Each HLS stream: 24 MiB RSS (8 MiB Buffer + 16 MiB hex) |
+| `FASTSTART_MAX_CONCURRENT` | unbounded | 2 (default) | Each FFmpeg job: 80–150 MiB; 5 concurrent = 750 MiB spike |
 
 ## Correct production thresholds (≥2 GiB host)
 
@@ -21,22 +22,49 @@ MEMORY_RESTART_RSS_MB=1800
 MEMORY_ABSOLUTE_MAX_RSS_MB=2000
 HLS_MAX_CONCURRENT=10
 --max-old-space-size=1536
+FASTSTART_MAX_CONCURRENT=2
 ```
 
 With `HLS_MAX_CONCURRENT=10` + 4 MiB chunks: ≤120 MiB HLS external pressure vs 480 MiB previously.
+With `FASTSTART_MAX_CONCURRENT=2`: max 300 MiB additional faststart spike, queued not dropped.
 
-## Self-healing relief pass (watchdog sustained-pressure path)
+## Watchdog is log-only (no auto-restart)
 
-Before committing to SIGTERM on sustained `MEMORY_RESTART_RSS_MB` breach:
-1. Call `cancelAllFaststartJobs()` (each in-flight FFmpeg job holds 80–150 MiB)
-2. Trim HLS segment cache to 0 + call `purgeExpiredCacheEntries()` + `gcFn()`
+All `process.kill(process.pid, "SIGTERM")` and `process.exit(1)` removed from:
+1. V8 heap critical path — replaced with emergency relief + RELIEF_COOLDOWN_MS reset
+2. Hard ceiling (MEMORY_ABSOLUTE_MAX_RSS_MB) — replaced with emergency relief + reset
+3. Sustained RSS path — replaced with looping relief (re-fires every ~90s if still critical)
+
+The watchdog still:
+- Logs structured JSON at `error` / `warn` level
+- Sends Sentry captures
+- Fires `ops-alert` SSE events (visible in Admin → Ops section)
+- Sends email alerts via `sendAdminAlert()`
+- Runs the relief pass (cancel faststart + trim HLS cache + GC + 15s wait)
+
+**Why log-only:** restart itself was causing the loop (workers reconnecting, DB connection storm, broadcast checkpoint replay all spiked RSS again immediately). Fixing root causes (thresholds, HLS concurrency, faststart semaphore) eliminates the need to restart.
+
+**Risk:** if there IS a real leak and relief never recovers it, the OS OOM killer fires (SIGKILL, no graceful shutdown). Monitor `/api/admin/diagnostics/memory` and the ops-alert SSE events for sustained pressure warnings.
+
+## Self-healing relief pass
+
+Before or after CRITICAL_SAMPLES_FOR_EXIT is reached:
+1. Call `cancelAllFaststartJobs()` — SIGKILL all in-flight FFmpeg, drain semaphore waiters
+2. Trim HLS segment cache to 0 + `purgeExpiredCacheEntries()` + GC nudge
 3. Wait 15 s for allocations to drain
-4. Re-measure RSS — if below threshold, reset counter and SKIP restart
-5. Only if still critical: send SIGTERM
+4. Re-measure — log recovery if below threshold
+5. Reset `criticalExitInFlight` after RELIEF_COOLDOWN_MS (90s) so next pass can run
 
-**Why:** A single large upload + concurrent HLS pushes RSS briefly over threshold but self-corrects in <15 s. Without relief, the 8-sample countdown is exhausted regardless.
+## Faststart concurrency semaphore
 
-**Hard-ceiling path:** No 15 s wait — cancel faststart fire-and-forget, then SIGTERM immediately (OOM imminent).
+`faststart.service.ts` — module-level semaphore pattern:
+- `_faststartRunning: number` + `_faststartWaiters: Array<() => void>`
+- `acquireFaststartSlot()` — returns `Promise<void>`, waits if at max concurrent
+- `releaseFaststartSlot()` — passes slot to next waiter or decrements counter
+- Slot acquired AFTER pre-flight checks (memory gate, disk gate), BEFORE `mkdir(scratchDir)`
+- Slot released in `finally` block (always, even on error/kill)
+- `cancelAllFaststartJobs()` also drains `_faststartWaiters` (drained callers hit memory gate and skip)
+- Configured via `FASTSTART_MAX_CONCURRENT` env var (default 2, max 16)
 
 ## Process isolation (dev workflows)
 
@@ -46,10 +74,17 @@ Before committing to SIGTERM on sustained `MEMORY_RESTART_RSS_MB` breach:
 
 **Why split matters:** Worker restart cascade was the second OOM: workers restarting with the API created a thundering-herd DB connection storm that pushed RSS immediately past threshold again.
 
-## cancelAllFaststartJobs
+## How to apply on Render
 
-`faststart.service.ts` exports this function. It kills all entries in the `_activeProcs: Set<ChildProcess>` module-level registry (populated on `spawnFfmpegFaststart` spawn, cleared on close/error/timeout). The watchdog uses a dynamic `import()` to avoid a circular import.
+Set these as environment variables in the Render service dashboard:
+```
+MEMORY_WARN_RSS_MB=1400
+MEMORY_RESTART_RSS_MB=1800
+MEMORY_ABSOLUTE_MAX_RSS_MB=2000
+HLS_MAX_CONCURRENT=10
+FASTSTART_MAX_CONCURRENT=2
+NODE_OPTIONS=--max-old-space-size=1536
+MALLOC_ARENA_MAX=2
+```
 
-## How to apply
-
-On any future Replit Deployment (VM target), ensure the run command matches the thresholds above. In Render, set these as environment variables in the service dashboard. Always check that `MEMORY_ABSOLUTE_MAX_RSS_MB` < host RAM by ≥200 MiB.
+Always verify `MEMORY_ABSOLUTE_MAX_RSS_MB` < host RAM by ≥200 MiB.

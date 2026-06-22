@@ -42,21 +42,52 @@ import { detectMdatWithoutMoov, probeContainerIsValid, remuxForFaststart, valida
 
 /**
  * Module-level registry of all currently-running FFmpeg child processes.
- * Used by cancelAllFaststartJobs() to free 80–150 MiB of RSS before the
- * memory watchdog issues a SIGTERM — potentially avoiding the restart entirely.
+ * Used by cancelAllFaststartJobs() to free 80–150 MiB of RSS during memory
+ * pressure — the watchdog calls this before triggering its relief pass.
  */
 const _activeProcs = new Set<ChildProcess>();
+
+// ── Faststart concurrency semaphore ──────────────────────────────────────────
+// Limits simultaneous faststart jobs to FASTSTART_MAX_CONCURRENT (default 2).
+// Each job downloads the full source file + spawns an ffmpeg process, adding
+// 80–150 MiB RSS.  Excess callers queue here and are served FIFO as slots free.
+// Slots are always released in the outer runFaststart finally block.
+
+let _faststartRunning = 0;
+const _faststartWaiters: Array<() => void> = [];
+
+function acquireFaststartSlot(): Promise<void> {
+  const max = env.FASTSTART_MAX_CONCURRENT;
+  if (_faststartRunning < max) {
+    _faststartRunning++;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => { _faststartWaiters.push(resolve); });
+}
+
+function releaseFaststartSlot(): void {
+  const next = _faststartWaiters.shift();
+  if (next) {
+    // Pass the slot directly to the next waiter (running count stays the same).
+    next();
+  } else {
+    _faststartRunning--;
+  }
+}
 
 /**
  * Kill every in-flight FFmpeg faststart and ffprobe process immediately.
  *
- * Called by the memory watchdog as a pre-SIGTERM relief pass.  Each
- * faststart job holds 80–150 MiB of RSS; cancelling them may drop RSS
- * below the restart threshold and avoid the process restart entirely.
+ * Called by the memory watchdog as a relief pass.  Each faststart job holds
+ * 80–150 MiB of RSS; cancelling them can drop RSS below the alert threshold.
+ *
+ * Waiting jobs in the semaphore queue are also drained — they are resolved
+ * immediately so their callers receive a slot; those callers will then run
+ * into the pre-flight memory gate and skip cleanly rather than spawning a
+ * new ffmpeg while pressure is still high.
  *
  * Safe to call at any time — processes that have already exited are simply
- * absent from the set.  The running runFaststart() calls will receive a
- * rejection (ffmpeg exited non-zero / kill) which the caller already handles.
+ * absent from the set.
  */
 export function cancelAllFaststartJobs(): void {
   const count = _activeProcs.size;
@@ -64,8 +95,17 @@ export function cancelAllFaststartJobs(): void {
     try { p.kill("SIGKILL"); } catch { /* noop — already exited */ }
   }
   _activeProcs.clear();
-  if (count > 0) {
-    rootLogger.warn({ count }, "[faststart] cancelAllFaststartJobs: killed active FFmpeg processes for memory relief");
+  // Drain all queued waiters so they proceed to the pre-flight memory gate.
+  const drainCount = _faststartWaiters.length;
+  while (_faststartWaiters.length > 0) {
+    const w = _faststartWaiters.shift();
+    if (w) w();
+  }
+  if (count > 0 || drainCount > 0) {
+    rootLogger.warn(
+      { killed: count, drained: drainCount },
+      "[faststart] cancelAllFaststartJobs: killed active FFmpeg processes + drained queue",
+    );
   }
 }
 
@@ -378,6 +418,11 @@ export async function runFaststart(
       return { elapsedMs: 0, outputSizeBytes: 0, durationSecs: null, skipped: true, skipReason: "memory_constrained" };
     }
   }
+
+  // Acquire a faststart semaphore slot.  Limits concurrent FFmpeg jobs to
+  // FASTSTART_MAX_CONCURRENT; excess callers wait here (backpressure, not drop).
+  // The slot is ALWAYS released in the finally block below.
+  await acquireFaststartSlot();
 
   try {
     await mkdir(scratchDir, { recursive: true });
@@ -820,6 +865,7 @@ export async function runFaststart(
     adminEventBus.push("broadcast-queue-updated", { videoId, reason: "faststart-skipped" });
     throw err;
   } finally {
+    releaseFaststartSlot();
     await rm(scratchDir, { recursive: true, force: true }).catch(() => { /* noop */ });
   }
 }
