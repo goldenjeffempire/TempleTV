@@ -188,7 +188,6 @@ services:
     # don't touch the API server or its shared libs will skip this build,
     # saving pipeline minutes and avoiding unnecessary API cold-starts during
     # rolling deploy windows.
-    filters:
       paths:
         - artifacts/api-server/**
         - lib/db/**
@@ -587,7 +586,6 @@ services:
     autoDeploy: true
     pullRequestPreviewsEnabled: false
     # Only rebuild when admin SPA source or its workspace lib dependencies change.
-    filters:
       paths:
         - artifacts/admin/**
         - lib/player-core/**
@@ -657,7 +655,6 @@ services:
     autoDeploy: true
     pullRequestPreviewsEnabled: false
     # Only rebuild when mobile source or its workspace lib dependencies change.
-    filters:
       paths:
         - artifacts/mobile/**
         - lib/player-core/**
@@ -723,7 +720,6 @@ services:
     autoDeploy: true
     pullRequestPreviewsEnabled: false
     # Only rebuild when TV SPA source or its workspace lib dependencies change.
-    filters:
       paths:
         - artifacts/tv/**
         - lib/player-core/**
