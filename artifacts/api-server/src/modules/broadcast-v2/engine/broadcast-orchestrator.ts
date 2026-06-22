@@ -8,7 +8,7 @@ import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, broadcastS
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
 import { checkpointRepo } from "../repository/checkpoint.repo.js";
-import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, getBadUrlCacheSize, getBadUrlStats, markUrlBadBySource, getUrlConfidenceState, type RawQueueRow } from "../repository/queue.repo.js";
+import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, getBadUrlCacheSize, getBadUrlStats, markUrlBadBySource, getUrlConfidenceState, markSourceApproved, isSourceApproved, clearSourceApproval, clearAllSourceApprovals, type RawQueueRow } from "../repository/queue.repo.js";
 import { faststartRecoveryWorker } from "./faststart-recovery.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { saveDiskBackup, loadDiskBackup } from "../repository/disk-state-backup.js";
@@ -987,14 +987,17 @@ class BroadcastOrchestrator extends EventEmitter {
     );
 
     // ── Current-item dead-stream probe ────────────────────────────────────
-    // Probes the CURRENTLY-PLAYING item's URL every 30 s.  Complements the
+    // Probes the CURRENTLY-PLAYING item's URL every 60 s.  Complements the
     // preload-window probe (which only fires for the NEXT item) by catching
     // CDN URLs that go dead while they are already on air. Auto-skips after
-    // 3 consecutive definitive 4xx responses (never on ambiguous / timeouts).
+    // 5 consecutive definitive 4xx responses (never on ambiguous / timeouts).
+    // Interval raised 30 s → 60 s: reduces false positives on transient CDN
+    // hiccups and eliminates redundant probes for sources already confirmed
+    // reachable by the source approval cache.
     this.currentItemProbeTimer = this._protectedInterval(
       "current-item-probe",
       () => { this.probeCurrentItem(); },
-      30_000,
+      60_000,
       () => this.currentItemProbeTimer,
       (h) => { this.currentItemProbeTimer = h; },
     );
@@ -3787,6 +3790,33 @@ class BroadcastOrchestrator extends EventEmitter {
   private scheduleProactiveProbe(item: V2Item): void {
     const key = item.id;
     if (this.probeAttemptedForId.has(key)) return;
+
+    const url = item.source?.url ?? null;
+    if (!url) return;
+
+    // ── Source approval gate ───────────────────────────────────────────────
+    // If this item's source was confirmed reachable by a recent successful
+    // probe (within SOURCE_APPROVAL_TTL_MS = 4 h), skip the proactive HTTP
+    // probe entirely. This is the pre-ingest approval gate: once a source
+    // passes a reachability check it is trusted for 4 hours — repeated
+    // round-trips before the item airs add latency and probe load without
+    // providing additional signal.
+    //
+    // Note: we still mark the item in probeAttemptedForId so the dedup set
+    // prevents re-scheduling on the next tick, but skip the network call.
+    if (item.source?.kind !== "youtube" && isSourceApproved(item.id, url)) {
+      logger.debug(
+        { itemId: item.id, title: item.title, url },
+        "[broadcast-v2] proactive probe: source recently approved — skipping redundant pre-air probe",
+      );
+      this.probeAttemptedForId.add(key);
+      if (this.probeAttemptedForId.size > 200) {
+        const oldest = this.probeAttemptedForId.values().next().value;
+        if (oldest != null) this.probeAttemptedForId.delete(oldest);
+      }
+      return;
+    }
+
     this.probeAttemptedForId.add(key);
     // Bounded eviction: prevents unbounded growth on very long-running instances.
     if (this.probeAttemptedForId.size > 200) {
@@ -3794,6 +3824,7 @@ class BroadcastOrchestrator extends EventEmitter {
       if (oldest != null) this.probeAttemptedForId.delete(oldest);
     }
 
+<<<<<<< HEAD
     const url = item.source?.url ?? null;
     if (!url) return;
 
@@ -3840,6 +3871,16 @@ class BroadcastOrchestrator extends EventEmitter {
           return;
         }
         // gap2 or gap3: two independent sources agree — block.
+=======
+    // YouTube sources: use the fast 2 s probe that only classifies
+    // 403/451 (geo-block / takedown) as definitively broken.
+    if (item.source?.kind === "youtube") {
+      void (async () => {
+        const result = await this.probeYouTubeReachability(url);
+        if (result !== "blocked") return; // ambiguous — leave rotation unchanged
+        clearSourceApproval(item.id);
+        markBadUrl(url);
+>>>>>>> 13d545e (Improve broadcast pipeline reliability with circuit-breaker and source approval caching)
         if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
         logger.warn(
           { itemId: item.id, title: item.title, url, confState, sequence: this.sequence },
@@ -3871,25 +3912,33 @@ class BroadcastOrchestrator extends EventEmitter {
       // so the URL only enters the bad-URL cache when a SECOND independent source
       // (scanner, storage-recon, or a prior proactive probe) also confirms it broken.
       if (reachable === true) {
-        // Source confirmed reachable — clear any prior confidence flags so a
-        // future failure cycle starts fresh.  clearBadUrl also removes the
-        // bad-URL cache entry and confidence source-set in one call.
+        // Source confirmed reachable — stamp the approval so probeCurrentItem()
+        // and future proactive probe calls skip redundant network checks for 4 h.
+        markSourceApproved(item.id, url);
+        // Clear any prior confidence flags so a future failure cycle starts fresh.
+        // clearBadUrl also removes the bad-URL cache entry and confidence source-set.
         if (getUrlConfidenceState(url) !== "healthy") {
           clearBadUrl(url);
           logger.info(
             { itemId: item.id, title: item.title, url },
-            "[broadcast-v2] proactive probe: URL reachable — cleared prior confidence flags",
+            "[broadcast-v2] proactive probe: URL reachable — stamped approval, cleared prior confidence flags",
+          );
+        } else {
+          logger.debug(
+            { itemId: item.id, title: item.title, url },
+            "[broadcast-v2] proactive probe: URL reachable — stamped approval for pre-air confirmation",
           );
         }
         return;
       }
       if (reachable !== false) return; // null = ambiguous (5xx/timeout) — do nothing
 
+      clearSourceApproval(item.id);
       const confState = markUrlBadBySource(url, "orchestrator-probe");
       if (confState === "gap1") {
         // Only one source so far — log and wait for a second confirmation before
         // removing this item from rotation.  The scanner will confirm within
-        // ≤2 min if the source is genuinely broken.
+        // ≤5 min if the source is genuinely broken (scanner interval raised to 5 min).
         logger.warn(
           { itemId: item.id, title: item.title, url, sequence: this.sequence },
           "[broadcast-v2] proactive probe: URL returned 4xx (gap1 — awaiting second confirmation before blocking)",
@@ -3905,7 +3954,7 @@ class BroadcastOrchestrator extends EventEmitter {
       );
       this.emitSnapshot(); // push new state to all clients immediately
       // Increment the per-item failure counter. If it reaches the threshold,
-      // temporarily suspend the item (5-min in-memory TTL via bad-URL cache)
+      // temporarily suspend the item (10-min in-memory TTL via bad-URL cache)
       // and reload so the orchestrator advances to the next item immediately.
       const failCount = incrementBadUrlSkipCount(item.id);
       if (failCount >= BAD_URL_SKIP_THRESHOLD) {
@@ -3931,6 +3980,7 @@ class BroadcastOrchestrator extends EventEmitter {
    *  • Only runs when mode === "queue" and a current item exists.
    *  • Skips if < 15 s remain on the item (let it finish naturally).
    *  • Skips YouTube sources — HEAD probes return HTML, creating false positives.
+<<<<<<< HEAD
    *  • Resets the per-item failure counters when the current item changes.
    *  • Time-window guard: if the first failure in the current window was
    *    recorded > PROBE_FAILURE_WINDOW_MS (5 min) ago and the URL still appears
@@ -3946,6 +3996,18 @@ class BroadcastOrchestrator extends EventEmitter {
    *  • `null` (ambiguous / timeout / 5xx) never increments the definitive 4xx
    *    counter, and vice versa — independent tracks prevent a mixed failure
    *    pattern from reaching either threshold prematurely.
+=======
+   *  • Skips if the source was recently confirmed reachable (isSourceApproved).
+   *  • Resets the per-item failure counter when the current item changes.
+   *  • Auto-skips after 5 consecutive definitive 4xx responses (`reachable === false`).
+   *    Threshold raised from 3 → 5: at 60 s interval this is 5 min of confirmed
+   *    4xx before giving up, preventing false-positive skips from brief CDN errors.
+   *  • Auto-skips after 8 consecutive ambiguous (5xx/timeout) results — raised
+   *    from 5: at 60 s interval this is 8 min, giving transient CDN restarts time
+   *    to recover before penalising an otherwise healthy item.
+   *  • `null` (ambiguous / timeout / 5xx) never increments the 4xx counter — a
+   *    single CDN blip must never drop healthy content from the rotation.
+>>>>>>> 13d545e (Improve broadcast pipeline reliability with circuit-breaker and source approval caching)
    */
   private probeCurrentItem(): void {
     if (!this.started || this.mode !== "queue") return;
@@ -3962,6 +4024,21 @@ class BroadcastOrchestrator extends EventEmitter {
 
     const url = snap.current.source?.url;
     if (!url) return;
+
+    // ── Source approval gate ───────────────────────────────────────────────
+    // Skip the HTTP probe if this item's source was confirmed reachable within
+    // the last 4 hours by a prior successful probe (scheduleProactiveProbe or
+    // a previous probeCurrentItem cycle). This eliminates redundant network
+    // round-trips for items that have been airing healthily for hours.
+    // The approval is cleared immediately if a stall report arrives (client-side
+    // evidence of dead-air) or when the URL changes.
+    if (isSourceApproved(snap.current.id, url)) {
+      logger.debug(
+        { itemId: snap.current.id, title: snap.current.title, url },
+        "[broadcast-v2] current-item probe: source recently approved — skipping redundant probe",
+      );
+      return;
+    }
 
     // Reset failure counters when the playing item changes between probe fires.
     if (this.currentItemProbeId !== snap.current.id) {
@@ -4002,10 +4079,14 @@ class BroadcastOrchestrator extends EventEmitter {
       // See extractRawProbeUrl() for the full rationale.
       const reachable = await this.probeUrlReachability(this.extractRawProbeUrl(url));
       if (reachable === false) {
+<<<<<<< HEAD
         // Track when this failure window started (first failure in the window).
         if (this.currentItemProbeFirstFailureMs === null) {
           this.currentItemProbeFirstFailureMs = Date.now();
         }
+=======
+        clearSourceApproval(item.id);
+>>>>>>> 13d545e (Improve broadcast pipeline reliability with circuit-breaker and source approval caching)
         this.currentItemProbeFailures += 1;
         logger.warn(
           {
@@ -4016,6 +4097,7 @@ class BroadcastOrchestrator extends EventEmitter {
             threshold: 4,
             remainingMs,
           },
+<<<<<<< HEAD
           `[broadcast-v2] current-item probe: URL returned 4xx (failure ${this.currentItemProbeFailures}/4)`,
         );
         // Threshold raised 3 → 4: gives CDN auth-token refresh and cold-start
@@ -4025,6 +4107,14 @@ class BroadcastOrchestrator extends EventEmitter {
           logger.error(
             { itemId: item.id, title: item.title, url },
             "[broadcast-v2] current-item probe: 4 consecutive 4xx failures (≥ 120 s) — marking bad and auto-skipping dead stream",
+=======
+          `[broadcast-v2] current-item probe: URL returned 4xx (failure ${this.currentItemProbeFailures}/5)`,
+        );
+        if (this.currentItemProbeFailures >= 5) {
+          logger.error(
+            { itemId: item.id, title: item.title, url },
+            "[broadcast-v2] current-item probe: 5 consecutive 4xx failures — marking bad and auto-skipping dead stream",
+>>>>>>> 13d545e (Improve broadcast pipeline reliability with circuit-breaker and source approval caching)
           );
           this.currentItemProbeFailures = 0;
           this.currentItemProbeAmbiguousFailures = 0;
@@ -4039,8 +4129,16 @@ class BroadcastOrchestrator extends EventEmitter {
           await this.skip();
         }
       } else if (reachable === true) {
+<<<<<<< HEAD
         // Recovered — reset both failure counters and the window timer so
         // stale counts do not carry forward into a future instability window.
+=======
+        // Confirmed reachable — stamp the approval so subsequent probe ticks
+        // are suppressed for up to 4 hours (SOURCE_APPROVAL_TTL_MS).
+        markSourceApproved(item.id, url);
+        // Recovered — reset both failure counters so stale counts don't carry
+        // forward into a future instability window on the same item.
+>>>>>>> 13d545e (Improve broadcast pipeline reliability with circuit-breaker and source approval caching)
         if (this.currentItemProbeFailures > 0 || this.currentItemProbeAmbiguousFailures > 0) {
           logger.info(
             {
@@ -4049,7 +4147,7 @@ class BroadcastOrchestrator extends EventEmitter {
               previousDefinitiveFailures: this.currentItemProbeFailures,
               previousAmbiguousFailures: this.currentItemProbeAmbiguousFailures,
             },
-            "[broadcast-v2] current-item probe: URL reachable again — resetting failure counters",
+            "[broadcast-v2] current-item probe: URL reachable again — resetting failure counters and stamping approval",
           );
         }
         // Also clear any confidence evidence accumulated by prior failed probes
@@ -4062,6 +4160,7 @@ class BroadcastOrchestrator extends EventEmitter {
         this.currentItemProbeFirstFailureMs = null;
       } else {
         // reachable === null: ambiguous (5xx / timeout / network error).
+<<<<<<< HEAD
         // Track when this failure window started (first failure in the window).
         if (this.currentItemProbeFirstFailureMs === null) {
           this.currentItemProbeFirstFailureMs = Date.now();
@@ -4072,6 +4171,16 @@ class BroadcastOrchestrator extends EventEmitter {
         // that would interrupt the active broadcast for all viewers.
         this.currentItemProbeAmbiguousFailures += 1;
         if (this.currentItemProbeAmbiguousFailures >= 7) {
+=======
+        // Track separately. After 8 consecutive ambiguous results (≥ 8 min
+        // at the 60 s probe interval) the CDN is likely genuinely down and the
+        // broadcast is airing dead-air for all viewers — auto-skip.
+        // Threshold raised from 5 → 8: at the new 60 s interval, 8 failures
+        // is 8 min — enough headroom for a CDN restart or brief origin outage
+        // to self-recover before penalising a healthy item.
+        this.currentItemProbeAmbiguousFailures += 1;
+        if (this.currentItemProbeAmbiguousFailures >= 8) {
+>>>>>>> 13d545e (Improve broadcast pipeline reliability with circuit-breaker and source approval caching)
           logger.error(
             {
               itemId: item.id,
@@ -4079,12 +4188,17 @@ class BroadcastOrchestrator extends EventEmitter {
               url,
               ambiguousFailures: this.currentItemProbeAmbiguousFailures,
             },
+<<<<<<< HEAD
             "[broadcast-v2] current-item probe: 7 consecutive 5xx/timeout failures (≥ 3.5 min) — CDN likely dead, auto-skipping to next item",
+=======
+            "[broadcast-v2] current-item probe: 8 consecutive 5xx/timeout failures (≥ 8 min) — CDN likely dead, auto-skipping to next item",
+>>>>>>> 13d545e (Improve broadcast pipeline reliability with circuit-breaker and source approval caching)
           );
           this.currentItemProbeAmbiguousFailures = 0;
           this.currentItemProbeFailures = 0;
           this.currentItemProbeFirstFailureMs = null;
           this.currentItemProbeId = null;
+          clearSourceApproval(item.id);
           markBadUrl(url);
           if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
           const failCount = incrementBadUrlSkipCount(item.id);

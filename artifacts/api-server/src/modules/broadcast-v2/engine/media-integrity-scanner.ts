@@ -111,7 +111,7 @@ export interface MediaScanReport {
 
 const PROBE_TIMEOUT_MS = 8_000;
 const MAX_CONCURRENT = 4;
-const DEFAULT_INTERVAL_MS = 2 * 60_000;
+const DEFAULT_INTERVAL_MS = 5 * 60_000;
 // INITIAL_DELAY_MS is read from env.MEDIA_SCANNER_INITIAL_DELAY_MS (default 90 s).
 // Using a function to defer the env read until after env.ts is fully initialised
 // (avoids TDZ issues when the module is imported early in the startup sequence).
@@ -126,7 +126,7 @@ const getInitialDelayMs = () => env.MEDIA_SCANNER_INITIAL_DELAY_MS;
  * Set to 3 (≈ 6 minutes with 2-minute scan interval) — enough to
  * distinguish a transient CDN hiccup from a persistently broken source.
  */
-const SCANNER_BAD_URL_THRESHOLD = 3;
+const SCANNER_BAD_URL_THRESHOLD = 5;
 
 /**
  * Probe a non-HLS URL for HTTP reachability using HEAD + Range.

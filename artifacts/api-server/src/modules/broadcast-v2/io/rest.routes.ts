@@ -21,7 +21,7 @@ import {
 import { requireAuth } from "../../../middleware/auth.js";
 import { broadcastService } from "../../broadcast/broadcast.service.js";
 import { scanLibraryAndEnqueue, listMissingFromQueue } from "../../broadcast/auto-enqueue.service.js";
-import { markBadUrl, clearAllBadUrls, clearBadUrl, getItemsHealth, getBadUrlStats, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl, getUrlBadSourceSetsSize, persistBadUrlCache } from "../repository/queue.repo.js";
+import { markBadUrl, clearAllBadUrls, clearBadUrl, getItemsHealth, getBadUrlStats, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl, getUrlBadSourceSetsSize, persistBadUrlCache, clearSourceApproval, clearAllSourceApprovals } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
@@ -1104,6 +1104,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       logger.info({ reEnabled }, "[broadcast-v2] reload: re-enabled suspended queue items before reload");
     }
     clearAllBadUrls();
+    clearAllSourceApprovals();
     // Reset the queue hash so reloadInner() re-resolves all items even when
     // the raw DB rows haven't changed — critical when the environment changed
     // (e.g. API_ORIGIN set, bad-URL cache cleared) but DB content is the same.
@@ -1233,7 +1234,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       stallActionCooldown.set(cooldownKey, Date.now());
 
       // Blacklist the failing source URLs so the orchestrator's toItem()
-      // returns null for these URLs for the next 2 minutes. Without this,
+      // returns null for these URLs for the next 60 s. Without this,
       // the orchestrator continues presenting the same broken URL as
       // "current" after every skip, causing an endless cycle of:
       //   player loads URL → 502 → RECOVERING → SKIP_PENDING → stall report
@@ -1242,6 +1243,11 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       // that URL from the rotation. If all items share the same broken URL,
       // snapshot().current becomes null → FSM → SYNCING → overlay: "Off air".
       const snapForBlacklist = broadcastOrchestrator.snapshot();
+      // Clear the source approval so probeCurrentItem() re-validates this
+      // item on its next fire rather than serving stale approval from a
+      // previously successful probe. This is the "pre-ingest approval reset"
+      // path: client-side stall evidence always overrides a cached approval.
+      clearSourceApproval(body.itemId);
       if (snapForBlacklist.current?.source?.url) {
         markBadUrl(snapForBlacklist.current.source.url);
       }
@@ -1453,6 +1459,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     const body = req.body as z.infer<typeof StopOverrideCommand>;
     if (!checkIdempotency(body.idempotencyKey)) return { ok: true, sequence: broadcastOrchestrator.getSequence(), duplicate: true };
     clearAllBadUrls();
+    clearAllSourceApprovals();
     // Persist cleared state to DB immediately so the next process restart
     // doesn't re-hydrate the old blocked URLs from broadcast_runtime_state.
     void persistBadUrlCache("main").catch((err: unknown) =>
@@ -1526,6 +1533,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
 
       // Step 2: Clear bad-URL cache + skip counters (clearAllBadUrls resets counts too).
       clearAllBadUrls();
+      clearAllSourceApprovals();
       // Persist cleared state immediately so the next restart doesn't re-hydrate
       // the old blocked URLs from broadcast_runtime_state.bad_url_cache.
       void persistBadUrlCache("main").catch((err: unknown) =>
@@ -1980,8 +1988,9 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       // ── Phase 6: Re-enable system-suspended items ──────────────────────────
       const itemsReEnabled = await reEnableAllSuspended();
 
-      // ── Phase 7: Flush bad-URL cache ──────────────────────────────────────
+      // ── Phase 7: Flush bad-URL cache + source approvals ──────────────────
       clearAllBadUrls();
+      clearAllSourceApprovals();
       broadcastOrchestrator.resetQueueHash();
 
       // ── Phase 8: Stop stale non-youtube override ───────────────────────────

@@ -280,7 +280,7 @@ function proxyExternalSource<T extends Pick<V2Source, "kind" | "url">>(
 // which is acceptable. Persistent blacklisting belongs in the DB layer and is
 // future work.
 
-export const BAD_URL_TTL_MS = 90_000; // 90 seconds — base TTL for persistent failures
+export const BAD_URL_TTL_MS = 60_000; // 60 seconds — base TTL (first failure grace window)
 
 /**
  * No-op stub retained for backward compatibility with callers in recovery
@@ -294,6 +294,7 @@ export function invalidateStorageVerifyCache(_videoId?: string): void {
 }
 
 // ── Exponential backoff TTL schedule ────────────────────────────────────────
+<<<<<<< HEAD
 // First confirmed block (2 independent sources agree): 20 s — brief window
 // that allows a transient stall (network blip, CDN cold-start, brief 503) to
 // self-recover before the orchestrator forward-scans past the item.
@@ -310,16 +311,36 @@ export function invalidateStorageVerifyCache(_videoId?: string): void {
 // the current-item probe accumulates ≥4 consecutive definitive 4xx failures.
 // Single-source failures (gap1) are warnings only and do not write to the
 // bad-URL cache, so they do not increment badUrlFailureCounts.
+=======
+// First failure: 60 s — generous recovery window so a transient CDN cold-start,
+// brief 503, or network blip can self-recover before the orchestrator skips
+// the item. The previous 20 s was too short: the HTTP probe round-trip plus
+// CDN edge-cache warm-up often exceeded 20 s, causing healthy sources to be
+// temporarily blocked.
+//
+// Subsequent failures escalate the block progressively so genuinely broken
+// sources are suppressed for longer without consuming skip budget on transients.
+// After 5+ failures the URL stays out of rotation for 20 minutes — enough for
+// an operator to swap the source or for a transcoding job to finish.
+>>>>>>> 13d545e (Improve broadcast pipeline reliability with circuit-breaker and source approval caching)
 //
 // The per-URL failure counts live in `badUrlFailureCounts` (separate from
 // badUrlSkipCounts which is per-itemId). Counts are cleared on clearBadUrl()
-// and clearAllBadUrls() so a manual operator clear gives a clean slate.
+// and clearAllBadUrls() so a manual operator "clear blocks" gives a clean slate.
 function badUrlTtlForCount(count: number): number {
+<<<<<<< HEAD
   if (count <= 1) return 20_000;   // 20 s  — first block: brief transient recovery window
   if (count === 2) return 60_000;  // 1 min — second block: moderate backoff before hard lock
   if (count === 3) return 180_000; // 3 min — third block: persistent problem
   if (count === 4) return 300_000; // 5 min
   return 600_000;                   // 10 min (5+)
+=======
+  if (count <= 1) return 60_000;    // 60 s — first failure: generous self-recovery window
+  if (count === 2) return 180_000;  // 3 min — second failure: sustained problem
+  if (count === 3) return 300_000;  // 5 min
+  if (count === 4) return 600_000;  // 10 min
+  return 1_200_000;                  // 20 min (5+) — genuinely broken; operator action needed
+>>>>>>> 13d545e (Improve broadcast pipeline reliability with circuit-breaker and source approval caching)
 }
 
 // url → consecutive failure count (for TTL escalation)
@@ -332,7 +353,7 @@ const badUrlFailureCounts = new Map<string, number>();
  * After this TTL the item automatically re-enters rotation — no operator
  * action required, preventing permanent Off Air states from transient failures.
  */
-export const SUSPENSION_TTL_MS = 5 * 60_000; // 5 minutes
+export const SUSPENSION_TTL_MS = 10 * 60_000; // 10 minutes
 
 // url → expiresAtMs
 const badUrlCache = new Map<string, number>();
@@ -344,12 +365,12 @@ export function getBadUrlCacheSize(): number {
 
 /** Mark a source URL as recently confirmed unreachable.
  *
- * Uses exponential backoff: each successive call for the same URL doubles
- * the blacklist window (90 s → 3 min → 5 min → 10 min) so genuinely broken
- * sources don't re-enter rotation every 90 s and cause cascading RECOVERING
- * → SKIP_PENDING cycles. The per-URL failure count is reset by clearBadUrl()
- * or clearAllBadUrls() so an operator "clear blocks" action always gives a
- * clean slate.
+ * Uses exponential backoff: each successive call for the same URL extends
+ * the blacklist window (60 s → 3 min → 5 min → 10 min → 20 min) so
+ * genuinely broken sources don't re-enter rotation after a brief TTL and
+ * cause cascading RECOVERING → SKIP_PENDING cycles. The per-URL failure
+ * count is reset by clearBadUrl() or clearAllBadUrls() so an operator
+ * "clear blocks" action always gives a clean slate.
  */
 export function markBadUrl(url: string): void {
   const now = Date.now();
@@ -658,6 +679,61 @@ export function autoSuspendQueueItem(
       { itemId, title, failCount, threshold: BAD_URL_SKIP_THRESHOLD, suspensionTtlMs: SUSPENSION_TTL_MS },
     ),
   ).catch(() => {});
+}
+
+// ── Source approval cache ─────────────────────────────────────────────────────
+//
+// Tracks items whose source URL has been positively confirmed reachable by a
+// successful HTTP probe. While the approval is fresh (within SOURCE_APPROVAL_TTL_MS),
+// the orchestrator's probeCurrentItem() and scheduleProactiveProbe() skip the
+// redundant HTTP check — a single pre-air confirmation is sufficient evidence.
+//
+// This eliminates the pattern of re-probing every 60 s for items that have
+// been on air and healthy for hours. The approval is cleared immediately when:
+//   • A stall report arrives (client-side evidence of dead-air)
+//   • The item is marked bad via markBadUrl() or autoSuspendQueueItem()
+//   • The URL changes (URL mismatch clears automatically in isSourceApproved)
+//
+// Lifetime: in-process only (resets on restart). Items re-prove themselves on
+// their first probeCurrentItem() or scheduleProactiveProbe() call after restart.
+
+/** How long a successful probe suppresses future probes for the same item. */
+export const SOURCE_APPROVAL_TTL_MS = 4 * 60 * 60_000; // 4 hours
+
+const sourceApprovalCache = new Map<string, { approvedAtMs: number; url: string }>();
+
+/** Mark a queue item's primary source URL as confirmed reachable. */
+export function markSourceApproved(itemId: string, url: string): void {
+  sourceApprovalCache.set(itemId, { approvedAtMs: Date.now(), url });
+}
+
+/**
+ * Return true if this item was confirmed reachable recently (within SOURCE_APPROVAL_TTL_MS)
+ * AND the approved URL matches the current URL.
+ * URL mismatch (e.g. after a source swap) forces a re-probe automatically.
+ */
+export function isSourceApproved(itemId: string, url: string): boolean {
+  const entry = sourceApprovalCache.get(itemId);
+  if (!entry) return false;
+  if (entry.url !== url) {
+    sourceApprovalCache.delete(itemId);
+    return false;
+  }
+  if (Date.now() - entry.approvedAtMs >= SOURCE_APPROVAL_TTL_MS) {
+    sourceApprovalCache.delete(itemId);
+    return false;
+  }
+  return true;
+}
+
+/** Clear approval for an item — call when a stall report arrives or bad-URL is marked. */
+export function clearSourceApproval(itemId: string): void {
+  sourceApprovalCache.delete(itemId);
+}
+
+/** Clear all approvals (call on operator "clear all blocks"). */
+export function clearAllSourceApprovals(): void {
+  sourceApprovalCache.clear();
 }
 
 /**
