@@ -169,16 +169,16 @@ services:
     rootDir: .
     autoDeploy: true
     pullRequestPreviewsEnabled: false
-    numInstances: 1           # Free tier is single-instance only. Cross-instance
-                              # SSE fanout via Redis is wired but not exercised
-                              # here. Bump to a paid plan + numInstances: 2 when
-                              # load requires horizontal scale.
+    # Free tier is always single-instance. Cross-instance SSE fanout via Redis
+    # is wired but not exercised here. Upgrade to a paid plan and add
+    # numInstances: 2 (or more) when load requires horizontal scale.
 
     # Only rebuild this service when files relevant to the API change.
     # Changes to artifacts/admin, artifacts/tv, artifacts/mobile, etc. that
     # don't touch the API server or its shared libs will skip this build,
     # saving pipeline minutes and avoiding unnecessary API cold-starts during
     # rolling deploy windows.
+    filters:
       paths:
         - artifacts/api-server/**
         - lib/db/**
@@ -569,6 +569,7 @@ services:
     autoDeploy: true
     pullRequestPreviewsEnabled: false
     # Only rebuild when admin SPA source or its workspace lib dependencies change.
+    filters:
       paths:
         - artifacts/admin/**
         - lib/player-core/**
@@ -638,6 +639,7 @@ services:
     autoDeploy: true
     pullRequestPreviewsEnabled: false
     # Only rebuild when mobile source or its workspace lib dependencies change.
+    filters:
       paths:
         - artifacts/mobile/**
         - lib/player-core/**
@@ -703,6 +705,7 @@ services:
     autoDeploy: true
     pullRequestPreviewsEnabled: false
     # Only rebuild when TV SPA source or its workspace lib dependencies change.
+    filters:
       paths:
         - artifacts/tv/**
         - lib/player-core/**
