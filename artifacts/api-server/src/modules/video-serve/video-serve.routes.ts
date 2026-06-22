@@ -43,7 +43,15 @@ import { registerNamedStore } from "../../infrastructure/cache.js";
 // connection pool. 503 is returned immediately; clients fall back to
 // their failoverHlsUrl after the first segment load failure.
 let hlsConcurrent = 0;
-const HLS_MAX = () => env.HLS_MAX_CONCURRENT;
+/**
+ * When non-null, overrides `env.HLS_MAX_CONCURRENT`.  Set to 0 by the memory
+ * watchdog during a self-healing relief pass to prevent new HLS requests from
+ * entering and re-filling the segment cache while in-flight Buffers drain.
+ * Restored to null after the relief window elapses.
+ */
+let _hlsConcurrencyOverride: number | null = null;
+const HLS_MAX = () =>
+  _hlsConcurrencyOverride !== null ? _hlsConcurrencyOverride : env.HLS_MAX_CONCURRENT;
 
 // ── A6: In-process HLS segment LRU cache ─────────────────────────────────────
 // Immutable .ts segments are content-addressed by the transcoder (path =
@@ -171,6 +179,40 @@ function hlsSegments(): HlsSegmentLru {
 export function trimHlsSegmentCache(targetMb: number): number {
   if (!_hlsSegments) return 0;
   return _hlsSegments.trim(targetMb);
+}
+
+/**
+ * Temporarily override the HLS proxy concurrency ceiling.
+ * Pass `null` to restore the env-configured default.
+ *
+ * Used by the memory watchdog to block new HLS segment requests (value 0)
+ * during a self-healing relief pass so the segment cache and in-flight
+ * Buffer allocations can fully drain before GC runs.  Callers that are
+ * blocked receive an immediate 503 and fall back to their failoverHlsUrl.
+ */
+export function setHlsConcurrencyOverride(n: number | null): void {
+  _hlsConcurrencyOverride = n;
+}
+
+/** Returns the current number of in-flight HLS proxy requests. */
+export function getHlsConcurrent(): number {
+  return hlsConcurrent;
+}
+
+/**
+ * Module-level hook set by `videoServeRoutes` after its closure-private
+ * `headMetaCache` is created.  Allows the memory watchdog to clear the
+ * cache without needing direct access to the closure.
+ */
+let _headMetaCacheClearFn: (() => void) | null = null;
+
+/**
+ * Clear the in-process HEAD metadata cache (Content-Length / Content-Type
+ * entries, max 500 × ~100 B).  Called by the memory watchdog during relief;
+ * entries are reconstructed on the next HEAD request.
+ */
+export function clearHeadMetaCache(): void {
+  _headMetaCacheClearFn?.();
 }
 
 // ── A3: HMAC token helpers ────────────────────────────────────────────────────
@@ -325,6 +367,11 @@ export async function videoServeRoutes(app: FastifyInstance) {
     string,
     { contentLength?: number; contentType?: string; expiresAt: number }
   >();
+  // Register with the diagnostics system so the memory watchdog can see it,
+  // and wire the module-level clear hook so the watchdog can drain it during
+  // a self-healing relief pass.
+  registerNamedStore("hls-head-meta-cache", () => headMetaCache.size);
+  _headMetaCacheClearFn = () => headMetaCache.clear();
 
   function headCacheGet(key: string) {
     const entry = headMetaCache.get(key);

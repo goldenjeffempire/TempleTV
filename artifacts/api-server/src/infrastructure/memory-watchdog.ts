@@ -753,21 +753,52 @@ function sample() {
       restartThresholdMb,
     });
     void (async () => {
-      // Step 1: cancel faststart jobs (80–150 MiB each)
+      // Step 1: Block new HLS proxy requests so the drain window is clean.
+      // In-flight requests that already entered will finish naturally; once
+      // they complete, their Buffers become GC-eligible.  New requests get
+      // an immediate 503 and fall back to their failoverHlsUrl.
+      let restoreHlsConcurrency: (() => void) | null = null;
+      try {
+        const { setHlsConcurrencyOverride } = await import("../modules/video-serve/video-serve.routes.js");
+        setHlsConcurrencyOverride(0);
+        restoreHlsConcurrency = () => {
+          try { setHlsConcurrencyOverride(null); } catch { /* noop */ }
+        };
+      } catch { /* non-fatal — module may not be loaded */ }
+
+      // Step 2: cancel faststart jobs (80–150 MiB each)
       try {
         const { cancelAllFaststartJobs } = await import("../modules/transcoder/faststart.service.js");
         cancelAllFaststartJobs();
       } catch { /* non-fatal — module may not be loaded */ }
-      // Step 2: aggressive cache drain + GC
+
+      // Step 3: aggressive cache drain + GC pass 1
       try {
-        const { trimHlsSegmentCache } = await import("../modules/video-serve/video-serve.routes.js");
+        const { trimHlsSegmentCache, clearHeadMetaCache } = await import("../modules/video-serve/video-serve.routes.js");
         trimHlsSegmentCache(0);
+        clearHeadMetaCache();
       } catch { /* non-fatal */ }
       purgeExpiredCacheEntries();
       if (gcFn) gcFn();
-      // Step 3: wait for memory to release
-      await new Promise<void>((r) => setTimeout(r, RELIEF_WAIT_MS));
-      // Step 4: re-measure
+
+      // Step 4: yield to event loop then GC pass 2.
+      // Allows any in-flight HLS response send-callbacks to complete,
+      // releasing the last Buffer references before the second collection.
+      await new Promise<void>((r) => setImmediate(r));
+      if (gcFn) gcFn();
+
+      // Step 5: wait 5 s — HLS responses drain, glibc arenas begin to compact.
+      await new Promise<void>((r) => setTimeout(r, 5_000));
+      if (gcFn) gcFn();
+
+      // Step 6: wait remaining relief window then final GC pass.
+      await new Promise<void>((r) => setTimeout(r, RELIEF_WAIT_MS - 5_000));
+      if (gcFn) gcFn();
+
+      // Restore normal HLS concurrency before we re-measure.
+      restoreHlsConcurrency?.();
+
+      // Step 7: re-measure
       const recoveredMem = process.memoryUsage();
       const recoveredRssMb = Math.round(recoveredMem.rss / (1024 * 1024));
       if (recoveredRssMb < restartThresholdMb) {
