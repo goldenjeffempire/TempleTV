@@ -29,6 +29,7 @@ import React, {
 import { AppState, Platform } from "react-native";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
 import { getApiBase } from "@/lib/apiBase";
+import { scheduleHeartbeat } from "@/lib/heartbeatScheduler";
 
 // ── Connectivity probe ────────────────────────────────────────────────────────
 
@@ -100,10 +101,17 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
   const [isOnline, setIsOnline] = useState(true);
   const [justRecovered, setJustRecovered] = useState(false);
 
-  const prevOnlineRef    = useRef(true);
-  const isOnlineRef      = useRef(true);
-  const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const intervalRef      = useRef<ReturnType<typeof setInterval> | null>(null);
+  const prevOnlineRef       = useRef(true);
+  const isOnlineRef         = useRef(true);
+  const recoveryTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Offline fast-poll (8 s) — only active while the device is offline.
+  // Cannot be merged into the shared heartbeat because 8 s is not a clean
+  // multiple of the 15 s base tick. Kept as a private setInterval so offline
+  // recovery is still detected within ~10 s.
+  const offlineIntervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Online slow-poll (30 s = 2 × 15 s heartbeat ticks) — unsubscribe handle
+  // for the shared HeartbeatScheduler. Null while the device is offline.
+  const heartbeatUnsubRef   = useRef<(() => void) | null>(null);
 
   function applyStatus(online: boolean): void {
     const wasOffline = !prevOnlineRef.current;
@@ -120,19 +128,37 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
       }, RECOVERY_FLASH_MS);
     }
 
-    // Adaptive poll rate: fast polling while offline so recovery is detected
-    // quickly; slow polling while online to preserve battery.
-    const newRate = online ? POLL_ONLINE_MS : POLL_OFFLINE_MS;
-    restartInterval(newRate);
+    // Adaptive poll strategy:
+    //   Online  → shared HeartbeatScheduler tick every 30 s (2 × 15 s base)
+    //             Merges this timer with the player-core janitor so both run
+    //             off a single JS interval — fewer iOS background timer wake-ups.
+    //   Offline → private 8 s setInterval for fast recovery detection
+    //             (8 s is not a multiple of 15 s so it stays independent)
+    restartProbe(online ? POLL_ONLINE_MS : POLL_OFFLINE_MS);
   }
 
-  function restartInterval(ms: number): void {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    intervalRef.current = setInterval(() => {
+  function restartProbe(ms: number): void {
+    // Clear both timer types first.
+    if (offlineIntervalRef.current) {
+      clearInterval(offlineIntervalRef.current);
+      offlineIntervalRef.current = null;
+    }
+    heartbeatUnsubRef.current?.();
+    heartbeatUnsubRef.current = null;
+
+    const probe = (): void => {
       checkConnectivity()
         .then((online) => applyStatus(online))
         .catch(() => {});
-    }, ms);
+    };
+
+    if (ms >= POLL_ONLINE_MS) {
+      // Online mode — join the shared 15 s heartbeat (fires every 2 ticks = 30 s).
+      heartbeatUnsubRef.current = scheduleHeartbeat(probe, ms);
+    } else {
+      // Offline mode — aggressive private interval.
+      offlineIntervalRef.current = setInterval(probe, ms);
+    }
   }
 
   useEffect(() => {
@@ -146,7 +172,8 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
       return () => {
         window.removeEventListener("online",  handleOnline);
         window.removeEventListener("offline", handleOffline);
-        if (intervalRef.current) clearInterval(intervalRef.current);
+        if (offlineIntervalRef.current) clearInterval(offlineIntervalRef.current);
+        heartbeatUnsubRef.current?.();
         if (recoveryTimerRef.current) clearTimeout(recoveryTimerRef.current);
       };
     }
@@ -162,8 +189,9 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
 
     // Immediate check on mount
     runCheck();
-    // Start interval at the online rate (optimistic initial assumption)
-    restartInterval(POLL_ONLINE_MS);
+    // Start with the online rate (optimistic initial assumption).
+    // Uses the shared heartbeat — no extra timer wake-up cost.
+    restartProbe(POLL_ONLINE_MS);
 
     // When the app returns to the foreground, run an immediate probe instead
     // of waiting for the next scheduled poll tick. This covers the common
@@ -175,7 +203,9 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       cancelled = true;
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (offlineIntervalRef.current) clearInterval(offlineIntervalRef.current);
+      heartbeatUnsubRef.current?.();
+      heartbeatUnsubRef.current = null;
       if (recoveryTimerRef.current) clearTimeout(recoveryTimerRef.current);
       appStateSub.remove();
     };

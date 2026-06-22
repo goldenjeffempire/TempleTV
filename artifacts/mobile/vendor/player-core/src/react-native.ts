@@ -31,6 +31,7 @@ import { PlayerMachine } from "./machine.js";
 import { V2Transport } from "./transport.js";
 import { createMobileAdapter, type MobileAdapter, type MobileAdapterStore } from "./adapters/mobile.js";
 import type { PlayerEvent, PlayerSnapshot } from "./types.js";
+import { scheduleHeartbeat } from "../../../lib/heartbeatScheduler.js";
 
 export interface UseV2BroadcastNativeOptions {
   baseUrl: string;
@@ -169,7 +170,14 @@ const SESSION_IDLE_EVICT_MS = 5 * 60 * 1000;
  */
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
-let janitorInterval: ReturnType<typeof setInterval> | null = null;
+/**
+ * Unsubscribe function returned by scheduleHeartbeat for the janitor tick.
+ * Null when no sessions exist and the janitor is not registered.
+ * Using the shared HeartbeatScheduler (15 s base, 4 ticks = 60 s) replaces
+ * an independent setInterval so the janitor shares a single JS timer with
+ * the NetworkContext online-probe, reducing iOS background timer wake-ups.
+ */
+let janitorUnsub: (() => void) | null = null;
 
 // ── Lightweight Sentry breadcrumb helper ────────────────────────────────────
 // Uses a lazy require so the player-core vendor library does not take a hard
@@ -204,50 +212,57 @@ function evictSession(baseUrl: string, entry: { session: NativeSession; lastIdle
   sessions.delete(baseUrl);
 }
 
+function runJanitor(): void {
+  const now = Date.now();
+  for (const [baseUrl, entry] of sessions) {
+    // Use hookCount — not snapshotListeners.size — to detect idle sessions.
+    // snapshotListeners always contains the two permanent session-level
+    // listeners (stallListener, escapeValveListener) added at session creation,
+    // so its size is always ≥ 2 and the janitor would never evict.
+    const hasListeners = entry.session.hookCount > 0;
+
+    // ── Hard max-age sweep (24 h) ─────────────────────────────────────────
+    // Evict sessions older than SESSION_MAX_AGE_MS regardless of hookCount.
+    // This is a safety net for always-on / kiosk devices where a navigation
+    // bug might keep hookCount > 0 indefinitely without anyone watching.
+    // On real broadcast surfaces the user will briefly see a BOOTSTRAP flash
+    // (< 1 s) before the fresh session reconnects — acceptable vs a memory
+    // leak that accumulates for days.
+    if (now - entry.lastUsedAt > SESSION_MAX_AGE_MS) {
+      evictSession(baseUrl, entry);
+      continue;
+    }
+
+    if (hasListeners) {
+      entry.lastIdleAtMs = null;
+      continue;
+    }
+    if (entry.lastIdleAtMs === null) {
+      entry.lastIdleAtMs = now;
+      continue;
+    }
+
+    // ── Idle eviction (5 min) ─────────────────────────────────────────────
+    if (now - entry.lastIdleAtMs >= SESSION_IDLE_EVICT_MS) {
+      evictSession(baseUrl, entry);
+    }
+  }
+  // Self-unsubscribe from the shared heartbeat when there are no sessions left.
+  // scheduleHeartbeat uses snapshot iteration so calling unsubscribe() from
+  // inside the tick callback is safe (the subscriber is skipped if already
+  // removed during the current tick).
+  if (sessions.size === 0 && janitorUnsub !== null) {
+    janitorUnsub();
+    janitorUnsub = null;
+  }
+}
+
 function startJanitor(): void {
-  if (janitorInterval !== null) return;
-  if (typeof setInterval === "undefined") return;
-  janitorInterval = setInterval(() => {
-    const now = Date.now();
-    for (const [baseUrl, entry] of sessions) {
-      // Use hookCount — not snapshotListeners.size — to detect idle sessions.
-      // snapshotListeners always contains the two permanent session-level
-      // listeners (stallListener, escapeValveListener) added at session creation,
-      // so its size is always ≥ 2 and the janitor would never evict.
-      const hasListeners = entry.session.hookCount > 0;
-
-      // ── Hard max-age sweep (24 h) ─────────────────────────────────────────
-      // Evict sessions older than SESSION_MAX_AGE_MS regardless of hookCount.
-      // This is a safety net for always-on / kiosk devices where a navigation
-      // bug might keep hookCount > 0 indefinitely without anyone watching.
-      // On real broadcast surfaces the user will briefly see a BOOTSTRAP flash
-      // (< 1 s) before the fresh session reconnects — acceptable vs a memory
-      // leak that accumulates for days.
-      if (now - entry.lastUsedAt > SESSION_MAX_AGE_MS) {
-        evictSession(baseUrl, entry);
-        continue;
-      }
-
-      if (hasListeners) {
-        entry.lastIdleAtMs = null;
-        continue;
-      }
-      if (entry.lastIdleAtMs === null) {
-        entry.lastIdleAtMs = now;
-        continue;
-      }
-
-      // ── Idle eviction (5 min) ─────────────────────────────────────────────
-      if (now - entry.lastIdleAtMs >= SESSION_IDLE_EVICT_MS) {
-        evictSession(baseUrl, entry);
-      }
-    }
-    if (sessions.size === 0 && janitorInterval !== null) {
-      clearInterval(janitorInterval);
-      janitorInterval = null;
-    }
-  }, 60_000);
-  (janitorInterval as unknown as { unref?: () => void }).unref?.();
+  if (janitorUnsub !== null) return;
+  // Register with the shared 15 s heartbeat at 4 ticks = 60 s cadence.
+  // The heartbeat itself self-stops when all subscribers unsubscribe, so no
+  // separate cleanup is needed for the heartbeat timer — only for janitorUnsub.
+  janitorUnsub = scheduleHeartbeat(runJanitor, 60_000);
 }
 
 function getOrCreateSession(baseUrl: string): NativeSession {
