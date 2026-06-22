@@ -112,6 +112,16 @@ function buildYouTubeUrl(videoId: string): string {
   return `https://www.youtube.com/watch?v=${videoId}`;
 }
 
+/**
+ * How long (ms) to suppress repeat activate() DB queries after the catalog
+ * was found empty.  The selfHealEmptyTimer calls activate() every 5 s; without
+ * this cooldown an empty-catalog deployment runs 12 SELECT queries/min that
+ * never return rows — unnecessary DB load and heap pressure from Drizzle query
+ * builder object churn.  60 s is long enough to react to a fresh YouTube sync
+ * while being short enough to miss at most one YouTube override advancement.
+ */
+const EMPTY_CATALOG_RECHECK_MS = 60_000;
+
 class YtShuffleFallback {
   private _active = false;
   private _activating = false;
@@ -124,6 +134,12 @@ class YtShuffleFallback {
   private _advanceCount = 0;
   private _deactivateCount = 0;
   private _lastError: string | null = null;
+  /**
+   * Timestamp (ms) of the last activate() call that found an empty catalog.
+   * Used to enforce EMPTY_CATALOG_RECHECK_MS cooldown and suppress repeat
+   * no-op DB queries on every self-heal-empty tick.
+   */
+  private _catalogEmptyLastCheckedMs: number | null = null;
 
   /** Full shuffled playlist (populated by activate(), re-shuffled on wraparound). */
   private _shuffledPlaylist: YtVideoEntry[] = [];
@@ -141,10 +157,24 @@ class YtShuffleFallback {
    * Queries managed_videos for YouTube catalog entries, Fisher-Yates shuffles
    * them, and starts the first video with a 20-minute finite-duration override.
    * Idempotent: silently no-ops when already active or when YOUTUBE_SHUFFLE_FALLBACK_DISABLE=true.
+   *
+   * Empty-catalog backoff: when the DB query returns 0 rows the result is
+   * cached for EMPTY_CATALOG_RECHECK_MS (60 s).  The selfHealEmptyTimer calls
+   * activate() every 5 s; without this guard that produces 12 no-op SELECT
+   * queries/min and Drizzle query-builder object churn during the V8 JIT
+   * warm-up window, amplifying the startup heap-slope alert.
    */
   async activate(startOverride: StartOverrideFn): Promise<void> {
     if (this._active || this._activating) return;
     if (env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE) return;
+
+    // Backoff: skip the DB query if the catalog was recently found empty.
+    if (
+      this._catalogEmptyLastCheckedMs !== null &&
+      Date.now() - this._catalogEmptyLastCheckedMs < EMPTY_CATALOG_RECHECK_MS
+    ) {
+      return;
+    }
 
     this._activating = true;
     try {
@@ -169,11 +199,15 @@ class YtShuffleFallback {
       );
 
       if (entries.length === 0) {
+        this._catalogEmptyLastCheckedMs = Date.now();
         logger.info(
           "[yt-shuffle] no YouTube catalog entries found — YouTube shuffle fallback inactive",
         );
         return;
       }
+      // Catalog has entries — clear the empty-cache so future calls don't
+      // skip the query with stale "no results" state.
+      this._catalogEmptyLastCheckedMs = null;
 
       this._shuffledPlaylist = fisherYatesShuffle(entries);
       this._playlistIndex = 0;

@@ -81,6 +81,20 @@ const RELIEF_COOLDOWN_MS = 90_000;
  * useful sparkline history.
  */
 const SLOPE_WINDOW_SAMPLES = 180;
+/**
+ * Minimum wall-clock span of the rolling window before any slope alert can fire.
+ *
+ * During the first 2 minutes after process startup, V8 JIT-compiles the full
+ * module graph (~1 400 modules), inflating heapUsed by 30–80 MB.  With only
+ * 3 samples (30 s) in the window this produces a slope of 75+ MB/min even
+ * though it is a transient JIT warm-up artefact, not a leak.  Requiring at
+ * least 120 s of data before any slope alert fires eliminates these spurious
+ * ops-alerts without delaying genuine leak detection: 2 minutes is still far
+ * below the timescale of any actionable memory issue.
+ *
+ * Applies to all three slope metrics: external, heapUsed, arrayBuffers.
+ */
+const MIN_SLOPE_WINDOW_MS = 120_000;
 
 /**
  * V8 heap utilisation above which a proactive GC nudge fires even when RSS is
@@ -191,6 +205,9 @@ function calcExternalGrowthMbPerMin(): number | null {
   const newest = memWindow[memWindow.length - 1];
   const dtMs = newest.ts - oldest.ts;
   if (dtMs < 1_000) return null;
+  // Suppress slope alerts when the window is too short to be meaningful.
+  // The first 2 minutes after startup are dominated by V8 JIT compilation.
+  if (dtMs < MIN_SLOPE_WINDOW_MS) return null;
   const deltaBytes = newest.external - oldest.external;
   const dtMin = dtMs / 60_000;
   return (deltaBytes / (1024 * 1024)) / dtMin;
@@ -203,6 +220,10 @@ function calcHeapUsedGrowthMbPerMin(): number | null {
   const newest = memWindow[memWindow.length - 1];
   const dtMs = newest.ts - oldest.ts;
   if (dtMs < 1_000) return null;
+  // Suppress slope alerts when the window is too short to be meaningful.
+  // The first 2 minutes after startup are dominated by V8 JIT compilation
+  // which inflates heapUsed by 30–80 MB, producing a deceptively steep slope.
+  if (dtMs < MIN_SLOPE_WINDOW_MS) return null;
   const deltaBytes = newest.heapUsed - oldest.heapUsed;
   const dtMin = dtMs / 60_000;
   return (deltaBytes / (1024 * 1024)) / dtMin;
@@ -221,6 +242,8 @@ function calcArrayBuffersGrowthMbPerMin(): number | null {
   const newest = memWindow[memWindow.length - 1];
   const dtMs = newest.ts - oldest.ts;
   if (dtMs < 1_000) return null;
+  // Suppress slope alerts when the window is too short to be meaningful.
+  if (dtMs < MIN_SLOPE_WINDOW_MS) return null;
   const deltaBytes = newest.arrayBuffers - oldest.arrayBuffers;
   const dtMin = dtMs / 60_000;
   return (deltaBytes / (1024 * 1024)) / dtMin;

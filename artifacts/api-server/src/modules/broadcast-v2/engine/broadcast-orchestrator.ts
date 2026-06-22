@@ -253,6 +253,13 @@ class BroadcastOrchestrator extends EventEmitter {
    */
   private lastDeadAirEscalationMs = 0;
   /**
+   * Wall-clock ms of the last ytShuffleFallback.activate() attempt from the
+   * reloadInner fast-path. Throttles to once per 60 s so an empty YouTube
+   * catalog does not trigger a DB query on every 5-second drift-poll.
+   * Reset to 0 when items load so the next outage gets an immediate attempt.
+   */
+  private lastYtShuffleActivateAttemptMs = 0;
+  /**
    * Dirty flag for the position checkpoint.  Set whenever the orchestrator
    * emits a snapshot (state has changed).  persistCheckpoint() returns
    * immediately when this flag is false, eliminating the DB write for ticks
@@ -888,6 +895,7 @@ class BroadcastOrchestrator extends EventEmitter {
           // outage gets an immediate escalation rather than waiting for the
           // remaining cooldown from a previous outage.
           this.lastDeadAirEscalationMs = 0;
+          this.lastYtShuffleActivateAttemptMs = 0;
         }
       },
       SELF_HEAL_EMPTY_MS,
@@ -1634,11 +1642,18 @@ class BroadcastOrchestrator extends EventEmitter {
       // This is safe: startOverride() is idempotent and the selfHealEmptyTimer
       // will not double-activate because ytShuffleFallback.isActive will be
       // true by the time the next poll fires.
+      //
+      // Throttle: when the catalog is empty, activate() returns without setting
+      // _active = true, so !ytShuffleFallback.isActive stays true forever and
+      // every 5-second drift-poll would trigger a DB query. Cap to once per 60 s
+      // using an orchestrator-level timestamp (same pattern as lastOffAirLogAtMs).
       if (
         !ytShuffleFallback.isActive &&
         this.mode !== "override" &&
-        !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE
+        !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE &&
+        nowMs - this.lastYtShuffleActivateAttemptMs >= 60_000
       ) {
+        this.lastYtShuffleActivateAttemptMs = nowMs;
         void ytShuffleFallback
           .activate((opts) => this.startOverride(opts))
           .catch((err: unknown) =>
@@ -1706,6 +1721,7 @@ class BroadcastOrchestrator extends EventEmitter {
     // after just 1 TTL cycle instead of the normal 2.
     if (resolved.length > 0) {
       this.lastDeadAirEscalationMs = 0;
+      this.lastYtShuffleActivateAttemptMs = 0;
       if (this.allBlockedSinceMs !== null) {
         this.allBlockedSinceMs = null;
         this.allBlockedRecoveryCycles = 0;
