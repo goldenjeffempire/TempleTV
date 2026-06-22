@@ -69,12 +69,15 @@
 #       for Postgres, Upstash free tier for Redis). REDIS_URL is optional; the
 #       application falls back to an in-process LRU cache when absent.
 #
-#  Three shared env-var groups so secrets / AWS creds / public domain names
-#  are populated ONCE in the Render dashboard ("Environment Groups" page) and
-#  inherited by every consuming service:
-#    • temple-tv-aws            → AWS S3 credentials (API only in this config)
+#  Two shared env-var groups so secrets / public domain names are populated
+#  ONCE in the Render dashboard ("Environment Groups" page) and inherited by
+#  every consuming service:
 #    • temple-tv-shared-secrets → DATABASE_URL, JWT secrets, REDIS_URL, Sentry
 #    • temple-tv-domains        → CORS_ORIGINS, APP_BASE_URL
+#
+#  Note: the former `temple-tv-aws` group (AWS S3 credentials) was removed.
+#  Storage is now pure PostgreSQL BYTEA (storage_blobs table) — no S3/MinIO
+#  dependency. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are not required.
 #
 #  Multi-domain architecture (temple-tv-domains group)
 #  ────────────────────────────────────────────────────
@@ -102,19 +105,6 @@
 # Define credentials ONCE in the Render dashboard and every service that lists
 # `fromGroup: <name>` inherits them automatically.
 envVarGroups:
-  # AWS S3 — used by temple-tv-api for signed URLs, range streaming, and
-  # multipart finalize. Static frontends never see these values.
-  - name: temple-tv-aws
-    envVars:
-      - key: AWS_S3_BUCKET
-        sync: false
-      - key: AWS_REGION
-        sync: false
-      - key: AWS_ACCESS_KEY_ID
-        sync: false
-      - key: AWS_SECRET_ACCESS_KEY
-        sync: false
-
   # Cross-service secrets shared between any services that need to validate
   # the same JWTs, connect to the same Postgres, and report to Sentry.
   # JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must each be ≥32-char random
@@ -227,7 +217,6 @@ services:
 
     envVars:
       # ── Inherited credential groups ───────────────────────────────────────
-      - fromGroup: temple-tv-aws
       - fromGroup: temple-tv-shared-secrets
       # ── Domain / CORS configuration (operator-managed in Render dashboard) ─
       # Adding a new custom domain: update CORS_ORIGINS in the dashboard,
@@ -562,13 +551,6 @@ services:
       - key: CDN_BASE_URL
         sync: false
 
-      # ── Object storage paths ───────────────────────────────────────────────
-      - key: DEFAULT_OBJECT_STORAGE_BUCKET_ID
-        sync: false
-      - key: PRIVATE_OBJECT_DIR
-        sync: false
-      - key: PUBLIC_OBJECT_SEARCH_PATHS
-        sync: false
 
   # ═══════════════════════════════════════════════════════════════════════
   #  Static SPAs — admin, mobile (Expo Web), TV
