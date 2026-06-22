@@ -19,6 +19,9 @@ import { contentRotationScan, getContentRotationStatus } from "./engine/content-
 import { queueHealthGuard, getQueueHealthGuardStatus } from "./engine/queue-health-guard.js";
 import { scheduleBridgeScan } from "./engine/schedule-bridge.js";
 import { storageReconciliationWorker } from "./engine/storage-reconciliation-worker.js";
+import { storageBlobRecoveryService } from "./engine/storage-blob-recovery.service.js";
+import { db, schema } from "../../infrastructure/db.js";
+import { eq, and } from "drizzle-orm";
 import { startExhaustionMonitor, stopExhaustionMonitor, getExhaustionStatus } from "./engine/queue-exhaustion-monitor.js";
 import { startAutoQueueRefill, stopAutoQueueRefill, getAutoRefillStatus } from "./engine/auto-queue-refill.js";
 import { refreshStorageStats, getStorageStats } from "../../infrastructure/storage.js";
@@ -558,6 +561,69 @@ export function ensureBroadcastV2Started(): Promise<void> {
         } catch (err) {
           logger.warn({ err }, "[broadcast-v2] YouTube live-status service install failed (non-fatal)");
         }
+
+        // ── One-time boot repair: "19 5 24 Intro" ─────────────────────────
+        // This asset experienced a zero-byte blob from an interrupted putObject
+        // call.  Run the storage waterfall once, 45 s after boot (after the
+        // orchestrator is fully stable), so it is repaired on the next restart
+        // without operator intervention.  The waterfall is idempotent — if the
+        // asset is already healthy it returns tier="healthy" immediately.
+        const REPAIR_VIDEO_ID = "02d31acf-d200-41e9-ab3d-f08f1a933cac";
+        const repairTimer = setTimeout(() => {
+          void (async () => {
+            try {
+              const videoRow = await db
+                .select({
+                  id: schema.videosTable.id,
+                  title: schema.videosTable.title,
+                  objectPath: schema.videosTable.objectPath,
+                  hlsMasterUrl: schema.videosTable.hlsMasterUrl,
+                  videoSource: schema.videosTable.videoSource,
+                  sourceCleanupStatus: schema.videosTable.sourceCleanupStatus,
+                })
+                .from(schema.videosTable)
+                .where(eq(schema.videosTable.id, REPAIR_VIDEO_ID))
+                .limit(1)
+                .then((r) => r[0] ?? null)
+                .catch(() => null);
+
+              if (!videoRow) {
+                logger.debug({ videoId: REPAIR_VIDEO_ID }, "[broadcast-v2] boot-repair: video not found — skipping");
+                return;
+              }
+
+              const queueRow = await db
+                .select({ id: schema.broadcastQueueTable.id })
+                .from(schema.broadcastQueueTable)
+                .where(and(
+                  eq(schema.broadcastQueueTable.videoId, REPAIR_VIDEO_ID),
+                  eq(schema.broadcastQueueTable.isActive, true),
+                ))
+                .limit(1)
+                .then((r) => r[0] ?? null)
+                .catch(() => null);
+
+              const result = await storageBlobRecoveryService.runWaterfall({
+                videoId: REPAIR_VIDEO_ID,
+                queueId: queueRow?.id ?? "",
+                title: videoRow.title,
+                objectPath: videoRow.objectPath,
+                hlsUrl: videoRow.hlsMasterUrl,
+                videoSource: videoRow.videoSource,
+                sourceCleanupStatus: videoRow.sourceCleanupStatus,
+                triggeredBy: "boot-repair:zero-byte-recovery",
+              });
+
+              logger.info(
+                { videoId: REPAIR_VIDEO_ID, title: videoRow.title, tier: result.tier, message: result.message },
+                "[broadcast-v2] boot-repair: storage waterfall complete",
+              );
+            } catch (err) {
+              logger.warn({ err, videoId: REPAIR_VIDEO_ID }, "[broadcast-v2] boot-repair: waterfall error (non-fatal)");
+            }
+          })();
+        }, 45_000);
+        repairTimer.unref?.();
       })
       .catch((err) => {
         startAttempts += 1;

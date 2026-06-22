@@ -182,6 +182,21 @@ class PostgresObjectStorage implements ObjectStorage {
 
   async putObject({ key, body, contentType }: { key: string; body: Buffer | Uint8Array; contentType?: string }): Promise<{ key: string; url: string }> {
     const buf = Buffer.isBuffer(body) ? body : Buffer.from(body);
+
+    // Reject empty bodies upfront — writing a zero-byte blob produces a row that
+    // looks valid in storage_blobs but serves empty/corrupt content to clients.
+    // Callers must ensure the body is non-empty before calling putObject.
+    if (buf.length === 0) {
+      throw Object.assign(
+        new Error(
+          `putObject: refusing to write zero-byte blob for key "${key}". ` +
+          "An empty body indicates an interrupted or failed upstream write. " +
+          "Ensure the source data is fully materialised before calling putObject.",
+        ),
+        { code: "STORAGE_EMPTY_BODY", statusCode: 400 },
+      );
+    }
+
     const ct = contentType ?? "application/octet-stream";
     await db.execute(sql`
       INSERT INTO storage_blobs (key, content_type, size_bytes, data, updated_at)
@@ -516,6 +531,30 @@ class PostgresObjectStorage implements ObjectStorage {
       } else {
         throw err;
       }
+    }
+
+    // ── Post-assembly zero-byte guard ─────────────────────────────────────
+    // Verify the assembled blob is non-empty before declaring success.
+    // A zero-byte blob here means bytea_agg received empty or NULL parts —
+    // it would look valid in storage_blobs but serve corrupt content.
+    // Delete immediately and throw so the caller marks the session failed.
+    type SizeRow = { size_bytes: string };
+    const sizeCheck = firstRow<SizeRow>(
+      await db.execute<SizeRow>(sql`
+        SELECT size_bytes::text AS size_bytes FROM storage_blobs WHERE key = ${key} LIMIT 1
+      `),
+    );
+    const assembledSize = parseInt(sizeCheck?.size_bytes ?? "0", 10);
+    if (assembledSize === 0) {
+      // Delete the invalid zero-byte row so it does not masquerade as a valid blob.
+      await db.execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`)
+        .catch((delErr) => logger.warn({ delErr, key, uploadId }, "[storage] zero-byte blob cleanup failed (non-fatal)"));
+      throw new Error(
+        `completeMultipartUpload: assembled blob is zero bytes despite ${partCount} part(s) ` +
+        `(expected ≥${totalBytes} B) for key="${key}" uploadId=${uploadId}. ` +
+        "The zero-byte blob has been deleted. " +
+        "Possible cause: all parts were empty, bytea_agg received NULL inputs, or the INSERT succeeded on 0 matching parts.",
+      );
     }
 
     // Clean up staging parts — no longer needed after successful assembly.

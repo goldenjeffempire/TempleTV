@@ -792,29 +792,132 @@ class StorageBlobRecoveryServiceImpl {
         }
       }
 
-      // ── Phase 3: Scan for zero-byte blobs (corrupted writes) ──────────────
-      const zeroByteResult = await db.execute<{ cnt: number; prefixes: string }>(sql`
-        SELECT COUNT(*)::int AS cnt,
-               string_agg(DISTINCT split_part(key,'/',1), ', ' ORDER BY split_part(key,'/',1)) AS prefixes
+      // ── Phase 3: Scan and immediately remediate zero-byte blobs ──────────
+      //
+      // Zero-byte blobs are rows in storage_blobs with size_bytes=0, written by
+      // interrupted putObject calls that committed the INSERT but never supplied
+      // data.  They look "present" to naive existence checks but serve empty /
+      // corrupt content to HLS players.
+      //
+      // Action taken here (not just logging):
+      //   1. Fetch the full key list (up to 500) so we can identify owners.
+      //   2. Delete every zero-byte blob immediately — they must not masquerade
+      //      as valid objects.  Pass A/B will no longer see them as "present"
+      //      and will trigger the waterfall on the very next reconciliation pass.
+      //   3. For any key matching transcoded/{videoId}/* whose videoId has an
+      //      active broadcast_queue entry, run runWaterfall() immediately rather
+      //      than waiting for the next scheduled reconciliation cycle.  This
+      //      satisfies the "immediate re-ingestion" requirement: a zero-byte HLS
+      //      blob that is deleted here kicks off recovery in the same pass.
+      const zeroByteRowsResult = await db.execute<{ key: string; updated_at: string }>(sql`
+        SELECT key, updated_at::text AS updated_at
         FROM storage_blobs
         WHERE size_bytes = 0
           AND key NOT LIKE '_parts/%'
           AND key NOT LIKE '_meta/%'
+        ORDER BY updated_at
+        LIMIT 500
       `);
-      const zeroByteCount = Number(zeroByteResult.rows[0]?.cnt ?? 0);
+      const zeroByteRows = zeroByteRowsResult.rows;
+      const zeroByteCount = zeroByteRows.length;
+
       if (zeroByteCount > 0) {
+        const prefixes = [...new Set(zeroByteRows.map((r) => r.key.split("/")[0] ?? "?"))].join(", ");
+
+        // Step 3a: Delete all zero-byte blobs immediately.
+        let deleted = 0;
+        try {
+          const delResult = await db.execute(sql`
+            DELETE FROM storage_blobs
+            WHERE size_bytes = 0
+              AND key NOT LIKE '_parts/%'
+              AND key NOT LIKE '_meta/%'
+          `);
+          deleted = (delResult as unknown as { rowCount?: number }).rowCount ?? zeroByteCount;
+        } catch (delErr) {
+          logger.warn({ err: delErr }, `${MODULE} failed to delete zero-byte blobs (non-fatal)`);
+        }
+
         logger.warn(
-          { zeroByteCount, prefixes: zeroByteResult.rows[0]?.prefixes },
-          `${MODULE} zero-byte blobs detected — these cannot be served and may indicate interrupted writes`,
+          { zeroByteCount, deleted, prefixes },
+          `${MODULE} zero-byte blobs detected and deleted — immediate waterfall recovery scheduled for affected videos`,
         );
         adminEventBus.push("ops-alert", {
           level: "warn", component: "storage-blob-recovery",
           message:
-            `${zeroByteCount} zero-byte blob(s) detected in storage_blobs (prefixes: ${zeroByteResult.rows[0]?.prefixes ?? "?"}). ` +
-            "These were written by interrupted putObject calls and cannot be served to clients. " +
-            "The reconciliation worker treats them as absent and will attempt recovery on the next pass.",
-          zeroByteCount,
+            `${zeroByteCount} zero-byte blob(s) found in storage_blobs (prefixes: ${prefixes}). ` +
+            `All ${deleted} have been deleted immediately. ` +
+            "These were written by interrupted putObject/completeMultipartUpload calls and cannot serve content. " +
+            "Immediate storage waterfall recovery is being triggered for all affected active queue items.",
+          zeroByteCount, deleted, prefixes,
         });
+
+        // Step 3b: Immediate waterfall recovery for active queue items whose
+        // HLS blobs were just deleted.  Extract videoIds from transcoded/ keys.
+        const affectedVideoIds = new Set<string>();
+        for (const row of zeroByteRows) {
+          // transcoded/{videoId}/...
+          const m = /^transcoded\/([^/]+)\//.exec(row.key);
+          if (m?.[1]) affectedVideoIds.add(m[1]);
+        }
+
+        if (affectedVideoIds.size > 0) {
+          // Look up video + active queue metadata for affected IDs
+          const idList = [...affectedVideoIds];
+          try {
+            const videoRows = await db.execute<{
+              videoId: string;
+              title: string;
+              objectPath: string | null;
+              hlsMasterUrl: string | null;
+              videoSource: string | null;
+              sourceCleanupStatus: string | null;
+              queueId: string | null;
+            }>(sql`
+              SELECT
+                mv.id                       AS "videoId",
+                mv.title                    AS "title",
+                mv.object_path              AS "objectPath",
+                mv.hls_master_url           AS "hlsMasterUrl",
+                mv.video_source             AS "videoSource",
+                mv.source_cleanup_status    AS "sourceCleanupStatus",
+                bq.id                       AS "queueId"
+              FROM managed_videos mv
+              LEFT JOIN broadcast_queue bq
+                ON bq.video_id = mv.id AND bq.is_active = true
+              WHERE mv.id = ANY(${sql.param(idList)}::text[])
+            `);
+
+            for (const vRow of videoRows.rows) {
+              if (!vRow.videoId) continue;
+              void (async () => {
+                try {
+                  const result = await this.runWaterfall({
+                    videoId: vRow.videoId,
+                    queueId: vRow.queueId ?? "",
+                    title: vRow.title,
+                    objectPath: vRow.objectPath,
+                    hlsUrl: vRow.hlsMasterUrl,
+                    videoSource: vRow.videoSource,
+                    sourceCleanupStatus: vRow.sourceCleanupStatus,
+                    triggeredBy: `${MODULE}:zero-byte-immediate-recovery`,
+                  });
+                  logger.info(
+                    { videoId: vRow.videoId, tier: result.tier, message: result.message },
+                    `${MODULE} zero-byte immediate recovery waterfall complete`,
+                  );
+                } catch (wErr) {
+                  logger.warn(
+                    { err: wErr, videoId: vRow.videoId },
+                    `${MODULE} zero-byte immediate recovery waterfall error (non-fatal)`,
+                  );
+                }
+              })();
+            }
+          } catch (lookupErr) {
+            logger.warn({ err: lookupErr }, `${MODULE} zero-byte recovery: video lookup failed (non-fatal)`);
+          }
+        }
       }
 
       // ── Metrics + alerting ─────────────────────────────────────────────────
