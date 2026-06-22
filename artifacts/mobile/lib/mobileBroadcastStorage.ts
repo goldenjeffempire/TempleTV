@@ -36,6 +36,28 @@ import { configureMobileStorage } from "@workspace/player-core";
 const MEMORY = new Map<string, string>();
 const AS_KEY_PREFIX = "ttv:transport:";
 
+// ── Hydration gate ─────────────────────────────────────────────────────────
+// Resolves once the AsyncStorage → in-memory hydration pass completes.
+// Consumers (V2PlayerContainer) await this before enabling the broadcast
+// session so the transport's initial storage reads use the persisted sequence,
+// eliminating the spurious BOOTSTRAP → re-request cycle on cold-start.
+
+let _resolveHydration!: () => void;
+let _hydrationDone = false;
+
+/** Resolves once AsyncStorage hydration into the in-memory map is complete. */
+export const hydrationReady: Promise<void> = new Promise<void>((resolve) => {
+  _resolveHydration = () => {
+    _hydrationDone = true;
+    resolve();
+  };
+});
+
+/** Synchronous check — true once the initial hydration pass has finished. */
+export function isHydrationDone(): boolean {
+  return _hydrationDone;
+}
+
 /** 24-hour TTL — entries older than this are discarded on hydration. */
 const TTL_MS = 24 * 60 * 60 * 1_000;
 
@@ -96,6 +118,10 @@ async function hydrateFromStorage(): Promise<void> {
     }
   } catch {
     // best-effort — app still works without persisted cache
+  } finally {
+    // Always resolve the hydration gate — even if AsyncStorage failed — so
+    // V2PlayerContainer never blocks indefinitely waiting for storage.
+    _resolveHydration();
   }
 }
 

@@ -162,7 +162,35 @@ export default function PlayerScreen() {
       interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
       shouldDuckAndroid: false,
       playThroughEarpieceAndroid: false,
-    }).catch(() => {});
+    }).catch((err: unknown) => {
+      // Log to Sentry so we can track OS-level audio-session revocation patterns.
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const S = require("@sentry/react-native") as {
+          addBreadcrumb: (b: { category: string; message: string; level: string }) => void;
+        };
+        S.addBreadcrumb({
+          category: "audio",
+          message: `setAudioModeAsync failed on player mount: ${err instanceof Error ? err.message : String(err)}`,
+          level: "warning",
+        });
+      } catch {
+        // Sentry not available
+      }
+      // Single 500 ms retry — the OS may need a brief moment to release a
+      // competing audio session (e.g. after a phone call or Siri dismissal)
+      // before it will accept our reconfiguration.
+      setTimeout(() => {
+        Audio.setAudioModeAsync({
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: true,
+          interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+          interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+          shouldDuckAndroid: false,
+          playThroughEarpieceAndroid: false,
+        }).catch(() => {});
+      }, 500);
+    });
     // Restore the global audio policy when this screen unmounts. The root
     // layout (setupAudioSession) establishes shouldDuckAndroid: true so OS
     // sounds (navigation prompts, notifications) and in-app radio can duck

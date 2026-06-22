@@ -113,6 +113,7 @@ import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { MobileBufferState } from "@workspace/player-core/adapters/mobile";
 import { useNetworkContext } from "@/context/NetworkContext";
 import { enqueueTelemetry, flushTelemetryBuffer } from "@/lib/telemetryBuffer";
+import { hydrationReady, isHydrationDone } from "@/lib/mobileBroadcastStorage";
 import {
   isInPictureInPictureMode,
   updatePipParams,
@@ -170,6 +171,16 @@ const BUFFERING_STALL_THRESHOLD_MS = 15_000;
 // exclude the zero-play edge case where ExoPlayer fires didJustFinish before
 // reporting any position (e.g. after a stale seek on a newly-loaded manifest).
 const HLS_QUICK_FINISH_THRESHOLD_MS = 3_000;
+
+// ── Manifest-driven quick-finish threshold cache ─────────────────────────────
+// Maps HLS playlist URL → EXT-X-TARGETDURATION (seconds). Populated lazily on
+// the first bind of any HLS URL; shared across all BroadcastBuffer instances so
+// a second buffer binding the same URL skips the network fetch. Module-level
+// (not useState) so it persists across component unmount/remount cycles.
+// Capped at 256 entries to prevent unbounded growth in long app sessions where
+// many different HLS URLs cycle through the broadcast queue.
+const hlsTargetDurationCache = new Map<string, number>();
+const HLS_MANIFEST_CACHE_MAX = 256;
 
 /**
  * Minimum margin (ms) between the seek target and the actual encoded end of
@@ -423,6 +434,59 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   // Whether the current item is an HLS source — drives different seek/finish
   // handling compared to MP4/DASH. Stable within a bind revision.
   const isHls = isHlsSource(state);
+
+  // ── Manifest-driven quick-finish threshold ────────────────────────────────
+  // Start at the static fallback; updated asynchronously once we've parsed the
+  // HLS playlist's EXT-X-TARGETDURATION header for the current URL.
+  // Stored in a ref (not state) so updates don't trigger a re-render.
+  const quickFinishThresholdMsRef = useRef(HLS_QUICK_FINISH_THRESHOLD_MS);
+
+  useEffect(() => {
+    // Reset to fallback on every URL change so stale thresholds from a previous
+    // source never carry over to a different stream.
+    quickFinishThresholdMsRef.current = HLS_QUICK_FINISH_THRESHOLD_MS;
+    if (!isHls || !url) return;
+
+    // Cache hit — apply immediately without a network request.
+    const cached = hlsTargetDurationCache.get(url);
+    if (cached !== undefined) {
+      quickFinishThresholdMsRef.current = Math.max(cached * 1_000, HLS_QUICK_FINISH_THRESHOLD_MS);
+      return;
+    }
+
+    // Async fetch of the HLS manifest to read EXT-X-TARGETDURATION.
+    // Non-blocking: if the fetch fails or takes too long the fallback threshold
+    // is used for this session; a future rebind will retry.
+    let cancelled = false;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5_000);
+
+    fetch(url, { signal: controller.signal })
+      .then((r) => r.text())
+      .then((text) => {
+        if (cancelled) return;
+        const match = text.match(/#EXT-X-TARGETDURATION:(\d+)/);
+        if (!match) return;
+        const targetSec = parseInt(match[1], 10);
+        if (!isFinite(targetSec) || targetSec <= 0) return;
+        // Evict oldest entry if cache is full (LRU-lite — evict first inserted).
+        if (hlsTargetDurationCache.size >= HLS_MANIFEST_CACHE_MAX) {
+          const firstKey = hlsTargetDurationCache.keys().next().value;
+          if (firstKey !== undefined) hlsTargetDurationCache.delete(firstKey);
+        }
+        hlsTargetDurationCache.set(url, targetSec);
+        quickFinishThresholdMsRef.current = Math.max(targetSec * 1_000, HLS_QUICK_FINISH_THRESHOLD_MS);
+      })
+      .catch(() => {
+        // Best-effort — keep the static fallback threshold.
+      })
+      .finally(() => clearTimeout(timeoutId));
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [url, isHls]);
 
   // Track the last bind revision that produced a buffer-ready report rather
   // than the URL string. URL-based dedup caused RECOVERING_PRIMARY to silently
@@ -1165,7 +1229,10 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
               playStartMsRef.current !== null
                 ? Date.now() - playStartMsRef.current
                 : Infinity;
-            if (playDurationMs < HLS_QUICK_FINISH_THRESHOLD_MS) {
+            // Use the manifest-driven threshold (updated async after URL bind)
+            // so segments with a long EXT-X-TARGETDURATION don't produce false
+            // "quick finish" positives during the first segment's playback.
+            if (playDurationMs < quickFinishThresholdMsRef.current) {
               hlsQuickFinishCountRef.current += 1;
               if (hlsQuickFinishCountRef.current > HLS_MAX_QUICK_FINISH_RETRIES) {
                 // Exhausted retries — escalate to buffer-ended.
@@ -1401,8 +1468,30 @@ export function V2PlayerContainer({
 }: Props) {
   void _channelId;
   const effectiveBaseUrl = useMidnightPrayersSwitch(baseUrl);
+
+  // ── Hydration gate ────────────────────────────────────────────────────────
+  // Defer session creation until AsyncStorage hydration has completed.
+  // On a cold-start deep-link the transport's initial `resume {sequence}` WS
+  // message uses `lastSequence=0` when storage isn't hydrated yet, producing a
+  // spurious BOOTSTRAP → re-request cycle visible to the user as an extra
+  // loading spinner.  Gating `enabled` on `storageReady` ensures the session
+  // (and its WebSocket) are created AFTER the persisted sequence is available.
+  // Hydration typically completes in < 30 ms; `isHydrationDone()` makes the
+  // initial state synchronously `true` for navigations to the player screen
+  // after the first mount (avoiding any flash).
+  const [storageReady, setStorageReady] = useState<boolean>(() => isHydrationDone());
+  useEffect(() => {
+    if (storageReady) return;
+    let mounted = true;
+    hydrationReady
+      .then(() => { if (mounted) setStorageReady(true); })
+      .catch(() => { if (mounted) setStorageReady(true); });
+    return () => { mounted = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const { snapshot, connected, buffers, reportBufferEvent, forceReconnect, forceRebind, notifyOnline } =
-    useV2BroadcastNative({ baseUrl: effectiveBaseUrl });
+    useV2BroadcastNative({ baseUrl: effectiveBaseUrl, enabled: storageReady });
 
   // Network context — drives network-aware banner text and immediate
   // reconnect on signal recovery (complements the AppState-based nudge).
