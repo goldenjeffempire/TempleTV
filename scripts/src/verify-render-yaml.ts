@@ -395,6 +395,41 @@ for (const spa of STATIC_SPAS) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Invariant 8: path-based build filters must use `buildFilter:` (the correct
+// Render Blueprint field name). The intuitive alias `filters:` is rejected by
+// Render's parser with "field filters not found in type file.Service" — this
+// silently disables per-path selective builds, causing every commit to rebuild
+// all services and burning pipeline minutes. Catch it before it reaches Render.
+// ────────────────────────────────────────────────────────────────────────────
+for (const svc of services) {
+  if (/^\s{4}filters:/m.test(svc.body)) {
+    fail(
+      `[${svc.name}] uses \`filters:\` for path-based build selection — Render rejects this field name. ` +
+        `Use \`buildFilter:\` instead (Render Blueprint field name). ` +
+        `Without this fix, Render shows "field filters not found in type file.Service" and ignores all path rules.`,
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Invariant 9: `numInstances:` must not appear on free-plan services. Render's
+// Blueprint parser rejects it with "did not find expected key" and marks the
+// whole Blueprint as invalid. Free-tier is always single-instance — the field
+// is only valid on paid plans (starter and above).
+// ────────────────────────────────────────────────────────────────────────────
+for (const svc of services) {
+  const planMatch = svc.body.match(/^\s{4}plan:\s*(\S+)/m);
+  const plan = planMatch?.[1] ?? "";
+  if (plan === "free" && /^\s+numInstances:/m.test(svc.body)) {
+    fail(
+      `[${svc.name}] declares \`numInstances:\` on \`plan: free\` — Render rejects this combination ` +
+        `("did not find expected key") and marks the whole Blueprint as invalid. ` +
+        `Remove \`numInstances:\` from free-tier services; it is only valid on paid plans (starter+).`,
+    );
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Report
 // ────────────────────────────────────────────────────────────────────────────
 if (failures.length > 0) {
