@@ -798,6 +798,19 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
     if (state.playing) {
       if (loadedRevision !== state.bindRevision) return; // not ready yet — wait for onLoad
 
+      // Hero preview (forceMuted) — re-assert mute BEFORE every imperative
+      // play call to close the Android ExoPlayer race: ExoPlayer can briefly
+      // open the audio pipeline on playAsync/playFromPositionAsync before the
+      // native isMuted flag has been acknowledged from the JS side.
+      // setIsMutedAsync + setVolumeAsync are fire-and-forget (non-blocking);
+      // ExoPlayer queues them before the play call in its internal command
+      // queue, so muting takes effect at the same audio frame that playback
+      // starts — no audible gap.
+      if (forceMuted) {
+        v.setIsMutedAsync(true).catch(() => {});
+        v.setVolumeAsync(0).catch(() => {});
+      }
+
       if (isHls) {
         const actualMs = actualDurationMsRef.current;
         // Distinguish live HLS (no fixed duration) from VOD HLS:
@@ -926,21 +939,42 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   //
   // For VOD HLS: playAsync() on an already-playing video is a no-op
   // (it only asserts shouldPlay=true without seeking). Safe to call.
+  //
+  // For forceMuted instances (hero preview): re-assert isMuted + volume=0
+  // immediately BEFORE each playAsync tick. playAsync() can briefly re-open
+  // the ExoPlayer/AVPlayer audio pipeline even while the player is already
+  // running; re-asserting mute here prevents that window from ever being
+  // audible.
   useEffect(() => {
     if (!isHls || !state.playing || !state.active) return;
     const t = setInterval(() => {
-      ref.current?.playAsync().catch(() => {});
+      const v = ref.current;
+      if (!v) return;
+      if (forceMuted) {
+        v.setIsMutedAsync(true).catch(() => {});
+        v.setVolumeAsync(0).catch(() => {});
+      }
+      v.playAsync().catch(() => {});
     }, HLS_LIVE_SYNC_INTERVAL_MS);
     return () => clearInterval(t);
-  }, [isHls, state.playing, state.active]);
+  }, [isHls, state.playing, state.active, forceMuted]);
 
   // Mute follows the adapter store (only the active buffer is audible),
   // unless `forceMuted` is set by the parent — used by the homepage hero
   // preview which must never play audio.
   const effectiveMuted = forceMuted || state.muted;
+  // Synchronise native muted state whenever effectiveMuted changes.
+  // For forceMuted instances (hero preview) we ALSO zero the volume as a
+  // belt-and-suspenders guard: AVPlayer/ExoPlayer can have a brief window
+  // between setIsMutedAsync resolving and the audio pipeline actually
+  // going silent. volume=0 + isMuted=true together close that window on
+  // every platform, and volume persists across play/pause transitions.
   useEffect(() => {
-    ref.current?.setIsMutedAsync(effectiveMuted).catch(() => {});
-  }, [effectiveMuted]);
+    const v = ref.current;
+    if (!v) return;
+    v.setIsMutedAsync(effectiveMuted).catch(() => {});
+    if (forceMuted) v.setVolumeAsync(0).catch(() => {});
+  }, [effectiveMuted, forceMuted]);
 
   // Stable error handler — placed here (before the early return below) so it
   // unconditionally follows the Rules of Hooks.  Captures only stable refs.
@@ -1006,6 +1040,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
       resizeMode={ResizeMode.CONTAIN}
       shouldPlay={false}
       isMuted={effectiveMuted}
+      volume={forceMuted ? 0 : 1}
       progressUpdateIntervalMillis={500}
       onLoad={(loadStatus) => {
         // Capture the actual encoded duration from the native media pipeline.
@@ -1199,6 +1234,21 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         // the state is already true.
         if (status.isLoaded && status.isPlaying && !status.isBuffering) {
           onVideoReady?.();
+        }
+
+        // ── Hero preview permanent-mute enforcement ──────────────────────
+        // 500 ms status ticks give us a periodic check: if the native player
+        // has somehow drifted to unmuted (audio session reset by OS, focus
+        // change, or any brief playAsync race that slipped through the
+        // pre-call guards above), snap it back to muted + volume=0
+        // immediately. This is the last line of defence — the earlier guards
+        // (isMuted prop, setIsMutedAsync in the muting effect, pre-call
+        // setIsMutedAsync in the play effect and HLS live-sync interval)
+        // should prevent the drift from happening; this check catches any
+        // that still slips through on unusual ExoPlayer builds.
+        if (forceMuted && status.isLoaded && status.isMuted === false) {
+          ref.current?.setIsMutedAsync(true).catch(() => {});
+          ref.current?.setVolumeAsync(0).catch(() => {});
         }
 
         if (status.didJustFinish && (status.positionMillis ?? 0) > 0) {
