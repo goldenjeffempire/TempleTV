@@ -1,3 +1,4 @@
+- [Faststart-recovery probe deadman hang](faststart-probe-deadman.md) — slow-path probe loop must have outer stage budget + row limit sized so (limit × per-item timeout) < outer budget < worker deadman.
 - [YouTube-only broadcast architecture](youtube-only-broadcast.md) — 100% YouTube catalog (960 videos); broadcast_queue always empty; ytShuffleFallback is the permanent broadcast driver, not a fallback. Duration stored as text seconds string.
 - [Production hardening deep-review findings](production-hardening-deep-review.md) — Storage/HLS/queue/watchdog all already production-grade; 2 genuine gaps fixed: HLS oversized-segment streaming bypass + orphan-cleanup deactivation reason code.
 - [Render Disk / persistent storage paths](render-storage-paths.md) — STORAGE_PATH env var routes scratch/backup dirs to /var/data; media is in PostgreSQL (never disappears); only FFmpeg scratch + broadcast state/queue backup JSON benefit from the persistent mount.

@@ -306,6 +306,11 @@ function startSupervisedWorkers(): void {
     initialDelayMs: 15_000,
     backoffMs: [5_000, 15_000, 30_000, 60_000],
     onCircuitOpen: makeCircuitOpenCallback("faststart-recovery"),
+    // Explicit deadman: Stage 1 (8 s) + Stage 2 (50 s budget) + Stage 3 (8 s)
+    // + dispatch (negligible) = ~66 s max. 90 s gives comfortable headroom
+    // without the default 2×intervalMs = 120 s that the slow-path probe stage
+    // was routinely exhausting.
+    timeoutMs: 90_000,
   });
 
   // Viewer-count metrics updater: uses native V2 WS+SSE connection counts from

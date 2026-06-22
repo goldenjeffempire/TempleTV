@@ -82,8 +82,23 @@ const DURATION_UPDATE_TIMEOUT_MS = 8_000;
  * Per-item wall-clock cap for probeUploadedDuration().
  * A large blob download + ffprobe can stall the sweep indefinitely
  * without this guard.
+ *
+ * 15 s is sufficient for ffprobe header-read on any well-formed file.
+ * If storage is slower than this the circuit breaker fires after 3
+ * consecutive timeouts, suppressing probes for CIRCUIT_COOLDOWN_MS.
+ * Previously 60 s: with up to 10 items sequentially that produced a
+ * 600 s worst-case, well over the 120 s worker deadman timeout.
  */
-const PROBE_ITEM_TIMEOUT_MS = 60_000;
+const PROBE_ITEM_TIMEOUT_MS = 15_000;
+/**
+ * Total wall-clock budget for the entire slow-path probe stage inside
+ * sweep().  Even if individual per-item withTimeout() calls don't abort
+ * their underlying Promises quickly (e.g. an in-flight BYTEA download
+ * that ignores cancellation), this outer cap ensures sweep() stays well
+ * within the 120 s worker deadman (Stage 1 ≤8 s + Stage 2 ≤50 s +
+ * Stage 3 ≤8 s + dispatch ≈0 s = ~66 s total max).
+ */
+const SLOW_PATH_BUDGET_MS = 50_000;
 /**
  * Wall-clock timeout for a storage headObject() used during backfill to
  * confirm whether a source blob is absent.
@@ -698,7 +713,10 @@ async function backfillPlaceholderDurations(): Promise<void> {
             inArray(v.transcodingStatus, [...probableStatuses]),
           ),
         )
-        .limit(10),
+        // 3 items × PROBE_ITEM_TIMEOUT_MS (15 s) = 45 s max, well within
+        // SLOW_PATH_BUDGET_MS (50 s). Previously 10: 10 × 60 s = 600 s worst
+        // case which routinely blew the 120 s worker deadman timeout.
+        .limit(3),
       CANDIDATE_QUERY_TIMEOUT_MS,
       "backfillPlaceholderDurations-query",
     );
@@ -930,8 +948,26 @@ export const faststartRecoveryWorker = {
       // Only for items where managed_videos ALSO still has the 1800-s placeholder.
       // Skips 'none'/'queued'/'encoding' — those will be updated by faststart/
       // transcoder in their own flows.  Circuit breaker prevents saturation.
+      //
+      // Outer SLOW_PATH_BUDGET_MS (50 s) caps the stage as a whole.
+      // This is belt-and-suspenders: per-item withTimeout(PROBE_ITEM_TIMEOUT_MS)
+      // guards each probe, but BYTEA downloads that ignore Promise cancellation
+      // can keep running in the background.  The outer timeout ensures sweep()
+      // never blocks the 90 s deadman regardless of underlying Promise leaks.
       const t2 = Date.now();
-      await backfillPlaceholderDurations();
+      await withTimeout(
+        backfillPlaceholderDurations(),
+        SLOW_PATH_BUDGET_MS,
+        "backfillPlaceholderDurations-stage-budget",
+      ).catch((err: unknown) => {
+        const isTimeout = err instanceof Error && err.message.startsWith("[timeout]");
+        logger.warn(
+          { err, elapsedMs: Date.now() - t2, budgetMs: SLOW_PATH_BUDGET_MS },
+          isTimeout
+            ? "faststart-recovery: slow-path probe stage exceeded budget — partial results retained, continuing sweep"
+            : "faststart-recovery: slow-path probe stage error (non-fatal)",
+        );
+      });
       stats.lastSweepStageMs.probeDurationBackfillMs = Date.now() - t2;
 
       if (_faststartRecoveryStopped) return;
