@@ -294,26 +294,32 @@ export function invalidateStorageVerifyCache(_videoId?: string): void {
 }
 
 // ── Exponential backoff TTL schedule ────────────────────────────────────────
-// First failure: 20 s — brief window that allows a transient stall (network
-// blip, CDN cold-start, brief 503) to self-recover before the orchestrator
-// forward-scans past the item.  If the URL fails again within those 20 s the
-// count becomes 2 → 3-minute block, making repeated failures progressively
-// more penalised.
+// First confirmed block (2 independent sources agree): 20 s — brief window
+// that allows a transient stall (network blip, CDN cold-start, brief 503) to
+// self-recover before the orchestrator forward-scans past the item.
 //
-// URLs that repeatedly fail get exponentially longer blacklist windows so a
-// genuinely broken source doesn't flood the orchestrator's snapshot() logic
-// with fruitless retries. After 4+ failures the URL stays out of rotation for
-// 10 minutes — long enough to expire while the transcoder produces a
-// replacement HLS stream, or for an operator to swap the source.
+// The schedule graduates gradually so a source that flaps (recovers at 20 s,
+// fails again, recovers at 60 s, fails again) is penalised progressively
+// rather than jumping straight to a 3-minute hard block on the second event.
+// After 5+ confirmed-bad events the URL stays out of rotation for 10 minutes
+// — long enough for the transcoder to produce a replacement HLS stream, or
+// for an operator to swap the source via Stream Health.
+//
+// "Confirmed bad" here means markBadUrl() was called — which only happens
+// when the confidence system reaches gap2 (≥2 independent sources) or when
+// the current-item probe accumulates ≥4 consecutive definitive 4xx failures.
+// Single-source failures (gap1) are warnings only and do not write to the
+// bad-URL cache, so they do not increment badUrlFailureCounts.
 //
 // The per-URL failure counts live in `badUrlFailureCounts` (separate from
 // badUrlSkipCounts which is per-itemId). Counts are cleared on clearBadUrl()
 // and clearAllBadUrls() so a manual operator clear gives a clean slate.
 function badUrlTtlForCount(count: number): number {
-  if (count <= 1) return 20_000;   // 20 s — first failure: brief recovery window
-  if (count === 2) return 180_000; // 3 min — second failure: persistent problem
-  if (count === 3) return 300_000; // 5 min
-  return 600_000;                   // 10 min (4+)
+  if (count <= 1) return 20_000;   // 20 s  — first block: brief transient recovery window
+  if (count === 2) return 60_000;  // 1 min — second block: moderate backoff before hard lock
+  if (count === 3) return 180_000; // 3 min — third block: persistent problem
+  if (count === 4) return 300_000; // 5 min
+  return 600_000;                   // 10 min (5+)
 }
 
 // url → consecutive failure count (for TTL escalation)

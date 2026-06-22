@@ -422,14 +422,31 @@ class BroadcastOrchestrator extends EventEmitter {
   /**
    * Consecutive ambiguous (5xx / timeout / network error) failure count.
    * Tracked separately from 4xx: 5xx are transient by nature (CDN blip, origin
-   * restart) and a single probe must never drop content. However, 5
+   * restart) and a single probe must never drop content. However, 7
    * consecutive ambiguous failures at the 30 s probe interval means the CDN
-   * has been unresponsive for ≥ 2.5 minutes — at that point the item is
+   * has been unresponsive for ≥ 3.5 minutes — at that point the item is
    * genuinely dead-air for all viewers and auto-skip is warranted.
    */
   private currentItemProbeAmbiguousFailures = 0;
   /** Item ID under observation — resets failure counters on item advance. */
   private currentItemProbeId: string | null = null;
+  /**
+   * Wall-clock ms when the first probe failure (4xx or ambiguous) was recorded
+   * for the currently-playing item in the current instability window. Used with
+   * PROBE_FAILURE_WINDOW_MS to discard stale failure counts accumulated during
+   * a previous instability episode on the same long-running item (e.g. a
+   * 2-hour sermon that had a CDN blip an hour ago but recovered). Reset to
+   * null when the item changes or the URL is confirmed reachable.
+   */
+  private currentItemProbeFirstFailureMs: number | null = null;
+  /**
+   * Maximum age of probe failures before they are treated as stale and the
+   * counters are reset. Prevents failure counts from separate instability
+   * episodes on the same long-running item accumulating toward the skip
+   * threshold. At a 30 s probe interval, 5 min = at most 10 failures can occur
+   * in one window — well above the 4× and 7× thresholds.
+   */
+  private static readonly PROBE_FAILURE_WINDOW_MS = 5 * 60_000;
   /**
    * Guards the fire-and-forget duration write-back in naturalItemEnd().
    * Prevents two near-simultaneous client reports for the same item from
@@ -1030,6 +1047,12 @@ class BroadcastOrchestrator extends EventEmitter {
     this.badUrlCacheTimer        = null;
     this.itemEndTimer            = null;
     this._cbResetTimer           = null;
+    // Clear probe-failure window state so a restart always begins with a
+    // clean slate — stale counts from before shutdown must not carry forward.
+    this.currentItemProbeFailures = 0;
+    this.currentItemProbeAmbiguousFailures = 0;
+    this.currentItemProbeFirstFailureMs = null;
+    this.currentItemProbeId = null;
     this.started = false;
     // Best-effort final save of bad-URL state on graceful shutdown.
     void persistBadUrlCache(this.channelId).catch((err: unknown) =>
@@ -3716,13 +3739,21 @@ class BroadcastOrchestrator extends EventEmitter {
   /**
    * Fast HEAD probe for YouTube sources with a 2 s timeout.
    *
-   * Returns:
-   *  "blocked"   — HTTP 403 or 451 (geo-block / legal takedown). The item is
-   *                definitively unreachable for most viewers → mark bad immediately.
-   *  "ambiguous" — Network error, timeout, or any other status code (including
-   *                5xx / 2xx). Do NOT mark bad; allow the normal retry path.
+   * Returns a three-way classification to let callers apply different levels
+   * of confidence gating:
+   *
+   *  "permanent"  — HTTP 410 (Gone) or 451 (legal takedown). The video is
+   *                 definitively and permanently removed. Mark bad immediately
+   *                 without waiting for a second source confirmation.
+   *  "transient"  — HTTP 403 (geo-block / auth required) or 404 (private /
+   *                 deleted). These CAN be transient (CDN auth races, brief
+   *                 YouTube outages, regional availability windows). Route
+   *                 through the confidence system (gap1 warning, gap2 block)
+   *                 so a single auth hiccup does not silently drop content.
+   *  "ambiguous"  — Network error, timeout, or any other status code (including
+   *                 5xx / 2xx). Do NOT mark bad; allow the normal retry path.
    */
-  private async probeYouTubeReachability(url: string): Promise<"blocked" | "ambiguous"> {
+  private async probeYouTubeReachability(url: string): Promise<"permanent" | "transient" | "ambiguous"> {
     try {
       const ctrl = new AbortController();
       const timeout = setTimeout(() => ctrl.abort(), 2_000);
@@ -3732,18 +3763,11 @@ class BroadcastOrchestrator extends EventEmitter {
       } finally {
         clearTimeout(timeout);
       }
-      // 403 = geo-block / auth required
-      // 404 = video deleted or set to private (not found)
-      // 410 = video permanently removed (Gone)
-      // 451 = legal takedown (Unavailable For Legal Reasons)
-      // All four are definitively unreachable for viewers → mark bad.
-      if (
-        res.status === 403 ||
-        res.status === 404 ||
-        res.status === 410 ||
-        res.status === 451
-      )
-        return "blocked";
+      // Permanent removals — mark bad immediately (no confidence gate needed).
+      if (res.status === 410 || res.status === 451) return "permanent";
+      // 403/404 — transient: could be auth race, region restriction, CDN blip.
+      // Route through the two-source confidence system before blocking.
+      if (res.status === 403 || res.status === 404) return "transient";
       return "ambiguous";
     } catch {
       return "ambiguous"; // AbortError or NetworkError — allow normal retry
@@ -3773,17 +3797,53 @@ class BroadcastOrchestrator extends EventEmitter {
     const url = item.source?.url ?? null;
     if (!url) return;
 
-    // YouTube sources: use the fast 2 s probe that only classifies
-    // 403/451 (geo-block / takedown) as definitively broken.
+    // YouTube sources: use the specialised 2 s probe.
+    // "permanent" (410/451) → mark bad immediately (video gone for good).
+    // "transient" (403/404) → route through the confidence system so a CDN
+    //   auth race or brief unavailability does not silently drop content.
+    //   The MediaIntegrityScanner will confirm within ≤2 min if truly broken.
+    // "ambiguous" → ignore; allow normal playback retry.
     if (item.source?.kind === "youtube") {
       void (async () => {
         const result = await this.probeYouTubeReachability(url);
-        if (result !== "blocked") return; // ambiguous — leave rotation unchanged
-        markBadUrl(url);
+        if (result === "ambiguous") return; // unclear — leave rotation unchanged
+
+        if (result === "permanent") {
+          // 410 Gone / 451 Legal — definitively removed. Block immediately.
+          markBadUrl(url);
+          if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
+          logger.warn(
+            { itemId: item.id, title: item.title, url, sequence: this.sequence },
+            "[broadcast-v2] YouTube probe: video permanently removed (410/451) — marking bad immediately",
+          );
+          this.emitSnapshot();
+          const failCount = incrementBadUrlSkipCount(item.id);
+          if (failCount >= BAD_URL_SKIP_THRESHOLD) {
+            autoSuspendQueueItem(item.id, item.title ?? null, failCount, url ?? undefined);
+            void this.reload().catch((err) => {
+              logger.warn({ err, itemId: item.id }, "[broadcast-v2] YouTube probe: background reload after auto-suspend failed (non-fatal)");
+            });
+          }
+          return;
+        }
+
+        // result === "transient" (403 / 404): route through confidence system.
+        // A single 403 from one probe source is gap1 — warning only, no block.
+        // A second independent confirmation (scanner, storage-recon, or a later
+        // proactive probe) elevates to gap2 and enters the bad-URL cache.
+        const confState = markUrlBadBySource(url, "orchestrator-probe-yt");
+        if (confState === "gap1") {
+          logger.warn(
+            { itemId: item.id, title: item.title, url, sequence: this.sequence },
+            "[broadcast-v2] YouTube probe: 403/404 response (gap1 — awaiting second confirmation before blocking)",
+          );
+          return;
+        }
+        // gap2 or gap3: two independent sources agree — block.
         if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
         logger.warn(
-          { itemId: item.id, title: item.title, url, sequence: this.sequence },
-          "[broadcast-v2] YouTube probe: 403/451 response — source geo-blocked or taken down, pre-marking bad",
+          { itemId: item.id, title: item.title, url, confState, sequence: this.sequence },
+          "[broadcast-v2] YouTube probe: 403/404 confirmed by multiple sources — pre-marking bad",
         );
         this.emitSnapshot();
         const failCount = incrementBadUrlSkipCount(item.id);
@@ -3871,10 +3931,21 @@ class BroadcastOrchestrator extends EventEmitter {
    *  • Only runs when mode === "queue" and a current item exists.
    *  • Skips if < 15 s remain on the item (let it finish naturally).
    *  • Skips YouTube sources — HEAD probes return HTML, creating false positives.
-   *  • Resets the per-item failure counter when the current item changes.
-   *  • Auto-skips after 3 consecutive definitive 4xx responses (`reachable === false`).
-   *  • `null` (ambiguous / timeout / 5xx) never increments the counter — a single
-   *    CDN blip must never drop healthy content from the rotation.
+   *  • Resets the per-item failure counters when the current item changes.
+   *  • Time-window guard: if the first failure in the current window was
+   *    recorded > PROBE_FAILURE_WINDOW_MS (5 min) ago and the URL still appears
+   *    reachable in between, the counters are reset so stale failure counts from
+   *    a previous instability episode on the same long-running item do not
+   *    accumulate toward the skip threshold.
+   *  • Auto-skips after 4 consecutive definitive 4xx responses (≥ 120 s at the
+   *    30 s probe interval) — raised from 3 (90 s) to give CDN cold-start and
+   *    auth-token refresh a full 2-minute window to self-resolve.
+   *  • Auto-skips after 7 consecutive ambiguous (5xx / timeout) responses
+   *    (≥ 3.5 min) — raised from 5 (2.5 min) because 5xx errors are inherently
+   *    transient and a single CDN blip must never drop healthy content.
+   *  • `null` (ambiguous / timeout / 5xx) never increments the definitive 4xx
+   *    counter, and vice versa — independent tracks prevent a mixed failure
+   *    pattern from reaching either threshold prematurely.
    */
   private probeCurrentItem(): void {
     if (!this.started || this.mode !== "queue") return;
@@ -3897,6 +3968,31 @@ class BroadcastOrchestrator extends EventEmitter {
       this.currentItemProbeId = snap.current.id;
       this.currentItemProbeFailures = 0;
       this.currentItemProbeAmbiguousFailures = 0;
+      this.currentItemProbeFirstFailureMs = null;
+    }
+
+    // Time-window guard: if the first failure in the current window was
+    // recorded more than PROBE_FAILURE_WINDOW_MS ago the counts are stale.
+    // Reset them so a previous instability episode (e.g. a CDN blip an hour
+    // ago on a 2-hour sermon) does not count toward the current threshold.
+    const nowBeforeProbe = Date.now();
+    if (
+      this.currentItemProbeFirstFailureMs !== null &&
+      nowBeforeProbe - this.currentItemProbeFirstFailureMs > BroadcastOrchestrator.PROBE_FAILURE_WINDOW_MS
+    ) {
+      logger.info(
+        {
+          itemId: snap.current.id,
+          url,
+          windowMs: BroadcastOrchestrator.PROBE_FAILURE_WINDOW_MS,
+          previousDefinitiveFailures: this.currentItemProbeFailures,
+          previousAmbiguousFailures: this.currentItemProbeAmbiguousFailures,
+        },
+        "[broadcast-v2] current-item probe: failure window expired — resetting stale counters (previous instability episode did not reach threshold)",
+      );
+      this.currentItemProbeFailures = 0;
+      this.currentItemProbeAmbiguousFailures = 0;
+      this.currentItemProbeFirstFailureMs = null;
     }
 
     const item = snap.current;
@@ -3906,6 +4002,10 @@ class BroadcastOrchestrator extends EventEmitter {
       // See extractRawProbeUrl() for the full rationale.
       const reachable = await this.probeUrlReachability(this.extractRawProbeUrl(url));
       if (reachable === false) {
+        // Track when this failure window started (first failure in the window).
+        if (this.currentItemProbeFirstFailureMs === null) {
+          this.currentItemProbeFirstFailureMs = Date.now();
+        }
         this.currentItemProbeFailures += 1;
         logger.warn(
           {
@@ -3913,17 +4013,22 @@ class BroadcastOrchestrator extends EventEmitter {
             title: item.title,
             url,
             failures: this.currentItemProbeFailures,
+            threshold: 4,
             remainingMs,
           },
-          `[broadcast-v2] current-item probe: URL returned 4xx (failure ${this.currentItemProbeFailures}/3)`,
+          `[broadcast-v2] current-item probe: URL returned 4xx (failure ${this.currentItemProbeFailures}/4)`,
         );
-        if (this.currentItemProbeFailures >= 3) {
+        // Threshold raised 3 → 4: gives CDN auth-token refresh and cold-start
+        // a full 120 s (4 × 30 s probes) window before we conclude the stream
+        // is genuinely dead for all viewers.
+        if (this.currentItemProbeFailures >= 4) {
           logger.error(
             { itemId: item.id, title: item.title, url },
-            "[broadcast-v2] current-item probe: 3 consecutive 4xx failures — marking bad and auto-skipping dead stream",
+            "[broadcast-v2] current-item probe: 4 consecutive 4xx failures (≥ 120 s) — marking bad and auto-skipping dead stream",
           );
           this.currentItemProbeFailures = 0;
           this.currentItemProbeAmbiguousFailures = 0;
+          this.currentItemProbeFirstFailureMs = null;
           this.currentItemProbeId = null;
           markBadUrl(url);
           if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
@@ -3934,8 +4039,8 @@ class BroadcastOrchestrator extends EventEmitter {
           await this.skip();
         }
       } else if (reachable === true) {
-        // Recovered — reset both failure counters so stale counts don't carry
-        // forward into a future instability window on the same item.
+        // Recovered — reset both failure counters and the window timer so
+        // stale counts do not carry forward into a future instability window.
         if (this.currentItemProbeFailures > 0 || this.currentItemProbeAmbiguousFailures > 0) {
           logger.info(
             {
@@ -3954,15 +4059,19 @@ class BroadcastOrchestrator extends EventEmitter {
         }
         this.currentItemProbeFailures = 0;
         this.currentItemProbeAmbiguousFailures = 0;
+        this.currentItemProbeFirstFailureMs = null;
       } else {
         // reachable === null: ambiguous (5xx / timeout / network error).
-        // Track separately. After 5 consecutive ambiguous results (≥ 2.5 min
-        // at the 30 s probe interval) the CDN is likely genuinely down and the
-        // broadcast is airing dead-air for all viewers — auto-skip.
-        // The threshold is higher than the 4xx threshold (3) because 5xx can
-        // be transient; we tolerate more variance before giving up.
+        // Track when this failure window started (first failure in the window).
+        if (this.currentItemProbeFirstFailureMs === null) {
+          this.currentItemProbeFirstFailureMs = Date.now();
+        }
+        // Tracked separately from 4xx: 5xx errors are inherently transient.
+        // Threshold raised 5 → 7 (≥ 3.5 min at 30 s intervals) so a CDN
+        // maintenance window or brief origin restart does not trigger a skip
+        // that would interrupt the active broadcast for all viewers.
         this.currentItemProbeAmbiguousFailures += 1;
-        if (this.currentItemProbeAmbiguousFailures >= 5) {
+        if (this.currentItemProbeAmbiguousFailures >= 7) {
           logger.error(
             {
               itemId: item.id,
@@ -3970,10 +4079,11 @@ class BroadcastOrchestrator extends EventEmitter {
               url,
               ambiguousFailures: this.currentItemProbeAmbiguousFailures,
             },
-            "[broadcast-v2] current-item probe: 5 consecutive 5xx/timeout failures (≥ 2.5 min) — CDN likely dead, auto-skipping to next item",
+            "[broadcast-v2] current-item probe: 7 consecutive 5xx/timeout failures (≥ 3.5 min) — CDN likely dead, auto-skipping to next item",
           );
           this.currentItemProbeAmbiguousFailures = 0;
           this.currentItemProbeFailures = 0;
+          this.currentItemProbeFirstFailureMs = null;
           this.currentItemProbeId = null;
           markBadUrl(url);
           if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
