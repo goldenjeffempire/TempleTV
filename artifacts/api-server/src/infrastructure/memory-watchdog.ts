@@ -450,6 +450,13 @@ function sample() {
         { growthMbPerMin: Math.round(abGrowthRate * 10) / 10, threshold: ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN },
         "[memory-watchdog] ArrayBuffers growth rate exceeded threshold — possible HLS segment cache pressure",
       );
+      void import("./sentry.js").then(({ captureEvent }) =>
+        captureEvent(
+          `[memory-watchdog] ArrayBuffers growing at ${Math.round(abGrowthRate * 10) / 10} MB/min — possible Buffer/HLS segment or media-proxy leak`,
+          "warning",
+          { growthMbPerMin: Math.round(abGrowthRate * 10) / 10, threshold: ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN },
+        ),
+      ).catch(() => {});
       adminEventBus.push("ops-alert", {
         level: "warn",
         code: "memory-arraybuffers-growth",
@@ -457,6 +464,23 @@ function sample() {
         growthMbPerMin: Math.round(abGrowthRate * 10) / 10,
         threshold: ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN,
       });
+    } else if (arrayBuffersAlertActive && consecutiveArrayBuffersOver % 18 === 0) {
+      // Re-trim every 18 samples (= 3 min at 10 s interval) while the alert
+      // remains active. The first trim fires at alert activation; subsequent
+      // trims prevent a sustained leak from re-filling the cache between
+      // operator intervention cycles and keep the GC nudge meaningful.
+      void import("../modules/video-serve/video-serve.routes.js")
+        .then(({ trimHlsSegmentCache }) => {
+          const hlsCacheMb = env.HLS_SEGMENT_CACHE_MB;
+          const freed = trimHlsSegmentCache(hlsCacheMb / 2);
+          if (freed > 0) {
+            logger.info(
+              { freedBytes: freed, targetMb: hlsCacheMb / 2, consecutiveOver: consecutiveArrayBuffersOver },
+              "[memory-watchdog] periodic re-trim: HLS cache trimmed while ArrayBuffers alert still active",
+            );
+          }
+        })
+        .catch(() => {/* non-fatal */});
     }
   } else if (arrayBuffersAlertActive && (abGrowthRate === null || abGrowthRate < ARRAY_BUFFERS_GROWTH_RECOVERY_MB_PER_MIN)) {
     arrayBuffersAlertActive = false;
@@ -591,7 +615,7 @@ function sample() {
       logger.info({ purged }, "[memory-watchdog] flushed expired cache entries during pressure");
     }
   }
-  if ((rssAlertActive || heapUsedAlertActive) && gcFn) {
+  if ((rssAlertActive || heapUsedAlertActive || arrayBuffersAlertActive) && gcFn) {
     gcFn();
   }
 

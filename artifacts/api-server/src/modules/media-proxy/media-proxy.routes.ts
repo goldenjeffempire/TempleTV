@@ -287,10 +287,42 @@ export async function mediaProxyRoutes(app: FastifyInstance) {
       };
       reply.raw.once("close", teardown);
 
+      // Stale-body watchdog: guard against an upstream (e.g. YouTube CDN) that
+      // delivers the first byte but then stalls indefinitely.  Without a
+      // stale-read timeout the upstream socket stays open and its pipe buffer
+      // accumulates in Node's external heap, contributing to the ArrayBuffers
+      // growth the memory watchdog reports.  Reset the timer on each data chunk;
+      // cancel it cleanly when the stream ends or errors so no orphan timers
+      // survive beyond the response lifecycle.
+      const BODY_STALE_MS = 15_000;
+      let staleBodyTimer: ReturnType<typeof setTimeout> | null = null;
+      const cancelStaleTimer = () => {
+        if (staleBodyTimer) { clearTimeout(staleBodyTimer); staleBodyTimer = null; }
+      };
+      const armStaleTimer = () => {
+        cancelStaleTimer();
+        staleBodyTimer = setTimeout(() => {
+          if (!reply.raw.writableFinished) {
+            logger.warn(
+              { targetHost },
+              "[media-proxy] upstream body stalled for 15 s — destroying stream to release external heap",
+            );
+            ctrl.abort();
+            bodyStream.destroy(new Error("upstream stall timeout"));
+          }
+        }, BODY_STALE_MS);
+        staleBodyTimer.unref?.();
+      };
+      bodyStream.on("data", armStaleTimer);
+      bodyStream.on("end", cancelStaleTimer);
+      bodyStream.on("close", cancelStaleTimer);
+      armStaleTimer(); // arm immediately — catches a fully-stalled upstream that never emits any data
+
       // A client aborting a segment mid-flight is normal HLS behaviour, not a
       // server fault. Swallow the resulting abort / premature-close so it does
       // not flood logs as an error; surface anything else as a warning.
       bodyStream.on("error", (err: NodeJS.ErrnoException) => {
+        cancelStaleTimer();
         if (err?.name === "AbortError" || err?.code === "ERR_STREAM_PREMATURE_CLOSE") {
           return;
         }

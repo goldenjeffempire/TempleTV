@@ -260,7 +260,7 @@ function attachHls(video: HTMLVideoElement, url: string): () => void {
     // long-session stability improvement on TV hardware.
     backBufferLength: 0,
     maxBufferLength: isConstrainedTv ? 20 : 30,   // constrained TVs get 20 s cap to prevent VRAM OOM
-    maxMaxBufferLength: isConstrainedTv ? 20 : 60, // no growth headroom on constrained chipsets
+    maxMaxBufferLength: isConstrainedTv ? 20 : 30, // match maxBufferLength — 24/7 broadcast never seeks back, no growth headroom needed
     highBufferWatchdogPeriod: 3,    // nudge stalled high-buffer streams every 3 s
 
     // ── ABR / quality ────────────────────────────────────────────────
