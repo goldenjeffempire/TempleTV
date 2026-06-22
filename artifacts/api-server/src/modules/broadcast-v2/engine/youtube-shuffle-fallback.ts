@@ -38,8 +38,34 @@ import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { env } from "../../../config/env.js";
 import type { V2Override } from "../domain/types.js";
 
-/** How long each shuffle-fallback video runs before the orchestrator advances. */
-const YT_SHUFFLE_VIDEO_DURATION_MS = 20 * 60 * 1000; // 20 minutes
+/**
+ * Parse a managed_videos.duration text value (seconds as a string, e.g. "3600")
+ * into milliseconds.  Returns null when the string is empty, non-numeric, or zero.
+ */
+function parseDurationMs(raw: string | null | undefined): number | null {
+  if (!raw || raw.trim() === "") return null;
+  const secs = parseInt(raw.trim(), 10);
+  if (!Number.isFinite(secs) || secs <= 0) return null;
+  return secs * 1000;
+}
+
+/**
+ * Compute the override window (ms) for a single shuffle-fallback video.
+ *
+ * Uses the video's actual duration so long sermons play in full instead of
+ * being cut at the old hardcoded 20-minute cap.  Applies a configurable
+ * minimum floor (YOUTUBE_SHUFFLE_MIN_SLOT_SECS, default 3 min) so very short
+ * clips don't cycle the playlist too rapidly.  Falls back to
+ * YOUTUBE_SHUFFLE_DEFAULT_DURATION_SECS (default 2 h) when no duration is
+ * available.
+ */
+function computeSlotMs(rawDuration: string | null | undefined): number {
+  const actual = parseDurationMs(rawDuration);
+  const defaultMs = env.YOUTUBE_SHUFFLE_DEFAULT_DURATION_SECS * 1000;
+  const minMs = env.YOUTUBE_SHUFFLE_MIN_SLOT_SECS * 1000;
+  const slotMs = actual ?? defaultMs;
+  return Math.max(slotMs, minMs);
+}
 
 type StartOverrideFn = (opts: {
   kind: V2Override["kind"];
@@ -54,6 +80,8 @@ type StopOverrideFn = () => Promise<void>;
 interface YtVideoEntry {
   youtubeId: string;
   title: string;
+  /** Raw duration string from managed_videos.duration (seconds as text). */
+  duration: string;
 }
 
 export interface YtShuffleFallbackInfo {
@@ -125,6 +153,7 @@ class YtShuffleFallback {
         .select({
           youtubeId: videosTable.youtubeId,
           title: videosTable.title,
+          duration: videosTable.duration,
         })
         .from(videosTable)
         .where(
@@ -135,7 +164,7 @@ class YtShuffleFallback {
         );
 
       const entries: YtVideoEntry[] = rows.filter(
-        (r): r is { youtubeId: string; title: string } =>
+        (r): r is { youtubeId: string; title: string; duration: string } =>
           typeof r.youtubeId === "string" && r.youtubeId.length > 0,
       );
 
@@ -149,12 +178,13 @@ class YtShuffleFallback {
       this._shuffledPlaylist = fisherYatesShuffle(entries);
       this._playlistIndex = 0;
       const pick = this._shuffledPlaylist[0]!;
+      const slotMs = computeSlotMs(pick.duration);
 
       const override = await startOverride({
         kind: "youtube",
         url: buildYouTubeUrl(pick.youtubeId),
         title: pick.title,
-        endsAtMs: Date.now() + YT_SHUFFLE_VIDEO_DURATION_MS,
+        endsAtMs: Date.now() + slotMs,
         resumeQueueOnEnd: true,
       });
 
@@ -235,12 +265,13 @@ class YtShuffleFallback {
       }
 
       const pick = this._shuffledPlaylist[this._playlistIndex]!;
+      const slotMs = computeSlotMs(pick.duration);
 
       const override = await startOverride({
         kind: "youtube",
         url: buildYouTubeUrl(pick.youtubeId),
         title: pick.title,
-        endsAtMs: Date.now() + YT_SHUFFLE_VIDEO_DURATION_MS,
+        endsAtMs: Date.now() + slotMs,
         resumeQueueOnEnd: true,
       });
 
@@ -257,6 +288,7 @@ class YtShuffleFallback {
           overrideId: override.id,
           catalogSize: this._shuffledPlaylist.length,
           playlistIndex: this._playlistIndex,
+          slotMins: Math.round(slotMs / 60_000),
         },
         "[yt-shuffle] YouTube shuffle fallback ADVANCED — next catalog video started",
       );
@@ -336,12 +368,12 @@ class YtShuffleFallback {
     try {
       const videosTable = schema.videosTable;
       const rows = await db
-        .select({ youtubeId: videosTable.youtubeId, title: videosTable.title })
+        .select({ youtubeId: videosTable.youtubeId, title: videosTable.title, duration: videosTable.duration })
         .from(videosTable)
         .where(and(eq(videosTable.videoSource, "youtube"), isNotNull(videosTable.youtubeId)));
 
       const freshEntries: YtVideoEntry[] = rows.filter(
-        (r): r is { youtubeId: string; title: string } =>
+        (r): r is { youtubeId: string; title: string; duration: string } =>
           typeof r.youtubeId === "string" && r.youtubeId.length > 0,
       );
 

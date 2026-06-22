@@ -677,6 +677,18 @@ const Env = z.object({
     .transform((v) => v === true || v === "true" || v === "1")
     .default(false),
 
+  // Minimum slot duration (seconds) for each video in the YouTube shuffle
+  // fallback. Videos shorter than this will still play for their natural
+  // duration, but the override window is floored to this value so very short
+  // clips (e.g. <3 min) don't churn the playlist too quickly.
+  // Default: 180 s (3 minutes). Set to 0 to disable the floor.
+  YOUTUBE_SHUFFLE_MIN_SLOT_SECS: z.coerce.number().int().nonnegative().default(180),
+
+  // Fallback duration (seconds) used when a YouTube video has no duration
+  // data in managed_videos (empty or null). Defaults to 2 hours — a safe
+  // estimate for a typical sermon/service that avoids premature advance.
+  YOUTUBE_SHUFFLE_DEFAULT_DURATION_SECS: z.coerce.number().int().positive().default(7200),
+
   // ── Cross-environment broadcast queue sync ───────────────────────────────
   // When set, this server periodically pulls the broadcast queue from an
   // upstream environment (typically production) and upserts the items into
