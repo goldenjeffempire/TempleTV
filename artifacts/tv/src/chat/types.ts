@@ -1,6 +1,19 @@
-/** Mirror of `artifacts/api-server/src/chat/types.ts`. See its docs. */
+/**
+ * Mirror of `artifacts/api-server/src/modules/realtime/chat.types.ts`.
+ * Hand-mirrored — keep in lock-step with the server file and with
+ * `artifacts/mobile/lib/chat/types.ts` and `artifacts/admin/src/chat/types.ts`.
+ */
 
 export const TEMPLE_TV_LIVE_CHANNEL = "temple-tv-live";
+
+export type ChatRole = "admin" | "mod" | "user" | "guest";
+
+export interface ChatSettings {
+  slowModeSecs: number;
+  subscriberOnly: boolean;
+  pinnedMessageId: string | null;
+  bannedKeywords: string[];
+}
 
 export interface ChatMessage {
   id: string;
@@ -11,6 +24,9 @@ export interface ChatMessage {
   createdAtMs: number;
   broadcastItemId: string | null;
   broadcastItemTitle: string | null;
+  role: ChatRole;
+  isHighlighted: boolean;
+  reactions: Record<string, number>;
 }
 
 export type ChatServerEvent =
@@ -20,9 +36,17 @@ export type ChatServerEvent =
       recent: ChatMessage[];
       viewers: number;
       serverTimeMs: number;
-      you: { sessionId: string; displayName: string; isModerator: boolean };
+      settings: ChatSettings;
+      pinnedMessage: ChatMessage | null;
+      you: {
+        sessionId: string;
+        displayName: string;
+        isModerator: boolean;
+        role: ChatRole;
+      };
     }
   | { type: "message"; channelId: string; message: ChatMessage }
+  | { type: "batch"; channelId: string; messages: ChatMessage[] }
   | { type: "delete"; channelId: string; messageId: string }
   | {
       type: "moderate";
@@ -31,6 +55,14 @@ export type ChatServerEvent =
       subjectKind: "user" | "ip";
       subjectId: string;
       expiresAtMs: number | null;
+    }
+  | { type: "pin"; channelId: string; message: ChatMessage | null }
+  | { type: "settings"; channelId: string; settings: ChatSettings }
+  | {
+      type: "reaction";
+      channelId: string;
+      messageId: string;
+      reactions: Record<string, number>;
     }
   | { type: "presence"; channelId: string; viewers: number }
   | { type: "ping"; serverTimeMs: number }
@@ -44,6 +76,9 @@ export type ChatServerEvent =
         | "empty"
         | "too_long"
         | "duplicate"
+        | "blocked"
+        | "slow_mode"
+        | "subscriber_only"
         | "invalid"
         | "unauthorized"
         | "internal";
@@ -53,6 +88,7 @@ export type ChatServerEvent =
 
 export type ChatClientFrame =
   | { type: "send"; clientMsgId: string; body: string }
+  | { type: "react"; messageId: string; emoji: string }
   | { type: "pong" };
 
 export type ChatConnectionState =
@@ -66,4 +102,5 @@ export interface ChatIdentity {
   sessionId: string;
   displayName: string;
   isModerator: boolean;
+  role: ChatRole;
 }

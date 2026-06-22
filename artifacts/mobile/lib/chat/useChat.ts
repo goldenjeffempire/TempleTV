@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { ChatClient, type ChatClientOptions, type ChatSnapshot } from "./ChatClient";
 
 const EMPTY_SNAPSHOT: ChatSnapshot = {
@@ -8,15 +8,22 @@ const EMPTY_SNAPSHOT: ChatSnapshot = {
   messages: [],
   pending: [],
   lastError: null,
+  settings: null,
+  pinnedMessage: null,
+  lastAckAtMs: 0,
 };
 
 export interface UseChatResult extends ChatSnapshot {
   send: (body: string) => void;
+  react: (messageId: string, emoji: string) => void;
 }
 
 /**
- * React Native binding for `ChatClient`. Same shape as the TV/admin
- * `useChat` so any UI built against `ChatSnapshot` is portable.
+ * React Native binding for `ChatClient`.
+ *
+ * Returns the full `ChatSnapshot` plus `send()` and `react()` action helpers.
+ * Same external shape as the TV/admin `useChat` so any UI built against
+ * `ChatSnapshot` is portable across surfaces.
  */
 export function useChat(options: ChatClientOptions = {}): UseChatResult {
   const key = `${options.channelId ?? ""}:${options.token ?? ""}:${options.bufferSize ?? ""}:${options.url ?? ""}`;
@@ -38,12 +45,6 @@ export function useChat(options: ChatClientOptions = {}): UseChatResult {
   }, [client]);
 
   useEffect(() => {
-    // Use clientRef (not the closed-over `client`) so that if options change
-    // during the component's lifetime — e.g. token goes null→JWT after login —
-    // useMemo creates a new ChatClient (stopping the old one itself), and this
-    // unmount cleanup correctly stops whichever client is current at that time.
-    // Closing over the initial `client` value would leave the newer WebSocket
-    // open indefinitely after unmount.
     return () => {
       clientRef.current?.client.stop();
     };
@@ -53,10 +54,15 @@ export function useChat(options: ChatClientOptions = {}): UseChatResult {
   const getSnapshot = useMemo(() => () => client.snapshot(), [client]);
   const snapshot = useSyncExternalStore(subscribe, getSnapshot, () => EMPTY_SNAPSHOT);
 
-  return {
-    ...snapshot,
-    send: (body: string) => {
-      client.send(body);
-    },
-  };
+  const send = useCallback(
+    (body: string) => { client.send(body); },
+    [client],
+  );
+
+  const react = useCallback(
+    (messageId: string, emoji: string) => { client.react(messageId, emoji); },
+    [client],
+  );
+
+  return { ...snapshot, send, react };
 }

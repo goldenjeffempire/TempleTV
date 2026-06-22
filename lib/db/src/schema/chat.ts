@@ -1,29 +1,6 @@
-import { pgTable, text, timestamp, index } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, jsonb, integer, index } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
-/**
- * Live chat messages.
- *
- * Channel binding: `channel_id` ties every message to a broadcast room.
- * Today there is exactly one global room (`temple-tv-live`), but the column
- * is in place so per-event / per-stream rooms can be added without a
- * schema migration.
- *
- * Broadcast-aware context: `broadcast_item_id` and `broadcast_item_title`
- * snapshot the currently-airing playback item at the moment a message was
- * sent. This is what lets future surfaces ("highlights from the 9am
- * service", "what people said during the sermon") slice chat by segment
- * without joining back through the playback engine's transient queue
- * state.
- *
- * Soft delete: moderator deletes flip `deleted_at` rather than removing
- * the row, so audit logs and abuse forensics remain queryable.
- *
- * IP-hash (not IP): we store the hex-truncated SHA-256 of the connecting
- * IP rather than the raw address. That's enough to (a) ban repeat
- * offenders by hash and (b) let an admin correlate spam bursts, while
- * keeping us GDPR-defensible — the raw IP never lands in the chat table.
- */
 export const chatMessagesTable = pgTable("chat_messages", {
   id: text("id").primaryKey(),
   channelId: text("channel_id").notNull(),
@@ -33,25 +10,20 @@ export const chatMessagesTable = pgTable("chat_messages", {
   broadcastItemId: text("broadcast_item_id"),
   broadcastItemTitle: text("broadcast_item_title"),
   ipHash: text("ip_hash"),
+  /** Sender role at time of posting — used for badge rendering on all clients. */
+  role: text("role"),
+  /** Set by a moderator to visually highlight an important message. */
+  isHighlighted: boolean("is_highlighted").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp("deleted_at", { withTimezone: true }),
   deletedBy: text("deleted_by"),
 }, (table) => [
-  // History fetch is `WHERE channel_id = ? AND deleted_at IS NULL ORDER BY
-  // created_at DESC LIMIT N` — a backward index walk on this composite
-  // serves it without a sort node.
   index("idx_chat_messages_channel_created_at").on(
     table.channelId,
     table.createdAt.desc(),
   ),
-  // Moderation lookups: ban/mute checks filter by userId or ipHash to determine
-  // whether a sender is blocked before their message is accepted.
   index("idx_chat_messages_user_id").on(table.userId),
   index("idx_chat_messages_ip_hash").on(table.ipHash),
-  // Partial index for the standard history fetch:
-  //   WHERE channel_id = ? AND deleted_at IS NULL ORDER BY created_at DESC
-  // Deleted messages are excluded from the index entirely, so the planner
-  // never needs a filter step on large channels with heavy moderation.
   index("idx_chat_messages_channel_not_deleted").on(
     table.channelId,
     table.createdAt.desc(),
@@ -60,24 +32,11 @@ export const chatMessagesTable = pgTable("chat_messages", {
 
 export type ChatMessageRow = typeof chatMessagesTable.$inferSelect;
 
-/**
- * Active moderation actions (mutes + bans).
- *
- * Subject kind decouples the targeting strategy:
- *   - `user`: stable user id (for signed-in viewers)
- *   - `ip`  : hashed IP (catches anonymous viewers who can't be banned by
- *             user id)
- *
- * Indefinite actions have `expires_at = NULL`. The hot-path lookup in
- * `moderation.ts` filters by `(subject_kind, subject_id, action)` and
- * checks `expires_at` in JS, so the partial index below covers both the
- * temporal and permanent cases.
- */
 export const chatModerationTable = pgTable("chat_moderation", {
   id: text("id").primaryKey(),
-  subjectKind: text("subject_kind").notNull(), // 'user' | 'ip'
+  subjectKind: text("subject_kind").notNull(),
   subjectId: text("subject_id").notNull(),
-  action: text("action").notNull(),            // 'mute' | 'ban'
+  action: text("action").notNull(),
   reason: text("reason"),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -91,3 +50,33 @@ export const chatModerationTable = pgTable("chat_moderation", {
 ]);
 
 export type ChatModerationRow = typeof chatModerationTable.$inferSelect;
+
+/**
+ * Per-channel broadcast chat settings.
+ *
+ * One row per channel (channelId is the PK). Settings are cached in-memory
+ * by ChatHub and broadcast to all connected clients when changed so every
+ * client surface stays in sync without polling.
+ *
+ * Columns:
+ *   slowModeSecs  — 0 = off; >0 = minimum seconds between sends per user
+ *                   (bypassed for admin/mod roles)
+ *   subscriberOnly — when true, only authenticated users can send messages
+ *   pinnedMessageId — foreign-key to chat_messages.id; null = no pin
+ *   bannedKeywords  — JSON array of strings; any message containing one is
+ *                     rejected with code "blocked" before DB insert
+ *   updatedAt      — tracked so admin surfaces can show "last changed by"
+ */
+export const chatSettingsTable = pgTable("chat_settings", {
+  channelId: text("channel_id").primaryKey(),
+  slowModeSecs: integer("slow_mode_secs").notNull().default(0),
+  subscriberOnly: boolean("subscriber_only").notNull().default(false),
+  pinnedMessageId: text("pinned_message_id"),
+  bannedKeywords: jsonb("banned_keywords")
+    .$type<string[]>()
+    .notNull()
+    .default(sql`'[]'::jsonb`),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type ChatSettingsRow = typeof chatSettingsTable.$inferSelect;

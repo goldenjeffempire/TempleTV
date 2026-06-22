@@ -12,13 +12,16 @@ import { env } from "../../config/env.js";
 import {
   chatHub,
   createMember,
+  DEFAULT_SETTINGS,
   type ChatSocket,
   type RoomMember,
 } from "./chat.hub.js";
 import type {
   ChatClientFrame,
   ChatMessage as ChatMessageDto,
+  ChatRole,
   ChatServerEvent,
+  ChatSettings,
 } from "./chat.types.js";
 
 const chat = schema.chatMessagesTable;
@@ -30,13 +33,12 @@ const ChatMessageSchema = z.object({
   userId: z.string().nullable(),
   displayName: z.string(),
   body: z.string(),
+  createdAtMs: z.number().int().nonnegative(),
   broadcastItemId: z.string().nullable(),
   broadcastItemTitle: z.string().nullable(),
-  // `createdAtMs` (epoch ms) matches the shape sent over WebSocket via rowToDto().
-  // Legacy field name was `createdAt` (ISO string) — normalized here so REST
-  // and WS history have the same structure and mobile/TV clients don't need
-  // format-branching logic.
-  createdAtMs: z.number().int().nonnegative(),
+  role: z.string(),
+  isHighlighted: z.boolean(),
+  reactions: z.record(z.number()),
 });
 
 const PostChatBodySchema = z.object({
@@ -44,25 +46,27 @@ const PostChatBodySchema = z.object({
 });
 
 const ChatHistoryQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).default(50).catch(50).transform(v => Math.min(v, 200)),
+  limit: z.coerce.number().int().min(1).default(50).catch(50).transform((v) => Math.min(v, 200)),
   before: z.string().datetime().optional(),
 });
 
-/** Truncated SHA-256 of the connecting IP — see schema doc for rationale. */
 function hashIp(ip: string | null | undefined): string | null {
   if (!ip) return null;
   return createHash("sha256").update(ip).digest("hex").slice(0, 32);
 }
 
-/** Pick a friendly default name for anonymous viewers. */
 function guestName(sessionId: string): string {
   return `Guest-${sessionId.slice(0, 4).toUpperCase()}`;
 }
 
-/**
- * Look up active moderation for any of (userId, ipHash). Returns the
- * most-restrictive action (`ban` > `mute`) currently in force, or null.
- */
+/** Map JWT role to the ChatRole discriminant used in frame DTOs. */
+function jwtRoleToChatRole(jwtRole: string | null | undefined): ChatRole {
+  if (!jwtRole) return "guest";
+  if (jwtRole === "system" || jwtRole === "admin" || jwtRole === "editor") return "admin";
+  if (jwtRole === "moderator") return "mod";
+  return "user";
+}
+
 async function lookupActiveModeration(
   userId: string | null,
   ipHash: string | null,
@@ -78,19 +82,10 @@ async function lookupActiveModeration(
   const subjectOr = subjectFilters.length === 1 ? subjectFilters[0] : or(...subjectFilters);
   const now = new Date();
   const rows = await db
-    .select({
-      action: moderation.action,
-      expiresAt: moderation.expiresAt,
-    })
+    .select({ action: moderation.action, expiresAt: moderation.expiresAt })
     .from(moderation)
-    .where(
-      and(
-        subjectOr,
-        or(isNull(moderation.expiresAt), gt(moderation.expiresAt, now)),
-      ),
-    );
+    .where(and(subjectOr, or(isNull(moderation.expiresAt), gt(moderation.expiresAt, now))));
   if (rows.length === 0) return null;
-  // Prefer ban over mute when both present.
   const ban = rows.find((r) => r.action === "ban");
   const pick = ban ?? rows[0]!;
   return {
@@ -99,25 +94,29 @@ async function lookupActiveModeration(
   };
 }
 
-/** Resolve identity from a query-string `token` (JWT or admin token). */
 async function resolveWsIdentity(token: string | null): Promise<{
   userId: string | null;
   email: string | null;
   isModerator: boolean;
+  role: ChatRole;
+  jwtRole: string | null;
 }> {
-  if (!token) return { userId: null, email: null, isModerator: false };
+  if (!token) return { userId: null, email: null, isModerator: false, role: "guest", jwtRole: null };
   if (env.ADMIN_API_TOKEN && safeStringEqual(token, env.ADMIN_API_TOKEN)) {
-    return { userId: "system:admin-token", email: "system@temple.tv", isModerator: true };
+    return { userId: "system:admin-token", email: "system@temple.tv", isModerator: true, role: "admin", jwtRole: "admin" };
   }
   try {
     const decoded = await verifyAccessToken(token);
+    const role = jwtRoleToChatRole(decoded.role);
     return {
       userId: decoded.sub,
       email: decoded.email,
-      isModerator: decoded.role === "editor" || decoded.role === "admin" || decoded.role === "system",
+      isModerator: role === "admin" || role === "mod",
+      role,
+      jwtRole: decoded.role ?? null,
     };
   } catch {
-    return { userId: null, email: null, isModerator: false };
+    return { userId: null, email: null, isModerator: false, role: "guest", jwtRole: null };
   }
 }
 
@@ -131,44 +130,77 @@ function rowToDto(row: typeof chat.$inferSelect): ChatMessageDto {
     createdAtMs: row.createdAt.getTime(),
     broadcastItemId: row.broadcastItemId,
     broadcastItemTitle: row.broadcastItemTitle,
+    role: (row.role ?? "user") as ChatRole,
+    isHighlighted: row.isHighlighted,
+    reactions: {},
   };
 }
 
 function safeSend(socket: ChatSocket, event: ChatServerEvent): void {
   try {
     if (socket.readyState === 1) socket.send(JSON.stringify(event));
-  } catch {
-    /* ignore — close handler runs */
-  }
+  } catch { /* ignore — close handler runs */ }
 }
 
-/**
- * Server-initiated keep-alive ping fanout. Single shared interval rather
- * than one per socket — avoids leaking timers when sockets disconnect
- * uncleanly. Started lazily on first WS connect.
- *
- * chatHub.pingAll() also sweeps zombie members (no pong in >60 s) and calls
- * socket.terminate() on them, so the interval does double duty as a cleanup
- * sweep — preventing half-open sockets from accumulating without bound.
- */
 let pingInterval: ReturnType<typeof setInterval> | null = null;
 function ensurePingLoop(): void {
   if (pingInterval) return;
-  pingInterval = setInterval(() => chatHub.pingAll(), 25_000).unref();
-  // Don't keep the event loop alive just for pings.
+  pingInterval = setInterval(() => chatHub.pingAll(), 25_000);
   pingInterval.unref?.();
 }
 
-/**
- * Stop the chat ping/sweep interval.
- * Called during graceful shutdown so the timer does not keep the event loop
- * alive after all other subsystems have stopped.
- */
 export function stopChatPingInterval(): void {
   if (pingInterval) {
     clearInterval(pingInterval);
     pingInterval = null;
   }
+}
+
+/** Load channel settings from DB and warm the ChatHub cache (no broadcast). */
+async function loadChannelSettings(channelId: string): Promise<ChatSettings> {
+  try {
+    const rows = await db
+      .select()
+      .from(schema.chatSettingsTable)
+      .where(eq(schema.chatSettingsTable.channelId, channelId))
+      .limit(1);
+    if (rows[0]) {
+      const s: ChatSettings = {
+        slowModeSecs: rows[0].slowModeSecs,
+        subscriberOnly: rows[0].subscriberOnly,
+        pinnedMessageId: rows[0].pinnedMessageId,
+        bannedKeywords: (rows[0].bannedKeywords as string[]) ?? [],
+      };
+      chatHub.updateSettings(channelId, s, false);
+      return s;
+    }
+  } catch {
+    /* table may not exist pre-migration — use defaults */
+  }
+  return chatHub.getSettings(channelId);
+}
+
+/** Load pinned message from DB and warm the ChatHub cache (no broadcast). */
+async function loadPinnedMessage(
+  channelId: string,
+  pinnedMessageId: string | null,
+): Promise<ChatMessageDto | null> {
+  if (!pinnedMessageId) return chatHub.getPinnedMessage(channelId);
+  const cached = chatHub.getPinnedMessage(channelId);
+  if (cached?.id === pinnedMessageId) return cached;
+  try {
+    const rows = await db
+      .select()
+      .from(chat)
+      .where(and(eq(chat.id, pinnedMessageId), isNull(chat.deletedAt)))
+      .limit(1);
+    if (rows[0]) {
+      const dto = rowToDto(rows[0]);
+      chatHub.setPinnedMessage(channelId, dto, false);
+      return dto;
+    }
+  } catch { /* noop */ }
+  return null;
 }
 
 export async function chatRoutes(app: FastifyInstance) {
@@ -177,15 +209,14 @@ export async function chatRoutes(app: FastifyInstance) {
   r.get(
     "/:channelId/history",
     {
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      schema: {
         tags: ["chat"],
         summary: "Recent chat messages for a channel",
         params: z.object({ channelId: z.string().min(1).max(128) }),
         querystring: ChatHistoryQuerySchema,
         response: {
-          200: z.object({
-            messages: z.array(ChatMessageSchema),
-          }),
+          200: z.object({ messages: z.array(ChatMessageSchema) }),
           429: z.object({ error: z.string() }),
         },
       },
@@ -204,21 +235,7 @@ export async function chatRoutes(app: FastifyInstance) {
         .where(and(...conditions))
         .orderBy(desc(chat.createdAt))
         .limit(req.query.limit);
-
-      return {
-        messages: rows.map((m) => ({
-          id: m.id,
-          channelId: m.channelId,
-          userId: m.userId,
-          displayName: m.displayName,
-          body: m.body,
-          broadcastItemId: m.broadcastItemId,
-          broadcastItemTitle: m.broadcastItemTitle,
-          // Normalized to epoch-ms to match the `createdAtMs` field sent
-          // over WebSocket. Previously this returned ISO string `createdAt`.
-          createdAtMs: m.createdAt.getTime(),
-        })),
-      };
+      return { messages: rows.map(rowToDto) };
     },
   );
 
@@ -226,9 +243,8 @@ export async function chatRoutes(app: FastifyInstance) {
     "/:channelId/messages",
     {
       preHandler: requireAuth("user"),
-      // 20/min per user prevents chat spam while staying comfortable for
-      // legitimate rapid-fire responses during a live service.
-      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },      schema: {
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+      schema: {
         tags: ["chat"],
         summary: "Post a chat message to a channel",
         params: z.object({ channelId: z.string().min(1).max(128) }),
@@ -250,31 +266,18 @@ export async function chatRoutes(app: FastifyInstance) {
           body: req.body.body,
           broadcastItemId: snap.current?.id ?? null,
           broadcastItemTitle: snap.current?.title ?? null,
+          role: "user",
+          isHighlighted: false,
         })
         .returning();
       const m = inserted[0]!;
-      // Mirror to any live WS subscribers so REST-posted messages also
-      // appear in real time.
       chatHub.publishMessage(m.channelId, rowToDto(m));
       reply.code(201);
-      return {
-        id: m.id,
-        channelId: m.channelId,
-        userId: m.userId,
-        displayName: m.displayName,
-        body: m.body,
-        broadcastItemId: m.broadcastItemId,
-        broadcastItemTitle: m.broadcastItemTitle,
-        createdAtMs: m.createdAt.getTime(),
-      };
+      return rowToDto(m);
     },
   );
 
-  // ── WebSocket gateway ────────────────────────────────────────────────────
-  // Persistent two-way chat channel. The browser-side `ChatClient`
-  // (admin + TV) connects to `/api/chat/ws?channel=...&token=...`.
-  // Frame contract lives in `chat.types.ts` and is mirrored verbatim in
-  // both SPAs.
+  // ── WebSocket gateway ──────────────────────────────────────────────────────
   app.get(
     "/ws",
     { websocket: true },
@@ -288,8 +291,12 @@ export async function chatRoutes(app: FastifyInstance) {
       const identity = await resolveWsIdentity(token);
       const sessionId = nanoid(12);
       const ipHash = hashIp(req.ip);
-      const displayName =
-        identity.email?.split("@")[0] || guestName(sessionId);
+      const displayName = identity.email?.split("@")[0] || guestName(sessionId);
+
+      // Load channel settings (warms hub cache; no broadcast)
+      const settings = await loadChannelSettings(channelId);
+      // Load pinned message (warms hub cache; no broadcast)
+      const pinnedMessage = await loadPinnedMessage(channelId, settings.pinnedMessageId);
 
       const member: RoomMember = createMember({
         socket,
@@ -297,11 +304,11 @@ export async function chatRoutes(app: FastifyInstance) {
         displayName,
         userId: identity.userId,
         isModerator: identity.isModerator,
+        role: identity.role,
         ipHash,
       });
 
-      // Read recent history once on connect so the client doesn't need
-      // a separate REST round-trip.
+      // Load recent history
       let recent: ChatMessageDto[] = [];
       try {
         const rows = await db
@@ -310,29 +317,20 @@ export async function chatRoutes(app: FastifyInstance) {
           .where(and(eq(chat.channelId, channelId), isNull(chat.deletedAt)))
           .orderBy(desc(chat.createdAt))
           .limit(50);
-        // Oldest → newest so the client renders in natural order.
         recent = rows.reverse().map(rowToDto);
       } catch (err) {
         req.log.error({ err }, "chat ws: failed to load history");
       }
 
-      // Register cleanup BEFORE joining the hub so that if the socket fires
-      // a close/error event during or after the async DB history query (above),
-      // the member is always removed from the room — preventing a permanent
-      // viewer-count leak when clients drop during the connection handshake.
-      const cleanup = () => {
-        chatHub.leave(channelId, member);
-      };
+      const cleanup = () => { chatHub.leave(channelId, member); };
       socket.on("close", cleanup);
       socket.on("error", cleanup);
 
       let viewers: number;
       try {
         ({ viewers } = chatHub.join(channelId, member));
-      } catch (err) {
-        // Hub at capacity (MAX_ROOMS exceeded) — close the socket cleanly so
-        // the client gets a clear rejection rather than a silent hang.
-        socket.close(1013 /* Try Again Later */);
+      } catch {
+        socket.close(1013);
         req.log.warn({ channelId }, "chat ws: hub at capacity, rejecting join");
         return;
       }
@@ -343,10 +341,13 @@ export async function chatRoutes(app: FastifyInstance) {
         recent,
         viewers,
         serverTimeMs: Date.now(),
+        settings,
+        pinnedMessage,
         you: {
           sessionId: member.sessionId,
           displayName: member.displayName,
           isModerator: member.isModerator,
+          role: member.role,
         },
       });
 
@@ -354,37 +355,84 @@ export async function chatRoutes(app: FastifyInstance) {
         let frame: ChatClientFrame;
         try {
           frame = JSON.parse(raw.toString()) as ChatClientFrame;
-        } catch {
-          return;
-        }
+        } catch { return; }
+
+        // ── pong ──────────────────────────────────────────────────────────────
         if (frame.type === "pong") {
-          // Update liveness timestamp so the zombie sweep in pingAll() does
-          // not terminate this member before the next cleanup cycle.
           member.lastPongMs = Date.now();
           return;
         }
+
+        // ── react ─────────────────────────────────────────────────────────────
+        if (frame.type === "react") {
+          const { messageId, emoji } = frame;
+          if (!messageId || !emoji || emoji.length > 8) return;
+          const userKey = member.userId ?? member.sessionId;
+          chatHub.toggleReaction(channelId, messageId, emoji, userKey);
+          return;
+        }
+
         if (frame.type !== "send") return;
 
-        const body = (frame.body ?? "").trim();
+        // ── send ──────────────────────────────────────────────────────────────
+        let body = (frame.body ?? "").trim();
         if (!body) {
-          safeSend(socket, {
-            type: "error",
-            code: "empty",
-            message: "Message body is empty.",
-          });
+          safeSend(socket, { type: "error", code: "empty", message: "Message body is empty." });
           return;
         }
         if (body.length > 500) {
+          safeSend(socket, { type: "error", code: "too_long", message: "Message exceeds 500 characters." });
+          return;
+        }
+
+        // Normalise ALL-CAPS before any other check
+        body = chatHub.normaliseCaps(body);
+
+        // Subscriber-only gate
+        const ch = chatHub.getSettings(channelId);
+        if (ch.subscriberOnly && !member.userId) {
           safeSend(socket, {
             type: "error",
-            code: "too_long",
-            message: "Message exceeds 500 characters.",
+            code: "subscriber_only",
+            message: "Only signed-in viewers can chat right now.",
           });
           return;
         }
 
-        // Token-bucket per socket. Cheap first line of defense; the DB-
-        // backed moderation check below is the durable one.
+        // Slow-mode check
+        const slowRemaining = chatHub.slowModeRemainingS(member, ch.slowModeSecs);
+        if (slowRemaining > 0) {
+          safeSend(socket, {
+            type: "error",
+            code: "slow_mode",
+            message: `Slow mode is on — wait ${slowRemaining}s before sending again.`,
+            retryAtMs: member.lastSentAtMs + ch.slowModeSecs * 1000,
+          });
+          return;
+        }
+
+        // Keyword ban
+        const matchedKw = chatHub.matchesBannedKeyword(body, ch.bannedKeywords);
+        if (matchedKw) {
+          safeSend(socket, {
+            type: "error",
+            code: "blocked",
+            message: "Your message contains a blocked word.",
+          });
+          return;
+        }
+
+        // Duplicate detection
+        if (chatHub.isDuplicate(member, body)) {
+          safeSend(socket, {
+            type: "error",
+            code: "duplicate",
+            message: "Please don't repeat the same message.",
+          });
+          return;
+        }
+
+        // Token-bucket rate limit
         if (!chatHub.consumeSendToken(member)) {
           safeSend(socket, {
             type: "error",
@@ -395,7 +443,7 @@ export async function chatRoutes(app: FastifyInstance) {
           return;
         }
 
-        // Active mute / ban check.
+        // Active mute / ban
         try {
           const block = await lookupActiveModeration(member.userId, member.ipHash);
           if (block) {
@@ -428,10 +476,13 @@ export async function chatRoutes(app: FastifyInstance) {
               broadcastItemId: snap.current?.id ?? null,
               broadcastItemTitle: snap.current?.title ?? null,
               ipHash: member.ipHash,
+              role: member.role,
+              isHighlighted: false,
             })
             .returning();
           const row = inserted[0]!;
           const dto = rowToDto(row);
+          chatHub.recordSend(member, body);
           safeSend(socket, { type: "ack", clientMsgId: frame.clientMsgId, messageId: row.id });
           chatHub.publishMessage(channelId, dto);
         } catch (err) {
@@ -443,7 +494,6 @@ export async function chatRoutes(app: FastifyInstance) {
           });
         }
       });
-
     },
   );
 }

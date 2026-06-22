@@ -1,15 +1,15 @@
 /**
  * React Native chat WebSocket client.
  *
- * Behavior is intentionally identical to the browser-side ChatClients
- * in `artifacts/admin/src/chat/ChatClient.ts` and
- * `artifacts/tv/src/chat/ChatClient.ts` — only the URL builder differs
- * because RN doesn't have `window.location` and the api host comes from
- * `getApiBase()` (EXPO_PUBLIC_API_URL / EXPO_PUBLIC_DOMAIN).
+ * Upgraded for YouTube-grade chat:
+ *   • Handles `batch`, `pin`, `settings`, `reaction` server frames
+ *   • `react(messageId, emoji)` sends a react frame
+ *   • `lastAckAtMs` in snapshot — drives slow-mode countdown in UI
+ *   • On `ack`, updates corresponding pending message and records timestamp
+ *   • Reactions are applied to the in-memory message list in-place
  *
- * RN's global `WebSocket` is API-compatible with the browser's for the
- * subset we use (constructor, send, close, onopen/onmessage/onclose/
- * onerror, readyState). No polyfill needed.
+ * URL builder is the only platform-specific bit; all logic is reusable by
+ * the browser-side clients (`admin/src/chat/ChatClient.ts`, `tv/src/chat/ChatClient.ts`).
  */
 
 import { getApiBase } from "../apiBase";
@@ -19,16 +19,13 @@ import type {
   ChatIdentity,
   ChatMessage,
   ChatServerEvent,
+  ChatSettings,
 } from "./types";
 
 export interface ChatClientOptions {
-  /** Channel to subscribe to. Defaults to TEMPLE_TV_LIVE_CHANNEL. */
   channelId?: string;
-  /** Max messages kept in memory. Older ones are dropped FIFO. */
   bufferSize?: number;
-  /** Auth bearer (JWT for users, ADMIN_API_TOKEN for moderators). */
   token?: string | null;
-  /** Override the WS URL (testing). */
   url?: string;
 }
 
@@ -49,24 +46,19 @@ export interface ChatSnapshot {
   messages: ChatMessage[];
   pending: PendingMessage[];
   lastError: { code: string; message: string; atMs: number } | null;
+  settings: ChatSettings | null;
+  pinnedMessage: ChatMessage | null;
+  /** Epoch-ms of the last server `ack` frame — used to compute slow-mode countdown. */
+  lastAckAtMs: number;
 }
 
 const DEFAULT_BUFFER = 80;
 
-/**
- * Build the WebSocket URL from the resolved API base.
- *
- *   https://api.example.com  → wss://api.example.com/api/chat/ws?...
- *   http://10.0.2.2:5000     → ws://10.0.2.2:5000/api/chat/ws?...
- */
 function buildUrl(opts: ChatClientOptions): string {
   if (opts.url) return opts.url;
   const base = getApiBase();
   if (!base) return "";
-  const wsBase = base.replace(/^http/i, (m) => (m.toLowerCase() === "https" ? "wss" : "ws"));
-  // getApiBase returns scheme://host[:port], no trailing slash. Strip a
-  // possible leading scheme replacement leftover and append the path.
-  const wsScheme = wsBase
+  const wsScheme = base
     .replace(/^http:/i, "ws:")
     .replace(/^https:/i, "wss:");
   const params: string[] = [];
@@ -84,6 +76,9 @@ export class ChatClient {
   private messages: ChatMessage[] = [];
   private pending: PendingMessage[] = [];
   private lastError: ChatSnapshot["lastError"] = null;
+  private settings: ChatSettings | null = null;
+  private pinnedMessage: ChatMessage | null = null;
+  private lastAckAtMs = 0;
   private listeners = new Set<Listener>();
   private cachedSnapshot: ChatSnapshot | null = null;
   private reconnectAttempts = 0;
@@ -92,21 +87,8 @@ export class ChatClient {
   private readonly bufferSize: number;
   private readonly opts: ChatClientOptions;
   private pingInterval: ReturnType<typeof setInterval> | null = null;
-  // 25 s is well under the ~2-5 min idle-drop window on mobile NAT gateways.
-  // Sending a lightweight ping frame keeps the TCP connection alive and lets
-  // us detect a silently-dead socket on the next send rather than waiting
-  // for the user to tap Chat and discover nothing is coming through.
-  private readonly PING_INTERVAL_MS = 25_000;
-  /**
-   * Wall-clock timestamp of the most recent server-originated frame (any
-   * message type, including pong/state/message). Set on socket open and on
-   * every onmessage delivery. The ping watchdog checks this value: if no
-   * frame has arrived within 2 × PING_INTERVAL_MS after the socket opens,
-   * the socket is silently OPEN but the server has stopped responding — a
-   * "dead socket" scenario common on Android when the radio changes state.
-   * Force-closing triggers the normal onclose → scheduleReconnect path.
-   */
   private lastServerActivityAt = 0;
+  private readonly PING_INTERVAL_MS = 25_000;
 
   constructor(opts: ChatClientOptions = {}) {
     this.opts = opts;
@@ -135,9 +117,7 @@ export class ChatClient {
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
     listener(this.snapshot());
-    return () => {
-      this.listeners.delete(listener);
-    };
+    return () => { this.listeners.delete(listener); };
   }
 
   send(body: string): { clientMsgId: string } | null {
@@ -160,6 +140,13 @@ export class ChatClient {
     return { clientMsgId };
   }
 
+  /** Toggle a reaction emoji on a message. No-op if not connected. */
+  react(messageId: string, emoji: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const frame: ChatClientFrame = { type: "react", messageId, emoji };
+    try { this.ws.send(JSON.stringify(frame)); } catch { /* noop */ }
+  }
+
   snapshot(): ChatSnapshot {
     if (this.cachedSnapshot) return this.cachedSnapshot;
     this.cachedSnapshot = {
@@ -169,6 +156,9 @@ export class ChatClient {
       messages: this.messages,
       pending: this.pending,
       lastError: this.lastError,
+      settings: this.settings,
+      pinnedMessage: this.pinnedMessage,
+      lastAckAtMs: this.lastAckAtMs,
     };
     return this.cachedSnapshot;
   }
@@ -177,8 +167,6 @@ export class ChatClient {
     if (this.closedByUser) return;
     const url = buildUrl(this.opts);
     if (!url) {
-      // No API base configured (Expo Go without EXPO_PUBLIC_API_URL).
-      // Surface a single error and stop reconnect storms.
       this.lastError = {
         code: "internal",
         message: "Live chat is unavailable in this build (no API URL).",
@@ -194,12 +182,12 @@ export class ChatClient {
     try {
       ws = new WebSocket(url);
     } catch (err) {
-      this.scheduleReconnect();
       this.lastError = {
         code: "internal",
         message: err instanceof Error ? err.message : "WebSocket construction failed",
         atMs: Date.now(),
       };
+      this.scheduleReconnect();
       this.emit();
       return;
     }
@@ -207,30 +195,20 @@ export class ChatClient {
 
     ws.onopen = () => {
       this.reconnectAttempts = 0;
-      this.lastServerActivityAt = Date.now(); // baseline for pong watchdog
+      this.lastServerActivityAt = Date.now();
       this.setState("open");
       this.startPing(ws);
     };
 
     ws.onmessage = (ev: WebSocketMessageEvent) => {
-      // Any inbound frame (state/message/pong) counts as "server is alive".
       this.lastServerActivityAt = Date.now();
-      // Skip binary frames — the chat protocol is JSON-only.  Some WebSocket
-      // polyfills (React Native's built-in and some Android Hermes builds)
-      // dispatch ArrayBuffer or Blob objects for binary messages. Passing
-      // those to JSON.parse as "" (falsy fallthrough) throws SyntaxError and
-      // silently drops the message, but the intent is clearer here.
       if (typeof ev.data !== "string") return;
       let frame: ChatServerEvent;
-      try {
-        frame = JSON.parse(ev.data) as ChatServerEvent;
-      } catch {
-        return;
-      }
+      try { frame = JSON.parse(ev.data) as ChatServerEvent; } catch { return; }
       this.handleServerFrame(frame);
     };
 
-    ws.onerror = () => { /* see onclose */ };
+    ws.onerror = () => { /* handled by onclose */ };
 
     ws.onclose = () => {
       this.stopPing();
@@ -243,8 +221,7 @@ export class ChatClient {
     if (this.closedByUser) return;
     this.reconnectAttempts += 1;
     const baseMs = Math.min(8_000, 250 * 2 ** Math.min(this.reconnectAttempts, 6));
-    const jitter = Math.random() * 0.3 * baseMs;
-    const delay = Math.floor(baseMs + jitter);
+    const delay = Math.floor(baseMs + Math.random() * 0.3 * baseMs);
     this.setState("reconnecting");
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -255,29 +232,65 @@ export class ChatClient {
   private handleServerFrame(frame: ChatServerEvent): void {
     switch (frame.type) {
       case "state":
-        this.identity = frame.you;
+        this.identity = {
+          sessionId: frame.you.sessionId,
+          displayName: frame.you.displayName,
+          isModerator: frame.you.isModerator,
+          role: frame.you.role,
+        };
         this.viewers = frame.viewers;
         this.messages = this.dedupeAndCap(frame.recent);
+        this.settings = frame.settings ?? null;
+        this.pinnedMessage = frame.pinnedMessage ?? null;
         this.emit();
         return;
+
       case "message":
         this.messages = this.dedupeAndCap([...this.messages, frame.message]);
         this.emit();
         return;
+
+      case "batch":
+        this.messages = this.dedupeAndCap([...this.messages, ...frame.messages]);
+        this.emit();
+        return;
+
+      case "settings":
+        this.settings = frame.settings;
+        this.emit();
+        return;
+
+      case "pin":
+        this.pinnedMessage = frame.message;
+        this.emit();
+        return;
+
+      case "reaction":
+        this.messages = this.messages.map((m) =>
+          m.id === frame.messageId ? { ...m, reactions: frame.reactions } : m,
+        );
+        this.emit();
+        return;
+
       case "delete":
         this.messages = this.messages.filter((m) => m.id !== frame.messageId);
         this.emit();
         return;
+
       case "moderate":
         return;
+
       case "presence":
         this.viewers = frame.viewers;
         this.emit();
         return;
+
       case "ack":
+        this.lastAckAtMs = Date.now();
         this.pending = this.pending.filter((p) => p.clientMsgId !== frame.clientMsgId);
         this.emit();
         return;
+
       case "error":
         this.lastError = { code: frame.code, message: frame.message, atMs: Date.now() };
         if (this.pending.length > 0) {
@@ -287,6 +300,7 @@ export class ChatClient {
           this.emit();
         }
         return;
+
       case "ping":
         return;
     }
@@ -300,10 +314,9 @@ export class ChatClient {
       seen.add(m.id);
       out.push(m);
     }
-    if (out.length > this.bufferSize) {
-      return out.slice(out.length - this.bufferSize);
-    }
-    return out;
+    return out.length > this.bufferSize
+      ? out.slice(out.length - this.bufferSize)
+      : out;
   }
 
   private markPendingError(clientMsgId: string, message: string, retryAtMs?: number): void {
@@ -325,36 +338,15 @@ export class ChatClient {
     for (const l of this.listeners) l(snap);
   }
 
-  /**
-   * Start a periodic ping on the given socket. Sends a lightweight
-   * `{ type: "ping" }` frame every PING_INTERVAL_MS to keep the TCP
-   * connection alive through mobile NAT gateways that drop idle sockets
-   * after 2–5 minutes. The server already handles inbound `ping` frames
-   * (see handleServerFrame — type "ping" is a no-op). Errors are silently
-   * swallowed; the next failed send will surface via the normal onclose path.
-   *
-   * Dead-socket watchdog: if no server frame has arrived within
-   * 2 × PING_INTERVAL_MS (50 s) the socket is OPEN but the server has
-   * stopped responding — a common failure mode on Android when the radio
-   * switches towers or the OS power-manager freezes network I/O in the
-   * background. Force-closing the socket here triggers the normal
-   * onclose → scheduleReconnect path so the client self-heals without
-   * waiting for the user to discover nothing is loading.
-   */
   private startPing(ws: WebSocket): void {
     this.stopPing();
     this.pingInterval = setInterval(() => {
       if (ws.readyState !== WebSocket.OPEN) return;
-
-      // ── Pong / dead-socket watchdog ──────────────────────────────────────
-      // If the server hasn't sent us any frame in the last 2 ping intervals,
-      // the socket is effectively dead. Force-close it to trigger reconnect.
       const silentMs = Date.now() - this.lastServerActivityAt;
       if (silentMs > this.PING_INTERVAL_MS * 2) {
         try { ws.close(1001, "pong-timeout"); } catch { /* noop */ }
-        return; // onclose will handle scheduleReconnect
+        return;
       }
-
       try { ws.send(JSON.stringify({ type: "ping" })); } catch { /* noop */ }
     }, this.PING_INTERVAL_MS);
   }
