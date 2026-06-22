@@ -744,6 +744,17 @@ async function main() {
     } catch (err) {
       logger.error({ err }, "[broadcast-v2] orchestrator failed to start (non-fatal)");
     }
+
+    // Viewer tracking service: Redis TTL-based heartbeat store, sorted-set
+    // viewer counts, peak tracking, trend snapshots, cross-instance pub/sub.
+    // Fully decoupled from the broadcast engine — no DB writes per heartbeat.
+    // Degraded gracefully to in-process fallback when Redis is unavailable.
+    try {
+      const { viewerTrackingService } = await import("./modules/viewer-tracking/index.js");
+      viewerTrackingService.start();
+    } catch (err) {
+      logger.error({ err }, "[viewer-tracking] service failed to start (non-fatal)");
+    }
     // Deactivate queue rows whose video has truly no blob at all (objectPath IS
     // NULL AND no hls_master_url AND no local_video_url). Runs AFTER the
     // orchestrator has hydrated its cycle anchor so we never deactivate the

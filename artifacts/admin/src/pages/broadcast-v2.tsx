@@ -95,6 +95,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { LiveStatusBadge } from "@/components/live-status-badge";
+import { ViewerCountPanel } from "@/components/ViewerCountPanel";
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -4447,8 +4448,11 @@ function BroadcastV2PageInner() {
         queueItems={queueItems}
       />
 
-      {/* ── Live Viewer Count ──────────────────────────────────────────── */}
+      {/* ── Live Viewer Count (broadcast-engine connection counter) ──────── */}
       <LiveViewerCountCard />
+
+      {/* ── Real-Time Viewer Tracking (heartbeat-based, Redis ZSET) ──────── */}
+      <ViewerCountPanel />
 
       {/* Viewer sync accuracy panel */}
       <ViewerSyncCard health={engineHealth} />

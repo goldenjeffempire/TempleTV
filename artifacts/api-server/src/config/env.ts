@@ -214,6 +214,12 @@ const Env = z.object({
 
   SENTRY_DSN: z.string().optional(),
 
+  // ── Viewer Tracking ──────────────────────────────────────────────────────
+  // TTL (seconds) for a viewer session heartbeat key in Redis.
+  // Must be > heartbeat interval (default 10 s) with a safety buffer.
+  // 25 s = 2 missed heartbeats before a session is considered gone.
+  VIEWER_TRACKING_SESSION_TTL_S: z.coerce.number().int().positive().default(25),
+
   // Process role selector. Lets the same image boot as either the API
   // server, a background worker, or both in a single process.
   //   api    → Fastify HTTP server only (no in-process dispatchers)

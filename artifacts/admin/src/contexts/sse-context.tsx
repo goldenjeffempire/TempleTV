@@ -173,10 +173,14 @@ const KNOWN_EVENTS = [
   // initiate the upload display a toast notification so editors working in
   // background tabs are informed without polling.
   "upload-assembly-complete",
+  // Real-time viewer count update pushed by the viewer-tracking service.
+  // Emitted at most every 3 s per stream when the active count changes.
+  // Used by useViewerTracking to invalidate its TanStack Query cache.
+  "viewer-count-updated",
 ];
 
 function summarize(event: string, data: unknown): string | null {
-  if (event === "heartbeat" || event === "stream-health" || event === "viewer-count" || event === "viewer-platform-breakdown") return null;
+  if (event === "heartbeat" || event === "stream-health" || event === "viewer-count" || event === "viewer-platform-breakdown" || event === "viewer-count-updated") return null;
   const d = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
   switch (event) {
     case "snapshot": case "status": {

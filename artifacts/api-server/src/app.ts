@@ -64,6 +64,7 @@ import { auditLogRoutes } from "./modules/admin/audit-log.routes.js";
 import { settingsRoutes } from "./modules/admin/settings.routes.js";
 import { tvHistoryRoutes } from "./modules/tv-history/tv-history.routes.js";
 import { radioRoutes } from "./modules/radio/radio.routes.js";
+import { viewerTrackingRoutes } from "./modules/viewer-tracking/index.js";
 import { seoRoutes } from "./modules/seo/seo.routes.js";
 import { wellKnownRoutes } from "./modules/well-known/well-known.routes.js";
 import { metricsRoutes } from "./modules/metrics/metrics.routes.js";
@@ -837,6 +838,14 @@ export async function buildApp(): Promise<FastifyInstance> {
     // Registered with no sub-prefix so paths are relative to the parent
     // prefix (/api or /api/v1) — yields /api/radio, /api/v1/radio, etc.
     await instance.register(radioRoutes);
+    // Viewer tracking: Redis TTL-based heartbeat store with sorted-set counts,
+    // peak tracking, trend snapshots, and admin SSE fan-out. Decoupled from
+    // the broadcast engine — no DB writes per heartbeat.
+    // Routes:
+    //   POST /viewer-tracking/heartbeat   — unauthenticated, rate-limited
+    //   GET  /viewer-tracking/stats       — requireAuth("editor")
+    //   GET  /viewer-tracking/stats/:id   — requireAuth("editor")
+    await instance.register(viewerTrackingRoutes, { prefix: "/viewer-tracking" });
   };
 
   await app.register(registerDomainRoutes, { prefix: API_PREFIX });
