@@ -198,12 +198,13 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
   // are pushed by the v1 WS gateway and surfaced via useBroadcastSync.
   // Must be declared BEFORE the emergency-pulse useEffect so `emergencyBroadcast`
   // is not in the Temporal Dead Zone when React evaluates the dependency array.
-  const { viewerCount, emergencyBroadcast, emergencyMessage } = useBroadcastSync();
+  const syncState = useBroadcastSync();
+  const { viewerCount, emergencyMessage } = syncState;
 
   // Animated pulse for the OMEGA emergency banner — draws urgent attention.
   const emergencyPulseAnim = useRef(new Animated.Value(1)).current;
   useEffect(() => {
-    if (!emergencyBroadcast) return;
+    if (!syncState.emergencyBroadcast) return;
     const anim = Animated.loop(
       Animated.sequence([
         Animated.timing(emergencyPulseAnim, { toValue: 0.6, duration: 400, useNativeDriver: true }),
@@ -212,7 +213,7 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
     );
     anim.start();
     return () => anim.stop();
-  }, [emergencyBroadcast, emergencyPulseAnim]);
+  }, [syncState.emergencyBroadcast, emergencyPulseAnim]);
 
   // STRICT POLICY: YouTube items are never promoted to the hero.
   // Only uploaded/local platform broadcasts get the hero treatment.
@@ -406,7 +407,7 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
           next PROGRAM_CHANGED event. Positioned below the notch so it never
           clips behind the status bar. pointerEvents="none" — taps still reach
           the underlying Pressable so the viewer can navigate to the player. */}
-      {emergencyBroadcast && (
+      {syncState.emergencyBroadcast && (
         <Animated.View
           style={[
             styles.emergencyBanner,
