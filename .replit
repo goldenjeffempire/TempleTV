@@ -30,6 +30,10 @@ args = "Start API"
 task = "workflow.run"
 args = "Start Workers"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Install and Build"
+
 [[workflows.workflow]]
 name = "Start application"
 author = "agent"
@@ -64,6 +68,17 @@ args = "export PATH=\"/home/runner/workspace/node_modules/.bin:$PATH\" && RUN_MO
 
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[workflows.workflow]]
+name = "Install and Build"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && pnpm --filter @workspace/db run push && NODE_OPTIONS='--max-old-space-size=4096' pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/admin run build && echo 'BUILD COMPLETE'"
 
 [agent]
 stack = "BEST_EFFORT_FALLBACK"
