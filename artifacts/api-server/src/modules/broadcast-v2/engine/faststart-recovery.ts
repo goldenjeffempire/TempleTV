@@ -815,9 +815,21 @@ async function backfillPlaceholderDurations(): Promise<void> {
         logger.warn(
           { err: probeErr, videoId: row.videoId, isTimeout },
           isTimeout
-            ? "faststart-recovery: duration probe timed out — skipping item this sweep"
+            ? "faststart-recovery: duration probe timed out — adding to skip set to avoid repeat timeouts"
             : "faststart-recovery: duration probe failed — skipping item this sweep",
         );
+        // On timeout, add the objectPath to the permanent skip set so this
+        // blob is never re-probed after the circuit-breaker cooldown expires.
+        // A storage blob that times out on every attempt is either too large
+        // for the 15 s budget or the storage tier is persistently slow for
+        // this key — either way, repeated probes only saturate the DB pool.
+        if (isTimeout && row.objectPath) {
+          if (probeSkipObjectPaths.size >= MAX_PROBE_SKIP) {
+            logger.warn({ cap: MAX_PROBE_SKIP }, "faststart-recovery: probeSkipObjectPaths cap reached — clearing");
+            probeSkipObjectPaths.clear();
+          }
+          probeSkipObjectPaths.add(row.objectPath);
+        }
         probeCircuit.recordFailure();
         stats.probeCircuitOpenUntilMs = probeCircuit.openUntilMs;
         continue;

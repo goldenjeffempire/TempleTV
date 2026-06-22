@@ -619,7 +619,19 @@ export async function buildApp(): Promise<FastifyInstance> {
     app.addHook("onRequest", async (req, reply) => {
       const host = (req.headers["host"] ?? "").split(":")[0];
       if (host.endsWith(".onrender.com")) {
-        const target = `${canonicalOrigin}${req.raw.url ?? "/"}`;
+        // Exempt health probe paths — Render's own load-balancer hits the
+        // .onrender.com hostname directly; redirecting it causes the service
+        // to be marked unhealthy and triggers unnecessary restarts.
+        const url = req.raw.url ?? "/";
+        const isHealthProbe =
+          url === "/healthz" ||
+          url === "/api/healthz" ||
+          url === "/health" ||
+          url === "/api/health" ||
+          url.startsWith("/healthz?") ||
+          url.startsWith("/api/healthz?");
+        if (isHealthProbe) return;
+        const target = `${canonicalOrigin}${url}`;
         return reply
           .code(301)
           .header("Location", target)
