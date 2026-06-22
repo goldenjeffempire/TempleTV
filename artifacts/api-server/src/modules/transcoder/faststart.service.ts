@@ -16,6 +16,7 @@
  */
 
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import { Transform } from "node:stream";
@@ -38,6 +39,35 @@ import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { boostTranscodePriority } from "./transcoder.queue.js";
 import { detectMdatWithoutMoov, probeContainerIsValid, remuxForFaststart, validateLocalSourceFile } from "./transcoder.service.js";
+
+/**
+ * Module-level registry of all currently-running FFmpeg child processes.
+ * Used by cancelAllFaststartJobs() to free 80–150 MiB of RSS before the
+ * memory watchdog issues a SIGTERM — potentially avoiding the restart entirely.
+ */
+const _activeProcs = new Set<ChildProcess>();
+
+/**
+ * Kill every in-flight FFmpeg faststart and ffprobe process immediately.
+ *
+ * Called by the memory watchdog as a pre-SIGTERM relief pass.  Each
+ * faststart job holds 80–150 MiB of RSS; cancelling them may drop RSS
+ * below the restart threshold and avoid the process restart entirely.
+ *
+ * Safe to call at any time — processes that have already exited are simply
+ * absent from the set.  The running runFaststart() calls will receive a
+ * rejection (ffmpeg exited non-zero / kill) which the caller already handles.
+ */
+export function cancelAllFaststartJobs(): void {
+  const count = _activeProcs.size;
+  for (const p of _activeProcs) {
+    try { p.kill("SIGKILL"); } catch { /* noop — already exited */ }
+  }
+  _activeProcs.clear();
+  if (count > 0) {
+    rootLogger.warn({ count }, "[faststart] cancelAllFaststartJobs: killed active FFmpeg processes for memory relief");
+  }
+}
 
 const videos = schema.videosTable;
 
@@ -814,6 +844,7 @@ function spawnFfmpegFaststart(
       outputPath,
     ]);
     proc.unref();
+    _activeProcs.add(proc);
 
     let stderr = "";
     let settled = false;
@@ -821,6 +852,7 @@ function spawnFfmpegFaststart(
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      _activeProcs.delete(proc);
       try { proc.kill("SIGKILL"); } catch { /* noop */ }
       reject(new Error(`faststart: ffmpeg timed out after ${FASTSTART_TIMEOUT_MS / 1000}s`));
     }, FASTSTART_TIMEOUT_MS);
@@ -831,6 +863,7 @@ function spawnFfmpegFaststart(
     proc.on("error", (err) => {
       if (settled) return;
       settled = true;
+      _activeProcs.delete(proc);
       clearTimeout(timer);
       reject(new Error(`faststart: ffmpeg spawn error: ${err.message}`));
     });
@@ -838,6 +871,7 @@ function spawnFfmpegFaststart(
     proc.on("close", (code) => {
       if (settled) return;
       settled = true;
+      _activeProcs.delete(proc);
       clearTimeout(timer);
       if (code === 0) {
         resolve();

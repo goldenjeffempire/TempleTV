@@ -607,9 +607,9 @@ function sample() {
 
   // ── Immediate hard-ceiling restart (no consecutive count needed) ─────────
   // If RSS reaches MEMORY_ABSOLUTE_MAX_RSS_MB (default 0 = disabled) we fire
-  // SIGTERM immediately, skipping the CRITICAL_SAMPLES_FOR_EXIT countdown.
-  // This prevents the 470 → 821 MiB balloon seen in production when the
-  // watchdog waited 3 min of sustained-over-threshold samples before acting.
+  // SIGTERM immediately after a brief faststart-cancellation pass, skipping the
+  // CRITICAL_SAMPLES_FOR_EXIT countdown.  This prevents the 470 → 821 MiB
+  // balloon seen in production when the watchdog waited 3 min before acting.
   // On a 512 MiB Render free-tier host set this to 460 MiB so the process
   // exits cleanly before the OOM killer fires at 512 MiB.
   const absoluteMaxMb = env.MEMORY_ABSOLUTE_MAX_RSS_MB;
@@ -632,11 +632,11 @@ function sample() {
         arrayBuffersMb: Math.round(mem.arrayBuffers / (1024 * 1024)),
         absoluteMaxMb,
       },
-      "[memory-watchdog] HARD CEILING exceeded — immediate SIGTERM (no wait)",
+      "[memory-watchdog] HARD CEILING exceeded — cancelling faststart jobs then SIGTERM",
     );
     void import("./sentry.js").then(({ captureEvent }) =>
       captureEvent(
-        `[memory-watchdog] HARD CEILING: RSS ${rssMb} MiB ≥ absolute max ${absoluteMaxMb} MiB — immediate SIGTERM`,
+        `[memory-watchdog] HARD CEILING: RSS ${rssMb} MiB ≥ absolute max ${absoluteMaxMb} MiB — SIGTERM`,
         "fatal",
         { rssMb, absoluteMaxMb },
       ),
@@ -644,19 +644,37 @@ function sample() {
     adminEventBus.push("ops-alert", {
       level: "fatal",
       code: "memory-hard-ceiling",
-      message: `RSS ${rssMb} MiB hit hard ceiling ${absoluteMaxMb} MiB — immediate restart (no drain delay)`,
+      message: `RSS ${rssMb} MiB hit hard ceiling ${absoluteMaxMb} MiB — cancelling heavy jobs and restarting`,
       rssMb,
       absoluteMaxMb,
     });
+    // Cancel faststart jobs immediately (each holds 80–150 MiB). The async
+    // import is fire-and-forget; Node resolves the already-cached module
+    // synchronously in the microtask queue so cancellation fires before SIGTERM.
+    void import("../modules/transcoder/faststart.service.js")
+      .then(({ cancelAllFaststartJobs }) => { cancelAllFaststartJobs(); })
+      .catch(() => {});
     process.kill(process.pid, "SIGTERM");
     const hardCeilingTimer = setTimeout(() => { process.exit(1); }, FORCE_EXIT_GRACE_MS);
     hardCeilingTimer.unref();
   }
 
-  // ── Critical escalation (production only) ────────────────────────────────
+  // ── Critical escalation with self-healing relief pass (production only) ──
   // Uses consecutiveRssOverRestart (RSS ≥ MEMORY_RESTART_RSS_MB) rather than
   // consecutiveRssOver (RSS ≥ MEMORY_WARN_RSS_MB) so a low warn threshold
   // does NOT cause the process to exit — it only triggers the ops-alert above.
+  //
+  // BEFORE committing to SIGTERM we attempt a self-healing relief pass:
+  //   1. Cancel all in-flight faststart FFmpeg processes (each holds 80–150 MiB).
+  //   2. Trim the HLS segment cache to zero and run a full GC.
+  //   3. Wait RELIEF_WAIT_MS for allocations to drain.
+  //   4. Re-measure RSS. If it fell below the restart threshold, reset the
+  //      consecutive counter and skip the restart entirely.
+  //   5. Only if still critical: send SIGTERM.
+  //
+  // This avoids restart loops where one large upload + concurrent HLS pushes
+  // RSS briefly over the threshold but would self-correct within 15 seconds.
+  const RELIEF_WAIT_MS = 15_000;
   if (
     env.NODE_ENV === "production" &&
     consecutiveRssOverRestart >= CRITICAL_SAMPLES_FOR_EXIT &&
@@ -666,10 +684,7 @@ function sample() {
     const heapUsedMb = Math.round(mem.heapUsed / (1024 * 1024));
     const heapTotalMb = Math.round(mem.heapTotal / (1024 * 1024));
     const externalMb  = Math.round(mem.external  / (1024 * 1024));
-    // Snapshot the full memory breakdown at the moment of exit so engineers
-    // can distinguish Buffer pressure (externalMb high) from heap leaks
-    // (heapUsedMb high) when reviewing logs after a restart cycle.
-    logger.fatal(
+    logger.warn(
       {
         rssMb,
         heapUsedMb,
@@ -681,53 +696,103 @@ function sample() {
         consecutiveRssOver,
         consecutiveRssOverRestart,
         criticalThreshold: CRITICAL_SAMPLES_FOR_EXIT,
+        reliefWaitMs: RELIEF_WAIT_MS,
       },
-      "[memory-watchdog] CRITICAL: sustained memory pressure — initiating graceful exit (supervisor will restart)",
+      "[memory-watchdog] CRITICAL RSS — attempting self-healing relief before restart",
     );
-    void import("./sentry.js").then(({ captureEvent }) =>
-      captureEvent(
-        `[memory-watchdog] CRITICAL: RSS sustained above restart threshold ${restartThresholdMb} MB for ${consecutiveRssOverRestart} samples — forcing graceful exit`,
-        "fatal",
-        { rssMb, restartThresholdMb, consecutiveRssOverRestart, graceMs: FORCE_EXIT_GRACE_MS },
-      ),
-    ).catch(() => {});
     adminEventBus.push("ops-alert", {
-      level: "fatal",
-      code: "memory-critical-exit",
-      message: `RSS sustained above restart threshold ${restartThresholdMb} MB for ${consecutiveRssOverRestart} samples — process will exit for clean restart in ${FORCE_EXIT_GRACE_MS / 1000}s`,
+      level: "warn",
+      code: "memory-relief-attempt",
+      message: `RSS ${rssMb} MB sustained above ${restartThresholdMb} MB — cancelling heavy jobs, waiting ${RELIEF_WAIT_MS / 1000}s for self-heal before restart`,
       rssMb,
       restartThresholdMb,
-      graceMs: FORCE_EXIT_GRACE_MS,
     });
-    // Email alert (fire-and-forget before SIGTERM). SSE only reaches an open
-    // admin dashboard — email is the only out-of-band signal for an overnight
-    // OOM restart that would otherwise appear only as a gap in uptime metrics.
-    void import("../modules/mail/mail.service.js")
-      .then(({ sendAdminAlert }) =>
-        sendAdminAlert({
-          subject: "API process restarting — critical memory pressure",
-          severity: "critical",
-          body: [
-            `RSS has been above the restart threshold (${restartThresholdMb} MB) for ${consecutiveRssOverRestart} consecutive samples.`,
-            `Current: ${rssMb} MB  |  heap: ${heapUsedMb}/${heapTotalMb} MB  |  external: ${externalMb} MB`,
-            "",
-            `The process is sending SIGTERM now and will exit in ${FORCE_EXIT_GRACE_MS / 1000}s.`,
-            "The supervisor (Render/k8s) will restart it automatically.",
-            "",
-            "If restarts are frequent, reduce HLS_MAX_CONCURRENT or raise your host memory.",
-          ].join("\n"),
-        }),
-      )
-      .catch(() => {/* non-fatal — process is about to exit anyway */});
-    process.kill(process.pid, "SIGTERM");
-    const forceExitTimer = setTimeout(() => {
+    void (async () => {
+      // Step 1: cancel faststart jobs (80–150 MiB each)
+      try {
+        const { cancelAllFaststartJobs } = await import("../modules/transcoder/faststart.service.js");
+        cancelAllFaststartJobs();
+      } catch { /* non-fatal — module may not be loaded */ }
+      // Step 2: aggressive cache drain + GC
+      try {
+        const { trimHlsSegmentCache } = await import("../modules/video-serve/video-serve.routes.js");
+        trimHlsSegmentCache(0);
+      } catch { /* non-fatal */ }
+      purgeExpiredCacheEntries();
+      if (gcFn) gcFn();
+      // Step 3: wait for memory to release
+      await new Promise<void>((r) => setTimeout(r, RELIEF_WAIT_MS));
+      // Step 4: re-measure — skip restart if RSS recovered
+      const recoveredMem = process.memoryUsage();
+      const recoveredRssMb = Math.round(recoveredMem.rss / (1024 * 1024));
+      if (recoveredRssMb < restartThresholdMb) {
+        criticalExitInFlight = false;
+        consecutiveRssOverRestart = 0;
+        logger.info(
+          { recoveredRssMb, restartThresholdMb },
+          "[memory-watchdog] RSS recovered after self-healing relief — restart ABORTED",
+        );
+        adminEventBus.push("ops-alert", {
+          level: "info",
+          code: "memory-relief-recovered",
+          message: `RSS recovered to ${recoveredRssMb} MB after relief (threshold: ${restartThresholdMb} MB) — restart aborted`,
+          recoveredRssMb,
+          restartThresholdMb,
+        });
+        return;
+      }
+      // Step 5: still critical — commit to graceful SIGTERM
       logger.fatal(
-        { graceMs: FORCE_EXIT_GRACE_MS },
-        "[memory-watchdog] graceful drain exceeded budget — force-exiting now",
+        {
+          rssMb: recoveredRssMb,
+          restartThresholdMb,
+          consecutiveRssOverRestart,
+          criticalThreshold: CRITICAL_SAMPLES_FOR_EXIT,
+        },
+        "[memory-watchdog] CRITICAL: RSS did not recover after relief — initiating graceful exit",
       );
-      process.exit(1);
-    }, FORCE_EXIT_GRACE_MS);
-    forceExitTimer.unref();
+      void import("./sentry.js").then(({ captureEvent }) =>
+        captureEvent(
+          `[memory-watchdog] CRITICAL: RSS ${recoveredRssMb} MB still above ${restartThresholdMb} MB after relief — forcing graceful exit`,
+          "fatal",
+          { rssMb: recoveredRssMb, restartThresholdMb, consecutiveRssOverRestart, graceMs: FORCE_EXIT_GRACE_MS },
+        ),
+      ).catch(() => {});
+      adminEventBus.push("ops-alert", {
+        level: "fatal",
+        code: "memory-critical-exit",
+        message: `RSS ${recoveredRssMb} MB still above ${restartThresholdMb} MB after ${RELIEF_WAIT_MS / 1000}s relief — process restarting now`,
+        rssMb: recoveredRssMb,
+        restartThresholdMb,
+        graceMs: FORCE_EXIT_GRACE_MS,
+      });
+      void import("../modules/mail/mail.service.js")
+        .then(({ sendAdminAlert }) =>
+          sendAdminAlert({
+            subject: "API process restarting — critical memory pressure",
+            severity: "critical",
+            body: [
+              `RSS stayed above the restart threshold (${restartThresholdMb} MB) even after ${RELIEF_WAIT_MS / 1000}s relief.`,
+              `Current: ${recoveredRssMb} MB  |  heap: ${heapUsedMb}/${heapTotalMb} MB  |  external: ${externalMb} MB`,
+              "",
+              `The process is sending SIGTERM now and will exit in ${FORCE_EXIT_GRACE_MS / 1000}s.`,
+              "The supervisor (Render/k8s) will restart it automatically.",
+              "",
+              "If restarts are frequent, reduce HLS_MAX_CONCURRENT or increase MEMORY_RESTART_RSS_MB.",
+            ].join("\n"),
+          }),
+        )
+        .catch(() => {});
+      process.kill(process.pid, "SIGTERM");
+      const forceExitTimer = setTimeout(() => {
+        logger.fatal(
+          { graceMs: FORCE_EXIT_GRACE_MS },
+          "[memory-watchdog] graceful drain exceeded budget — force-exiting now",
+        );
+        process.exit(1);
+      }, FORCE_EXIT_GRACE_MS);
+      forceExitTimer.unref();
+    })();
   }
 }
 

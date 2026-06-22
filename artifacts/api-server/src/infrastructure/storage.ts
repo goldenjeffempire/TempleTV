@@ -38,10 +38,13 @@ import { env } from "../config/env.js";
  */
 
 /** Each SUBSTRING query fetches this many bytes from PostgreSQL.
- *  8 MiB matches the upload chunk size and is large enough to keep round-trip
- *  overhead low while small enough that pg's hex decode (~16 MiB RSS per
- *  in-flight chunk) never threatens the memory watchdog threshold.         */
-const STORAGE_READ_CHUNK_BYTES = 8 * 1024 * 1024;
+ *  4 MiB balances throughput with memory safety: each chunk produces an
+ *  ~8 MiB intermediate hex string in the pg driver before decoding to a
+ *  4 MiB Buffer — peak RSS per in-flight stream ≈ 12 MiB.  At
+ *  HLS_MAX_CONCURRENT=10 that is ≤ 120 MiB external pressure from HLS alone
+ *  (vs 240 MiB at 8 MiB chunks).  The extra round-trips add < 1 ms of
+ *  latency per segment on a local PostgreSQL connection.                  */
+const STORAGE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 
 // ── Active-stream tracking for graceful shutdown ──────────────────────────────
 //
