@@ -31,7 +31,7 @@
  *     is an operator action.  The runtime auto-skip handles all bad sources.
  */
 
-import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { storage } from "../../../infrastructure/storage.js";
 import { logger as rootLogger } from "../../../infrastructure/logger.js";
@@ -657,10 +657,20 @@ async function backfillDurationsFromVideoTable(): Promise<number> {
 async function backfillPlaceholderDurations(): Promise<void> {
   // Status filter: skip items whose pipeline stage guarantees the duration
   // will be written by a more authoritative path (faststart / transcoder).
-  // 'none' and 'queued' → faststart is about to run and will call ffprobe.
   // 'encoding' → HLS transcoder is running and will update duration on completion.
-  // Only 'ready', 'hls_ready', and 'failed' need manual backfill here.
-  const probableStatuses = ["ready", "hls_ready", "failed"] as const;
+  // 'queued' → faststart is imminent; ffprobe will run as part of that pass.
+  //
+  // 'ready', 'hls_ready', 'failed' → pipeline is complete; no more authoritative
+  // writes are coming — probe here.
+  //
+  // 'none' → MP4-only pipeline: faststart-recovery sweeps these items and sets
+  // the duration on success.  However if faststart keeps failing (e.g. ffmpeg
+  // unavailable, corrupt blob, or max-attempts reached) the status stays 'none'
+  // forever and the 1800-s placeholder is never corrected.  We include 'none'
+  // items here so the queue gets a real duration even when faststart will never
+  // succeed — the backfill only fires when managed_videos.duration is ALSO still
+  // 1800, so it doesn't race with an in-flight faststart that already probed.
+  const probableStatuses = ["ready", "hls_ready", "failed", "none"] as const;
 
   let rows: Array<{
     queueItemId: string;
@@ -1024,5 +1034,23 @@ export const faststartRecoveryWorker = {
       openUntilMs: probeCircuit.openUntilMs,
       consecutiveFailures: probeCircuit.failures,
     };
+  },
+
+  /**
+   * Triggers an immediate one-shot duration backfill pass for queue items that
+   * still carry the 1800-s upload-time placeholder in BOTH broadcast_queue and
+   * managed_videos.  Designed to be called from the broadcast orchestrator
+   * immediately after a queue reload when 1800-s items are detected — so the
+   * first broadcast cycle uses real durations rather than waiting up to 60 s
+   * for the scheduled sweep to fire.
+   *
+   * Runs both the fast-path (propagate managed_videos.duration → queue) and the
+   * slow-path (ffprobe re-probe) independently of the main sweep guard so it
+   * can run concurrently without blocking or being blocked by the full sweep.
+   * The circuit breaker still applies to the slow ffprobe path.
+   */
+  async triggerDurationBackfill(): Promise<void> {
+    await backfillDurationsFromVideoTable();
+    await backfillPlaceholderDurations();
   },
 };

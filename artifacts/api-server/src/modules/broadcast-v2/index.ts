@@ -334,14 +334,17 @@ function startSupervisedWorkers(): void {
   // sequence staleness from outside the orchestrator's own self-heal loop.
   // Tier 1 (STALE_MS=3min): calls reload(). Tier 2 (RECOVERY_MS=7min):
   // calls initiateFullRecovery() and emits ops-alert + broadcast webhook.
-  // Initial delay reduced from 90 s → 45 s: the orchestrator completes its
-  // first reload in ~5 s; waiting 45 s is enough grace before we start
-  // checking for staleness without waiting nearly 2 min for first coverage.
+  // Initial delay reduced from 90 s → 45 s → 10 s: the orchestrator completes
+  // its first reload in ~5 s; 10 s gives just enough grace for the first queue
+  // load to settle before the health monitor starts checking for staleness.
+  // Faster first pass means duration-backfill (via the sweep inside the monitor)
+  // runs sooner, so newly-uploaded MP4s with 1800-s placeholder durations are
+  // corrected before the first broadcast cycle fires.
   workerSupervisor.spawn({
     name: "broadcast-health-monitor",
     fn: () => broadcastHealthMonitorScan(),
     intervalMs: 60_000,
-    initialDelayMs: 45_000,
+    initialDelayMs: 10_000,
     backoffMs: [15_000, 30_000, 60_000],
     onCircuitOpen: makeCircuitOpenCallback("broadcast-health-monitor"),
   });

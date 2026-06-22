@@ -1327,7 +1327,11 @@ class UploadQueueEngine {
       } // end if (!isFinalizeOnly)
 
       // ── 4. Finalize ───────────────────────────────────────────────────────
-      this.update(id, { status: "finalizing", progress: 92, speed: 0, eta: 0, assemblyPercent: null });
+      // Mark finalizeOnly: true BEFORE setting status so IDB is durably updated
+      // in the same synchronous batch.  If the page is killed during finalization
+      // the next resume will see finalizeOnly=true in IDB and skip re-uploading
+      // all chunks — it will call /finalize directly on the existing session.
+      this.update(id, { status: "finalizing", progress: 92, speed: 0, eta: 0, assemblyPercent: null, finalizeOnly: true });
 
       // Callback wired into pollFinalizeStatus so polling paths receive real
       // assembly progress (0–99 from server) and apply it to the item. Maps

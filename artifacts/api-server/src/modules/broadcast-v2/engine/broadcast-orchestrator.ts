@@ -1652,6 +1652,18 @@ class BroadcastOrchestrator extends EventEmitter {
     // Fire-and-forget — write errors are logged at debug level only.
     this.saveQueueBackup();
 
+    // If any items still carry the 1800-s upload-time placeholder, kick off
+    // an immediate duration backfill — both the fast DB-propagation pass and
+    // the slow ffprobe pass — without waiting for the scheduled sweep (up to
+    // 60 s away).  This ensures the first broadcast cycle uses real durations
+    // and prevents premature queue advancement for newly-uploaded MP4 files.
+    // Fire-and-forget; any errors are logged inside triggerDurationBackfill().
+    if (resolved.some((item) => item.durationSecs === 1800)) {
+      void faststartRecoveryWorker.triggerDurationBackfill().catch((err) =>
+        logger.warn({ err }, "[broadcast-v2] reloadInner: immediate duration backfill failed (non-fatal)"),
+      );
+    }
+
     // Reset dead-air tracking state whenever items load successfully.
     //
     // lastDeadAirEscalationMs: the 5-min cooldown is designed to throttle
