@@ -41,3 +41,4 @@ export * from "./memory-hourly-snapshots";
 export * from "./app-versions";
 export * from "./pending-storage-cleanup";
 export * from "./media-audit-log";
+export * from "./queue-asset-health";

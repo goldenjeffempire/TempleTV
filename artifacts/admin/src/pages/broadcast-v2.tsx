@@ -374,6 +374,60 @@ interface DiagnosticsReport {
   } | null;
 }
 
+interface RepairLogEntry {
+  ts: string;
+  actor: "system" | "operator";
+  action: string;
+  detail: string;
+  outcome: "success" | "failure" | "pending" | "skipped";
+}
+
+interface AssetHealthItem {
+  id: string;
+  queueItemId: string;
+  videoId: string | null;
+  state: "healthy" | "quarantined" | "repairing" | "approved" | "blocked";
+  repairAttempts: number;
+  lastRepairAt: string | null;
+  nextRetryAt: string | null;
+  lastErrorCode: string | null;
+  lastError: string | null;
+  suggestedFix: string | null;
+  sourceHash: string | null;
+  autoRepairPaused: boolean;
+  repairLog: RepairLogEntry[];
+  createdAt: string;
+  updatedAt: string;
+  queueItemTitle: string | null;
+  queueItemActive: boolean | null;
+  videoSource: string | null;
+}
+
+interface AssetHealthResponse {
+  items: AssetHealthItem[];
+  summary: {
+    healthy: number;
+    quarantined: number;
+    repairing: number;
+    approved: number;
+    blocked: number;
+    total: number;
+  };
+  workerLastScanMs: number;
+  workerRunning: boolean;
+}
+
+interface RepairRunResult {
+  ok: true;
+  scanned: number;
+  quarantined: number;
+  repaired: number;
+  blocked: number;
+  recovered: number;
+  orphansPruned: number;
+  durationMs: number;
+}
+
 interface TranscodingPanelJob {
   id: string;
   videoId: string;
@@ -2284,6 +2338,59 @@ function BroadcastV2PageInner() {
     onError: (err) => {
       toast.error(err instanceof HttpError ? err.message : "Failed to send test webhook.");
     },
+  });
+
+  // Asset health — repair state machine for broadcast queue items.
+  // Polls every 60 s (SSE-gated); provides per-item quarantine/blocked state.
+  const { data: assetHealthData, refetch: refetchAssetHealth } = useQuery({
+    queryKey: ["broadcast-v2-asset-health"],
+    queryFn: () => api.get<AssetHealthResponse>("/broadcast-v2/asset-health"),
+    refetchInterval: sseGated60s,
+    staleTime: 50_000,
+  });
+
+  const approveAssetMutation = useMutation({
+    mutationFn: ({ itemId, reason }: { itemId: string; reason?: string }) =>
+      api.post(`/broadcast-v2/asset-health/${itemId}/approve`, { reason }),
+    onSuccess: () => {
+      void refetchAssetHealth();
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      toast.success("Item approved — cleared from quarantine");
+    },
+    onError: (err) => toast.error(err instanceof HttpError ? err.message : "Approve failed"),
+  });
+
+  const quarantineAssetMutation = useMutation({
+    mutationFn: ({ itemId, reason }: { itemId: string; reason: string }) =>
+      api.post(`/broadcast-v2/asset-health/${itemId}/quarantine`, { reason }),
+    onSuccess: () => {
+      void refetchAssetHealth();
+      toast.success("Item quarantined");
+    },
+    onError: (err) => toast.error(err instanceof HttpError ? err.message : "Quarantine failed"),
+  });
+
+  const resetAssetRepairMutation = useMutation({
+    mutationFn: (itemId: string) =>
+      api.post(`/broadcast-v2/asset-health/${itemId}/reset`, {}),
+    onSuccess: () => {
+      void refetchAssetHealth();
+      toast.success("Repair cycle reset — worker will retry");
+    },
+    onError: (err) => toast.error(err instanceof HttpError ? err.message : "Reset failed"),
+  });
+
+  const runRepairMutation = useMutation({
+    mutationFn: () => api.post<RepairRunResult>("/broadcast-v2/asset-health/run-repair", {}),
+    onSuccess: (data) => {
+      void refetchAssetHealth();
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      const { repaired, recovered, blocked } = data as RepairRunResult;
+      toast.success(`Repair scan complete — ${repaired} repaired, ${recovered} recovered, ${blocked} blocked`);
+    },
+    onError: (err) => toast.error(err instanceof HttpError ? err.message : "Repair run failed"),
   });
 
   // Deactivate (remove) a queue item without navigating away.
@@ -5279,6 +5386,22 @@ function BroadcastV2PageInner() {
 
       <TranscodingProgressPanel />
 
+      {/* ── Asset Self-Healing Panel ──────────────────────────────────────────── */}
+      {/* Shows repair state per queue item + approve / quarantine / reset.      */}
+      {assetHealthData && (
+        <AssetHealthPanel
+          data={assetHealthData}
+          onApprove={(itemId) => approveAssetMutation.mutate({ itemId })}
+          onQuarantine={(itemId, reason) => quarantineAssetMutation.mutate({ itemId, reason })}
+          onReset={(itemId) => resetAssetRepairMutation.mutate(itemId)}
+          onRunRepair={() => runRepairMutation.mutate()}
+          runRepairPending={runRepairMutation.isPending}
+          approvePending={approveAssetMutation.isPending}
+          quarantinePending={quarantineAssetMutation.isPending}
+          resetPending={resetAssetRepairMutation.isPending}
+        />
+      )}
+
       {/* ── API_ORIGIN misconfiguration banner ───────────────────────────────── */}
       {/* Shown when the server is in production mode but no public API origin  */}
       {/* is configured. Uploaded video URLs resolve to http://localhost:PORT    */}
@@ -6820,6 +6943,323 @@ function OnAirStatusBar({ currentItem, nextTitle, activeQueueCount, viewerCount,
         </p>
       )}
     </div>
+  );
+}
+
+// ─── AssetHealthPanel ─────────────────────────────────────────────────────────
+// Persistent repair state machine viewer for broadcast queue items.
+// Shows per-item quarantine/blocked/repairing/approved state with action buttons.
+
+const STATE_BADGE: Record<AssetHealthItem["state"], { label: string; variant: "outline" | "secondary" | "destructive"; cls: string }> = {
+  healthy:    { label: "Healthy",    variant: "outline",     cls: "text-green-700 border-green-400 bg-green-50 dark:text-green-300 dark:border-green-700 dark:bg-green-950/30" },
+  quarantined:{ label: "Quarantined",variant: "secondary",   cls: "text-amber-700 border-amber-400 bg-amber-50 dark:text-amber-300 dark:border-amber-700 dark:bg-amber-950/30" },
+  repairing:  { label: "Repairing", variant: "secondary",   cls: "text-blue-700 border-blue-400 bg-blue-50 dark:text-blue-300 dark:border-blue-700 dark:bg-blue-950/30" },
+  approved:   { label: "Approved",  variant: "outline",     cls: "text-emerald-700 border-emerald-400 bg-emerald-50 dark:text-emerald-300 dark:border-emerald-700 dark:bg-emerald-950/30" },
+  blocked:    { label: "Blocked",   variant: "destructive", cls: "" },
+};
+
+interface AssetHealthPanelProps {
+  data: AssetHealthResponse;
+  onApprove: (itemId: string) => void;
+  onQuarantine: (itemId: string, reason: string) => void;
+  onReset: (itemId: string) => void;
+  onRunRepair: () => void;
+  runRepairPending: boolean;
+  approvePending: boolean;
+  quarantinePending: boolean;
+  resetPending: boolean;
+}
+
+function AssetHealthPanel({
+  data,
+  onApprove,
+  onQuarantine,
+  onReset,
+  onRunRepair,
+  runRepairPending,
+  approvePending,
+  quarantinePending,
+  resetPending,
+}: AssetHealthPanelProps) {
+  const [expandedItemId, setExpandedItemId] = useState<string | null>(null);
+  const [filterState, setFilterState] = useState<AssetHealthItem["state"] | "all">("all");
+  const [quarantineDialogItemId, setQuarantineDialogItemId] = useState<string | null>(null);
+  const [quarantineReason, setQuarantineReason] = useState("");
+
+  const { summary, items, workerLastScanMs, workerRunning } = data;
+  const unhealthyCount = summary.quarantined + summary.repairing + summary.blocked;
+  const hasIssues = unhealthyCount > 0;
+
+  const filtered = filterState === "all"
+    ? items
+    : items.filter((i) => i.state === filterState);
+
+  const visibleItems = filtered.filter((i) =>
+    filterState === "all" ? i.state !== "healthy" : true
+  );
+
+  const lastScanAgo = workerLastScanMs > 0
+    ? Math.round((Date.now() - workerLastScanMs) / 1000)
+    : null;
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between pb-3">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Wrench className="h-4 w-4 text-muted-foreground" />
+          Asset Self-Healing
+          {hasIssues ? (
+            <Badge variant="destructive" className="ml-1 text-[10px]">
+              {unhealthyCount} issue{unhealthyCount !== 1 ? "s" : ""}
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="ml-1 text-[10px] text-green-700 border-green-400 bg-green-50 dark:text-green-300 dark:border-green-700 dark:bg-green-950/30">
+              All healthy
+            </Badge>
+          )}
+        </CardTitle>
+        <div className="flex items-center gap-1.5">
+          {lastScanAgo !== null && (
+            <span className="text-[10px] text-muted-foreground">
+              Last scan {lastScanAgo < 60 ? `${lastScanAgo}s` : `${Math.round(lastScanAgo / 60)}m`} ago
+            </span>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1 px-2 text-xs"
+            disabled={runRepairPending || workerRunning}
+            onClick={onRunRepair}
+            title="Run repair scan now (normally runs every 2 minutes)"
+          >
+            {runRepairPending || workerRunning ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <RotateCw className="h-3 w-3" />
+            )}
+            Run Repair
+          </Button>
+        </div>
+      </CardHeader>
+
+      <CardContent className="space-y-3 pt-0">
+        {/* Summary badges */}
+        <div className="flex flex-wrap gap-1.5">
+          {(["all", "healthy", "quarantined", "repairing", "approved", "blocked"] as const).map((s) => {
+            const count = s === "all" ? summary.total : summary[s];
+            if (s !== "all" && count === 0) return null;
+            const badge = s === "all" ? null : STATE_BADGE[s];
+            return (
+              <button
+                key={s}
+                onClick={() => setFilterState(s)}
+                className={[
+                  "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors",
+                  filterState === s
+                    ? "ring-2 ring-ring ring-offset-1"
+                    : "opacity-70 hover:opacity-100",
+                  badge?.cls ?? "bg-muted text-muted-foreground border-border",
+                ].join(" ")}
+              >
+                {s === "all" ? "All" : badge?.label}
+                <span className="tabular-nums">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {visibleItems.length === 0 && (
+          <div className="flex flex-col items-center gap-1.5 py-6 text-center">
+            <ShieldCheck className="h-8 w-8 text-green-500/60" />
+            <p className="text-sm font-medium text-muted-foreground">
+              {filterState === "all" ? "No issues — all queue items are healthy" : `No items in ${filterState} state`}
+            </p>
+            <p className="text-[11px] text-muted-foreground/70">
+              The self-healing worker runs every 2 minutes and auto-repairs transient source failures.
+            </p>
+          </div>
+        )}
+
+        {visibleItems.length > 0 && (
+          <div className="rounded-md border divide-y text-[11px]">
+            {visibleItems.map((item) => {
+              const badge = STATE_BADGE[item.state];
+              const isExpanded = expandedItemId === item.id;
+              return (
+                <div key={item.id} className="px-3 py-2 space-y-1.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <button
+                        className="shrink-0"
+                        onClick={() => setExpandedItemId(isExpanded ? null : item.id)}
+                        title={isExpanded ? "Collapse" : "Expand repair log"}
+                      >
+                        {isExpanded
+                          ? <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" />
+                          : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />}
+                      </button>
+                      <div className="min-w-0">
+                        <p className="font-medium truncate">{item.queueItemTitle ?? item.queueItemId}</p>
+                        {item.lastError && (
+                          <p className="text-[10px] text-muted-foreground truncate mt-0.5">
+                            {item.lastErrorCode ? <span className="font-mono mr-1">{item.lastErrorCode}</span> : null}
+                            {item.lastError}
+                          </p>
+                        )}
+                        {item.suggestedFix && item.state === "blocked" && (
+                          <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5">
+                            💡 {item.suggestedFix}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <Badge
+                        variant={badge.variant}
+                        className={`text-[9px] font-medium ${badge.cls}`}
+                      >
+                        {badge.label}
+                        {item.repairAttempts > 0 && (
+                          <span className="ml-1 opacity-70">×{item.repairAttempts}</span>
+                        )}
+                        {item.state === "repairing" && (
+                          <Loader2 className="ml-1 h-2 w-2 animate-spin" />
+                        )}
+                      </Badge>
+
+                      {/* Action buttons */}
+                      {(item.state === "quarantined" || item.state === "blocked" || item.state === "repairing") && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-5 px-1.5 text-[9px] gap-0.5"
+                          disabled={approvePending}
+                          onClick={() => onApprove(item.queueItemId)}
+                          title="Manually approve — clears quarantine and allows broadcast"
+                        >
+                          <CheckCircle2 className="h-2.5 w-2.5 text-green-600" />
+                          Approve
+                        </Button>
+                      )}
+                      {(item.state === "blocked" || item.state === "quarantined") && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-5 px-1.5 text-[9px] gap-0.5"
+                          disabled={resetPending}
+                          onClick={() => onReset(item.queueItemId)}
+                          title="Reset repair cycle — clears attempt count and retries from scratch"
+                        >
+                          <RotateCw className="h-2.5 w-2.5" />
+                          Reset
+                        </Button>
+                      )}
+                      {item.state === "healthy" || item.state === "approved" ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-5 px-1.5 text-[9px] gap-0.5 text-muted-foreground"
+                          disabled={quarantinePending}
+                          onClick={() => { setQuarantineDialogItemId(item.queueItemId); setQuarantineReason(""); }}
+                          title="Manually quarantine this item"
+                        >
+                          <ShieldAlert className="h-2.5 w-2.5" />
+                          Quarantine
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  {/* Next retry info */}
+                  {item.nextRetryAt && item.state === "quarantined" && (
+                    <p className="text-[10px] text-muted-foreground pl-5">
+                      <Clock className="inline h-2.5 w-2.5 mr-0.5 relative -top-px" />
+                      Next retry: {new Date(item.nextRetryAt).toLocaleTimeString()}
+                    </p>
+                  )}
+
+                  {/* Expanded repair log */}
+                  {isExpanded && item.repairLog.length > 0 && (
+                    <div className="ml-5 mt-1 rounded border bg-muted/30 divide-y text-[10px]">
+                      {[...item.repairLog].reverse().slice(0, 8).map((entry, i) => (
+                        <div key={i} className="flex items-start gap-2 px-2 py-1">
+                          <span className={[
+                            "shrink-0 font-medium tabular-nums",
+                            entry.outcome === "success" ? "text-green-600" :
+                            entry.outcome === "failure" ? "text-red-500" :
+                            entry.outcome === "pending" ? "text-amber-500" : "text-muted-foreground",
+                          ].join(" ")}>
+                            {entry.outcome === "success" ? "✓" : entry.outcome === "failure" ? "✗" : entry.outcome === "pending" ? "⋯" : "–"}
+                          </span>
+                          <div className="min-w-0">
+                            <span className="font-medium">{entry.action}</span>
+                            {" · "}
+                            <span className="text-muted-foreground">{entry.detail}</span>
+                            <span className="ml-1.5 text-[9px] text-muted-foreground/60">
+                              {new Date(entry.ts).toLocaleTimeString()} · {entry.actor}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {visibleItems.length > 0 && filterState === "all" && (
+          <p className="text-[10px] text-muted-foreground">
+            Only showing non-healthy items. Click a state badge above to see all items.
+          </p>
+        )}
+      </CardContent>
+
+      {/* Quarantine confirm dialog */}
+      <Dialog
+        open={quarantineDialogItemId !== null}
+        onOpenChange={(open) => { if (!open) setQuarantineDialogItemId(null); }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Quarantine queue item</DialogTitle>
+            <DialogDescription>
+              Enter a reason for quarantining this item. The self-healing worker will attempt repair after a 2-minute delay.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Input
+              placeholder="e.g. Source URL returning 403 errors"
+              value={quarantineReason}
+              onChange={(e) => setQuarantineReason(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && quarantineReason.trim() && quarantineDialogItemId) {
+                  onQuarantine(quarantineDialogItemId, quarantineReason.trim());
+                  setQuarantineDialogItemId(null);
+                }
+              }}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setQuarantineDialogItemId(null)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={!quarantineReason.trim() || quarantinePending}
+              onClick={() => {
+                if (quarantineDialogItemId && quarantineReason.trim()) {
+                  onQuarantine(quarantineDialogItemId, quarantineReason.trim());
+                  setQuarantineDialogItemId(null);
+                }
+              }}
+            >
+              Quarantine
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
   );
 }
 

@@ -49,3 +49,4 @@
 - [YouTube-grade chat upgrade — key design constraints](chat-upgrade-design.md) — reactions are in-memory only (ephemeral); batch frame (100ms window) coalesces WS writes; `chat_settings` table + `role`/`isHighlighted` on `chat_messages`; 4 type mirrors must stay in lock-step.
 - [Circuit-breaker + source approval design](circuit-breaker-source-approval.md) — tuned thresholds and in-memory approval gate for broadcast pipeline probe system.
 - [Zero-byte blob storage integrity hardening](zero-byte-blob-hardening.md) — putObject rejects empty bodies; completeMultipartUpload post-assembly guard; Phase 3 of scanOrphanedBlobs deletes immediately + triggers waterfall; boot-repair hook for specific video IDs.
+- [Asset self-healing state machine](asset-self-healing-design.md) — queue_asset_health table + assetHealthRepo + queueSelfHealingWorker + REST endpoints + admin AssetHealthPanel; clearSourceApproval(itemId) takes 1 arg not 2.

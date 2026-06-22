@@ -58,6 +58,8 @@ import { getExhaustionStatus } from "../engine/queue-exhaustion-monitor.js";
 import { getAutoRefillStatus } from "../engine/auto-queue-refill.js";
 import { getStorageStats } from "../../../infrastructure/storage.js";
 import { getStitchedBroadcastManifest, invalidateStitchCache } from "../engine/hls-stream-stitcher.js";
+import { assetHealthRepo } from "../repository/asset-health.repo.js";
+import { queueSelfHealingWorker } from "../engine/queue-self-healing-worker.js";
 import { getDeadAirStats } from "../engine/dead-air-tracker.js";
 import { getTranscodingAutoRetryStatus } from "../engine/transcoding-auto-retry.js";
 
@@ -3432,6 +3434,274 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       triggeredAt: new Date().toISOString(),
     });
     return reply.send(result);
+  });
+
+  // ── Asset Health / Self-Healing ───────────────────────────────────────────
+  // These endpoints expose the persistent repair state machine for broadcast
+  // queue items. Operators can view per-item repair state, trigger manual
+  // approve / quarantine / reset actions, and kick off an on-demand repair run.
+
+  const assetHealthRowSchema = z.object({
+    id: z.string(),
+    queueItemId: z.string(),
+    videoId: z.string().nullable(),
+    state: z.enum(["healthy", "quarantined", "repairing", "approved", "blocked"]),
+    repairAttempts: z.number(),
+    lastRepairAt: z.string().nullable(),
+    nextRetryAt: z.string().nullable(),
+    lastErrorCode: z.string().nullable(),
+    lastError: z.string().nullable(),
+    suggestedFix: z.string().nullable(),
+    sourceHash: z.string().nullable(),
+    autoRepairPaused: z.boolean(),
+    repairLog: z.array(z.object({
+      ts: z.string(),
+      actor: z.enum(["system", "operator"]),
+      action: z.string(),
+      detail: z.string(),
+      outcome: z.enum(["success", "failure", "pending", "skipped"]),
+    })),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+  });
+
+  function serializeHealthRow(r: Awaited<ReturnType<typeof assetHealthRepo.getOrCreate>>) {
+    return {
+      id: r.id,
+      queueItemId: r.queueItemId,
+      videoId: r.videoId,
+      state: r.state,
+      repairAttempts: r.repairAttempts,
+      lastRepairAt: r.lastRepairAt?.toISOString() ?? null,
+      nextRetryAt: r.nextRetryAt?.toISOString() ?? null,
+      lastErrorCode: r.lastErrorCode,
+      lastError: r.lastError,
+      suggestedFix: r.suggestedFix,
+      sourceHash: r.sourceHash,
+      autoRepairPaused: r.autoRepairPaused,
+      repairLog: r.repairLog,
+      createdAt: r.createdAt.toISOString(),
+      updatedAt: r.updatedAt.toISOString(),
+    };
+  }
+
+  /**
+   * GET /api/broadcast-v2/asset-health
+   *
+   * Returns all asset health rows with queue item metadata joined.
+   * Optionally filter by ?state=quarantined|blocked|repairing|approved|healthy
+   */
+  app.get("/asset-health", {
+    ...adminGuard,
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+    schema: {
+      querystring: z.object({ state: z.string().optional() }),
+      response: {
+        200: z.object({
+          items: z.array(assetHealthRowSchema.extend({
+            queueItemTitle: z.string().nullable(),
+            queueItemActive: z.boolean().nullable(),
+            videoSource: z.string().nullable(),
+          })),
+          summary: z.object({
+            healthy: z.number(),
+            quarantined: z.number(),
+            repairing: z.number(),
+            approved: z.number(),
+            blocked: z.number(),
+            total: z.number(),
+          }),
+          workerLastScanMs: z.number(),
+          workerRunning: z.boolean(),
+        }),
+        429: z.object({ error: z.string() }),
+      },
+    },
+  }, async (req, reply) => {
+    const { state } = req.query as { state?: string };
+    const validStates = ["healthy", "quarantined", "repairing", "approved", "blocked"] as const;
+    type ValidState = typeof validStates[number];
+    const stateFilter = (validStates as readonly string[]).includes(state ?? "") ? state as ValidState : undefined;
+
+    const [rows, summary] = await Promise.all([
+      assetHealthRepo.list({ state: stateFilter, limit: 200 }),
+      assetHealthRepo.getSummary(),
+    ]);
+
+    const queueItemIds = [...new Set(rows.map((r) => r.queueItemId))];
+    let queueMeta: Array<{ id: string; title: string; isActive: boolean; videoSource: string }> = [];
+    if (queueItemIds.length > 0) {
+      queueMeta = await db
+        .select({
+          id: schema.broadcastQueueTable.id,
+          title: schema.broadcastQueueTable.title,
+          isActive: schema.broadcastQueueTable.isActive,
+          videoSource: schema.broadcastQueueTable.videoSource,
+        })
+        .from(schema.broadcastQueueTable)
+        .where(inArray(schema.broadcastQueueTable.id, queueItemIds));
+    }
+    const metaByItemId = new Map(queueMeta.map((m) => [m.id, m]));
+
+    const items = rows.map((r) => ({
+      ...serializeHealthRow(r),
+      queueItemTitle: metaByItemId.get(r.queueItemId)?.title ?? null,
+      queueItemActive: metaByItemId.get(r.queueItemId)?.isActive ?? null,
+      videoSource: metaByItemId.get(r.queueItemId)?.videoSource ?? null,
+    }));
+
+    return reply.send({
+      items,
+      summary,
+      workerLastScanMs: queueSelfHealingWorker.getLastScanMs(),
+      workerRunning: queueSelfHealingWorker.isRunning(),
+    });
+  });
+
+  /**
+   * POST /api/broadcast-v2/asset-health/run-repair
+   *
+   * Triggers an immediate on-demand self-healing scan (normally runs every 2 min).
+   * Returns after the scan completes — do not call from a tight loop.
+   */
+  app.post("/asset-health/run-repair", {
+    ...adminGuard,
+    config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+    schema: {
+      body: z.object({}),
+      response: {
+        200: z.object({
+          ok: z.literal(true),
+          scanned: z.number(),
+          quarantined: z.number(),
+          repaired: z.number(),
+          blocked: z.number(),
+          recovered: z.number(),
+          orphansPruned: z.number(),
+          durationMs: z.number(),
+        }),
+        429: z.object({ error: z.string() }),
+      },
+    },
+  }, async (_req, reply) => {
+    const result = await queueSelfHealingWorker.scan();
+    return reply.send({ ok: true as const, ...result });
+  });
+
+  /**
+   * POST /api/broadcast-v2/asset-health/:itemId/approve
+   *
+   * Manually approve a queue item — clears quarantine / blocked state.
+   */
+  app.post<{ Params: { itemId: string } }>("/asset-health/:itemId/approve", {
+    ...adminGuard,
+    config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+    schema: {
+      params: z.object({ itemId: z.string() }),
+      body: z.object({ reason: z.string().optional() }),
+      response: {
+        200: z.object({ ok: z.literal(true), row: assetHealthRowSchema }),
+        404: z.object({ error: z.string() }),
+        429: z.object({ error: z.string() }),
+      },
+    },
+  }, async (req, reply) => {
+    const { itemId } = req.params;
+    const { reason } = req.body as { reason?: string };
+    const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
+
+    const row = await assetHealthRepo.getByQueueItemId(itemId);
+    if (!row) {
+      return reply.status(404).send({ error: "No health record found for that queue item" });
+    }
+
+    const updated = await assetHealthRepo.manualApprove(itemId, actor, reason);
+    clearBadUrl(updated.sourceHash ?? itemId);
+    adminEventBus.push("broadcast-queue-updated", { reason: "operator-approve", queueItemId: itemId });
+
+    return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
+  });
+
+  /**
+   * POST /api/broadcast-v2/asset-health/:itemId/quarantine
+   *
+   * Manually quarantine a queue item.
+   */
+  app.post<{ Params: { itemId: string } }>("/asset-health/:itemId/quarantine", {
+    ...adminGuard,
+    config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+    schema: {
+      params: z.object({ itemId: z.string() }),
+      body: z.object({ reason: z.string() }),
+      response: {
+        200: z.object({ ok: z.literal(true), row: assetHealthRowSchema }),
+        400: z.object({ error: z.string() }),
+        429: z.object({ error: z.string() }),
+      },
+    },
+  }, async (req, reply) => {
+    const { itemId } = req.params;
+    const { reason } = req.body as { reason: string };
+    if (!reason?.trim()) {
+      return reply.status(400).send({ error: "reason is required" });
+    }
+    const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
+    const updated = await assetHealthRepo.manualQuarantine(itemId, actor, reason);
+    return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
+  });
+
+  /**
+   * POST /api/broadcast-v2/asset-health/:itemId/reset
+   *
+   * Reset repair attempts — restarts the repair cycle from scratch.
+   */
+  app.post<{ Params: { itemId: string } }>("/asset-health/:itemId/reset", {
+    ...adminGuard,
+    config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+    schema: {
+      params: z.object({ itemId: z.string() }),
+      body: z.object({}),
+      response: {
+        200: z.object({ ok: z.literal(true), row: assetHealthRowSchema }),
+        404: z.object({ error: z.string() }),
+        429: z.object({ error: z.string() }),
+      },
+    },
+  }, async (req, reply) => {
+    const { itemId } = req.params;
+    const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
+
+    const existing = await assetHealthRepo.getByQueueItemId(itemId);
+    if (!existing) {
+      return reply.status(404).send({ error: "No health record found for that queue item" });
+    }
+
+    const updated = await assetHealthRepo.resetRepair(itemId, actor);
+    return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
+  });
+
+  /**
+   * POST /api/broadcast-v2/asset-health/:itemId/pause
+   *
+   * Toggle auto-repair paused state for an item.
+   */
+  app.post<{ Params: { itemId: string } }>("/asset-health/:itemId/pause", {
+    ...adminGuard,
+    config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+    schema: {
+      params: z.object({ itemId: z.string() }),
+      body: z.object({ paused: z.boolean() }),
+      response: {
+        200: z.object({ ok: z.literal(true), row: assetHealthRowSchema }),
+        429: z.object({ error: z.string() }),
+      },
+    },
+  }, async (req, reply) => {
+    const { itemId } = req.params;
+    const { paused } = req.body as { paused: boolean };
+    const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
+    const updated = await assetHealthRepo.setPaused(itemId, paused, actor);
+    return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
   });
 
 }

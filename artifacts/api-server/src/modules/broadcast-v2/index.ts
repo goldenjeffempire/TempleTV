@@ -29,6 +29,7 @@ import { env } from "../../config/env.js";
 import { sendAdminAlert } from "../mail/mail.service.js";
 import { installDeadAirTracker, getDeadAirStats } from "./engine/dead-air-tracker.js";
 import { transcodingAutoRetryScan, getTranscodingAutoRetryStatus } from "./engine/transcoding-auto-retry.js";
+import { queueSelfHealingWorker } from "./engine/queue-self-healing-worker.js";
 
 export { getExhaustionStatus, getAutoRefillStatus, getStorageStats };
 export { getDeadAirStats, getTranscodingAutoRetryStatus };
@@ -463,6 +464,23 @@ function startSupervisedWorkers(): void {
       backoffMs: [5 * 60_000, 15 * 60_000, 30 * 60_000],
     });
   }
+
+  // Queue Self-Healing Worker: persistent state machine that tracks repair
+  // state (healthy → quarantined → repairing → approved | blocked) for every
+  // active broadcast queue item. Detects sources degraded to gap2/gap3 URL
+  // confidence, attempts cache-clear + reprobe repair, and escalates to
+  // "blocked" after MAX_REPAIR_ATTEMPTS (3) consecutive failures.
+  // Emits ops-alert SSE events when items are blocked. Runs every 2 min with
+  // a 3-min initial delay (after queue-health-guard and integrity validator
+  // complete their first passes so the queue is in a known-good state first).
+  workerSupervisor.spawn({
+    name: "queue-self-healing",
+    fn: () => queueSelfHealingWorker.scan(),
+    intervalMs: 2 * 60_000,
+    initialDelayMs: 3 * 60_000,
+    backoffMs: [15_000, 30_000, 60_000],
+    onCircuitOpen: makeCircuitOpenCallback("queue-self-healing"),
+  });
 
   // Queue exhaustion monitor + auto-refill run as lightweight interval-based
   // processes (not supervised workers) since they are computation-light and
