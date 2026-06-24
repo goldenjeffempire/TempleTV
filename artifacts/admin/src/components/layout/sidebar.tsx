@@ -228,6 +228,7 @@ function ConnectionStatus() {
 export function Sidebar({ onClose }: { onClose?: () => void }) {
   const [location] = useLocation();
   const { isAdmin } = useAuth();
+  const automationBlocked = useBroadcastBlockedCount();
 
   const sections: NavSection[] = [
     {
@@ -236,7 +237,17 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
         { href: "/", label: "Dashboard", icon: <LayoutDashboard size={16} /> },
         { href: "/live-control", label: "Live Control", icon: <Radio size={16} />, badge: <LiveBadge /> },
         { href: "/broadcast-v2",      label: "Master Control",    icon: <Layers size={16} /> },
-        { href: "/self-healing",      label: "Automation Center", icon: <Bot size={16} />, adminOnly: true },
+        {
+          href: "/self-healing",
+          label: "Automation Center",
+          icon: <Bot size={16} />,
+          adminOnly: true,
+          badge: automationBlocked > 0 ? (
+            <span className="ml-auto text-[10px] font-semibold text-white bg-amber-500 px-1.5 py-0.5 rounded-full leading-none">
+              {automationBlocked}
+            </span>
+          ) : undefined,
+        },
         { href: "/midnight-prayers",  label: "Midnight Prayers",  icon: <Moon size={16} /> },
         { href: "/radio",             label: "Radio Station",      icon: <Headphones size={16} /> },
         { href: "/stream-health", label: "Stream Health", icon: <Activity size={16} /> },

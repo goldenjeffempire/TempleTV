@@ -7,7 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import {
   CheckCircle2, XCircle, AlertTriangle, RefreshCw, Activity,
-  Cpu, Database, HardDrive, Wifi, Clock, Server, Zap, Bot, ShieldAlert, ArrowRight,
+  Cpu, Database, HardDrive, Wifi, Clock, Server, Zap, Bot, ArrowRight,
 } from "lucide-react";
 import { Link } from "wouter";
 import { formatDistanceToNow } from "date-fns";

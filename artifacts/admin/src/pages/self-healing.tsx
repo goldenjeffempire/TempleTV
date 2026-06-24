@@ -1,9 +1,8 @@
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
 import {
   Popover,
   PopoverContent,
@@ -36,7 +35,6 @@ import {
 } from "lucide-react";
 import { formatDistanceToNow, formatDistance } from "date-fns";
 import { toast } from "sonner";
-import { Link } from "wouter";
 import { api } from "@/lib/api";
 import { useSSEEvent } from "@/contexts/sse-context";
 
@@ -67,7 +65,7 @@ interface AssetHealthSummary {
   total: number;
 }
 
-interface RepairLogItem {
+interface BlockedItem {
   queueItemId: string;
   queueItemTitle: string | null;
   state: string;
@@ -78,6 +76,9 @@ interface RepairLogItem {
   lastRepairAt: string | null;
   nextRetryAt: string | null;
   autoRepairPaused: boolean;
+}
+
+interface RepairLogItem extends BlockedItem {
   latestLogEntry: {
     ts: string;
     actor: string;
@@ -97,6 +98,7 @@ interface AutomationStatus {
     stopped: number;
   };
   assetHealth: AssetHealthSummary;
+  blockedItems: BlockedItem[];
   recentRepairLog: RepairLogItem[];
   badUrlStats: {
     cachedBadUrls: number;
@@ -105,6 +107,7 @@ interface AutomationStatus {
   selfHealingWorker: {
     lastScanMs: number;
     isRunning: boolean;
+    nextRevalidationAt: number | null;
   };
 }
 
@@ -303,13 +306,12 @@ function BlockedItemsTable({
   onReset,
   approving,
 }: {
-  items: RepairLogItem[];
+  items: BlockedItem[];
   onApprove: (id: string) => void;
   onReset: (id: string) => void;
   approving: Set<string>;
 }) {
-  const blocked = items.filter((i) => i.state === "blocked");
-  if (blocked.length === 0) {
+  if (items.length === 0) {
     return (
       <div className="flex items-center gap-2 py-6 justify-center text-zinc-500 text-sm">
         <CheckCircle2 size={16} className="text-emerald-500" />
@@ -320,7 +322,7 @@ function BlockedItemsTable({
 
   return (
     <div className="divide-y divide-zinc-800">
-      {blocked.map((item) => {
+      {items.map((item) => {
         const blockedAt = item.lastRepairAt ? new Date(item.lastRepairAt).getTime() : null;
         const autoUnblockAt = blockedAt ? blockedAt + 4 * 60 * 60 * 1000 : null;
         return (
@@ -668,7 +670,7 @@ export default function SelfHealingPage() {
           </CardHeader>
           <CardContent>
             <BlockedItemsTable
-              items={recentRepairLog}
+              items={data?.blockedItems ?? []}
               onApprove={(id) => void approveItem(id)}
               onReset={(id) => void resetItem(id)}
               approving={approving}

@@ -3827,6 +3827,18 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
             blocked: z.number(),
             total: z.number(),
           }),
+          blockedItems: z.array(z.object({
+            queueItemId: z.string(),
+            queueItemTitle: z.string().nullable(),
+            state: z.string(),
+            lastErrorCode: z.string().nullable(),
+            lastError: z.string().nullable(),
+            suggestedFix: z.string().nullable(),
+            repairAttempts: z.number(),
+            lastRepairAt: z.string().nullable(),
+            nextRetryAt: z.string().nullable(),
+            autoRepairPaused: z.boolean(),
+          })),
           recentRepairLog: z.array(z.object({
             queueItemId: z.string(),
             queueItemTitle: z.string().nullable(),
@@ -3853,32 +3865,50 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
           selfHealingWorker: z.object({
             lastScanMs: z.number(),
             isRunning: z.boolean(),
+            nextRevalidationAt: z.number().nullable(),
           }),
         }),
         429: z.object({ error: z.string() }),
       },
     },
   }, async (_req, reply) => {
-    const [summary, recentItems, workerStatuses] = await Promise.all([
+    const [summary, allItems, blockedRows, workerStatuses] = await Promise.all([
       assetHealthRepo.getSummary(),
-      assetHealthRepo.list({ limit: 50 }),
+      assetHealthRepo.list({ limit: 200 }),
+      assetHealthRepo.list({ state: "blocked", limit: 500 }),
       Promise.resolve(workerSupervisor.getWorkerStatuses()),
     ]);
 
-    // Get queue item titles for the recent repair log
-    const itemIds = [...new Set(recentItems.map((r) => r.queueItemId))];
+    // Collect all unique queue item IDs across both sets
+    const allItemIds = [...new Set([
+      ...allItems.map((r) => r.queueItemId),
+      ...blockedRows.map((r) => r.queueItemId),
+    ])];
     let queueMeta: Array<{ id: string; title: string }> = [];
-    if (itemIds.length > 0) {
+    if (allItemIds.length > 0) {
       queueMeta = await db
         .select({ id: schema.broadcastQueueTable.id, title: schema.broadcastQueueTable.title })
         .from(schema.broadcastQueueTable)
-        .where(inArray(schema.broadcastQueueTable.id, itemIds));
+        .where(inArray(schema.broadcastQueueTable.id, allItemIds));
     }
     const titleById = new Map(queueMeta.map((m) => [m.id, m.title]));
 
-    // Recent repair log: items that have had some repair activity (non-healthy)
-    // or were recently repaired — sorted by lastRepairAt desc
-    const repairedItems = recentItems
+    // Full blocked items list (all, not capped)
+    const blockedItems = blockedRows.map((r) => ({
+      queueItemId: r.queueItemId,
+      queueItemTitle: titleById.get(r.queueItemId) ?? null,
+      state: r.state,
+      lastErrorCode: r.lastErrorCode,
+      lastError: r.lastError,
+      suggestedFix: r.suggestedFix,
+      repairAttempts: r.repairAttempts,
+      lastRepairAt: r.lastRepairAt?.toISOString() ?? null,
+      nextRetryAt: r.nextRetryAt?.toISOString() ?? null,
+      autoRepairPaused: r.autoRepairPaused,
+    }));
+
+    // Recent repair log: items that have had repair activity, sorted by lastRepairAt desc
+    const repairedItems = allItems
       .filter((r) => r.state !== "healthy" || r.repairAttempts > 0)
       .sort((a, b) => {
         const aTs = a.lastRepairAt?.getTime() ?? 0;
@@ -3914,11 +3944,16 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     const badUrlStats = getBadUrlStats();
     const sourceSetSize = getUrlBadSourceSetsSize();
 
+    // Next revalidation: use the self-healing worker's scheduled next-run time
+    const selfHealingWorkerHealth = workerSupervisor.get("queue-self-healing")?.health();
+    const nextRevalidationAt = selfHealingWorkerHealth?.nextRunAtMs ?? null;
+
     return reply.send({
       generatedAtMs: Date.now(),
       workers: workerStatuses.workers,
       workerSummary: workerStatuses.summary,
       assetHealth: summary,
+      blockedItems,
       recentRepairLog,
       badUrlStats: {
         cachedBadUrls: badUrlStats.size,
@@ -3927,6 +3962,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       selfHealingWorker: {
         lastScanMs: queueSelfHealingWorker.getLastScanMs(),
         isRunning: queueSelfHealingWorker.isRunning(),
+        nextRevalidationAt,
       },
     });
   });
