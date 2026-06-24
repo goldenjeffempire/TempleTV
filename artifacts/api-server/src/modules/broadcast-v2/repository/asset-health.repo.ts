@@ -485,6 +485,154 @@ export const assetHealthRepo = {
   },
 
   /**
+   * List items stuck in "repairing" state (e.g. after a process restart
+   * left them mid-repair). Any item that has been in "repairing" state for
+   * longer than thresholdMs with no update is considered stuck and will be
+   * recovered back to "quarantined" at the start of the next scan.
+   */
+  async listStuckRepairing(thresholdMs: number): Promise<AssetHealthRow[]> {
+    const cutoff = new Date(Date.now() - thresholdMs);
+    const rows = await db
+      .select()
+      .from(schema.queueAssetHealthTable)
+      .where(
+        and(
+          eq(schema.queueAssetHealthTable.state, "repairing"),
+          lte(schema.queueAssetHealthTable.updatedAt, cutoff),
+        ),
+      )
+      .limit(50);
+    return rows.map(rowToDto);
+  },
+
+  /**
+   * Auto-clear blocked items that have been blocked longer than ttlMs.
+   * Resets them to "quarantined" with repairAttempts=0 so the worker
+   * will retry them on the next scan cycle.
+   *
+   * This is the key mechanism for unattended 24/7 operation — blocked
+   * items will automatically re-enter the repair cycle after the TTL
+   * expires rather than requiring manual operator intervention forever.
+   *
+   * Returns the number of items reset.
+   */
+  async clearExpiredBlocked(ttlMs: number): Promise<number> {
+    const cutoff = new Date(Date.now() - ttlMs);
+    try {
+      const now = new Date();
+      const updated = await db
+        .update(schema.queueAssetHealthTable)
+        .set({
+          state: "quarantined",
+          repairAttempts: 0,
+          lastRepairAt: null,
+          nextRetryAt: now,
+          autoRepairPaused: false,
+          repairLog: sql`(
+            repairLog || jsonb_build_object(
+              'ts', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+              'actor', 'system',
+              'action', 'auto_unblock',
+              'detail', 'Block TTL expired — automatically re-entering repair cycle',
+              'outcome', 'pending'
+            )
+          )`,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(schema.queueAssetHealthTable.state, "blocked"),
+            lte(schema.queueAssetHealthTable.updatedAt, cutoff),
+          ),
+        )
+        .returning({ id: schema.queueAssetHealthTable.id });
+      return updated.length;
+    } catch (err) {
+      logger.warn({ err }, "[asset-health] clearExpiredBlocked failed (non-fatal)");
+      return 0;
+    }
+  },
+
+  /**
+   * Bulk reset — restart the repair cycle for multiple items at once.
+   * Used when a transient CDN outage blocks many items simultaneously.
+   * Returns the number of items successfully reset.
+   */
+  async bulkReset(queueItemIds: string[], actor: string): Promise<number> {
+    if (queueItemIds.length === 0) return 0;
+    try {
+      const now = new Date();
+      const logEntry = JSON.stringify({
+        ts: now.toISOString(),
+        actor: "operator",
+        action: "bulk_repair_reset",
+        detail: `Bulk reset by ${actor} — repair cycle restarted`,
+        outcome: "pending",
+      });
+      const updated = await db
+        .update(schema.queueAssetHealthTable)
+        .set({
+          state: "quarantined",
+          repairAttempts: 0,
+          lastRepairAt: null,
+          nextRetryAt: now,
+          autoRepairPaused: false,
+          repairLog: sql`(repairLog || ${logEntry}::jsonb)`,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            inArray(schema.queueAssetHealthTable.queueItemId, queueItemIds),
+            ne(schema.queueAssetHealthTable.state, "healthy"),
+          ),
+        )
+        .returning({ id: schema.queueAssetHealthTable.id });
+      return updated.length;
+    } catch (err) {
+      logger.warn({ err }, "[asset-health] bulkReset failed");
+      return 0;
+    }
+  },
+
+  /**
+   * Bulk approve — manually approve multiple items at once.
+   * Clears quarantine / blocked state so items re-enter broadcast rotation.
+   * Returns the number of items approved.
+   */
+  async bulkApprove(queueItemIds: string[], actor: string): Promise<number> {
+    if (queueItemIds.length === 0) return 0;
+    try {
+      const now = new Date();
+      const logEntry = JSON.stringify({
+        ts: now.toISOString(),
+        actor: "operator",
+        action: "bulk_manual_approve",
+        detail: `Bulk approved by ${actor}`,
+        outcome: "success",
+      });
+      const updated = await db
+        .update(schema.queueAssetHealthTable)
+        .set({
+          state: "approved",
+          nextRetryAt: null,
+          repairLog: sql`(repairLog || ${logEntry}::jsonb)`,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            inArray(schema.queueAssetHealthTable.queueItemId, queueItemIds),
+            ne(schema.queueAssetHealthTable.state, "healthy"),
+          ),
+        )
+        .returning({ id: schema.queueAssetHealthTable.id });
+      return updated.length;
+    } catch (err) {
+      logger.warn({ err }, "[asset-health] bulkApprove failed");
+      return 0;
+    }
+  },
+
+  /**
    * Remove orphaned health rows for queue items that no longer exist.
    */
   async pruneOrphans(): Promise<number> {

@@ -3704,6 +3704,86 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
   });
 
+  /**
+   * POST /api/broadcast-v2/asset-health/bulk-reset
+   *
+   * Reset the repair cycle for multiple queue items at once.
+   * When a transient CDN outage simultaneously blocks many items, this lets
+   * operators recover all of them in a single action instead of clicking reset
+   * on each individually.
+   *
+   * Body: { queueItemIds: string[] } — if empty, resets ALL non-healthy items.
+   * Returns: { ok, reset } — count of items that were actually reset.
+   */
+  app.post("/asset-health/bulk-reset", {
+    ...adminGuard,
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    schema: {
+      body: z.object({ queueItemIds: z.array(z.string()).optional() }),
+      response: {
+        200: z.object({ ok: z.literal(true), reset: z.number() }),
+        429: z.object({ error: z.string() }),
+      },
+    },
+  }, async (req, reply) => {
+    const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
+    let ids = (req.body as { queueItemIds?: string[] }).queueItemIds;
+
+    // If no IDs supplied, reset all non-healthy items (the "Reset All" case)
+    if (!ids || ids.length === 0) {
+      const nonHealthy = await assetHealthRepo.list({ limit: 500 });
+      ids = nonHealthy
+        .filter((r) => r.state !== "healthy" && r.state !== "approved")
+        .map((r) => r.queueItemId);
+    }
+
+    const reset = await assetHealthRepo.bulkReset(ids, actor);
+    if (reset > 0) {
+      // Trigger a fresh orchestrator look at the queue after mass-reset
+      adminEventBus.push("broadcast-queue-updated", { reason: "bulk-reset", count: reset });
+    }
+    return reply.send({ ok: true as const, reset });
+  });
+
+  /**
+   * POST /api/broadcast-v2/asset-health/bulk-approve
+   *
+   * Manually approve multiple queue items at once — clears quarantine / blocked
+   * state and returns them to broadcast rotation immediately.
+   *
+   * Body: { queueItemIds: string[] } — if empty, approves ALL non-healthy items.
+   * Returns: { ok, approved } — count of items that were approved.
+   */
+  app.post("/asset-health/bulk-approve", {
+    ...adminGuard,
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+    schema: {
+      body: z.object({ queueItemIds: z.array(z.string()).optional() }),
+      response: {
+        200: z.object({ ok: z.literal(true), approved: z.number() }),
+        429: z.object({ error: z.string() }),
+      },
+    },
+  }, async (req, reply) => {
+    const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
+    let ids = (req.body as { queueItemIds?: string[] }).queueItemIds;
+
+    // If no IDs supplied, approve all non-healthy items (the "Approve All" case)
+    if (!ids || ids.length === 0) {
+      const nonHealthy = await assetHealthRepo.list({ limit: 500 });
+      ids = nonHealthy
+        .filter((r) => r.state !== "healthy" && r.state !== "approved")
+        .map((r) => r.queueItemId);
+    }
+
+    const approved = await assetHealthRepo.bulkApprove(ids, actor);
+    if (approved > 0) {
+      // Clear bad-URL cache for all approved items and reload the orchestrator
+      adminEventBus.push("broadcast-queue-updated", { reason: "bulk-approve", count: approved });
+    }
+    return reply.send({ ok: true as const, approved });
+  });
+
 }
 
 // ── Module-level remediation helpers ────────────────────────────────────────

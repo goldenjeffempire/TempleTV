@@ -2393,6 +2393,47 @@ function BroadcastV2PageInner() {
     onError: (err) => toast.error(err instanceof HttpError ? err.message : "Repair run failed"),
   });
 
+  const pauseAssetMutation = useMutation({
+    mutationFn: ({ itemId, paused }: { itemId: string; paused: boolean }) =>
+      api.post(`/broadcast-v2/asset-health/${itemId}/pause`, { paused }),
+    onSuccess: (_data, { paused }) => {
+      void refetchAssetHealth();
+      toast.success(paused ? "Auto-repair paused for this item" : "Auto-repair resumed");
+    },
+    onError: (err) => toast.error(err instanceof HttpError ? err.message : "Pause toggle failed"),
+  });
+
+  const bulkResetMutation = useMutation({
+    mutationFn: (queueItemIds?: string[]) =>
+      api.post<{ ok: true; reset: number }>("/broadcast-v2/asset-health/bulk-reset", { queueItemIds: queueItemIds ?? [] }),
+    onSuccess: (data) => {
+      void refetchAssetHealth();
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      toast.success(`${(data as { ok: true; reset: number }).reset} item(s) reset — worker will retry`);
+    },
+    onError: (err) => toast.error(err instanceof HttpError ? err.message : "Bulk reset failed"),
+  });
+
+  const bulkApproveMutation = useMutation({
+    mutationFn: (queueItemIds?: string[]) =>
+      api.post<{ ok: true; approved: number }>("/broadcast-v2/asset-health/bulk-approve", { queueItemIds: queueItemIds ?? [] }),
+    onSuccess: (data) => {
+      void refetchAssetHealth();
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-source-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      toast.success(`${(data as { ok: true; approved: number }).approved} item(s) approved — returned to rotation`);
+    },
+    onError: (err) => toast.error(err instanceof HttpError ? err.message : "Bulk approve failed"),
+  });
+
+  // Real-time self-healing updates — push from worker after every scan cycle
+  // so the panel refreshes immediately instead of waiting for 60 s polling.
+  useSSEEvent("asset-health-updated", useCallback(() => {
+    void refetchAssetHealth();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []));
+
   // Deactivate (remove) a queue item without navigating away.
   const deactivateMutation = useMutation({
     mutationFn: (itemId: string) =>
@@ -5394,11 +5435,17 @@ function BroadcastV2PageInner() {
           onApprove={(itemId) => approveAssetMutation.mutate({ itemId })}
           onQuarantine={(itemId, reason) => quarantineAssetMutation.mutate({ itemId, reason })}
           onReset={(itemId) => resetAssetRepairMutation.mutate(itemId)}
+          onPause={(itemId, paused) => pauseAssetMutation.mutate({ itemId, paused })}
+          onBulkReset={(ids) => bulkResetMutation.mutate(ids)}
+          onBulkApprove={(ids) => bulkApproveMutation.mutate(ids)}
           onRunRepair={() => runRepairMutation.mutate()}
           runRepairPending={runRepairMutation.isPending}
           approvePending={approveAssetMutation.isPending}
           quarantinePending={quarantineAssetMutation.isPending}
           resetPending={resetAssetRepairMutation.isPending}
+          pausePending={pauseAssetMutation.isPending}
+          bulkResetPending={bulkResetMutation.isPending}
+          bulkApprovePending={bulkApproveMutation.isPending}
         />
       )}
 
@@ -6949,6 +6996,7 @@ function OnAirStatusBar({ currentItem, nextTitle, activeQueueCount, viewerCount,
 // ─── AssetHealthPanel ─────────────────────────────────────────────────────────
 // Persistent repair state machine viewer for broadcast queue items.
 // Shows per-item quarantine/blocked/repairing/approved state with action buttons.
+// Real-time updates via SSE (asset-health-updated event) + 60 s polling fallback.
 
 const STATE_BADGE: Record<AssetHealthItem["state"], { label: string; variant: "outline" | "secondary" | "destructive"; cls: string }> = {
   healthy:    { label: "Healthy",    variant: "outline",     cls: "text-green-700 border-green-400 bg-green-50 dark:text-green-300 dark:border-green-700 dark:bg-green-950/30" },
@@ -6963,11 +7011,31 @@ interface AssetHealthPanelProps {
   onApprove: (itemId: string) => void;
   onQuarantine: (itemId: string, reason: string) => void;
   onReset: (itemId: string) => void;
+  onPause: (itemId: string, paused: boolean) => void;
+  onBulkReset: (ids?: string[]) => void;
+  onBulkApprove: (ids?: string[]) => void;
   onRunRepair: () => void;
   runRepairPending: boolean;
   approvePending: boolean;
   quarantinePending: boolean;
   resetPending: boolean;
+  pausePending: boolean;
+  bulkResetPending: boolean;
+  bulkApprovePending: boolean;
+}
+
+/** Live countdown to the next scheduled worker scan (runs every 120 s). */
+function useNextScanCountdown(workerLastScanMs: number): string {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  if (workerLastScanMs === 0) return "";
+  const elapsedSec = Math.floor((Date.now() - workerLastScanMs) / 1000);
+  const remaining = Math.max(0, 120 - elapsedSec);
+  if (remaining === 0) return "scanning…";
+  return `next scan in ${remaining}s`;
 }
 
 function AssetHealthPanel({
@@ -6975,13 +7043,20 @@ function AssetHealthPanel({
   onApprove,
   onQuarantine,
   onReset,
+  onPause,
+  onBulkReset,
+  onBulkApprove,
   onRunRepair,
   runRepairPending,
   approvePending,
   quarantinePending,
   resetPending,
+  pausePending,
+  bulkResetPending,
+  bulkApprovePending,
 }: AssetHealthPanelProps) {
   const [expandedItemId, setExpandedItemId] = useState<string | null>(null);
+  const [showAllLog, setShowAllLog] = useState<Record<string, boolean>>({});
   const [filterState, setFilterState] = useState<AssetHealthItem["state"] | "all">("all");
   const [quarantineDialogItemId, setQuarantineDialogItemId] = useState<string | null>(null);
   const [quarantineReason, setQuarantineReason] = useState("");
@@ -6989,6 +7064,11 @@ function AssetHealthPanel({
   const { summary, items, workerLastScanMs, workerRunning } = data;
   const unhealthyCount = summary.quarantined + summary.repairing + summary.blocked;
   const hasIssues = unhealthyCount > 0;
+  const nextScanLabel = useNextScanCountdown(workerLastScanMs);
+
+  const lastScanAgo = workerLastScanMs > 0
+    ? Math.round((Date.now() - workerLastScanMs) / 1000)
+    : null;
 
   const filtered = filterState === "all"
     ? items
@@ -6998,9 +7078,11 @@ function AssetHealthPanel({
     filterState === "all" ? i.state !== "healthy" : true
   );
 
-  const lastScanAgo = workerLastScanMs > 0
-    ? Math.round((Date.now() - workerLastScanMs) / 1000)
-    : null;
+  // Items eligible for bulk actions (non-healthy, non-approved)
+  const bulkEligibleIds = items
+    .filter((i) => i.state !== "healthy" && i.state !== "approved")
+    .map((i) => i.queueItemId);
+  const hasBulkEligible = bulkEligibleIds.length > 0;
 
   return (
     <Card>
@@ -7018,12 +7100,48 @@ function AssetHealthPanel({
             </Badge>
           )}
         </CardTitle>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5 flex-wrap justify-end">
+          {/* Live scan countdown */}
           {lastScanAgo !== null && (
-            <span className="text-[10px] text-muted-foreground">
-              Last scan {lastScanAgo < 60 ? `${lastScanAgo}s` : `${Math.round(lastScanAgo / 60)}m`} ago
+            <span className="text-[10px] text-muted-foreground tabular-nums">
+              {workerRunning ? (
+                <span className="flex items-center gap-0.5">
+                  <Loader2 className="h-2.5 w-2.5 animate-spin" /> Scanning…
+                </span>
+              ) : (
+                <>scan {lastScanAgo < 60 ? `${lastScanAgo}s` : `${Math.round(lastScanAgo / 60)}m`} ago · {nextScanLabel}</>
+              )}
             </span>
           )}
+
+          {/* Bulk actions — only shown when there are issues */}
+          {hasBulkEligible && (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1 px-2 text-xs"
+                disabled={bulkResetPending || bulkApprovePending}
+                onClick={() => onBulkReset(bulkEligibleIds)}
+                title={`Reset all ${bulkEligibleIds.length} issue items — clears attempt counts and retries from scratch`}
+              >
+                {bulkResetPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCw className="h-3 w-3" />}
+                Reset All ({bulkEligibleIds.length})
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 gap-1 px-2 text-xs text-green-700 border-green-400 hover:bg-green-50 dark:text-green-400 dark:border-green-700"
+                disabled={bulkApprovePending || bulkResetPending}
+                onClick={() => onBulkApprove(bulkEligibleIds)}
+                title={`Approve all ${bulkEligibleIds.length} issue items — returns them to broadcast rotation immediately`}
+              >
+                {bulkApprovePending ? <Loader2 className="h-3 w-3 animate-spin" /> : <CheckCircle2 className="h-3 w-3" />}
+                Approve All
+              </Button>
+            </>
+          )}
+
           <Button
             size="sm"
             variant="outline"
@@ -7043,7 +7161,7 @@ function AssetHealthPanel({
       </CardHeader>
 
       <CardContent className="space-y-3 pt-0">
-        {/* Summary badges */}
+        {/* Summary filter badges */}
         <div className="flex flex-wrap gap-1.5">
           {(["all", "healthy", "quarantined", "repairing", "approved", "blocked"] as const).map((s) => {
             const count = s === "all" ? summary.total : summary[s];
@@ -7075,7 +7193,7 @@ function AssetHealthPanel({
               {filterState === "all" ? "No issues — all queue items are healthy" : `No items in ${filterState} state`}
             </p>
             <p className="text-[11px] text-muted-foreground/70">
-              The self-healing worker runs every 2 minutes and auto-repairs transient source failures.
+              Worker scans every 2 min · auto-repairs transient failures · blocked items auto-clear after 4 h
             </p>
           </div>
         )}
@@ -7085,14 +7203,18 @@ function AssetHealthPanel({
             {visibleItems.map((item) => {
               const badge = STATE_BADGE[item.state];
               const isExpanded = expandedItemId === item.id;
+              const logExpanded = showAllLog[item.id] ?? false;
+              const logReversed = [...item.repairLog].reverse();
+              const logVisible = logExpanded ? logReversed : logReversed.slice(0, 8);
               return (
                 <div key={item.id} className="px-3 py-2 space-y-1.5">
                   <div className="flex items-start justify-between gap-2">
+                    {/* Left: expand toggle + title */}
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       <button
                         className="shrink-0"
                         onClick={() => setExpandedItemId(isExpanded ? null : item.id)}
-                        title={isExpanded ? "Collapse" : "Expand repair log"}
+                        title={isExpanded ? "Collapse repair log" : "Expand repair log"}
                       >
                         {isExpanded
                           ? <ChevronUp className="h-3.5 w-3.5 text-muted-foreground" />
@@ -7106,15 +7228,21 @@ function AssetHealthPanel({
                             {item.lastError}
                           </p>
                         )}
-                        {item.suggestedFix && item.state === "blocked" && (
+                        {item.suggestedFix && (item.state === "blocked" || item.state === "quarantined") && (
                           <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5">
                             💡 {item.suggestedFix}
+                          </p>
+                        )}
+                        {item.autoRepairPaused && (
+                          <p className="text-[10px] text-orange-600 dark:text-orange-400 mt-0.5 flex items-center gap-0.5">
+                            <span>⏸</span> Auto-repair paused
                           </p>
                         )}
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
+                    {/* Right: state badge + action buttons */}
+                    <div className="flex items-center gap-1 shrink-0 flex-wrap justify-end">
                       <Badge
                         variant={badge.variant}
                         className={`text-[9px] font-medium ${badge.cls}`}
@@ -7128,7 +7256,7 @@ function AssetHealthPanel({
                         )}
                       </Badge>
 
-                      {/* Action buttons */}
+                      {/* Approve */}
                       {(item.state === "quarantined" || item.state === "blocked" || item.state === "repairing") && (
                         <Button
                           size="sm"
@@ -7142,6 +7270,8 @@ function AssetHealthPanel({
                           Approve
                         </Button>
                       )}
+
+                      {/* Reset */}
                       {(item.state === "blocked" || item.state === "quarantined") && (
                         <Button
                           size="sm"
@@ -7155,7 +7285,28 @@ function AssetHealthPanel({
                           Reset
                         </Button>
                       )}
-                      {item.state === "healthy" || item.state === "approved" ? (
+
+                      {/* Pause / Resume auto-repair */}
+                      {(item.state === "quarantined" || item.state === "blocked") && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className={[
+                            "h-5 px-1.5 text-[9px] gap-0.5",
+                            item.autoRepairPaused
+                              ? "text-orange-600 dark:text-orange-400"
+                              : "text-muted-foreground",
+                          ].join(" ")}
+                          disabled={pausePending}
+                          onClick={() => onPause(item.queueItemId, !item.autoRepairPaused)}
+                          title={item.autoRepairPaused ? "Resume auto-repair" : "Pause auto-repair for this item"}
+                        >
+                          {item.autoRepairPaused ? "▶ Resume" : "⏸ Pause"}
+                        </Button>
+                      )}
+
+                      {/* Manual quarantine (healthy/approved items) */}
+                      {(item.state === "healthy" || item.state === "approved") && (
                         <Button
                           size="sm"
                           variant="ghost"
@@ -7167,41 +7318,61 @@ function AssetHealthPanel({
                           <ShieldAlert className="h-2.5 w-2.5" />
                           Quarantine
                         </Button>
-                      ) : null}
+                      )}
                     </div>
                   </div>
 
-                  {/* Next retry info */}
-                  {item.nextRetryAt && item.state === "quarantined" && (
-                    <p className="text-[10px] text-muted-foreground pl-5">
-                      <Clock className="inline h-2.5 w-2.5 mr-0.5 relative -top-px" />
-                      Next retry: {new Date(item.nextRetryAt).toLocaleTimeString()}
-                    </p>
-                  )}
+                  {/* Next retry + auto-unblock info */}
+                  <div className="pl-5 flex flex-wrap gap-x-3 gap-y-0.5">
+                    {item.nextRetryAt && item.state === "quarantined" && (
+                      <p className="text-[10px] text-muted-foreground">
+                        <Clock className="inline h-2.5 w-2.5 mr-0.5 relative -top-px" />
+                        Next retry: {new Date(item.nextRetryAt).toLocaleTimeString()}
+                      </p>
+                    )}
+                    {item.state === "blocked" && item.updatedAt && (
+                      <p className="text-[10px] text-muted-foreground">
+                        <Clock className="inline h-2.5 w-2.5 mr-0.5 relative -top-px" />
+                        Auto-clears:{" "}
+                        {new Date(new Date(item.updatedAt).getTime() + 4 * 60 * 60_000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        {" "}(4 h block TTL)
+                      </p>
+                    )}
+                  </div>
 
-                  {/* Expanded repair log */}
+                  {/* Expanded repair log — full history, no truncation */}
                   {isExpanded && item.repairLog.length > 0 && (
                     <div className="ml-5 mt-1 rounded border bg-muted/30 divide-y text-[10px]">
-                      {[...item.repairLog].reverse().slice(0, 8).map((entry, i) => (
+                      {logVisible.map((entry, i) => (
                         <div key={i} className="flex items-start gap-2 px-2 py-1">
                           <span className={[
-                            "shrink-0 font-medium tabular-nums",
+                            "shrink-0 font-medium tabular-nums mt-px",
                             entry.outcome === "success" ? "text-green-600" :
                             entry.outcome === "failure" ? "text-red-500" :
                             entry.outcome === "pending" ? "text-amber-500" : "text-muted-foreground",
                           ].join(" ")}>
                             {entry.outcome === "success" ? "✓" : entry.outcome === "failure" ? "✗" : entry.outcome === "pending" ? "⋯" : "–"}
                           </span>
-                          <div className="min-w-0">
+                          <div className="min-w-0 flex-1">
                             <span className="font-medium">{entry.action}</span>
                             {" · "}
                             <span className="text-muted-foreground">{entry.detail}</span>
-                            <span className="ml-1.5 text-[9px] text-muted-foreground/60">
+                            <span className="ml-1.5 text-[9px] text-muted-foreground/60 whitespace-nowrap">
                               {new Date(entry.ts).toLocaleTimeString()} · {entry.actor}
                             </span>
                           </div>
                         </div>
                       ))}
+                      {item.repairLog.length > 8 && (
+                        <button
+                          className="w-full py-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                          onClick={() => setShowAllLog((prev) => ({ ...prev, [item.id]: !logExpanded }))}
+                        >
+                          {logExpanded
+                            ? "Show less"
+                            : `Show all ${item.repairLog.length} entries`}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -7212,7 +7383,8 @@ function AssetHealthPanel({
 
         {visibleItems.length > 0 && filterState === "all" && (
           <p className="text-[10px] text-muted-foreground">
-            Only showing non-healthy items. Click a state badge above to see all items.
+            Only showing non-healthy items · Click a state badge above to see all ·{" "}
+            Blocked items auto-reset after 4 h · Updates in real-time via SSE
           </p>
         )}
       </CardContent>
@@ -7226,7 +7398,7 @@ function AssetHealthPanel({
           <DialogHeader>
             <DialogTitle>Quarantine queue item</DialogTitle>
             <DialogDescription>
-              Enter a reason for quarantining this item. The self-healing worker will attempt repair after a 2-minute delay.
+              Enter a reason. The self-healing worker will attempt automated repair after a 2-minute delay, then escalate through the back-off schedule (2 min → 10 min → 30 min → blocked → auto-clear after 4 h).
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">

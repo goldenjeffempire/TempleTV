@@ -25,7 +25,7 @@
  *   "SUSPICIOUS_DURATION"                  → "Re-probe duration from admin panel"
  *   default                                → "Review source URL"
  */
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
@@ -128,6 +128,51 @@ export const queueSelfHealingWorker = {
     const result: ScanResult = { scanned: 0, quarantined: 0, repaired: 0, blocked: 0, recovered: 0, orphansPruned: 0, durationMs: 0 };
 
     try {
+      // ── 0a. Recover stuck-repairing items (process-restart safety net) ───
+      // Items left in "repairing" state for > 5 min after a process restart
+      // would otherwise never transition again. Reset them to quarantined so
+      // they re-enter the normal repair cycle.
+      const STUCK_REPAIRING_THRESHOLD_MS = 5 * 60_000;
+      const stuckItems = await assetHealthRepo.listStuckRepairing(STUCK_REPAIRING_THRESHOLD_MS);
+      for (const stuck of stuckItems) {
+        await db
+          .update(schema.queueAssetHealthTable)
+          .set({
+            state: "quarantined",
+            nextRetryAt: new Date(),
+            repairLog: sql`(
+              repairLog || jsonb_build_object(
+                'ts', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                'actor', 'system',
+                'action', 'stuck_repairing_recovered',
+                'detail', 'Item was stuck in repairing state after process restart — resetting to quarantined',
+                'outcome', 'pending'
+              )
+            )`,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.queueAssetHealthTable.queueItemId, stuck.queueItemId));
+        logger.info({ itemId: stuck.queueItemId }, `${LOG_TAG} recovered stuck-repairing item`);
+      }
+
+      // ── 0b. Auto-clear blocked items past 4h TTL ─────────────────────────
+      // Blocked items that have been blocked for > 4 hours automatically
+      // re-enter the repair cycle. This ensures 24/7 unattended operation
+      // — a CDN outage that blocked items overnight will self-recover without
+      // requiring operator intervention.
+      const BLOCKED_ITEM_TTL_MS = 4 * 60 * 60_000; // 4 hours
+      const autoUnblocked = await assetHealthRepo.clearExpiredBlocked(BLOCKED_ITEM_TTL_MS);
+      if (autoUnblocked > 0) {
+        logger.info({ count: autoUnblocked }, `${LOG_TAG} auto-unblocked ${autoUnblocked} item(s) past 4h TTL`);
+        adminEventBus.push("ops-alert", {
+          level: "info",
+          title: "Blocked Items Auto-Cleared",
+          message: `${autoUnblocked} queue item${autoUnblocked !== 1 ? "s" : ""} automatically re-entered repair cycle after 4-hour block TTL.`,
+          timestamp: new Date().toISOString(),
+          source: "queue-self-healing",
+        });
+      }
+
       // ── 1. Load active queue items ───────────────────────────────────────
       const activeItems = await db
         .select({
@@ -360,6 +405,23 @@ export const queueSelfHealingWorker = {
     } else {
       logger.debug(result, `${LOG_TAG} scan complete (no changes)`);
     }
+
+    // Push SSE event so the admin panel refreshes immediately instead of
+    // waiting for the 60 s polling interval. Only push when state may have
+    // changed (avoids noisy no-op events during quiet periods).
+    const hasChanges = result.quarantined > 0 || result.repaired > 0 ||
+      result.blocked > 0 || result.recovered > 0 || result.orphansPruned > 0;
+    adminEventBus.push("asset-health-updated", {
+      scanned: result.scanned,
+      quarantined: result.quarantined,
+      repaired: result.repaired,
+      blocked: result.blocked,
+      recovered: result.recovered,
+      orphansPruned: result.orphansPruned,
+      durationMs: result.durationMs,
+      hasChanges,
+      ts: new Date().toISOString(),
+    });
 
     return result;
   },

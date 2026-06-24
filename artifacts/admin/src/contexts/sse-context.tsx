@@ -177,6 +177,12 @@ const KNOWN_EVENTS = [
   // Emitted at most every 3 s per stream when the active count changes.
   // Used by useViewerTracking to invalidate its TanStack Query cache.
   "viewer-count-updated",
+  // Asset self-healing scan completion — emitted by the queue-self-healing
+  // worker at the end of every scan cycle (scheduled every 2 min + on-demand
+  // via POST /broadcast-v2/asset-health/run-repair). Payload includes the
+  // scan summary so the admin panel can refresh the health query immediately
+  // rather than waiting for the 60 s polling interval.
+  "asset-health-updated",
 ];
 
 function summarize(event: string, data: unknown): string | null {
@@ -261,6 +267,16 @@ function summarize(event: string, data: unknown): string | null {
       const msg = typeof d.message === "string" ? d.message : null;
       const level = d.level === "critical" ? "CRITICAL" : "WARN";
       return msg ? `[${level}] ${msg}` : `System alert (${level.toLowerCase()})`;
+    }
+    case "asset-health-updated": {
+      const repaired = Number(d.repaired ?? 0);
+      const recovered = Number(d.recovered ?? 0);
+      const blocked = Number(d.blocked ?? 0);
+      const quarantined = Number(d.quarantined ?? 0);
+      if (blocked > 0) return `Self-healing: ${blocked} item${blocked !== 1 ? "s" : ""} blocked after max repair attempts`;
+      if (repaired > 0 || recovered > 0) return `Self-healing: ${repaired + recovered} item${repaired + recovered !== 1 ? "s" : ""} repaired/recovered`;
+      if (quarantined > 0) return `Self-healing: ${quarantined} new item${quarantined !== 1 ? "s" : ""} quarantined`;
+      return null; // silent for no-change scans
     }
     case "feedback-received": return "New user feedback received";
     case "youtube-live-status-changed": {
