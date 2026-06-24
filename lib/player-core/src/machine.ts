@@ -254,6 +254,20 @@ export class PlayerMachine {
   private naturalEndRetries = 0;
 
   /**
+   * Wall-clock timestamp (Date.now()) when the machine last entered the
+   * PLAYING state, regardless of which path brought it there (initial
+   * buffer-ready, HANDOFF completion, FATAL recovery, server restart).
+   *
+   * Used as a belt-and-suspenders guard in onBufferEnded(): if `ended` fires
+   * within MIN_PLAYBACK_BEFORE_HANDOFF_MS of entering PLAYING, the event is
+   * most likely a false positive (e.g. a preloaded buffer that was seeked
+   * past its actual end, or a race between canplay and ended on a very short
+   * segment). In that case HANDOFF is suppressed and the stall watchdog
+   * handles recovery through the normal error path.
+   */
+  private playingEnteredMs: number | null = null;
+
+  /**
    * The `startsAtMs` value from the server snapshot at the moment the last
    * natural-end event fired. Used to detect single-item queue loops where
    * the orchestrator advances the cycle anchor for the same item ID.
@@ -469,7 +483,15 @@ export class PlayerMachine {
     // Reset the FATAL backoff counter when the machine successfully reaches
     // PLAYING.  The source proved recoverable so the next FATAL entry (if any)
     // restarts the backoff from the base 30 s rather than 240 s.
-    if (state === "PLAYING") this.fatalAttemptCount = 0;
+    if (state === "PLAYING") {
+      this.fatalAttemptCount = 0;
+      // Stamp the wall-clock time at which PLAYING was entered.  Used by
+      // onBufferEnded() to detect false-positive `ended` events that fire
+      // before the video has had any meaningful playback time (e.g. a seek
+      // that overshot the actual video duration, or a preloaded buffer that
+      // was already at its end position when it became active after HANDOFF).
+      this.playingEnteredMs = Date.now();
+    }
     // Publish FATAL countdown fields so UI surfaces can show an accurate live
     // countdown rather than a static "30 seconds" message.
     // fatalAttemptCount is incremented by the caller BEFORE transition("FATAL")
@@ -1077,6 +1099,37 @@ export class PlayerMachine {
 
   private onBufferEnded(bufferId: "A" | "B"): void {
     if (bufferId !== this.snapshot.activeBufferId) return;
+
+    // ── State guard ────────────────────────────────────────────────────────
+    // Only honour natural-end events in states where the video is confirmed
+    // to be playing.  In PREPARING_ACTIVE the element has been loaded but
+    // `canplay` / buffer-ready may not yet have fired — an `ended` event here
+    // is almost certainly a seek-past-end false positive (the browser clamped
+    // currentTime to duration and fired ended before canplay).  In RECOVERING_*
+    // the adapter is re-binding or retrying; treating ended as authoritative
+    // there would trigger HANDOFF out of a broken recovery cycle.
+    // LIVE_OVERRIDE_ACTIVE is included because finite HLS/MP4 overrides can
+    // legitimately fire `ended` when the override stream ends.
+    const state = this.snapshot.state;
+    if (
+      state !== "PLAYING" &&
+      state !== "PREPARING_NEXT" &&
+      state !== "LIVE_OVERRIDE_ACTIVE"
+    ) return;
+
+    // ── Minimum-playback guard ─────────────────────────────────────────────
+    // If the machine entered PLAYING less than MIN_PLAYBACK_BEFORE_HANDOFF_MS
+    // ago, this `ended` is suspicious: it could come from a preloaded buffer
+    // that was seeked to a position very close to the video's actual end (or
+    // past it) and fired ended almost immediately after `canplay`.  Suppress
+    // HANDOFF and let the stall watchdog handle recovery through its normal
+    // error path if the element truly cannot produce any more frames.
+    const MIN_PLAYBACK_BEFORE_HANDOFF_MS = 2_000;
+    if (
+      this.playingEnteredMs !== null &&
+      Date.now() - this.playingEnteredMs < MIN_PLAYBACK_BEFORE_HANDOFF_MS
+    ) return;
+
     // Hand off to the inactive buffer if it's bound.
     const inactiveId = this.swappedId(bufferId);
     const inactiveItem = inactiveId === "A" ? this.snapshot.bufferA : this.snapshot.bufferB;

@@ -3302,6 +3302,40 @@ class BroadcastOrchestrator extends EventEmitter {
     // already expired the next tick() will handle the advance naturally.
     if (remainingMs <= 0) return { acted: false };
 
+    // ── Minimum elapsed-time guard ─────────────────────────────────────────
+    // Reject natural-end signals that arrive before the item has played for
+    // a meaningful amount of time.  These are almost always false positives
+    // caused by a late-joining client whose resolvePositionSecs() returned a
+    // value ≥ the actual encoded video duration: the browser clamps
+    // currentTime to duration, fires `ended` almost immediately (< 100 ms),
+    // and the client sends POST /natural-end before any real playback occurred.
+    //
+    // Without this guard, that one late-joining client would advance the
+    // broadcast anchor for ALL connected players, cutting the current item
+    // short by potentially hundreds of seconds.
+    //
+    // Threshold: max(15 s, 5 % of the item's scheduled durationSecs).
+    //   - Short videos (60 s scheduled) → max(15, 3) = 15 s minimum.
+    //   - Typical sermon (3600 s)       → max(15, 180) = 180 s minimum.
+    //   - 1800 s placeholder            → max(15, 90) = 90 s minimum.
+    //
+    // A genuine natural-end from a client that joined at the very beginning of
+    // the item will always have elapsed > 90 % of the scheduled duration, so
+    // this threshold never blocks a real end signal.  A false positive from a
+    // late joiner will have elapsed ≈ 0–5 s, well below the threshold.
+    const elapsedMs = (snap.current.endsAtMs - remainingMs) - snap.current.startsAtMs;
+    const item = this.items.find((i) => i.id === itemId);
+    const minElapsedMs = item
+      ? Math.max(15_000, Math.floor(item.durationSecs * 0.05 * 1000))
+      : 15_000;
+    if (elapsedMs < minElapsedMs) {
+      logger.warn(
+        { itemId, elapsedMs, minElapsedMs, remainingMs },
+        "[broadcast-v2] naturalItemEnd rejected: elapsed too short (false-positive guard)",
+      );
+      return { acted: false };
+    }
+
     // Compute the actual elapsed duration before modifying cycleStartedAtMs:
     //   actual = (endsAtMs − remainingMs) − startsAtMs
     //          ≈ Date.now() − startsAtMs
