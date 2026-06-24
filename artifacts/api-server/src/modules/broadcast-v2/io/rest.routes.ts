@@ -1455,11 +1455,13 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   app.post("/clear-bad-urls", {
     ...adminGuard,
     bodyLimit: 1048576,
-    schema: { body: StopOverrideCommand, response: { 200: _200okSeq, 400: _400err, 401: _401err, 429: _429err } },
+    schema: { body: z.object({ idempotencyKey: z.string().optional() }), response: { 200: _200okSeq, 400: _400err, 401: _401err, 429: _429err } },
     config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
   }, async (req, _reply) => {
-    const body = req.body as z.infer<typeof StopOverrideCommand>;
-    if (!checkIdempotency(body.idempotencyKey)) return { ok: true, sequence: broadcastOrchestrator.getSequence(), duplicate: true };
+    const body = req.body as { idempotencyKey?: string };
+    // Auto-generate idempotency key if not supplied by the client.
+    const iKey = body.idempotencyKey ?? randomUUID();
+    if (!checkIdempotency(iKey)) return { ok: true, sequence: broadcastOrchestrator.getSequence(), duplicate: true };
     clearAllBadUrls();
     clearAllSourceApprovals();
     // Persist cleared state to DB immediately so the next process restart
@@ -1509,7 +1511,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       preHandler: requireAuth("admin"),
       bodyLimit: 1048576,
       schema: {
-        body: StopOverrideCommand,
+        body: z.object({ idempotencyKey: z.string().optional() }),
         response: {
           200: z.object({
             ok: z.boolean(),
@@ -1520,53 +1522,63 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
           400: _400err,
           401: _401err,
           429: _429err,
+          500: z.object({ error: z.string() }),
         },
       },
       config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
     },
-    async (req, _reply) => {
-      const body = req.body as z.infer<typeof StopOverrideCommand>;
-      if (!checkIdempotency(body.idempotencyKey)) {
+    async (req, reply) => {
+      const body = req.body as { idempotencyKey?: string };
+      // Auto-generate idempotency key if not supplied by the client so the
+      // admin Automation Center can fire this endpoint without pre-generating a UUID.
+      const iKey = body.idempotencyKey ?? randomUUID();
+      if (!checkIdempotency(iKey)) {
         return { ok: true, sequence: broadcastOrchestrator.getSequence(), reEnabledItems: 0, duplicate: true };
       }
 
-      // Step 1: Re-enable all auto-suspended items.
-      const reEnabledItems = await reEnableAllSuspended();
+      try {
+        // Step 1: Re-enable all auto-suspended items.
+        const reEnabledItems = await reEnableAllSuspended();
 
-      // Step 2: Clear bad-URL cache + skip counters (clearAllBadUrls resets counts too).
-      clearAllBadUrls();
-      clearAllSourceApprovals();
-      // Persist cleared state immediately so the next restart doesn't re-hydrate
-      // the old blocked URLs from broadcast_runtime_state.bad_url_cache.
-      void persistBadUrlCache("main").catch((err: unknown) =>
-        logger.warn({ err }, "[broadcast-v2] revalidate-sources: persist failed (non-fatal)"),
-      );
+        // Step 2: Clear bad-URL cache + skip counters.
+        clearAllBadUrls();
+        clearAllSourceApprovals();
+        // Persist cleared state immediately so the next restart doesn't re-hydrate
+        // the old blocked URLs from broadcast_runtime_state.bad_url_cache.
+        void persistBadUrlCache("main").catch((err: unknown) =>
+          logger.warn({ err }, "[broadcast-v2] revalidate-sources: persist failed (non-fatal)"),
+        );
 
-      // Step 3: Reset queue hash so reloadInner() re-resolves everything.
-      broadcastOrchestrator.resetQueueHash();
+        // Step 3: Reset queue hash so reloadInner() re-resolves everything.
+        broadcastOrchestrator.resetQueueHash();
 
-      // Step 4: Reload orchestrator immediately.
-      await broadcastOrchestrator.reload();
+        // Step 4: Reload orchestrator immediately.
+        await broadcastOrchestrator.reload();
 
-      // Step 5: Trigger immediate media integrity scan in background.
-      void mediaIntegrityScanner.scan().catch((err: unknown) => {
-        logger.warn({ err }, "[broadcast-v2] revalidate-sources: background scan failed (non-fatal)");
-      });
+        // Step 5: Trigger immediate media integrity scan in background.
+        void mediaIntegrityScanner.scan().catch((err: unknown) => {
+          logger.warn({ err }, "[broadcast-v2] revalidate-sources: background scan failed (non-fatal)");
+        });
 
-      logger.info(
-        { reEnabledItems, sequence: broadcastOrchestrator.getSequence() },
-        "[broadcast-v2] revalidate-sources: full recovery cycle complete",
-      );
+        logger.info(
+          { reEnabledItems, sequence: broadcastOrchestrator.getSequence() },
+          "[broadcast-v2] revalidate-sources: full recovery cycle complete",
+        );
 
-      // Audit log — write asynchronously; never block the response.
-      void db.insert(schema.mediaAuditLogTable).values({
-        id: randomUUID(),
-        action: "broadcast_force_full_recovery",
-        triggeredBy: req.principal?.email ?? req.principal?.id ?? "operator",
-        metadata: { reEnabledItems, sequence: broadcastOrchestrator.getSequence() },
-      }).catch((err: unknown) => logger.debug({ err }, "[audit] revalidate-sources log failed (non-fatal)"));
+        // Audit log — write asynchronously; never block the response.
+        void db.insert(schema.mediaAuditLogTable).values({
+          id: randomUUID(),
+          action: "broadcast_force_full_recovery",
+          triggeredBy: req.principal?.email ?? req.principal?.id ?? "operator",
+          metadata: { reEnabledItems, sequence: broadcastOrchestrator.getSequence() },
+        }).catch((err: unknown) => logger.debug({ err }, "[audit] revalidate-sources log failed (non-fatal)"));
 
-      return { ok: true, sequence: broadcastOrchestrator.getSequence(), reEnabledItems };
+        return { ok: true, sequence: broadcastOrchestrator.getSequence(), reEnabledItems };
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.error({ err }, "[broadcast-v2] revalidate-sources: unexpected error");
+        return reply.code(500).send({ error: `Recovery cycle failed: ${msg}` });
+      }
     },
   );
 
@@ -3584,8 +3596,14 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       },
     },
   }, async (_req, reply) => {
-    const result = await queueSelfHealingWorker.scan();
-    return reply.send({ ok: true as const, ...result });
+    try {
+      const result = await queueSelfHealingWorker.scan();
+      return reply.send({ ok: true as const, ...result });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ err }, "[broadcast-v2] asset-health/run-repair: scan failed");
+      return reply.code(500).send({ error: `Repair scan failed: ${msg}` });
+    }
   });
 
   /**
@@ -3610,16 +3628,22 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     const { reason } = req.body as { reason?: string };
     const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
 
-    const row = await assetHealthRepo.getByQueueItemId(itemId);
-    if (!row) {
-      return reply.status(404).send({ error: "No health record found for that queue item" });
+    try {
+      const row = await assetHealthRepo.getByQueueItemId(itemId);
+      if (!row) {
+        return reply.status(404).send({ error: "No health record found for that queue item" });
+      }
+
+      const updated = await assetHealthRepo.manualApprove(itemId, actor, reason);
+      clearBadUrl(updated.sourceHash ?? itemId);
+      adminEventBus.push("broadcast-queue-updated", { reason: "operator-approve", queueItemId: itemId });
+
+      return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ err, itemId }, "[broadcast-v2] asset-health/approve: failed");
+      return reply.code(500).send({ error: `Approve failed: ${msg}` });
     }
-
-    const updated = await assetHealthRepo.manualApprove(itemId, actor, reason);
-    clearBadUrl(updated.sourceHash ?? itemId);
-    adminEventBus.push("broadcast-queue-updated", { reason: "operator-approve", queueItemId: itemId });
-
-    return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
   });
 
   /**
@@ -3671,13 +3695,19 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     const { itemId } = req.params;
     const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
 
-    const existing = await assetHealthRepo.getByQueueItemId(itemId);
-    if (!existing) {
-      return reply.status(404).send({ error: "No health record found for that queue item" });
-    }
+    try {
+      const existing = await assetHealthRepo.getByQueueItemId(itemId);
+      if (!existing) {
+        return reply.status(404).send({ error: "No health record found for that queue item" });
+      }
 
-    const updated = await assetHealthRepo.resetRepair(itemId, actor);
-    return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
+      const updated = await assetHealthRepo.resetRepair(itemId, actor);
+      return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ err, itemId }, "[broadcast-v2] asset-health/reset: failed");
+      return reply.code(500).send({ error: `Reset failed: ${msg}` });
+    }
   });
 
   /**
@@ -3700,8 +3730,14 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     const { itemId } = req.params;
     const { paused } = req.body as { paused: boolean };
     const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
-    const updated = await assetHealthRepo.setPaused(itemId, paused, actor);
-    return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
+    try {
+      const updated = await assetHealthRepo.setPaused(itemId, paused, actor);
+      return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ err, itemId }, "[broadcast-v2] asset-health/pause: failed");
+      return reply.code(500).send({ error: `Pause update failed: ${msg}` });
+    }
   });
 
   /**
@@ -3737,12 +3773,17 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         .map((r) => r.queueItemId);
     }
 
-    const reset = await assetHealthRepo.bulkReset(ids, actor);
-    if (reset > 0) {
-      // Trigger a fresh orchestrator look at the queue after mass-reset
-      adminEventBus.push("broadcast-queue-updated", { reason: "bulk-reset", count: reset });
+    try {
+      const reset = await assetHealthRepo.bulkReset(ids, actor);
+      if (reset > 0) {
+        adminEventBus.push("broadcast-queue-updated", { reason: "bulk-reset", count: reset });
+      }
+      return reply.send({ ok: true as const, reset });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ err }, "[broadcast-v2] asset-health/bulk-reset: failed");
+      return reply.code(500).send({ error: `Bulk reset failed: ${msg}` });
     }
-    return reply.send({ ok: true as const, reset });
   });
 
   /**
@@ -3776,12 +3817,17 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         .map((r) => r.queueItemId);
     }
 
-    const approved = await assetHealthRepo.bulkApprove(ids, actor);
-    if (approved > 0) {
-      // Clear bad-URL cache for all approved items and reload the orchestrator
-      adminEventBus.push("broadcast-queue-updated", { reason: "bulk-approve", count: approved });
+    try {
+      const approved = await assetHealthRepo.bulkApprove(ids, actor);
+      if (approved > 0) {
+        adminEventBus.push("broadcast-queue-updated", { reason: "bulk-approve", count: approved });
+      }
+      return reply.send({ ok: true as const, approved });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ err }, "[broadcast-v2] asset-health/bulk-approve: failed");
+      return reply.code(500).send({ error: `Bulk approve failed: ${msg}` });
     }
-    return reply.send({ ok: true as const, approved });
   });
 
   /**
@@ -3872,6 +3918,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       },
     },
   }, async (_req, reply) => {
+    try {
     const [summary, allItems, blockedRows, workerStatuses] = await Promise.all([
       assetHealthRepo.getSummary(),
       assetHealthRepo.list({ limit: 200 }),
@@ -3965,6 +4012,11 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         nextRevalidationAt,
       },
     });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ err }, "[broadcast-v2] automation-status: query failed");
+      return reply.code(500).send({ error: `Automation status unavailable: ${msg}` });
+    }
   });
 
 }
