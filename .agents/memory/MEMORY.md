@@ -51,3 +51,4 @@
 - [Circuit-breaker + source approval design](circuit-breaker-source-approval.md) — tuned thresholds and in-memory approval gate for broadcast pipeline probe system.
 - [Zero-byte blob storage integrity hardening](zero-byte-blob-hardening.md) — putObject rejects empty bodies; completeMultipartUpload post-assembly guard; Phase 3 of scanOrphanedBlobs deletes immediately + triggers waterfall; boot-repair hook for specific video IDs.
 - [Asset self-healing state machine](asset-self-healing-design.md) — queue_asset_health table + assetHealthRepo + queueSelfHealingWorker + REST endpoints + admin AssetHealthPanel; clearSourceApproval(itemId) takes 1 arg not 2.
+- [asset-health repairLog raw SQL snake_case](asset-health-repair-log-sql.md) — Drizzle .set() raw sql`` for repair_log must use snake_case "repair_log" NOT camelCase "repairLog"; 3 occurrences in clearExpiredBlocked, bulkReset, bulkApprove cause 42703 column-not-exist errors.

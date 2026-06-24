@@ -529,7 +529,7 @@ export const assetHealthRepo = {
           nextRetryAt: now,
           autoRepairPaused: false,
           repairLog: sql`(
-            repairLog || jsonb_build_object(
+            repair_log || jsonb_build_object(
               'ts', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
               'actor', 'system',
               'action', 'auto_unblock',
@@ -577,7 +577,7 @@ export const assetHealthRepo = {
           lastRepairAt: null,
           nextRetryAt: now,
           autoRepairPaused: false,
-          repairLog: sql`(repairLog || ${logEntry}::jsonb)`,
+          repairLog: sql`(repair_log || ${logEntry}::jsonb)`,
           updatedAt: now,
         })
         .where(
@@ -615,7 +615,7 @@ export const assetHealthRepo = {
         .set({
           state: "approved",
           nextRetryAt: null,
-          repairLog: sql`(repairLog || ${logEntry}::jsonb)`,
+          repairLog: sql`(repair_log || ${logEntry}::jsonb)`,
           updatedAt: now,
         })
         .where(
