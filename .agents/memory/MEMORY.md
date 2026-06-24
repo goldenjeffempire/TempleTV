@@ -1,3 +1,4 @@
+- [zod esbuild externalize on Replit](zod-esbuild-externalize.md) — zod v4 ESM files fail esbuild bundling through pnpm virtual store; must be in external[] in build.mjs.
 - [Faststart-recovery probe deadman hang](faststart-probe-deadman.md) — slow-path probe loop must have outer stage budget + row limit sized so (limit × per-item timeout) < outer budget < worker deadman.
 - [YouTube-only broadcast architecture](youtube-only-broadcast.md) — 100% YouTube catalog (960 videos); broadcast_queue always empty; ytShuffleFallback is the permanent broadcast driver, not a fallback. Duration stored as text seconds string.
 - [yt-shuffle orchestrator-level throttle](yt-shuffle-orchestrator-throttle.md) — rate-limit activate() at the orchestrator call site (lastYtShuffleActivateAttemptMs), not inside activate(); internal cooldown fails due to fire-and-forget async patterns.

@@ -88,6 +88,9 @@ const shared = {
     // ioredis uses CJS internal requires that esbuild cannot resolve through
     // pnpm's virtual store symlinks. Externalise it so Node loads it at runtime.
     "ioredis",
+    // zod v4 ships ESM-only files that esbuild cannot resolve through pnpm's
+    // virtual store symlinks on Replit. Externalise it so Node loads it at runtime.
+    "zod",
   ],
 };
 
