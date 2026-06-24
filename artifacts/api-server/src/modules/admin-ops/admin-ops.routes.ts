@@ -1297,7 +1297,8 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         {
           key: "broadcast",
           label: "Broadcast engine",
-          status: snap.current ? "ok" : "degraded",
+          status:
+            snap.current || broadcastOrchestrator.isStarted() ? "ok" : "degraded",
         },
         {
           key: "storage",
