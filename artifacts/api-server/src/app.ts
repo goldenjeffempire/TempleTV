@@ -69,6 +69,7 @@ import { seoRoutes } from "./modules/seo/seo.routes.js";
 import { wellKnownRoutes } from "./modules/well-known/well-known.routes.js";
 import { metricsRoutes } from "./modules/metrics/metrics.routes.js";
 import { appVersionRoutes } from "./modules/app-version/app-version.routes.js";
+import { otaRoutes } from "./modules/ota/ota.routes.js";
 import { httpRequestDuration, httpRequestTotal, SERVICE_LABELS } from "./infrastructure/metrics.js";
 import { registerSlowRequestHook } from "./infrastructure/slow-request-capture.js";
 const API_PREFIX = "/api/v1";
@@ -829,6 +830,10 @@ export async function buildApp(): Promise<FastifyInstance> {
     // Admin:   GET/POST/PATCH/DELETE /admin/app/versions
     //          POST /admin/app/versions/:id/send-notification
     await instance.register(appVersionRoutes);
+    // EAS OTA update dispatch + EAS update history.
+    // Admin: GET /admin/ota/status
+    //        POST /admin/ota/publish
+    await instance.register(otaRoutes);
     // OMEGA Control Plane: Network Operations Center.
     // Registers:
     //   GET  /api/network/status              — NOC dashboard state

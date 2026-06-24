@@ -6,6 +6,10 @@
 # code. EAS Update publishes a new bundle to the `production` channel and all
 # running apps silently download it on next foreground resume.
 #
+# Can also be triggered manually from the Admin Dashboard (OTA Updates page)
+# via the workflow_dispatch event, which allows selecting any channel and
+# providing a custom release message.
+#
 # If native files change (android/, ios/, eas.json, package.json,
 # pnpm-lock.yaml) this workflow skips and a full EAS Build is required.
 #
@@ -34,6 +38,28 @@ on:
       - '!artifacts/mobile/eas.json'
       - '!artifacts/mobile/package.json'
       - '!**/pnpm-lock.yaml'
+
+  # Manual trigger from the Admin Dashboard "OTA Updates" page.
+  # GITHUB_TOKEN must have actions:write permission on the repo.
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'EAS update channel (e.g. production, staging, preview, firetv, androidtv, appletv)'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - staging
+          - preview
+          - firetv
+          - androidtv
+          - appletv
+      message:
+        description: 'Release message (shown in EAS update history)'
+        required: true
+        default: 'Admin-triggered OTA update'
+        type: string
 
 concurrency:
   group: ota-update
@@ -77,19 +103,33 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
+      - name: Resolve channel and message
+        id: params
+        run: |
+          # workflow_dispatch wins; fall back to push-to-main defaults
+          CHANNEL="${{ github.event.inputs.channel || 'production' }}"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            MSG="OTA: ${{ github.event.head_commit.message }}"
+          else
+            MSG="${{ github.event.inputs.message }}"
+          fi
+          echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
+          echo "message=${MSG}"     >> "$GITHUB_OUTPUT"
+
       - name: Publish OTA update
         working-directory: artifacts/mobile
         run: |
           eas update \
-            --channel production \
-            --message "OTA: ${{ github.event.head_commit.message }}" \
+            --channel "${{ steps.params.outputs.channel }}" \
+            --message "${{ steps.params.outputs.message }}" \
             --non-interactive
-          echo "OTA update published to production channel."
+          echo "OTA update published to ${{ steps.params.outputs.channel }} channel."
 
       - name: Write job summary
         run: |
           echo "## OTA Update Published" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Channel:** production" >> $GITHUB_STEP_SUMMARY
+          echo "**Channel:** ${{ steps.params.outputs.channel }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Message:** ${{ steps.params.outputs.message }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Message:** ${{ github.event.head_commit.message }}" >> $GITHUB_STEP_SUMMARY

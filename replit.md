@@ -25,6 +25,8 @@ pnpm --filter @workspace/api-spec run codegen                # regen clients
 
 **Optional:** `ADMIN_API_TOKEN`, `REDIS_URL`, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`, `EXPO_ACCESS_TOKEN`, `SENTRY_DSN`.
 
+**OTA update dispatch** (admin `/ota-updates` page): `GITHUB_TOKEN` (fine-grained PAT, `actions:write` scope) + `GITHUB_REPO` (`owner/repo`, e.g. `templeapp/temple-tv`). Without these the Publish button is disabled. `EXPO_ACCESS_TOKEN` also enables the update history panel.
+
 **Dead-air fallback (optional):** `BROADCAST_DEADAIR_FALLBACK_URL` — when set to an HLS URL (e.g. a looping "Be right back" stream), the orchestrator automatically applies it as a broadcast override when *all* queue items have been URL-blocked for `BROADCAST_DEADAIR_FALLBACK_AFTER_MS` milliseconds (default 5 min). Auto-clears the override the moment the queue recovers playable content. Use this to guarantee zero-dead-air on production rather than a blank screen when every queued video is temporarily unavailable.
 
 **`API_ORIGIN` (required in production):** e.g. `https://api.templetv.org.ng`. Absolutizes relative upload paths (`/api/v1/uploads/…`) stored in `localVideoUrl` so they pass the broadcast allowlist. Without it, locally-uploaded videos fail `resolveSource()` and nothing airs.

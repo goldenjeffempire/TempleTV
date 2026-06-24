@@ -517,6 +517,15 @@ const Env = z.object({
   // When absent the open Expo Push API is used (rate-limited to ~1000/s).
   EXPO_ACCESS_TOKEN: z.string().optional(),
 
+  // ── EAS OTA Update Dispatch ───────────────────────────────────────────────
+  // GitHub personal access token (fine-grained, actions:write scope) used by
+  // the admin OTA dashboard to dispatch the ota-update.yml workflow_dispatch
+  // event. Without this set, the "Trigger OTA" button is disabled.
+  GITHUB_TOKEN: z.string().optional(),
+  // GitHub repo in "owner/repo" format, e.g. "templeapp/temple-tv".
+  // Required alongside GITHUB_TOKEN for OTA workflow dispatch.
+  GITHUB_REPO: z.string().optional(),
+
   // ── A2: CDN & Delivery Optimization ─────────────────────────────────────
   // Optional base URL for a CDN edge layer in front of the S3 bucket.
   // When set, HLS manifest responses rewrite segment URLs to point at the CDN

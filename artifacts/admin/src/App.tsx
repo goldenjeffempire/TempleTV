@@ -78,6 +78,7 @@ const SecurityPage      = lazyPage(() => import("@/pages/security"));
 const MidnightPrayers   = lazyPage(() => import("@/pages/midnight-prayers"));
 const Diagnostics       = lazyPage(() => import("@/pages/diagnostics"));
 const AppVersions       = lazyPage(() => import("@/pages/app-versions"));
+const OtaUpdates        = lazyPage(() => import("@/pages/ota-updates"));
 
 // ── Error Boundary ────────────────────────────────────────────────────────────
 
@@ -518,6 +519,7 @@ function AuthenticatedApp() {
             <Route path="/midnight-prayers"  component={MidnightPrayers} />
             <Route path="/diagnostics">{() => <AdminRoute component={Diagnostics} />}</Route>
             <Route path="/app-versions">{() => <AdminRoute component={AppVersions} />}</Route>
+            <Route path="/ota-updates">{() => <AdminRoute component={OtaUpdates} />}</Route>
             <Route component={NotFound} />
           </Switch>
         </Suspense>
