@@ -454,6 +454,15 @@ function isPlayableForBroadcast(row: {
   // orchestrator's bad-URL cache and auto-skip logic.
   if (row.localVideoUrl && row.localVideoUrl.trim() !== "") return true;
 
+  // HLS-only source: video was transcoded to HLS but the original MP4
+  // localVideoUrl is no longer set (e.g. HLS-URL-only import, or the
+  // localVideoUrl was never stored because the video source is external HLS).
+  // The orchestrator queue.repo.ts load query already accepts rows where only
+  // hlsMasterUrl is populated, so we must enqueue these videos here too —
+  // otherwise scanLibraryAndEnqueue's WHERE clause picks them up (finds them
+  // missing) but isPlayableForBroadcast returns false and they are never queued.
+  if (row.hlsMasterUrl && row.hlsMasterUrl.trim() !== "") return true;
+
   return false;
 }
 

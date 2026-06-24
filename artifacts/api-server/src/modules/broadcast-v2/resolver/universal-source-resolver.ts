@@ -208,6 +208,24 @@ function isAllowed(url: string): boolean {
   );
   if (isLoopbackHost && env.NODE_ENV === "production" && hasConfiguredPublicOrigin) return false;
   if (!isLoopbackHost && isPrivateIp(host)) return false;
+  // Own-origin: always allow this server's own public hostname, regardless of
+  // the static CDN allowlist.  This is essential for Replit deployments where
+  // REPLIT_DEV_DOMAIN is the server's self-origin but is not a known CDN domain.
+  // Without this, locally-uploaded videos absolutized to
+  // `https://<REPLIT_DEV_DOMAIN>/api/v1/uploads/{key}` fail the suffix check
+  // and the orchestrator silently drops every uploaded video from the queue.
+  // DEV_DOMAIN covers generic ngrok/localtunnel dev tunnels.
+  const ownOriginRaw = [
+    process.env["REPLIT_DEV_DOMAIN"],
+    process.env["DEV_DOMAIN"],
+  ];
+  for (const raw of ownOriginRaw) {
+    if (!raw) continue;
+    try {
+      const ownHost = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`).hostname.toLowerCase();
+      if (host === ownHost) return true;
+    } catch { /* malformed env var — skip */ }
+  }
   return ALLOWED_HOST_SUFFIXES.some((suf) => host === suf.replace(/^\./, "") || host.endsWith(suf));
 }
 

@@ -1138,6 +1138,33 @@ export const queueRepo = {
   },
 
   /**
+   * Fetch the actual encoded duration from managed_videos for a given video ID.
+   *
+   * Used by naturalItemEnd() when the in-memory queue item still carries the
+   * 1800-s upload-time placeholder: the 5% threshold based on 1800s (= 90s)
+   * would incorrectly reject natural-end signals from videos shorter than 90s.
+   * Looking up the real duration fixes the threshold for those videos.
+   *
+   * Returns null when the video row is not found, the duration column is empty,
+   * the value cannot be parsed as a positive number, or the DB query fails.
+   */
+  async getVideoDurationSecs(videoId: string): Promise<number | null> {
+    try {
+      const [row] = await db
+        .select({ duration: v.duration })
+        .from(v)
+        .where(eq(v.id, videoId))
+        .limit(1);
+      if (!row?.duration) return null;
+      const parsed = parseFloat(row.duration);
+      if (!isFinite(parsed) || parsed <= 0 || parsed >= 86_400) return null;
+      return Math.round(parsed);
+    } catch {
+      return null;
+    }
+  },
+
+  /**
    * Project a raw queue row + a wall-clock window into a v2 V2Item.
    *
    * Returns null when:

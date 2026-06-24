@@ -3325,12 +3325,48 @@ class BroadcastOrchestrator extends EventEmitter {
     // late joiner will have elapsed ≈ 0–5 s, well below the threshold.
     const elapsedMs = (snap.current.endsAtMs - remainingMs) - snap.current.startsAtMs;
     const item = this.items.find((i) => i.id === itemId);
-    const minElapsedMs = item
-      ? Math.max(15_000, Math.floor(item.durationSecs * 0.05 * 1000))
-      : 15_000;
+
+    // When the queue row still carries the 1800-s upload-time placeholder, the
+    // standard 5% threshold would be max(15s, 90s) = 90s — longer than many
+    // short videos.  A 60-second sermon would play to completion and correctly
+    // fire naturalItemEnd, but the guard would reject it (60s < 90s), leaving
+    // the broadcast frozen for 29 more minutes.
+    //
+    // Fix: when the in-memory durationSecs equals the known placeholder (1800),
+    // look up the actual encoded duration from managed_videos.  If found, use
+    // that as the effective duration for the threshold calculation AND update the
+    // in-memory item so subsequent cycle iterations don't repeat the lookup.
+    let effectiveDurationSecs = item?.durationSecs ?? 1800;
+    if (effectiveDurationSecs === 1800 && item?.videoId) {
+      try {
+        const realDur = await queueRepo.getVideoDurationSecs(item.videoId);
+        if (realDur != null && realDur > 0 && realDur < 86_400) {
+          effectiveDurationSecs = realDur;
+          // Mirror the real duration into memory so the NEXT cycle uses it
+          // without another DB round-trip and so the threshold is already
+          // correct if a second naturalItemEnd arrives before the next reload.
+          const idx = this.items.findIndex((i) => i.id === itemId);
+          if (idx !== -1 && this.items[idx]) {
+            this.items[idx] = { ...this.items[idx]!, durationSecs: realDur };
+            this.rebuildItemOffsets();
+          }
+          logger.debug(
+            { itemId, realDur, placeholder: 1800 },
+            "[broadcast-v2] naturalItemEnd: resolved real duration from managed_videos (was placeholder 1800s)",
+          );
+        }
+      } catch (lookupErr) {
+        logger.debug(
+          { err: lookupErr, itemId },
+          "[broadcast-v2] naturalItemEnd: managed_videos duration lookup failed (non-fatal — using placeholder threshold)",
+        );
+      }
+    }
+
+    const minElapsedMs = Math.max(15_000, Math.floor(effectiveDurationSecs * 0.05 * 1000));
     if (elapsedMs < minElapsedMs) {
       logger.warn(
-        { itemId, elapsedMs, minElapsedMs, remainingMs },
+        { itemId, elapsedMs, minElapsedMs, effectiveDurationSecs, remainingMs },
         "[broadcast-v2] naturalItemEnd rejected: elapsed too short (false-positive guard)",
       );
       return { acted: false };
@@ -3656,8 +3692,22 @@ class BroadcastOrchestrator extends EventEmitter {
         })
         .filter(Boolean) as string[];
 
+      // Also add REPLIT_DEV_DOMAIN so probes for locally-uploaded videos
+      // absolutized to https://<REPLIT_DEV_DOMAIN>/api/v1/uploads/{key}
+      // are rewritten to loopback instead of going through the Replit proxy.
+      const replitDevDomain = process.env["REPLIT_DEV_DOMAIN"];
+      if (replitDevDomain) {
+        try {
+          const rh = new URL(/^https?:\/\//i.test(replitDevDomain) ? replitDevDomain : `https://${replitDevDomain}`).hostname;
+          if (rh && !ownHostnames.includes(rh)) ownHostnames.push(rh);
+        } catch { /* malformed env var — ignore */ }
+      }
       const isOwnHost = ownHostnames.includes(u.hostname);
-      if (isOwnHost && /\/api(?:\/v1)?\/hls\//.test(u.pathname)) {
+      // Rewrite own-origin HLS routes AND locally-uploaded video (uploads) routes
+      // to loopback.  HLS routes need the X-Internal-Token bypass when
+      // REQUIRE_HLS_TOKEN=true; upload routes may also require auth headers that
+      // the loopback path can bypass via isInternalRequest().
+      if (isOwnHost && /\/api(?:\/v1)?\/(?:hls|uploads?)\//.test(u.pathname)) {
         u.protocol = "http:";
         u.hostname = "127.0.0.1";
         u.port = String(env.PORT ?? 8080);
