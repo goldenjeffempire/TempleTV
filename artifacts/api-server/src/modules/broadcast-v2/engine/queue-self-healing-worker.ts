@@ -141,7 +141,7 @@ export const queueSelfHealingWorker = {
             state: "quarantined",
             nextRetryAt: new Date(),
             repairLog: sql`(
-              repairLog || jsonb_build_object(
+              repair_log || jsonb_build_object(
                 'ts', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
                 'actor', 'system',
                 'action', 'stuck_repairing_recovered',

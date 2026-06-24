@@ -83,10 +83,12 @@ export function registerErrorHandler(app: FastifyInstance) {
       status,
       code: status >= 500 ? "INTERNAL" : ((err as FastifyError).code ?? "INTERNAL"),
       // `error` satisfies route response schemas that declare `{ error: z.string() }`
-      // (the shorthand used for 4xx responses across many routes). Without it,
-      // Fastify's Zod serializer rejects the response and escalates to a 500
-      // ResponseSerializationError — turning every 429 rate-limit into a 500.
-      error: status < 500 ? err.message : undefined,
+      // (used for both 4xx and 5xx responses). Without it, Fastify's Zod serializer
+      // rejects the response and escalates to a ResponseSerializationError that
+      // surfaces as "Internal Server Error" with no useful diagnostics.
+      // For 500 responses we use a generic title rather than the raw err.message
+      // to avoid leaking internal state; the full error is logged above.
+      error: status >= 500 ? "Internal server error" : err.message,
       detail: status >= 500 ? undefined : err.message,
       requestId,
     };

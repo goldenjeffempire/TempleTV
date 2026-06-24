@@ -1552,8 +1552,18 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         // Step 3: Reset queue hash so reloadInner() re-resolves everything.
         broadcastOrchestrator.resetQueueHash();
 
-        // Step 4: Reload orchestrator immediately.
-        await broadcastOrchestrator.reload();
+        // Step 4: Reload orchestrator immediately (non-fatal — self-heal drift poll
+        // will pick it up within 30 s if this times out or throws).
+        try {
+          await Promise.race([
+            broadcastOrchestrator.reload(),
+            new Promise<void>((_, reject) =>
+              setTimeout(() => reject(new Error("reload timed out after 12 s")), 12_000),
+            ),
+          ]);
+        } catch (reloadErr: unknown) {
+          logger.warn({ err: reloadErr }, "[broadcast-v2] revalidate-sources: reload failed (non-fatal — drift poll will recover)");
+        }
 
         // Step 5: Trigger immediate media integrity scan in background.
         void mediaIntegrityScanner.scan().catch((err: unknown) => {
@@ -3593,6 +3603,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
           durationMs: z.number(),
         }),
         429: z.object({ error: z.string() }),
+        500: z.object({ error: z.string() }),
       },
     },
   }, async (_req, reply) => {
@@ -3621,14 +3632,15 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         200: z.object({ ok: z.literal(true), row: assetHealthRowSchema }),
         404: z.object({ error: z.string() }),
         429: z.object({ error: z.string() }),
+        500: z.object({ error: z.string() }),
       },
     },
   }, async (req, reply) => {
     const { itemId } = req.params;
-    const { reason } = req.body as { reason?: string };
-    const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
-
     try {
+      const { reason } = (req.body as { reason?: string } | null) ?? {};
+      const actor = req.principal?.email ?? req.principal?.id ?? "operator";
+
       const row = await assetHealthRepo.getByQueueItemId(itemId);
       if (!row) {
         return reply.status(404).send({ error: "No health record found for that queue item" });
@@ -3661,17 +3673,24 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         200: z.object({ ok: z.literal(true), row: assetHealthRowSchema }),
         400: z.object({ error: z.string() }),
         429: z.object({ error: z.string() }),
+        500: z.object({ error: z.string() }),
       },
     },
   }, async (req, reply) => {
     const { itemId } = req.params;
-    const { reason } = req.body as { reason: string };
-    if (!reason?.trim()) {
-      return reply.status(400).send({ error: "reason is required" });
+    try {
+      const { reason } = (req.body as { reason: string } | null) ?? { reason: "" };
+      if (!reason?.trim()) {
+        return reply.status(400).send({ error: "reason is required" });
+      }
+      const actor = req.principal?.email ?? req.principal?.id ?? "operator";
+      const updated = await assetHealthRepo.manualQuarantine(itemId, actor, reason);
+      return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error({ err, itemId }, "[broadcast-v2] asset-health/quarantine: failed");
+      return reply.code(500).send({ error: `Quarantine failed: ${msg}` });
     }
-    const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
-    const updated = await assetHealthRepo.manualQuarantine(itemId, actor, reason);
-    return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
   });
 
   /**
@@ -3689,11 +3708,12 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         200: z.object({ ok: z.literal(true), row: assetHealthRowSchema }),
         404: z.object({ error: z.string() }),
         429: z.object({ error: z.string() }),
+        500: z.object({ error: z.string() }),
       },
     },
   }, async (req, reply) => {
     const { itemId } = req.params;
-    const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
+    const actor = req.principal?.email ?? req.principal?.id ?? "operator";
 
     try {
       const existing = await assetHealthRepo.getByQueueItemId(itemId);
@@ -3724,12 +3744,13 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       response: {
         200: z.object({ ok: z.literal(true), row: assetHealthRowSchema }),
         429: z.object({ error: z.string() }),
+        500: z.object({ error: z.string() }),
       },
     },
   }, async (req, reply) => {
     const { itemId } = req.params;
     const { paused } = req.body as { paused: boolean };
-    const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
+    const actor = req.principal?.email ?? req.principal?.id ?? "operator";
     try {
       const updated = await assetHealthRepo.setPaused(itemId, paused, actor);
       return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
@@ -3759,21 +3780,22 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       response: {
         200: z.object({ ok: z.literal(true), reset: z.number() }),
         429: z.object({ error: z.string() }),
+        500: z.object({ error: z.string() }),
       },
     },
   }, async (req, reply) => {
-    const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
+    const actor = req.principal?.email ?? req.principal?.id ?? "operator";
     let ids = (req.body as { queueItemIds?: string[] }).queueItemIds;
 
-    // If no IDs supplied, reset all non-healthy items (the "Reset All" case)
-    if (!ids || ids.length === 0) {
-      const nonHealthy = await assetHealthRepo.list({ limit: 500 });
-      ids = nonHealthy
-        .filter((r) => r.state !== "healthy" && r.state !== "approved")
-        .map((r) => r.queueItemId);
-    }
-
     try {
+      // If no IDs supplied, reset all non-healthy items (the "Reset All" case)
+      if (!ids || ids.length === 0) {
+        const nonHealthy = await assetHealthRepo.list({ limit: 500 });
+        ids = nonHealthy
+          .filter((r) => r.state !== "healthy" && r.state !== "approved")
+          .map((r) => r.queueItemId);
+      }
+
       const reset = await assetHealthRepo.bulkReset(ids, actor);
       if (reset > 0) {
         adminEventBus.push("broadcast-queue-updated", { reason: "bulk-reset", count: reset });
@@ -3803,21 +3825,22 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       response: {
         200: z.object({ ok: z.literal(true), approved: z.number() }),
         429: z.object({ error: z.string() }),
+        500: z.object({ error: z.string() }),
       },
     },
   }, async (req, reply) => {
-    const actor = (req.user as { email?: string } | undefined)?.email ?? "operator";
+    const actor = req.principal?.email ?? req.principal?.id ?? "operator";
     let ids = (req.body as { queueItemIds?: string[] }).queueItemIds;
 
-    // If no IDs supplied, approve all non-healthy items (the "Approve All" case)
-    if (!ids || ids.length === 0) {
-      const nonHealthy = await assetHealthRepo.list({ limit: 500 });
-      ids = nonHealthy
-        .filter((r) => r.state !== "healthy" && r.state !== "approved")
-        .map((r) => r.queueItemId);
-    }
-
     try {
+      // If no IDs supplied, approve all non-healthy items (the "Approve All" case)
+      if (!ids || ids.length === 0) {
+        const nonHealthy = await assetHealthRepo.list({ limit: 500 });
+        ids = nonHealthy
+          .filter((r) => r.state !== "healthy" && r.state !== "approved")
+          .map((r) => r.queueItemId);
+      }
+
       const approved = await assetHealthRepo.bulkApprove(ids, actor);
       if (approved > 0) {
         adminEventBus.push("broadcast-queue-updated", { reason: "bulk-approve", count: approved });
@@ -3915,16 +3938,33 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
           }),
         }),
         429: z.object({ error: z.string() }),
+        500: z.object({ error: z.string() }),
       },
     },
   }, async (_req, reply) => {
     try {
-    const [summary, allItems, blockedRows, workerStatuses] = await Promise.all([
+    const [summaryResult, allItemsResult, blockedRowsResult, workerStatusesResult] = await Promise.allSettled([
       assetHealthRepo.getSummary(),
       assetHealthRepo.list({ limit: 200 }),
       assetHealthRepo.list({ state: "blocked", limit: 500 }),
       Promise.resolve(workerSupervisor.getWorkerStatuses()),
     ]);
+
+    const summary = summaryResult.status === "fulfilled"
+      ? summaryResult.value
+      : { healthy: 0, quarantined: 0, repairing: 0, approved: 0, blocked: 0, total: 0 };
+    const allItems = allItemsResult.status === "fulfilled" ? allItemsResult.value : [];
+    const blockedRows = blockedRowsResult.status === "fulfilled" ? blockedRowsResult.value : [];
+    const workerStatuses = workerStatusesResult.status === "fulfilled"
+      ? workerStatusesResult.value
+      : { workers: [], summary: { total: 0, running: 0, circuitOpen: 0, stopped: 0 } };
+
+    if (summaryResult.status === "rejected") {
+      logger.warn({ err: summaryResult.reason }, "[broadcast-v2] automation-status: getSummary failed (partial response)");
+    }
+    if (allItemsResult.status === "rejected") {
+      logger.warn({ err: allItemsResult.reason }, "[broadcast-v2] automation-status: list(all) failed (partial response)");
+    }
 
     // Collect all unique queue item IDs across both sets
     const allItemIds = [...new Set([
@@ -4003,7 +4043,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       blockedItems,
       recentRepairLog,
       badUrlStats: {
-        cachedBadUrls: badUrlStats.size,
+        cachedBadUrls: badUrlStats.blockedCount,
         sourceSetSize,
       },
       selfHealingWorker: {
