@@ -3784,6 +3784,153 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     return reply.send({ ok: true as const, approved });
   });
 
+  /**
+   * GET /api/broadcast-v2/automation-status
+   *
+   * Aggregated self-healing automation state for the Automation Center admin page.
+   * Returns worker statuses, asset-health summary, recent repair log, bad-URL cache
+   * stats, and the next scheduled revalidation timestamp.
+   */
+  app.get("/automation-status", {
+    ...adminGuard,
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+    schema: {
+      response: {
+        200: z.object({
+          generatedAtMs: z.number(),
+          workers: z.array(z.object({
+            name: z.string(),
+            state: z.string(),
+            running: z.boolean(),
+            circuitOpen: z.boolean(),
+            consecutiveFailures: z.number(),
+            totalRuns: z.number(),
+            totalErrors: z.number(),
+            lastRunAtMs: z.number().nullable(),
+            lastSuccessAtMs: z.number().nullable(),
+            lastErrorAtMs: z.number().nullable(),
+            lastError: z.string().nullable(),
+            nextRunAtMs: z.number().nullable(),
+            circuitAutoResetAtMs: z.number().nullable(),
+          })),
+          workerSummary: z.object({
+            total: z.number(),
+            running: z.number(),
+            circuitOpen: z.number(),
+            stopped: z.number(),
+          }),
+          assetHealth: z.object({
+            healthy: z.number(),
+            quarantined: z.number(),
+            repairing: z.number(),
+            approved: z.number(),
+            blocked: z.number(),
+            total: z.number(),
+          }),
+          recentRepairLog: z.array(z.object({
+            queueItemId: z.string(),
+            queueItemTitle: z.string().nullable(),
+            state: z.string(),
+            lastErrorCode: z.string().nullable(),
+            lastError: z.string().nullable(),
+            suggestedFix: z.string().nullable(),
+            repairAttempts: z.number(),
+            lastRepairAt: z.string().nullable(),
+            nextRetryAt: z.string().nullable(),
+            autoRepairPaused: z.boolean(),
+            latestLogEntry: z.object({
+              ts: z.string(),
+              actor: z.string(),
+              action: z.string(),
+              detail: z.string(),
+              outcome: z.string(),
+            }).nullable(),
+          })),
+          badUrlStats: z.object({
+            cachedBadUrls: z.number(),
+            sourceSetSize: z.number(),
+          }),
+          selfHealingWorker: z.object({
+            lastScanMs: z.number(),
+            isRunning: z.boolean(),
+          }),
+        }),
+        429: z.object({ error: z.string() }),
+      },
+    },
+  }, async (_req, reply) => {
+    const [summary, recentItems, workerStatuses] = await Promise.all([
+      assetHealthRepo.getSummary(),
+      assetHealthRepo.list({ limit: 50 }),
+      Promise.resolve(workerSupervisor.getWorkerStatuses()),
+    ]);
+
+    // Get queue item titles for the recent repair log
+    const itemIds = [...new Set(recentItems.map((r) => r.queueItemId))];
+    let queueMeta: Array<{ id: string; title: string }> = [];
+    if (itemIds.length > 0) {
+      queueMeta = await db
+        .select({ id: schema.broadcastQueueTable.id, title: schema.broadcastQueueTable.title })
+        .from(schema.broadcastQueueTable)
+        .where(inArray(schema.broadcastQueueTable.id, itemIds));
+    }
+    const titleById = new Map(queueMeta.map((m) => [m.id, m.title]));
+
+    // Recent repair log: items that have had some repair activity (non-healthy)
+    // or were recently repaired — sorted by lastRepairAt desc
+    const repairedItems = recentItems
+      .filter((r) => r.state !== "healthy" || r.repairAttempts > 0)
+      .sort((a, b) => {
+        const aTs = a.lastRepairAt?.getTime() ?? 0;
+        const bTs = b.lastRepairAt?.getTime() ?? 0;
+        return bTs - aTs;
+      })
+      .slice(0, 20);
+
+    const recentRepairLog = repairedItems.map((r) => {
+      const log = r.repairLog;
+      const latest = log.length > 0 ? log[log.length - 1]! : null;
+      return {
+        queueItemId: r.queueItemId,
+        queueItemTitle: titleById.get(r.queueItemId) ?? null,
+        state: r.state,
+        lastErrorCode: r.lastErrorCode,
+        lastError: r.lastError,
+        suggestedFix: r.suggestedFix,
+        repairAttempts: r.repairAttempts,
+        lastRepairAt: r.lastRepairAt?.toISOString() ?? null,
+        nextRetryAt: r.nextRetryAt?.toISOString() ?? null,
+        autoRepairPaused: r.autoRepairPaused,
+        latestLogEntry: latest ? {
+          ts: latest.ts,
+          actor: latest.actor,
+          action: latest.action,
+          detail: latest.detail,
+          outcome: latest.outcome,
+        } : null,
+      };
+    });
+
+    const badUrlStats = getBadUrlStats();
+    const sourceSetSize = getUrlBadSourceSetsSize();
+
+    return reply.send({
+      generatedAtMs: Date.now(),
+      workers: workerStatuses.workers,
+      workerSummary: workerStatuses.summary,
+      assetHealth: summary,
+      recentRepairLog,
+      badUrlStats: {
+        cachedBadUrls: badUrlStats.size,
+        sourceSetSize,
+      },
+      selfHealingWorker: {
+        lastScanMs: queueSelfHealingWorker.getLastScanMs(),
+        isRunning: queueSelfHealingWorker.isRunning(),
+      },
+    });
+  });
+
 }
 
 // ── Module-level remediation helpers ────────────────────────────────────────

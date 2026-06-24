@@ -78,6 +78,7 @@ const SecurityPage      = lazyPage(() => import("@/pages/security"));
 const MidnightPrayers   = lazyPage(() => import("@/pages/midnight-prayers"));
 const Diagnostics       = lazyPage(() => import("@/pages/diagnostics"));
 const SystemHealth      = lazyPage(() => import("@/pages/system-health"));
+const SelfHealing       = lazyPage(() => import("@/pages/self-healing"));
 const AppVersions       = lazyPage(() => import("@/pages/app-versions"));
 const OtaUpdates        = lazyPage(() => import("@/pages/ota-updates"));
 
@@ -519,6 +520,7 @@ function AuthenticatedApp() {
             <Route path="/security">{() => <AdminRoute component={SecurityPage} />}</Route>
             <Route path="/midnight-prayers"  component={MidnightPrayers} />
             <Route path="/system-health">{() => <AdminRoute component={SystemHealth} />}</Route>
+            <Route path="/self-healing">{() => <AdminRoute component={SelfHealing} />}</Route>
             <Route path="/diagnostics">{() => <AdminRoute component={Diagnostics} />}</Route>
             <Route path="/app-versions">{() => <AdminRoute component={AppVersions} />}</Route>
             <Route path="/ota-updates">{() => <AdminRoute component={OtaUpdates} />}</Route>

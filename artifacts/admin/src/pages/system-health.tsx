@@ -7,9 +7,11 @@ import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import {
   CheckCircle2, XCircle, AlertTriangle, RefreshCw, Activity,
-  Cpu, Database, HardDrive, Wifi, Clock, Server, Zap,
+  Cpu, Database, HardDrive, Wifi, Clock, Server, Zap, Bot, ShieldAlert, ArrowRight,
 } from "lucide-react";
+import { Link } from "wouter";
 import { formatDistanceToNow } from "date-fns";
+import { api } from "@/lib/api";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -130,6 +132,12 @@ function dur(ms: number): string {
   return `${Math.round(ms / 3_600_000)}h`;
 }
 
+interface AutomationHealthSummary {
+  assetHealth: { healthy: number; quarantined: number; repairing: number; approved: number; blocked: number; total: number };
+  selfHealingWorker: { lastScanMs: number; isRunning: boolean };
+  workerSummary: { total: number; running: number; circuitOpen: number };
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function SystemHealthPage() {
@@ -140,6 +148,13 @@ export default function SystemHealthPage() {
       if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
       return r.json() as Promise<SystemHealthData>;
     },
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+  });
+
+  const { data: automationData } = useQuery<AutomationHealthSummary>({
+    queryKey: ["automation-status-mini"],
+    queryFn: () => api.get<AutomationHealthSummary>("/broadcast-v2/automation-status"),
     refetchInterval: 15_000,
     staleTime: 10_000,
   });
@@ -447,6 +462,59 @@ export default function SystemHealthPage() {
               </Tooltip>
             ))}
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Automation Health */}
+      <Card className={automationData?.assetHealth.blocked ? "border-amber-800" : ""}>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Bot size={15} className="text-violet-400" /> Automation Health
+            {automationData?.assetHealth.blocked ? (
+              <WarnBadge label={`${automationData.assetHealth.blocked} blocked`} />
+            ) : automationData ? (
+              <Badge className="bg-emerald-600 text-white text-xs gap-1">
+                <CheckCircle2 size={10} /> All healthy
+              </Badge>
+            ) : null}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {automationData ? (
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                {[
+                  { label: "Healthy", value: String(automationData.assetHealth.healthy + automationData.assetHealth.approved) },
+                  { label: "Quarantined", value: String(automationData.assetHealth.quarantined) },
+                  { label: "Blocked", value: String(automationData.assetHealth.blocked) },
+                  { label: "Workers", value: `${automationData.workerSummary.running}/${automationData.workerSummary.total} running` },
+                ].map(({ label, value }) => (
+                  <div key={label} className="bg-zinc-900 rounded p-2.5">
+                    <p className="text-zinc-500">{label}</p>
+                    <p className="text-zinc-200 font-mono mt-0.5">{value}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-zinc-500">
+                  Last scan: {automationData.selfHealingWorker.lastScanMs > 0
+                    ? formatDistanceToNow(new Date(automationData.selfHealingWorker.lastScanMs), { addSuffix: true })
+                    : "not yet run"}
+                  {automationData.selfHealingWorker.isRunning && " (running now)"}
+                  {automationData.workerSummary.circuitOpen > 0 && (
+                    <span className="ml-2 text-red-400">· {automationData.workerSummary.circuitOpen} circuit breaker{automationData.workerSummary.circuitOpen !== 1 ? "s" : ""} open</span>
+                  )}
+                </span>
+                <Link href="/self-healing">
+                  <Button size="sm" variant="ghost" className="h-6 px-2 text-xs gap-1">
+                    View Automation Center <ArrowRight size={11} />
+                  </Button>
+                </Link>
+              </div>
+            </div>
+          ) : (
+            <p className="text-zinc-500 text-xs">Loading automation status…</p>
+          )}
         </CardContent>
       </Card>
     </div>

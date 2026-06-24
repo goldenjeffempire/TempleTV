@@ -9,7 +9,7 @@ import {
   Bell, BarChart2, Users, Heart, Settings, Shield,
   Zap, Cpu, Signal, Layers, Tv2, Wifi, WifiOff, Loader, ChevronRight, X, Youtube,
   Image, Gauge, Rss, ClipboardList, Settings2, RefreshCw, Trash2, Headphones, Lock,
-  SignalLow, Moon, ScanSearch, Smartphone, ShieldAlert, Rocket,
+  SignalLow, Moon, ScanSearch, Smartphone, ShieldAlert, Rocket, Bot,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
@@ -56,9 +56,29 @@ function parseBroadcastHealth(raw: Record<string, unknown>): BroadcastHealthData
   };
 }
 
+function useBroadcastBlockedCount(): number {
+  const [blocked, setBlocked] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/broadcast-v2/automation-status", { credentials: "include", cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json() as { assetHealth?: { blocked?: number } };
+        if (!cancelled) setBlocked(data.assetHealth?.blocked ?? 0);
+      } catch { /* noop */ }
+    };
+    void poll();
+    const id = setInterval(() => { void poll(); }, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+  return blocked;
+}
+
 function BroadcastStatusStrip() {
   const [health, setHealth] = useState<BroadcastHealthData | null>(null);
   const [error, setError] = useState(false);
+  const blockedCount = useBroadcastBlockedCount();
 
   useEffect(() => {
     let cancelled = false;
@@ -139,6 +159,12 @@ function BroadcastStatusStrip() {
                 No content queued
               </p>
             )}
+            {/* Blocked badge */}
+            {blockedCount > 0 && (
+              <span className="inline-flex items-center gap-0.5 mt-1 text-[9px] font-semibold text-amber-500 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded">
+                <ShieldAlert size={8} /> {blockedCount} blocked
+              </span>
+            )}
           </div>
 
           <ChevronRight
@@ -210,6 +236,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
         { href: "/", label: "Dashboard", icon: <LayoutDashboard size={16} /> },
         { href: "/live-control", label: "Live Control", icon: <Radio size={16} />, badge: <LiveBadge /> },
         { href: "/broadcast-v2",      label: "Master Control",    icon: <Layers size={16} /> },
+        { href: "/self-healing",      label: "Automation Center", icon: <Bot size={16} />, adminOnly: true },
         { href: "/midnight-prayers",  label: "Midnight Prayers",  icon: <Moon size={16} /> },
         { href: "/radio",             label: "Radio Station",      icon: <Headphones size={16} /> },
         { href: "/stream-health", label: "Stream Health", icon: <Activity size={16} /> },
