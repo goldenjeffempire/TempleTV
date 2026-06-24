@@ -4617,6 +4617,24 @@ export async function adminOpsRoutes(app: FastifyInstance) {
             lastShuffleAtMs: z.number(),
             shuffleCount: z.number(),
           }),
+          memory: z.object({
+            rssMb: z.number(),
+            rssWarnMb: z.number(),
+            rssRestartMb: z.number(),
+            rssAlertActive: z.boolean(),
+            heapUsedGrowthMbPerMin: z.number().nullable(),
+            externalGrowthMbPerMin: z.number().nullable(),
+            arrayBuffersAlertActive: z.boolean(),
+            eventLoopLagMs: z.number().nullable(),
+          }),
+          deadAir: z.object({
+            totalIncidents: z.number(),
+            openIncident: z.boolean(),
+            onAirPct: z.number().nullable(),
+            longestIncidentMs: z.number(),
+            frameLivenessOk: z.boolean(),
+            lastFrameAtMs: z.number(),
+          }),
           apiOriginConfigured: z.boolean(),
           ok: z.boolean(),
           issues: z.array(z.string()),
@@ -4740,6 +4758,45 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         );
       }
 
+      // ── Memory watchdog ───────────────────────────────────────────────────
+      const { getWatchdogState } = await import("../../infrastructure/memory-watchdog.js");
+      const wd = getWatchdogState();
+      const memory = {
+        rssMb:                   wd.current.rssMb,
+        rssWarnMb:               wd.thresholds.rssAlertMb,
+        rssRestartMb:            wd.thresholds.rssRestartMb,
+        rssAlertActive:          wd.alerts.rssAlertActive,
+        heapUsedGrowthMbPerMin:  wd.current.heapUsedGrowthMbPerMin,
+        externalGrowthMbPerMin:  wd.current.externalGrowthMbPerMin,
+        arrayBuffersAlertActive: wd.alerts.arrayBuffersAlertActive,
+        eventLoopLagMs:          wd.current.eventLoopLagMs,
+      };
+      if (wd.alerts.rssAlertActive) {
+        issues.push(`Memory pressure: RSS at ${wd.current.rssMb} MB (warn: ${wd.thresholds.rssAlertMb} MB)`);
+      }
+      if (wd.alerts.arrayBuffersAlertActive) {
+        issues.push("ArrayBuffers growing faster than expected — possible Buffer/HLS segment cache leak");
+      }
+
+      // ── Dead-air tracker ──────────────────────────────────────────────────
+      const { getDeadAirStats } = await import("../broadcast-v2/engine/dead-air-tracker.js");
+      const da = getDeadAirStats();
+      const deadAir = {
+        totalIncidents:    da.totalIncidents,
+        openIncident:      da.openIncident !== null,
+        onAirPct:          da.onAirPct,
+        longestIncidentMs: da.longestIncidentMs,
+        frameLivenessOk:   da.frameLivenessOk,
+        lastFrameAtMs:     da.lastFrameAtMs,
+      };
+      if (!da.frameLivenessOk && da.lastFrameAtMs > 0) {
+        issues.push("Broadcast orchestrator appears frozen — no frames received in >60s");
+      }
+      if (da.openIncident !== null) {
+        const durationS = Math.round((Date.now() - da.openIncident.startedAtMs) / 1000);
+        issues.push(`Channel is currently off-air for ${durationS}s (reason: ${da.openIncident.reason})`);
+      }
+
       return {
         checkedAt: new Date().toISOString(),
         broadcast,
@@ -4750,6 +4807,8 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         dbPool,
         storage: storageResult,
         contentRotation,
+        memory,
+        deadAir,
         apiOriginConfigured,
         ok: issues.length === 0,
         issues,

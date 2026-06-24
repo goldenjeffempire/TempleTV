@@ -8,22 +8,26 @@
  * After acting, clears the corresponding scheduled_* timestamp so the
  * trigger only fires once. Logs each action to media_audit_log for the
  * audit trail.
+ *
+ * Uses workerSupervisor for circuit-breaker, deadman-switch, and metrics.
+ * A sustained DB outage trips the circuit after 10 consecutive failures and
+ * suppresses alerts until the auto-reset window passes. This prevents log
+ * flooding and false-positive ops-alerts during brief DB unavailability.
  */
 
-import { and, isNotNull, lte, eq, sql } from "drizzle-orm";
+import { and, isNotNull, lte, eq } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { invalidateVideosCatalogCache } from "../../videos/videos.routes.js";
+import { workerSupervisor } from "./worker-supervisor.js";
 import { logger as rootLogger } from "../../../infrastructure/logger.js";
 import { randomUUID } from "node:crypto";
 
 const logger = rootLogger.child({ module: "content-scheduling" });
 
-const INTERVAL_MS = parseInt(process.env.CONTENT_SCHEDULING_INTERVAL_MS ?? "60000", 10);
-const INITIAL_DELAY_MS = 15_000;
-
-let timer: ReturnType<typeof setTimeout> | null = null;
-let stopped = false;
+const WORKER_NAME  = "content-scheduling";
+const INTERVAL_MS  = parseInt(process.env.CONTENT_SCHEDULING_INTERVAL_MS ?? "60000", 10);
+const INITIAL_DELAY = 15_000;
 
 async function runSchedulingSweep(): Promise<void> {
   const now = new Date();
@@ -59,7 +63,7 @@ async function runSchedulingSweep(): Promise<void> {
         videoId: v.id,
         action: "scheduled_publish",
         reason: `Auto-published at scheduled time`,
-        triggeredBy: "content-scheduling-worker",
+        triggeredBy: WORKER_NAME,
       }).catch(() => {});
 
       logger.info({ videoId: v.id, title: v.title }, "[content-scheduling] auto-published video");
@@ -99,7 +103,7 @@ async function runSchedulingSweep(): Promise<void> {
         videoId: v.id,
         action: "scheduled_unpublish",
         reason: `Auto-unpublished at scheduled time`,
-        triggeredBy: "content-scheduling-worker",
+        triggeredBy: WORKER_NAME,
       }).catch(() => {});
 
       logger.info({ videoId: v.id, title: v.title }, "[content-scheduling] auto-unpublished video");
@@ -114,34 +118,17 @@ async function runSchedulingSweep(): Promise<void> {
   }
 }
 
-function scheduleNext() {
-  if (stopped) return;
-  timer = setTimeout(() => {
-    void (async () => {
-      try { await runSchedulingSweep(); } catch (err) {
-        logger.warn({ err }, "[content-scheduling] sweep error");
-      }
-      scheduleNext();
-    })();
-  }, INTERVAL_MS);
-  timer.unref?.();
-}
-
 export function startContentSchedulingWorker(): void {
-  if (stopped) return;
-  logger.info({ intervalMs: INTERVAL_MS }, "[content-scheduling] worker started");
-  const init = setTimeout(() => {
-    void (async () => {
-      try { await runSchedulingSweep(); } catch (err) {
-        logger.warn({ err }, "[content-scheduling] initial sweep error");
-      }
-      scheduleNext();
-    })();
-  }, INITIAL_DELAY_MS);
-  init.unref?.();
+  workerSupervisor.spawn({
+    name:           WORKER_NAME,
+    fn:             runSchedulingSweep,
+    intervalMs:     INTERVAL_MS,
+    initialDelayMs: INITIAL_DELAY,
+    backoffMs:      [5_000, 15_000, 30_000, 60_000],
+  });
+  logger.info({ intervalMs: INTERVAL_MS }, "[content-scheduling] worker registered with supervisor");
 }
 
 export function stopContentSchedulingWorker(): void {
-  stopped = true;
-  if (timer) { clearTimeout(timer); timer = null; }
+  workerSupervisor.remove(WORKER_NAME);
 }

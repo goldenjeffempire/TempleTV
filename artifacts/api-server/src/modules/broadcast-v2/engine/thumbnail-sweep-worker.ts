@@ -10,44 +10,38 @@
  *   • Videos with hasCustomThumbnail = true
  *   • Videos that already have a thumbnailUrl
  *   • Videos without a localVideoUrl (no source to extract from)
+ *
+ * Uses workerSupervisor for circuit-breaker, deadman-switch, and Prometheus
+ * metrics. A hung ffprobe call no longer freezes the worker permanently —
+ * the supervisor's deadman fires after 2× the interval and marks a failure.
  */
 
 import { autoGenerateMissingThumbnails } from "../../admin-videos/thumbnail-generator.service.js";
+import { workerSupervisor } from "./worker-supervisor.js";
 import { logger } from "../../../infrastructure/logger.js";
 
-const SWEEP_INTERVAL_MS = Number(process.env["THUMBNAIL_SWEEP_INTERVAL_MS"] ?? 10 * 60 * 1000);
+const WORKER_NAME    = "thumbnail-sweep";
+const INTERVAL_MS    = Number(process.env["THUMBNAIL_SWEEP_INTERVAL_MS"] ?? 10 * 60_000);
+const INITIAL_DELAY  = 2 * 60_000; // 2 min boot delay so HLS jobs start first
 
-let timer: ReturnType<typeof setTimeout> | null = null;
-let running = false;
-
-async function runSweep() {
-  if (running) return;
-  running = true;
-  try {
-    const result = await autoGenerateMissingThumbnails(5);
-    if (result.processed > 0) {
-      logger.info(result, "[thumbnail-sweep] sweep complete");
-    }
-  } catch (err) {
-    logger.warn({ err }, "[thumbnail-sweep] sweep error (non-fatal)");
-  } finally {
-    running = false;
+async function runSweep(): Promise<void> {
+  const result = await autoGenerateMissingThumbnails(5);
+  if (result.processed > 0) {
+    logger.info(result, "[thumbnail-sweep] sweep complete");
   }
 }
 
-export function startThumbnailSweepWorker() {
-  if (timer) return;
-  const tick = () => {
-    void runSweep();
-    timer = setTimeout(tick, SWEEP_INTERVAL_MS);
-    timer.unref();
-  };
-  // First run after 2 minutes so it doesn't race with HLS jobs on boot.
-  timer = setTimeout(tick, 2 * 60 * 1000);
-  timer.unref();
-  logger.info({ intervalMs: SWEEP_INTERVAL_MS }, "[thumbnail-sweep] worker started");
+export function startThumbnailSweepWorker(): void {
+  workerSupervisor.spawn({
+    name:           WORKER_NAME,
+    fn:             runSweep,
+    intervalMs:     INTERVAL_MS,
+    initialDelayMs: INITIAL_DELAY,
+    backoffMs:      [30_000, 60_000, 5 * 60_000],
+  });
+  logger.info({ intervalMs: INTERVAL_MS }, "[thumbnail-sweep] worker registered with supervisor");
 }
 
-export function stopThumbnailSweepWorker() {
-  if (timer) { clearTimeout(timer); timer = null; }
+export function stopThumbnailSweepWorker(): void {
+  workerSupervisor.remove(WORKER_NAME);
 }

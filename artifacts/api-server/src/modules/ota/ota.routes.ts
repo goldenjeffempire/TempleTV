@@ -307,7 +307,7 @@ export async function otaRoutes(app: FastifyInstance): Promise<void> {
           message: z.string().min(1).max(500),
         }),
         response: {
-          200: z.object({ ok: z.boolean(); queued: z.boolean(); note: z.string() }),
+          200: z.object({ ok: z.boolean(), queued: z.boolean(), note: z.string() }),
           400: z.object({ error: z.string() }),
           503: z.object({ error: z.string() }),
           429: _429,

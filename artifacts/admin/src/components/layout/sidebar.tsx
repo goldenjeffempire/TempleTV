@@ -240,6 +240,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
     {
       title: "System",
       items: [
+        { href: "/system-health", label: "System Health", icon: <Activity size={16} />, adminOnly: true },
         { href: "/operations", label: "Operations", icon: <Cpu size={16} />, adminOnly: true },
         { href: "/diagnostics", label: "Diagnostics", icon: <ScanSearch size={16} />, adminOnly: true },
         { href: "/live-ingest", label: "Live Ingest", icon: <Wifi size={16} />, adminOnly: true },

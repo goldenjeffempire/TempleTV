@@ -133,9 +133,25 @@ const ARRAY_BUFFERS_GROWTH_RECOVERY_MB_PER_MIN = 5;
 /** How many consecutive over-slope samples before a slope alert fires. */
 const CONSECUTIVE_SLOPE_FOR_ALERT = 3;
 
+/**
+ * Fraction of MEMORY_WARN_RSS_MB at which a proactive early-pressure eviction
+ * fires. At 0.85 the watchdog purges expired cache entries when RSS reaches
+ * 85% of the warn threshold — before the alert fires — giving the GC a chance
+ * to recover without any operator action.
+ */
+const MEMORY_EARLY_PRESSURE_PCT = 0.85;
+/** Minimum consecutive samples at early-pressure level before eviction runs. */
+const EARLY_PRESSURE_MIN_SAMPLES = 2;
+/** Minimum gap between early-pressure eviction runs to avoid over-purging. */
+const EARLY_EVICTION_COOLDOWN_MS = 3 * 60_000;
+
 let criticalExitInFlight = false;
 /** ms timestamp of when the most recent relief attempt started. Used to enforce RELIEF_COOLDOWN_MS. */
 let lastReliefAttemptMs = 0;
+/** Counter for consecutive samples at early-pressure level. */
+let consecutiveEarlyPressure = 0;
+/** Timestamp of the last early-pressure eviction, to enforce the cooldown. */
+let lastEarlyEvictionMs = 0;
 
 /** Separate slope-alert state for the ArrayBuffers metric. */
 let arrayBuffersAlertActive = false;
@@ -278,6 +294,33 @@ function sample() {
       });
     }
     consecutiveRssOver = 0;
+  }
+
+  // ── Early-pressure proactive eviction ────────────────────────────────────
+  // When RSS climbs to ≥ MEMORY_EARLY_PRESSURE_PCT of the warn threshold
+  // (but is still BELOW the threshold) run a lightweight purge of expired
+  // cache entries. This gives the GC a window to reclaim memory before the
+  // sustained-pressure alert fires, reducing alert noise on constrained hosts.
+  // The eviction is rate-limited to EARLY_EVICTION_COOLDOWN_MS so it does
+  // not hammer the cache during a prolonged moderate-load period.
+  const earlyPressureMb = Math.round(thresholdMb * MEMORY_EARLY_PRESSURE_PCT);
+  if (rssMb >= earlyPressureMb && rssMb < thresholdMb) {
+    consecutiveEarlyPressure++;
+    if (
+      consecutiveEarlyPressure >= EARLY_PRESSURE_MIN_SAMPLES &&
+      Date.now() - lastEarlyEvictionMs > EARLY_EVICTION_COOLDOWN_MS
+    ) {
+      lastEarlyEvictionMs = Date.now();
+      const purged = purgeExpiredCacheEntries();
+      if (purged > 0) {
+        logger.debug(
+          { rssMb, earlyPressureMb, thresholdMb, purged },
+          "[memory-watchdog] early-pressure eviction — purged expired entries before warn threshold",
+        );
+      }
+    }
+  } else {
+    consecutiveEarlyPressure = 0;
   }
 
   // Track a separate counter for the restart (critical-exit) threshold.
