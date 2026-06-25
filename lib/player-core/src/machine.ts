@@ -320,6 +320,38 @@ export class PlayerMachine {
    */
   private fatalAttemptCount = 0;
 
+  /**
+   * Which buffer ID has fired `buffer-ready` (canplay / loadedmetadata) as
+   * the inactive preload target.  The machine only tracks the INACTIVE
+   * buffer's readiness here — the active buffer's readiness drives
+   * PREPARING_ACTIVE → PLAYING transitions via the active branch of
+   * `onBufferReady`.
+   *
+   * Reset to null whenever `bindInactive()` loads a new item so stale
+   * readiness signals from a previous cycle don't carry over.  Also reset
+   * in `doHandoff()` after the swap so the freshly-demoted inactive buffer
+   * starts clean for the next preload cycle.
+   */
+  private inactiveReadyBufferId: "A" | "B" | null = null;
+
+  /**
+   * Deferred HANDOFF state: when the active buffer fires `ended` but the
+   * inactive buffer's `canplay` has not yet fired, the HANDOFF is held
+   * here until the inactive buffer becomes ready (or MAX_HANDOFF_WAIT_MS
+   * elapses as a safety valve).
+   */
+  private pendingHandoff: {
+    endedBufferId: "A" | "B";
+    inactiveId: "A" | "B";
+    inactiveItem: V2Item | V2Override;
+    endedItemId: string | null;
+  } | null = null;
+
+  /** Safety-valve timer that forces the deferred HANDOFF even if the inactive
+   *  buffer's canplay event never fires (e.g. browser throttling, very slow
+   *  connection). */
+  private pendingHandoffTimer: ReturnType<typeof setTimeout> | null = null;
+
   constructor(private readonly emit: IntentHandler) {}
 
   setNeedSnapshotCallback(fn: () => void): void {
@@ -454,6 +486,7 @@ export class PlayerMachine {
    */
   destroy(): void {
     this.clearSourceExpiryTimer();
+    this.clearPendingHandoff();
     if (this.fatalRecoveryTimer !== null) {
       clearTimeout(this.fatalRecoveryTimer);
       this.fatalRecoveryTimer = null;
@@ -954,6 +987,29 @@ export class PlayerMachine {
         // RECOVERING_FAILOVER instead of trying primary again.
         this.primaryRetries = 0;
         this.transition("PLAYING");
+      }
+    } else {
+      // ── Inactive buffer became ready ─────────────────────────────────────
+      // Track that canplay / loadedmetadata fired on the inactive preload
+      // buffer.  This tells onBufferEnded() that the first frame is decoded
+      // and the swap can happen without a black-frame flash.
+      this.inactiveReadyBufferId = bufferId;
+
+      // If the active buffer already ended while we were waiting for the
+      // inactive buffer to finish loading (common with very short items
+      // where the near-end trigger fires at t=0 and ended fires within
+      // seconds), a deferred HANDOFF is waiting here — execute it now.
+      if (
+        this.pendingHandoff !== null &&
+        this.pendingHandoff.inactiveId === bufferId
+      ) {
+        if (this.pendingHandoffTimer !== null) {
+          clearTimeout(this.pendingHandoffTimer);
+          this.pendingHandoffTimer = null;
+        }
+        const h = this.pendingHandoff;
+        this.pendingHandoff = null;
+        this.doHandoff(h.endedBufferId, h.inactiveId, h.inactiveItem, h.endedItemId);
       }
     }
   }
