@@ -163,6 +163,19 @@ const FATAL_AUTO_RECOVERY_MS = 10_000;
  */
 const FATAL_BACKOFF_MAX_MS = 240_000;
 
+/**
+ * How long to wait (ms) for the inactive buffer to fire canplay after the
+ * active buffer fires `ended` before forcing the HANDOFF anyway.
+ *
+ * When the inactive buffer preloaded successfully (typical case, ~120 s of
+ * lead time), canplay already fired and the HANDOFF is immediate.  This timer
+ * is only the last resort for pathological cases (very slow network, browser
+ * throttling) where the inactive buffer still hasn't decoded a first frame
+ * by the time the active buffer ends.  3 s caps the "frozen last frame"
+ * duration without letting the display hang indefinitely.
+ */
+const MAX_HANDOFF_WAIT_MS = 3_000;
+
 export class PlayerMachine {
   private snapshot: PlayerSnapshot = {
     state: "BOOTSTRAP",
@@ -1238,84 +1251,72 @@ export class PlayerMachine {
       return;
     }
 
-    // Record that this item ended naturally before engaging the HANDOFF so
-    // onSnapshot() guards against re-binding it from a stale server snapshot.
+    // Record that this item ended naturally BEFORE the HANDOFF so onSnapshot()
+    // guards against re-binding it from a stale server snapshot.
     if (endedItemId) {
       this.lastEndedItemId = endedItemId;
       this.lastEndedAtMs = handoffStartMs;
       this.lastEndedItemStartsAtMs = this.snapshot.lastServerSnapshot?.current?.startsAtMs ?? null;
     }
 
+    // Signal the server immediately — before deciding whether to defer the
+    // visual swap.  Advancing the orchestrator anchor ASAP keeps all clients
+    // in sync regardless of when this client's inactive buffer becomes ready.
+    if (endedItemId) this.onNaturalEndCb?.(endedItemId);
+
     const inactiveItemId = "id" in inactiveItem ? (inactiveItem as V2Item).id : "override";
+
+    // ── Deferred HANDOFF ──────────────────────────────────────────────────
+    // If the inactive buffer hasn't fired canplay / loadedmetadata yet
+    // (inactiveReadyBufferId !== inactiveId), the swap would reveal a blank
+    // or partially-decoded frame.  Instead, hold the active buffer's frozen
+    // last frame on screen — HTML5 video elements retain the last decoded
+    // frame after `ended` fires — and defer the swap until the inactive
+    // buffer signals it is ready.
+    //
+    // onBufferReady() executes the HANDOFF as soon as the inactive buffer
+    // fires canplay.  A safety-valve timer (MAX_HANDOFF_WAIT_MS = 3 s) forces
+    // the swap if canplay never arrives, capping the "frozen frame" duration.
+    if (this.inactiveReadyBufferId !== inactiveId) {
+      console.debug(
+        "[player] buffer-ended → deferred HANDOFF (inactive buffer not yet ready)",
+        {
+          activeBuffer: bufferId,
+          nextBuffer: inactiveId,
+          endedItemId,
+          nextItemId: inactiveItemId,
+          inactiveReadyBufferId: this.inactiveReadyBufferId,
+          ts: handoffStartMs,
+        },
+      );
+      this.pendingHandoff = { endedBufferId: bufferId, inactiveId, inactiveItem, endedItemId };
+      this.pendingHandoffTimer = setTimeout(() => {
+        this.pendingHandoffTimer = null;
+        if (!this.pendingHandoff) return;
+        const h = this.pendingHandoff;
+        this.pendingHandoff = null;
+        console.debug(
+          "[player] deferred HANDOFF safety valve fired — inactive never fired canplay",
+          { endedBuffer: h.endedBufferId, nextBuffer: h.inactiveId, waitedMs: MAX_HANDOFF_WAIT_MS },
+        );
+        this.doHandoff(h.endedBufferId, h.inactiveId, h.inactiveItem);
+      }, MAX_HANDOFF_WAIT_MS);
+      return;
+    }
+
+    // Inactive buffer already decoded at least one frame — swap immediately
+    // for a seamless zero-gap transition.
     console.debug(
-      "[player] buffer-ended → HANDOFF",
+      "[player] buffer-ended → immediate HANDOFF (inactive buffer ready)",
       {
         activeBuffer: bufferId,
         nextBuffer: inactiveId,
         endedItemId,
         nextItemId: inactiveItemId,
-        stateAtEnd: this.snapshot.state,
         ts: handoffStartMs,
       },
     );
-
-    this.transition("HANDOFF");
-    this.emit({ type: "swap", activeBufferId: inactiveId });
-    // Play the inactive buffer from the start of the next item (position 0).
-    this.emit({ type: "play", bufferId: inactiveId, positionSecs: 0 });
-    this.set({ activeBufferId: inactiveId });
-    this.transition("PLAYING");
-
-    console.debug(
-      "[player] HANDOFF complete → PLAYING",
-      { activeBuffer: inactiveId, nextItemId: inactiveItemId, handoffDurationMs: Date.now() - handoffStartMs },
-    );
-    this.primaryRetries = 0;
-
-    // Signal the server that this item ended naturally so it can advance
-    // the cycle anchor immediately, keeping all clients in sync.
-    if (endedItemId) this.onNaturalEndCb?.(endedItemId);
-
-    // Immediately request a fresh snapshot after HANDOFF so drift correction
-    // for the newly-active item fires in < 1 s rather than waiting up to 8 s
-    // for the next keepalive frame.  Every other "needs fresh state now" path
-    // in the machine (SYNCING, SKIP_PENDING, onBufferError) already calls this;
-    // the HANDOFF path was the only one missing it.  The server will respond
-    // with the updated startsAtMs for the new current item, which
-    // resolvePositionSecs() uses to place the playhead at the correct wall-clock
-    // position — eliminating the brief position-0 phase that was visible
-    // during item transitions on slow or reconnecting transports.
-    this.onNeedSnapshotCb?.();
-
-    // ── Eager post-handoff preload ────────────────────────────────────────
-    // The just-freed buffer (old `bufferId`, now the inactive slot) was
-    // cleared to null above.  Start loading the next item into it immediately
-    // instead of waiting for the server's preload frame (which fires up to
-    // durationSecs − PRELOAD_LEAD_MS seconds from now) or the next
-    // keep-alive snapshot (≤ 30 s).  The wider window dramatically reduces
-    // the chance of a SYNCING gap on the next transition.
-    //
-    // Guard for multi-item queues: if the snapshot is from BEFORE the
-    // server's item.advanced event, lastServerSnapshot.next still points at
-    // the item we just activated (inactiveItem).  Binding that URL into the
-    // freed buffer would duplicate the active source.  We detect this by
-    // checking next.id === activatedId and deferring — the correct next item
-    // arrives in the imminent item.advanced snapshot.
-    //
-    // For single-item queues (next.id === current.id === activatedId) the
-    // same item must loop, so we always preload it regardless.
-    const snap = this.snapshot.lastServerSnapshot;
-    const nextToEagerBind = snap?.next ?? snap?.nextNext;
-    if (nextToEagerBind && "durationSecs" in inactiveItem) {
-      const activatedId = (inactiveItem as V2Item).id;
-      const isSingleItemLoop =
-        snap?.current != null &&
-        "id" in snap.current &&
-        (snap.current as { id: string }).id === nextToEagerBind.id;
-      if (isSingleItemLoop || nextToEagerBind.id !== activatedId) {
-        this.bindInactive(nextToEagerBind);
-      }
-    }
+    this.doHandoff(bufferId, inactiveId, inactiveItem);
   }
 
   private onBufferNearEnd(bufferId: "A" | "B"): void {
@@ -1418,6 +1419,74 @@ export class PlayerMachine {
     if (inactiveId === "A") this.set({ bufferA: override, activeBufferId: "A" });
     else this.set({ bufferB: override, activeBufferId: "B" });
     this.transition("LIVE_OVERRIDE_ACTIVE");
+  }
+
+  /**
+   * Execute the buffer swap atomically: transition HANDOFF → PLAYING, emit
+   * swap + play intents, reset retry counters, request a drift-correction
+   * snapshot, and kick off eager preloading of the next item.
+   *
+   * Called from two sites:
+   *  - `onBufferEnded()` directly when the inactive buffer is already ready.
+   *  - `onBufferReady()` when the inactive buffer becomes ready after the
+   *    active buffer had already ended (deferred HANDOFF path).
+   */
+  private doHandoff(
+    endedBufferId: "A" | "B",
+    inactiveId: "A" | "B",
+    inactiveItem: V2Item | V2Override,
+  ): void {
+    const swapStartMs = Date.now();
+    const inactiveItemId = "id" in inactiveItem ? (inactiveItem as V2Item).id : "override";
+
+    // Clear the readiness flag BEFORE the swap so the newly-demoted inactive
+    // buffer starts fresh for its next preload cycle.
+    this.inactiveReadyBufferId = null;
+
+    this.transition("HANDOFF");
+    this.emit({ type: "swap", activeBufferId: inactiveId });
+    // Play the next item from position 0. The server's `play` drift correction
+    // fires within < 1 s via onNeedSnapshotCb below.
+    this.emit({ type: "play", bufferId: inactiveId, positionSecs: 0 });
+    this.set({ activeBufferId: inactiveId });
+    this.transition("PLAYING");
+    this.primaryRetries = 0;
+
+    console.debug("[player] HANDOFF complete → PLAYING", {
+      endedBuffer: endedBufferId,
+      activeBuffer: inactiveId,
+      nextItemId: inactiveItemId,
+      handoffDurationMs: Date.now() - swapStartMs,
+    });
+
+    // Immediately request a fresh snapshot so drift correction for the
+    // newly-active item fires in < 1 s rather than waiting up to 8 s for
+    // the next keepalive frame.
+    this.onNeedSnapshotCb?.();
+
+    // ── Eager post-handoff preload ────────────────────────────────────────
+    // Start loading the next item into the just-freed buffer immediately
+    // instead of waiting for the server's preload frame (up to
+    // durationSecs − PRELOAD_LEAD_MS seconds away) or the next keepalive
+    // snapshot (≤ 30 s). This dramatically reduces the chance of a SYNCING
+    // gap on the next transition.
+    //
+    // Guard: if the snapshot still shows the item we just activated as
+    // `next` (pre-item.advanced race), skip the bind — the correct next
+    // item arrives in the imminent snapshot. Exception: single-item queue
+    // loops where the same item always recurs.
+    const snap = this.snapshot.lastServerSnapshot;
+    const nextToEagerBind = snap?.next ?? snap?.nextNext;
+    if (nextToEagerBind && "durationSecs" in inactiveItem) {
+      const activatedId = (inactiveItem as V2Item).id;
+      const isSingleItemLoop =
+        snap?.current != null &&
+        "id" in snap.current &&
+        (snap.current as { id: string }).id === nextToEagerBind.id;
+      if (isSingleItemLoop || nextToEagerBind.id !== activatedId) {
+        this.bindInactive(nextToEagerBind);
+      }
+    }
   }
 
   private bindActive(item: V2Item | V2Override): void {
