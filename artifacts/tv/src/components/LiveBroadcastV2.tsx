@@ -622,7 +622,7 @@ export function LiveBroadcastV2({
     const overrideKind = snapshot.lastServerSnapshot?.override?.kind;
     const overrideUrl  = snapshot.lastServerSnapshot?.override?.url ?? null;
     const overrideId   = snapshot.lastServerSnapshot?.override?.id ?? null;
-    const nextYtId     = (snapshot.lastServerSnapshot as { nextYtVideoId?: string | null } | null)?.nextYtVideoId ?? null;
+    const nextYtId     = snapshot.lastServerSnapshot?.nextYtVideoId ?? null;
     const isPlayer     = variant === "player";
 
     const extractId = (url: string): string | null => {
@@ -657,8 +657,11 @@ export function LiveBroadcastV2({
       };
       ytStateRef.current = next;
       setYtRender({ slotA: next.slotA, slotB: next.slotB, activeSlot: next.activeSlot });
-      // Player variant: unmute the newly-active slot
-      if (isPlayer) setTimeout(() => ytPostMsg(ytSlotARef, "unMute"), 500);
+      // Player variant: unmute the newly-active slot.
+      // 100 ms is enough for the iframe to register the postMessage;
+      // shorter than the previous 500 ms which caused an audible silence gap.
+      if (isPlayer) setTimeout(() => ytPostMsg(ytSlotARef, "unMute"), 100);
+      console.debug("[yt-slot] first activation", { ytId, nextPreload: nextYtId, ts: Date.now() });
       return;
     }
 
@@ -674,14 +677,21 @@ export function LiveBroadcastV2({
         const newSt = { ...st, activeSlot: inactiveSlot as "A" | "B", lastOverrideId: newLastId };
         ytStateRef.current = newSt;
         setYtRender(r => ({ ...r, activeSlot: inactiveSlot as "A" | "B" }));
-        // Player variant: unmute new active, mute old
+        // Player variant: unmute new active, mute old.
+        // The inactive slot has been playing (muted, invisible) for the full
+        // duration of the previous video — no load delay, so the postMessage
+        // can fire immediately rather than waiting the old 100 ms.
         if (isPlayer) {
-          setTimeout(() => {
-            ytPostMsg(inactiveSlot === "A" ? ytSlotARef : ytSlotBRef, "unMute");
-            ytPostMsg(prevActiveSlot === "A" ? ytSlotARef : ytSlotBRef, "mute");
-          }, 100);
+          ytPostMsg(inactiveSlot === "A" ? ytSlotARef : ytSlotBRef, "unMute");
+          ytPostMsg(prevActiveSlot === "A" ? ytSlotARef : ytSlotBRef, "mute");
         }
-        // Load next video into the old active slot (brief delay for CSS transition)
+        console.debug("[yt-slot] gapless transition", {
+          from: prevActiveSlot, to: inactiveSlot, ytId,
+          nextPreload: nextYtId, ts: Date.now(),
+        });
+        // Load next video into the old active slot.  100 ms lets the CSS
+        // opacity transition finish before the freed slot gets a new src,
+        // avoiding a brief double-decode stutter on low-end TV SoCs.
         const oldSlot = prevActiveSlot;
         const nextPreload = nextYtId && nextYtId !== ytId ? nextYtId : null;
         setTimeout(() => {
@@ -693,7 +703,7 @@ export function LiveBroadcastV2({
             ytStateRef.current = { ...ytStateRef.current, slotB: nextPreload };
             setYtRender(r => ({ ...r, slotB: nextPreload }));
           }
-        }, 400);
+        }, 100);
       } else {
         // Preloaded slot doesn't have new video — load it there and switch
         const updates =
@@ -702,14 +712,21 @@ export function LiveBroadcastV2({
             : { slotB: ytId, activeSlot: inactiveSlot as "A" | "B", lastOverrideId: newLastId };
         ytStateRef.current = { ...st, ...updates };
         setYtRender(r => ({ ...r, ...updates }));
-        // Player variant: unmute new active, mute old
+        // Player variant: unmute new active, mute old.
+        // 300 ms gives the new iframe's autoplay a head start before audio
+        // opens; reduced from 600 ms which was longer than necessary.
         if (isPlayer) {
           setTimeout(() => {
             ytPostMsg(inactiveSlot === "A" ? ytSlotARef : ytSlotBRef, "unMute");
             ytPostMsg(prevActiveSlot === "A" ? ytSlotARef : ytSlotBRef, "mute");
-          }, 600);
+          }, 300);
         }
-        // Load next video into old active slot
+        console.debug("[yt-slot] non-gapless transition", {
+          from: prevActiveSlot, to: inactiveSlot, ytId,
+          prevContent: inactiveContent, nextPreload: nextYtId, ts: Date.now(),
+        });
+        // Load next video into old active slot.  300 ms lets the new iframe
+        // start its initial decode before we repurpose the freed slot.
         const oldSlot = prevActiveSlot;
         const nextPreload = nextYtId && nextYtId !== ytId ? nextYtId : null;
         if (nextPreload) {
@@ -721,7 +738,7 @@ export function LiveBroadcastV2({
               ytStateRef.current = { ...ytStateRef.current, slotB: nextPreload };
               setYtRender(r => ({ ...r, slotB: nextPreload }));
             }
-          }, 1200);
+          }, 300);
         }
       }
       return;
