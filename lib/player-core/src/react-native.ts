@@ -157,57 +157,102 @@ interface NativeSession {
  * background janitor (see startJanitor) evicts sessions that have had zero
  * subscribers for SESSION_IDLE_EVICT_MS so backgrounded apps don't keep a
  * dead WebSocket and FSM in memory forever. */
-const sessions = new Map<string, { session: NativeSession; lastIdleAtMs: number | null }>();
+const sessions = new Map<string, { session: NativeSession; lastIdleAtMs: number | null; lastUsedAt: number }>();
 
 const SESSION_IDLE_EVICT_MS = 5 * 60 * 1000;
+/**
+ * Hard maximum age (ms) for any session entry in the singleton map — 24 hours.
+ * Belt-and-suspenders beyond the 5-min idle eviction: sessions on always-on
+ * devices that somehow kept hookCount > 0 (e.g. due to a navigation bug that
+ * never calls the hook cleanup) are force-evicted after 24 hours to prevent
+ * unbounded Map growth and memory leaks on kiosk-style deployments.
+ */
+const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
+
+/** setInterval handle for the janitor sweep. Null when no sessions exist. */
 let janitorInterval: ReturnType<typeof setInterval> | null = null;
+
+// ── Lightweight Sentry breadcrumb helper ────────────────────────────────────
+// Uses a lazy require so the player-core vendor library does not take a hard
+// compile-time dependency on @sentry/react-native. Falls back silently when
+// Sentry is unavailable (web builds, unit tests, TV surface).
+function _breadcrumb(
+  category: string,
+  message: string,
+  level: "info" | "warning" | "error" = "info",
+  data?: Record<string, unknown>,
+): void {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any
+    // @ts-expect-error — require is available in both RN (native) and the
+    // Metro bundler's CommonJS shim; lib tsconfig doesn't include @types/node.
+    const S = (require as (id: string) => unknown)("@sentry/react-native") as {
+      addBreadcrumb: (b: { category: string; message: string; level: string; data?: Record<string, unknown> }) => void;
+    };
+    S.addBreadcrumb({ category, message, level, data });
+  } catch {
+    // Sentry not available
+  }
+}
+
+function evictSession(baseUrl: string, entry: { session: NativeSession; lastIdleAtMs: number | null; lastUsedAt: number }): void {
+  try {
+    entry.session.cleanup();
+    entry.session.machine.destroy();
+    entry.session.machineUnsub();
+    entry.session.transport.stop?.();
+  } catch {
+    /* best-effort */
+  }
+  sessions.delete(baseUrl);
+}
+
+function runJanitor(): void {
+  const now = Date.now();
+  for (const [baseUrl, entry] of sessions) {
+    // Use hookCount — not snapshotListeners.size — to detect idle sessions.
+    // snapshotListeners always contains the two permanent session-level
+    // listeners (stallListener, escapeValveListener) added at session creation,
+    // so its size is always ≥ 2 and the janitor would never evict.
+    const hasListeners = entry.session.hookCount > 0;
+
+    // ── Hard max-age sweep (24 h) ─────────────────────────────────────────
+    // Evict sessions older than SESSION_MAX_AGE_MS regardless of hookCount.
+    // This is a safety net for always-on / kiosk devices where a navigation
+    // bug might keep hookCount > 0 indefinitely without anyone watching.
+    // On real broadcast surfaces the user will briefly see a BOOTSTRAP flash
+    // (< 1 s) before the fresh session reconnects — acceptable vs a memory
+    // leak that accumulates for days.
+    if (now - entry.lastUsedAt > SESSION_MAX_AGE_MS) {
+      evictSession(baseUrl, entry);
+      continue;
+    }
+
+    if (hasListeners) {
+      entry.lastIdleAtMs = null;
+      continue;
+    }
+    if (entry.lastIdleAtMs === null) {
+      entry.lastIdleAtMs = now;
+      continue;
+    }
+
+    // ── Idle eviction (5 min) ─────────────────────────────────────────────
+    if (now - entry.lastIdleAtMs >= SESSION_IDLE_EVICT_MS) {
+      evictSession(baseUrl, entry);
+    }
+  }
+  // Stop the interval when no sessions remain.
+  if (sessions.size === 0 && janitorInterval !== null) {
+    clearInterval(janitorInterval);
+    janitorInterval = null;
+  }
+}
 
 function startJanitor(): void {
   if (janitorInterval !== null) return;
   if (typeof setInterval === "undefined") return;
-  janitorInterval = setInterval(() => {
-    const now = Date.now();
-    for (const [baseUrl, entry] of sessions) {
-      // Use hookCount — not snapshotListeners.size — to detect idle sessions.
-      // snapshotListeners always contains the two permanent session-level
-      // listeners (stallListener, escapeValveListener) added at session creation,
-      // so its size is always ≥ 2 and the janitor would never evict.
-      const hasListeners = entry.session.hookCount > 0;
-      if (hasListeners) {
-        entry.lastIdleAtMs = null;
-        continue;
-      }
-      if (entry.lastIdleAtMs === null) {
-        entry.lastIdleAtMs = now;
-        continue;
-      }
-      if (now - entry.lastIdleAtMs >= SESSION_IDLE_EVICT_MS) {
-        try {
-          // Teardown order matters:
-          // 1. cleanup() — clears closure-scoped timers (escapeValveTimer)
-          //    that live outside the machine and transport. Must run FIRST so
-          //    the timer can't fire transport.forceReconnect() after stop().
-          // 2. machine.destroy() — clears internal machine timers
-          //    (fatalRecoveryTimer, sourceExpiryTimer). Fires into dead state
-          //    otherwise and keeps the RN event loop alive.
-          // 3. machineUnsub() — removes the machine→session listener bridge.
-          // 4. transport.stop() — closes the WS socket and cancels reconnects.
-          entry.session.cleanup();
-          entry.session.machine.destroy();
-          entry.session.machineUnsub();
-          entry.session.transport.stop?.();
-        } catch {
-          /* best-effort */
-        }
-        sessions.delete(baseUrl);
-      }
-    }
-    if (sessions.size === 0 && janitorInterval !== null) {
-      clearInterval(janitorInterval);
-      janitorInterval = null;
-    }
-  }, 60_000);
-  (janitorInterval as unknown as { unref?: () => void }).unref?.();
+  janitorInterval = setInterval(runJanitor, 60_000);
 }
 
 function getOrCreateSession(baseUrl: string): NativeSession {
@@ -220,6 +265,7 @@ function getOrCreateSession(baseUrl: string): NativeSession {
   const existing = sessions.get(key);
   if (existing) {
     existing.lastIdleAtMs = null;
+    existing.lastUsedAt = Date.now();
     return existing.session;
   }
 
@@ -240,6 +286,11 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     // uses server-calibrated wall-clock instead of the device's local clock.
     // This is the primary driver of admin↔mobile broadcast position sync.
     onClockCalibration: (offsetMs: number) => machine.setClockOffsetMs(offsetMs),
+    // Forward the session-level auth getter so the transport's drift reporter
+    // (POST /report-position) includes an Authorization header for authenticated
+    // sessions. Uses the mutable ref so token rotations are always reflected
+    // without recreating the transport or its callbacks.
+    getAuthToken: () => authGetterRef.current?.(),
   });
 
   // Wire machine → transport: when the active buffer ends with no preloaded
@@ -296,7 +347,25 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     doPost(0);
   });
 
+  // Track the previous FSM state for Sentry breadcrumb transitions.
+  let _prevState = "BOOTSTRAP";
   const machineUnsub = machine.subscribe((snap) => {
+    // Emit a Sentry breadcrumb on every FSM state transition so crash reports
+    // include the full playback history without needing custom event logging.
+    // Cap breadcrumb volume: only emit when the state actually changes.
+    if (snap.state !== _prevState) {
+      _breadcrumb(
+        "player.fsm",
+        `${_prevState} → ${snap.state}`,
+        snap.state === "FATAL" ? "error" : snap.state === "SKIP_PENDING" ? "warning" : "info",
+        {
+          itemId: snap.lastServerSnapshot?.current?.id ?? null,
+          lastSequence: snap.lastSequence,
+          fatalAttempts: snap.fatalAttemptCount,
+        },
+      );
+      _prevState = snap.state;
+    }
     session.snapshot = snap;
     for (const l of session.snapshotListeners) l(snap);
   });
@@ -341,6 +410,12 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     const itemId = s.lastServerSnapshot?.current?.id ?? null;
     if (!itemId || itemId === stallLastReportedId) return;
     stallLastReportedId = itemId;
+    _breadcrumb(
+      "player.stall",
+      `SKIP_PENDING reported for item ${itemId}`,
+      "warning",
+      { itemId, baseUrl },
+    );
     // Jitter: spread POST /report-stall calls 0–5 s across the client fleet
     // so a mass-CDN-failure event that stalls thousands of devices simultaneously
     // doesn't produce a thundering herd that exhausts the server rate-limiter.
@@ -408,7 +483,7 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     // they are garbage-collected with the closure. No explicit clear needed.
   };
 
-  sessions.set(key, { session, lastIdleAtMs: null });
+  sessions.set(key, { session, lastIdleAtMs: null, lastUsedAt: Date.now() });
   // Register session-level listeners AFTER the session Map entry exists so
   // a synchronous machine snapshot (theoretically possible) finds the entry.
   session.snapshotListeners.add(stallListener);

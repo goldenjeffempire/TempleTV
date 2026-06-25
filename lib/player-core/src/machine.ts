@@ -489,6 +489,14 @@ export class PlayerMachine {
     this.sourceExpiryItemId = null;
   }
 
+  private clearPendingHandoff(): void {
+    if (this.pendingHandoffTimer !== null) {
+      clearTimeout(this.pendingHandoffTimer);
+      this.pendingHandoffTimer = null;
+    }
+    this.pendingHandoff = null;
+  }
+
   /**
    * Release all internal resources held by this machine instance.
    *
@@ -1022,7 +1030,7 @@ export class PlayerMachine {
         }
         const h = this.pendingHandoff;
         this.pendingHandoff = null;
-        this.doHandoff(h.endedBufferId, h.inactiveId, h.inactiveItem, h.endedItemId);
+        this.doHandoff(h.endedBufferId, h.inactiveId, h.inactiveItem);
       }
     }
   }

@@ -250,12 +250,14 @@ const HLS_LIVE_SYNC_INTERVAL_MS = 30_000;
  * when the server's preload frame arrives late — e.g. during a transport
  * reconnect or a slow-link snapshot delay.
  *
- * Matches `PRELOAD_LEAD_MS` in `lib/player-core/src/machine.ts` so the
- * two triggers work in lockstep. Only fires once per bind revision (guarded
- * by `nearEndReportedRef`) and only for VOD content with a finite duration.
+ * Set to 120 s to match `PRELOAD_LEAD_MS` in `lib/player-core/src/machine.ts`
+ * (and the server's `BROADCAST_PRELOAD_LEAD_MS` default) so the server preload
+ * frame, machine HANDOFF logic, and this client-side fallback all fire at the
+ * same lead time. Only fires once per bind revision (guarded by
+ * `nearEndReportedRef`) and only for VOD content with a finite duration.
  * Live HLS has no fixed end point so near-end detection is skipped for it.
  */
-const NEAR_END_PRELOAD_LEAD_MS = 90_000;
+const NEAR_END_PRELOAD_LEAD_MS = 120_000;
 
 /**
  * Maximum time (ms) to wait for expo-av's `onLoad` to fire after a new

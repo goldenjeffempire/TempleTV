@@ -296,6 +296,11 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     // uses server-calibrated wall-clock instead of the device's local clock.
     // This is the primary driver of admin↔mobile broadcast position sync.
     onClockCalibration: (offsetMs: number) => machine.setClockOffsetMs(offsetMs),
+    // Forward the session-level auth getter so the transport's drift reporter
+    // (POST /report-position) includes an Authorization header for authenticated
+    // sessions. Uses the mutable ref so token rotations are always reflected
+    // without recreating the transport or its callbacks.
+    getAuthToken: () => authGetterRef.current?.(),
   });
 
   // Wire machine → transport: when the active buffer ends with no preloaded
