@@ -30,6 +30,7 @@ import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { normalizeQueueUrl } from "../repository/queue.repo.js";
+import { env } from "../../../config/env.js";
 
 // ── Duration probe helper ─────────────────────────────────────────────────────
 //
@@ -132,6 +133,28 @@ function _probeUrlFfmpegFallback(probeUrl: string): Promise<number | null> {
   });
 }
 
+/**
+ * Rewrites a local upload URL to a localhost probe URL so ffprobe hits this
+ * server directly instead of going through the external API_ORIGIN hostname.
+ * External origin probing fails when media is stored in PostgreSQL BYTEA and
+ * only THIS server can serve it (e.g. Replit, single-node deployments).
+ *
+ * Matches paths of the form /api/v1/uploads/… or /api/uploads/…
+ * Any other URL is returned unchanged.
+ */
+function toLocalUploadProbeUrl(absUrl: string): string {
+  try {
+    const u = new URL(absUrl);
+    if (/^\/api(?:\/v1)?\/uploads?\//.test(u.pathname)) {
+      const port = Number(env.PORT) || 8080;
+      return `http://127.0.0.1:${port}${u.pathname}${u.search}`;
+    }
+  } catch {
+    // malformed URL — return unchanged
+  }
+  return absUrl;
+}
+
 export type IssueSeverity = "error" | "warn" | "info";
 
 export interface ValidationIssue {
@@ -175,8 +198,10 @@ class QueueIntegrityValidatorImpl {
           durationSecs: q.durationSecs,
           sortOrder: q.sortOrder,
           qLocalUrl: q.localVideoUrl,
+          qHlsUrl: q.hlsMasterUrl,
           videoId2: v.id,
           vLocalUrl: v.localVideoUrl,
+          vHlsUrl: v.hlsMasterUrl,
           vDuration: v.duration,
           vSource: v.videoSource,
         })
@@ -189,10 +214,16 @@ class QueueIntegrityValidatorImpl {
       // Items with SUSPICIOUS_DURATION collected here for background reprobe
       // after the main issue-detection loop (max 3 per cycle).
       const suspiciousDurationItems: Array<{ id: string; videoId: string; localUrl: string }> = [];
+      // Items with placeholder 1800s on the queue row but a real duration on the
+      // joined video row — collected for a single-pass DB UPDATE at the end.
+      const placeholderDurationItems: Array<{ id: string; realDur: number }> = [];
 
       for (const row of rows) {
-        // MP4-only: a playable URL is a local MP4 URL on either the queue row or the video row.
-        const hasAnyUrl = row.qLocalUrl || row.vLocalUrl;
+        // A playable URL is either a local MP4 URL or an HLS master playlist URL,
+        // on either the queue row itself or the joined managed_videos row.
+        // Both HLS and MP4 sources are accepted so that purely-HLS videos are not
+        // incorrectly flagged as missing content.
+        const hasAnyUrl = row.qLocalUrl || row.vLocalUrl || row.qHlsUrl || row.vHlsUrl;
 
         if (!hasAnyUrl) {
           issues.push({
@@ -214,7 +245,10 @@ class QueueIntegrityValidatorImpl {
           });
         }
 
-        if (row.videoId && row.videoId2 !== null && !row.vLocalUrl) {
+        // ORPHANED_VIDEO_REF: the joined video row exists but has no playable URL
+        // on it at all (neither a local MP4 nor an HLS master playlist).  Items
+        // that have only an HLS URL on the *queue* row (qHlsUrl) are not orphaned.
+        if (row.videoId && row.videoId2 !== null && !row.vLocalUrl && !row.vHlsUrl && !row.qHlsUrl && !row.qLocalUrl) {
           issues.push({
             severity: "error",
             itemId: row.id,
@@ -260,6 +294,24 @@ class QueueIntegrityValidatorImpl {
             code: "ZERO_DURATION",
             message: `Item has durationSecs=${row.durationSecs} — orchestrator applies a 60 s floor; re-probe the source file or correct the duration`,
           });
+        }
+
+        // Detect 1800-s placeholder where the joined managed_videos row already
+        // has a real duration.  We collect these for a single-pass DB fix below
+        // so the orchestrator picks up the real duration on its next reload and
+        // the naturalItemEnd guard uses the correct 5 % threshold (not 90 s).
+        if (row.durationSecs === 1800 && row.videoId2 !== null && row.vDuration) {
+          const realDur = parseFloat(row.vDuration);
+          if (Number.isFinite(realDur) && realDur > 10 && realDur < 86_400 && Math.round(realDur) !== 1800) {
+            placeholderDurationItems.push({ id: row.id, realDur });
+            issues.push({
+              severity: "info",
+              itemId: row.id,
+              itemTitle: row.title,
+              code: "PLACEHOLDER_DURATION",
+              message: `Queue row still carries 1800-s placeholder but managed_videos.duration=${row.vDuration} — auto-correcting`,
+            });
+          }
         }
       }
 
@@ -514,15 +566,54 @@ class QueueIntegrityValidatorImpl {
         }
       }
 
+      // ── Auto-fix: repair PLACEHOLDER_DURATION items ────────────────────────
+      // When the queue row carries the 1800-s upload-time sentinel but the joined
+      // managed_videos row already holds a real probe duration, write it into
+      // broadcast_queue in a single UPDATE so the orchestrator's next reload sees
+      // the correct value.  No event is fired here — the orchestrator's drift-poll
+      // will pick up the change within 10 s.
+      if (placeholderDurationItems.length > 0) {
+        try {
+          for (const fix of placeholderDurationItems) {
+            await db.execute(sql`
+              UPDATE broadcast_queue
+              SET duration_secs = ${Math.round(fix.realDur)}
+              WHERE id = ${fix.id}
+                AND duration_secs = 1800
+            `);
+          }
+          logger.info(
+            { count: placeholderDurationItems.length },
+            "[queue-validator] AUTO-FIX: corrected PLACEHOLDER_DURATION (1800 s) → real duration for queue rows",
+          );
+          adminEventBus.push("broadcast-queue-updated", {
+            reason: "integrity-fix-placeholder-duration",
+            count: placeholderDurationItems.length,
+          });
+        } catch (fixErr) {
+          logger.warn(
+            { err: fixErr, count: placeholderDurationItems.length },
+            "[queue-validator] AUTO-FIX: placeholder duration repair failed (non-fatal)",
+          );
+        }
+      }
+
       // ── Background: reprobe SUSPICIOUS_DURATION items ─────────────────────
       // Fire at most 3 concurrent reprobe tasks per cycle (fire-and-forget).
+      // The probe URL is rewritten to localhost so ffprobe hits this server
+      // directly — media stored in PostgreSQL BYTEA is only served locally;
+      // using the external API_ORIGIN URL would fail with a 404 on a
+      // different node or when the origin resolves to a production server.
       if (suspiciousDurationItems.length > 0) {
         const toReprobe = suspiciousDurationItems.slice(0, 3);
         for (const item of toReprobe) {
           void (async () => {
             try {
-              const absUrl = normalizeQueueUrl(item.localUrl);
-              if (!absUrl) return;
+              const rawUrl = normalizeQueueUrl(item.localUrl);
+              if (!rawUrl) return;
+              // Rewrite external upload URLs to localhost so ffprobe fetches
+              // from THIS server, not from a potentially different host.
+              const absUrl = toLocalUploadProbeUrl(rawUrl);
               const dur = await probeDurationFromUrl(absUrl);
               if (!dur || dur < 1) {
                 logger.debug(

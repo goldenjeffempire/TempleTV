@@ -3363,7 +3363,17 @@ class BroadcastOrchestrator extends EventEmitter {
       }
     }
 
-    const minElapsedMs = Math.max(15_000, Math.floor(effectiveDurationSecs * 0.05 * 1000));
+    // When effectiveDurationSecs is still 1800 after the DB lookup (i.e. managed_videos
+    // also stores the placeholder, or the lookup failed), the 5% threshold would be
+    // max(15s, 90s) = 90 s.  A 60-second video that plays to completion would have
+    // elapsed ≈ 60 s < 90 s and be rejected — leaving the broadcast frozen on a
+    // finished item for up to 29 additional minutes.
+    // Fix: when the placeholder is still unresolved, use the absolute 15 s minimum
+    // (already strong enough to reject sub-second false positives from late-joiners)
+    // rather than 5% of the 1800-s sentinel value.
+    const minElapsedMs = effectiveDurationSecs === 1800
+      ? 15_000  // unresolved placeholder — absolute minimum; real 5% guard applied once duration is known
+      : Math.max(15_000, Math.floor(effectiveDurationSecs * 0.05 * 1000));
     if (elapsedMs < minElapsedMs) {
       logger.warn(
         { itemId, elapsedMs, minElapsedMs, effectiveDurationSecs, remainingMs },
