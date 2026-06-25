@@ -481,6 +481,27 @@ export function LiveBroadcastV2({
   const videoRefB = useRef<HTMLVideoElement | null>(null);
   const prevActiveBufferId = useRef(snapshot.activeBufferId);
 
+  // ── YouTube dual-slot preload ─────────────────────────────────────────────
+  // Two permanent iframe slots (A / B) avoid DOM remounts between YouTube
+  // videos. The inactive slot preloads the next video via the server's
+  // nextYtVideoId field. On each override transition a CSS-only opacity/
+  // zIndex swap makes the preloaded frame visible — zero dead-air spinner.
+  const ytSlotARef = useRef<HTMLIFrameElement | null>(null);
+  const ytSlotBRef = useRef<HTMLIFrameElement | null>(null);
+  // Mutable ref — read inside effects without stale-closure issues.
+  const ytStateRef = useRef<{
+    slotA: string | null;
+    slotB: string | null;
+    activeSlot: "A" | "B" | null;
+    lastOverrideId: string | null;
+  }>({ slotA: null, slotB: null, activeSlot: null, lastOverrideId: null });
+  // Render-driving state — triggers JSX updates.
+  const [ytRender, setYtRender] = useState<{
+    slotA: string | null;
+    slotB: string | null;
+    activeSlot: "A" | "B" | null;
+  }>({ slotA: null, slotB: null, activeSlot: null });
+
   // ── Stable combined ref callbacks ───────────────────────────────────────────
   // The player-core hook already wraps attach.A / attach.B in useCallback so
   // their identities are stable across renders. We must NOT wrap them in new
@@ -582,6 +603,151 @@ export function LiveBroadcastV2({
       .then(() => newActiveEl.requestPictureInPicture())
       .catch(() => { /* PiP may not be available — best effort */ });
   }, [snapshot.activeBufferId]);
+
+  // ── YouTube dual-slot sync ────────────────────────────────────────────────
+  // Keeps ytStateRef (mutable) and ytRender (render-driving) in sync with the
+  // server's current YouTube override.  Runs whenever the override ID or
+  // nextYtVideoId changes.  Uses ytStateRef.current for reading current slot
+  // state (no stale-closure issue) and setYtRender only when the display
+  // needs to change (avoids spurious re-renders).
+  const ytPostMsg = useCallback((ref: React.RefObject<HTMLIFrameElement | null>, func: string) => {
+    try {
+      ref.current?.contentWindow?.postMessage(
+        JSON.stringify({ event: "command", func, args: "" }), "*",
+      );
+    } catch { /* cross-origin — ignore */ }
+  }, []);
+
+  useEffect(() => {
+    const overrideKind = snapshot.lastServerSnapshot?.override?.kind;
+    const overrideUrl  = snapshot.lastServerSnapshot?.override?.url ?? null;
+    const overrideId   = snapshot.lastServerSnapshot?.override?.id ?? null;
+    const nextYtId     = (snapshot.lastServerSnapshot as { nextYtVideoId?: string | null } | null)?.nextYtVideoId ?? null;
+    const isPlayer     = variant === "player";
+
+    const extractId = (url: string): string | null => {
+      try {
+        const u = new URL(url);
+        if (u.hostname === "youtu.be") return u.pathname.slice(1).split("?")[0] || null;
+        return u.searchParams.get("v");
+      } catch { return null; }
+    };
+
+    if (overrideKind !== "youtube" || !overrideUrl) {
+      // No active YouTube override — clear all slots
+      if (ytStateRef.current.activeSlot !== null) {
+        ytStateRef.current = { slotA: null, slotB: null, activeSlot: null, lastOverrideId: null };
+        setYtRender({ slotA: null, slotB: null, activeSlot: null });
+      }
+      return;
+    }
+
+    const ytId = extractId(overrideUrl);
+    if (!ytId) return;
+
+    const st = ytStateRef.current;
+
+    // First activation: put active in slot A, preload next in slot B
+    if (st.activeSlot === null) {
+      const next = {
+        slotA: ytId,
+        slotB: nextYtId && nextYtId !== ytId ? nextYtId : null,
+        activeSlot: "A" as const,
+        lastOverrideId: overrideId,
+      };
+      ytStateRef.current = next;
+      setYtRender({ slotA: next.slotA, slotB: next.slotB, activeSlot: next.activeSlot });
+      // Player variant: unmute the newly-active slot
+      if (isPlayer) setTimeout(() => ytPostMsg(ytSlotARef, "unMute"), 500);
+      return;
+    }
+
+    // Override changed — new video starting
+    if (overrideId !== st.lastOverrideId) {
+      const prevActiveSlot = st.activeSlot;
+      const inactiveSlot   = prevActiveSlot === "A" ? "B" : "A";
+      const inactiveContent = inactiveSlot === "A" ? st.slotA : st.slotB;
+      const newLastId = overrideId;
+
+      if (inactiveContent === ytId) {
+        // GAPLESS: preloaded slot already has this video — CSS swap only, no remount!
+        const newSt = { ...st, activeSlot: inactiveSlot as "A" | "B", lastOverrideId: newLastId };
+        ytStateRef.current = newSt;
+        setYtRender(r => ({ ...r, activeSlot: inactiveSlot as "A" | "B" }));
+        // Player variant: unmute new active, mute old
+        if (isPlayer) {
+          setTimeout(() => {
+            ytPostMsg(inactiveSlot === "A" ? ytSlotARef : ytSlotBRef, "unMute");
+            ytPostMsg(prevActiveSlot === "A" ? ytSlotARef : ytSlotBRef, "mute");
+          }, 100);
+        }
+        // Load next video into the old active slot (brief delay for CSS transition)
+        const oldSlot = prevActiveSlot;
+        const nextPreload = nextYtId && nextYtId !== ytId ? nextYtId : null;
+        setTimeout(() => {
+          if (!nextPreload) return;
+          if (oldSlot === "A" && ytStateRef.current.slotA !== nextPreload) {
+            ytStateRef.current = { ...ytStateRef.current, slotA: nextPreload };
+            setYtRender(r => ({ ...r, slotA: nextPreload }));
+          } else if (oldSlot === "B" && ytStateRef.current.slotB !== nextPreload) {
+            ytStateRef.current = { ...ytStateRef.current, slotB: nextPreload };
+            setYtRender(r => ({ ...r, slotB: nextPreload }));
+          }
+        }, 400);
+      } else {
+        // Preloaded slot doesn't have new video — load it there and switch
+        const updates =
+          inactiveSlot === "A"
+            ? { slotA: ytId, activeSlot: inactiveSlot as "A" | "B", lastOverrideId: newLastId }
+            : { slotB: ytId, activeSlot: inactiveSlot as "A" | "B", lastOverrideId: newLastId };
+        ytStateRef.current = { ...st, ...updates };
+        setYtRender(r => ({ ...r, ...updates }));
+        // Player variant: unmute new active, mute old
+        if (isPlayer) {
+          setTimeout(() => {
+            ytPostMsg(inactiveSlot === "A" ? ytSlotARef : ytSlotBRef, "unMute");
+            ytPostMsg(prevActiveSlot === "A" ? ytSlotARef : ytSlotBRef, "mute");
+          }, 600);
+        }
+        // Load next video into old active slot
+        const oldSlot = prevActiveSlot;
+        const nextPreload = nextYtId && nextYtId !== ytId ? nextYtId : null;
+        if (nextPreload) {
+          setTimeout(() => {
+            if (oldSlot === "A" && ytStateRef.current.slotA !== nextPreload) {
+              ytStateRef.current = { ...ytStateRef.current, slotA: nextPreload };
+              setYtRender(r => ({ ...r, slotA: nextPreload }));
+            } else if (oldSlot === "B" && ytStateRef.current.slotB !== nextPreload) {
+              ytStateRef.current = { ...ytStateRef.current, slotB: nextPreload };
+              setYtRender(r => ({ ...r, slotB: nextPreload }));
+            }
+          }, 1200);
+        }
+      }
+      return;
+    }
+
+    // Same override — update inactive slot with next video for preloading
+    const inactiveSlot = st.activeSlot === "A" ? "B" : "A";
+    const inactiveContent = inactiveSlot === "A" ? st.slotA : st.slotB;
+    const nextPreload = nextYtId && nextYtId !== ytId ? nextYtId : null;
+    if (nextPreload && inactiveContent !== nextPreload) {
+      if (inactiveSlot === "A") {
+        ytStateRef.current = { ...st, slotA: nextPreload };
+        setYtRender(r => ({ ...r, slotA: nextPreload }));
+      } else {
+        ytStateRef.current = { ...st, slotB: nextPreload };
+        setYtRender(r => ({ ...r, slotB: nextPreload }));
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    snapshot.lastServerSnapshot?.override?.id,
+    // nextYtVideoId typed via cast above — read from snapshot object reference
+    snapshot.lastServerSnapshot,
+    variant,
+    ytPostMsg,
+  ]);
 
   const server = snapshot.lastServerSnapshot;
 
@@ -926,43 +1092,78 @@ export function LiveBroadcastV2({
         />
       )}
 
-      {/* ── YouTube iframe ─────────────────────────────────────────────────
-          Rendered when the current item OR the active override is a YouTube
-          source (kind="youtube"). Override is checked first so that an admin
-          YouTube takeover (LIVE_OVERRIDE_ACTIVE) is always rendered here.
-          The iframe sits above the native <video> buffers (zIndex 5) but
-          below overlays (zIndex 20+). The video buffers stay mounted so the
-          player-core FSM continues to run — they are harmlessly invisible
-          behind the iframe. Native loading of YouTube URLs is suppressed in
-          the web adapter (see web.ts: kind === "youtube" early-return) so the
-          FSM stays in LIVE_OVERRIDE_ACTIVE without entering RECOVERING_PRIMARY.
-          autoplay=1 requires the iframe to be rendered after a user gesture
-          on most browsers; Smart TV platforms typically permit autoplay in
-          fullscreen embedded contexts.                                      */}
-      {(() => {
-        // Extract YouTube video ID from any supported URL format:
-        //   https://www.youtube.com/watch?v=VIDEOID
-        //   https://youtu.be/VIDEOID
-        //   https://www.youtube.com/embed/VIDEOID
-        // Returns null for unrecognised formats so the iframe is suppressed
-        // rather than loading with an invalid ID (which produces a 404 embed).
+      {/* ── YouTube dual-slot iframe preloader ──────────────────────────────
+          Two permanent iframe slots (A / B) avoid DOM remounts between
+          YouTube videos. The inactive slot preloads the next video from
+          server.nextYtVideoId. On each override transition a CSS-only
+          opacity/zIndex swap reveals the preloaded slot — no loading
+          spinner. All slots start muted=1 in the URL; the YouTube
+          postMessage API unmutes the active slot for the "player" variant
+          without triggering an iframe reload (and re-mutes the inactive
+          one). Managed by the ytStateRef + ytRender state above.       */}
+      {ytRender.slotA && (() => {
+        const isPlayer = variant === "player";
+        const ytControls = isPlayer ? 1 : 0;
+        const ytDisableKb = isPlayer ? "" : "&disablekb=1";
+        // Always mute=1 in the src URL. The active slot (player variant) is
+        // unmuted via postMessage without changing the src (which would reload).
+        const buildSlotSrc = (ytId: string) =>
+          `https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&mute=1&controls=${ytControls}&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3${ytDisableKb}&enablejsapi=1`;
+        const slotAActive = ytRender.activeSlot === "A";
+        const slotBActive = ytRender.activeSlot === "B";
+        return (
+          <>
+            <iframe
+              ref={ytSlotARef}
+              key="yt-slot-a"
+              src={buildSlotSrc(ytRender.slotA)}
+              allow="autoplay; encrypted-media; fullscreen"
+              allowFullScreen
+              style={{
+                position: "absolute", inset: 0, width: "100%", height: "100%",
+                border: "none",
+                zIndex: slotAActive ? 5 : 4,
+                opacity: slotAActive ? 1 : 0,
+                transition: "opacity 0.25s ease",
+                pointerEvents: slotAActive ? "auto" : "none",
+              }}
+              title={slotAActive ? (server?.override?.title ?? "Temple TV") : "Temple TV — Preloading"}
+            />
+            {ytRender.slotB && (
+              <iframe
+                ref={ytSlotBRef}
+                key="yt-slot-b"
+                src={buildSlotSrc(ytRender.slotB)}
+                allow="autoplay; encrypted-media; fullscreen"
+                allowFullScreen
+                style={{
+                  position: "absolute", inset: 0, width: "100%", height: "100%",
+                  border: "none",
+                  zIndex: slotBActive ? 5 : 4,
+                  opacity: slotBActive ? 1 : 0,
+                  transition: "opacity 0.25s ease",
+                  pointerEvents: slotBActive ? "auto" : "none",
+                }}
+                title={slotBActive ? (server?.override?.title ?? "Temple TV") : "Temple TV — Preloading"}
+              />
+            )}
+          </>
+        );
+      })()}
+
+      {/* Fallback: non-override YouTube queue item (rare in YouTube-only deploy)
+          or the very first frame before the dual-slot state initialises.    */}
+      {!ytRender.slotA && (() => {
         const extractYouTubeId = (url: string): string | null => {
           try {
             const u = new URL(url);
-            if (u.hostname === "youtu.be") {
-              const id = u.pathname.slice(1).split("?")[0];
-              return id || null;
-            }
+            if (u.hostname === "youtu.be") return u.pathname.slice(1).split("?")[0] || null;
             return u.searchParams.get("v");
           } catch { return null; }
         };
-
-        // Check active override first (LIVE_OVERRIDE_ACTIVE with YouTube kind).
+        // Check override first
         const overrideKind = server?.override?.kind;
         const overrideUrl  = server?.override?.url;
-        // hero → muted ambient preview, no controls, keyboard disabled.
-        // player → unmuted fullscreen experience, controls visible so the
-        // viewer can pause / seek / fullscreen / adjust volume.
         const isPlayer = variant === "player";
         const ytMute     = isPlayer ? 0 : 1;
         const ytControls = isPlayer ? 1 : 0;
@@ -975,19 +1176,12 @@ export function LiveBroadcastV2({
               src={`https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&mute=${ytMute}&controls=${ytControls}&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3${ytDisableKb}&enablejsapi=1`}
               allow="autoplay; encrypted-media; fullscreen"
               allowFullScreen
-              style={{
-                position: "absolute",
-                inset: 0,
-                width: "100%",
-                height: "100%",
-                border: "none",
-                zIndex: 5,
-              }}
+              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: "none", zIndex: 5 }}
               title={server?.override?.title ?? "Temple TV — YouTube Override"}
             />
           );
         }
-        // Fall back to current queue item's YouTube source.
+        // Queue item YouTube source
         const src = server?.current?.source;
         if (src?.kind !== "youtube") return null;
         const ytId = extractYouTubeId(src.url);
@@ -998,14 +1192,7 @@ export function LiveBroadcastV2({
             src={`https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&mute=${ytMute}&controls=${ytControls}&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3${ytDisableKb}&enablejsapi=1`}
             allow="autoplay; encrypted-media; fullscreen"
             allowFullScreen
-            style={{
-              position: "absolute",
-              inset: 0,
-              width: "100%",
-              height: "100%",
-              border: "none",
-              zIndex: 5,
-            }}
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: "none", zIndex: 5 }}
             title={server?.current?.title ?? "Temple TV — YouTube"}
           />
         );

@@ -424,6 +424,15 @@ class BroadcastOrchestrator extends EventEmitter {
    * Node event loops).
    */
   private itemEndTimer: NodeJS.Timeout | null = null;
+  /**
+   * Precision one-shot timer that fires when the current YouTube shuffle
+   * override's endsAtMs is reached.  Calls ytShuffleFallback.advance()
+   * immediately so the next video starts without waiting up to 5 s for the
+   * selfHealEmptyTimer to detect an expired override.  Cleared whenever a
+   * new override starts (startOverride reschedules it) or when the
+   * orchestrator stops.
+   */
+  private overrideEndTimer: NodeJS.Timeout | null = null;
   /** Consecutive definitive 4xx failure count for the currently-playing item. */
   private currentItemProbeFailures = 0;
   /**
@@ -817,11 +826,26 @@ class BroadcastOrchestrator extends EventEmitter {
         if (!this.started) return;
         if (this.items.length === 0) {
           // ── YouTube shuffle fallback: advance to next video if override ended ──
-          // When the shuffle fallback is active but the running override has ended
-          // naturally (endsAtMs expired → override = null), advance immediately to
-          // the next catalog video without waiting for the full EMPTY_POLLS_BEFORE_*
-          // threshold.  This ensures continuous playback with no dead-air gap.
-          if (ytShuffleFallback.isActive && !this.override && !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE) {
+          // When the shuffle fallback is active and either:
+          //   (a) the override was explicitly stopped (this.override === null), OR
+          //   (b) the override has expired (endsAtMs <= now but was never cleared)
+          // advance immediately to the next catalog video.
+          //
+          // Case (b) is the common path: the overrideEndTimer fires at exactly
+          // endsAtMs but this selfHealEmptyTimer check acts as a belt-and-suspenders
+          // safety net.  Without this guard, an expired override with a non-null
+          // this.override would leave the stream stuck on the ended YouTube video
+          // indefinitely — advance() would never be called because !this.override
+          // is always false while the override object exists.
+          const overrideExpired =
+            this.override !== null &&
+            this.override.endsAtMs !== null &&
+            this.override.endsAtMs <= Date.now();
+          if (
+            ytShuffleFallback.isActive &&
+            (!this.override || overrideExpired) &&
+            !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE
+          ) {
             void ytShuffleFallback
               .advance((opts) => this.startOverride(opts))
               .catch((err: unknown) =>
@@ -1045,6 +1069,7 @@ class BroadcastOrchestrator extends EventEmitter {
     if (this.currentItemProbeTimer)   clearInterval(this.currentItemProbeTimer);
     if (this.badUrlCacheTimer)        clearInterval(this.badUrlCacheTimer);
     if (this.itemEndTimer)            clearTimeout(this.itemEndTimer);
+    if (this.overrideEndTimer)        clearTimeout(this.overrideEndTimer);
     // Cancel any pending circuit-breaker reset timer so it cannot fire on a
     // stopped orchestrator and trigger a spurious scheduleSelfHealReload().
     if (this._cbResetTimer)           clearTimeout(this._cbResetTimer);
@@ -2302,6 +2327,12 @@ class BroadcastOrchestrator extends EventEmitter {
       failover: { ...this.failover },
       offAirReason,
       sourceQuality,
+      // nextYtVideoId: expose the next video in the YouTube shuffle playlist so
+      // clients can preload the next YouTube iframe before the current one ends.
+      // Only populated when the shuffle fallback is active.
+      nextYtVideoId: ytShuffleFallback.isActive
+        ? (ytShuffleFallback.peekNext()?.youtubeId ?? null)
+        : null,
     };
   }
 
@@ -2702,6 +2733,51 @@ class BroadcastOrchestrator extends EventEmitter {
       }
     }, delayMs);
     this.itemEndTimer.unref?.();
+  }
+
+  /**
+   * Schedule a precision one-shot timer to fire at `endsAtMs` and advance the
+   * YouTube shuffle fallback to the next video.  Replaces the old approach of
+   * relying solely on the 5-second selfHealEmptyTimer detecting an expired
+   * override — that approach failed because `!this.override` is never true while
+   * the override object exists (it's only cleared by stopOverride(), which is
+   * never called for natural YouTube override expiry).
+   *
+   * This timer fires at exactly `endsAtMs`, checks the override is still the
+   * same expired one, then calls advance() directly to atomically replace it
+   * with the next video — zero dead-air gap.
+   *
+   * Mirrors the same guard structure as scheduleItemEndTimer:
+   * - max 4 h ahead (long items drift on busy event loops)
+   * - unref() so it never prevents process exit
+   */
+  private scheduleOverrideEndTimer(endsAtMs: number): void {
+    if (this.overrideEndTimer !== null) {
+      clearTimeout(this.overrideEndTimer);
+      this.overrideEndTimer = null;
+    }
+    const OVERRIDE_END_MAX_LEAD_MS = 4 * 60 * 60 * 1000; // 4 h guard
+    const delayMs = Math.max(0, endsAtMs - Date.now());
+    if (delayMs > OVERRIDE_END_MAX_LEAD_MS) return; // too far away — selfHealEmptyTimer handles it
+    this.overrideEndTimer = setTimeout(() => {
+      this.overrideEndTimer = null;
+      if (!this.started) return;
+      if (!ytShuffleFallback.isActive || env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE) return;
+      // Guard: only advance if the override is still the same expired one.
+      // startOverride() for a new video resets overrideEndTimer, so this
+      // callback should never fire for a stale override — but be defensive.
+      if (this.override?.endsAtMs == null || this.override.endsAtMs > Date.now() + 2_000) return;
+      logger.info(
+        { overrideId: this.override?.id, endsAtMs },
+        "[broadcast-v2] overrideEndTimer: YouTube override expired — advancing to next video (zero dead-air)",
+      );
+      void ytShuffleFallback
+        .advance((opts) => this.startOverride(opts))
+        .catch((err: unknown) =>
+          logger.warn({ err }, "[broadcast-v2] overrideEndTimer: YouTube shuffle advance failed (non-fatal)"),
+        );
+    }, delayMs);
+    this.overrideEndTimer.unref?.();
   }
 
   private tick(): void {
@@ -3204,6 +3280,15 @@ class BroadcastOrchestrator extends EventEmitter {
       resumeQueueOnEnd: input.resumeQueueOnEnd,
     };
     this.mode = "override";
+    // Arm the precision override-end timer for finite YouTube shuffle overrides.
+    // This ensures advance() is called at exactly endsAtMs without waiting up
+    // to 5 s for the selfHealEmptyTimer to detect an expired override object.
+    if (input.endsAtMs !== null && ytShuffleFallback.isActive) {
+      this.scheduleOverrideEndTimer(input.endsAtMs);
+    } else if (this.overrideEndTimer !== null) {
+      clearTimeout(this.overrideEndTimer);
+      this.overrideEndTimer = null;
+    }
     await this.bump("override.started", { override: this.override });
     this.emitFrame({ type: "takeover", sequence: this.sequence, override: this.override });
     this.emitSnapshot();
@@ -3213,6 +3298,12 @@ class BroadcastOrchestrator extends EventEmitter {
   async stopOverride(): Promise<void> {
     if (!this.override) return;
     const wasResumable = this.override.resumeQueueOnEnd;
+    // Cancel the precision override-end timer — the override is ending
+    // explicitly (operator stop or queue recovery), not via natural expiry.
+    if (this.overrideEndTimer !== null) {
+      clearTimeout(this.overrideEndTimer);
+      this.overrideEndTimer = null;
+    }
     await this.bump("override.ended", { id: this.override.id });
     this.override = null;
     this.mode = "queue";

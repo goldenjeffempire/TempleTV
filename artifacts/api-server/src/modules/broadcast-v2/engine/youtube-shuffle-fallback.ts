@@ -445,6 +445,25 @@ class YtShuffleFallback {
     }
   }
 
+  /**
+   * Return the next playlist entry (the video AFTER the currently-playing one)
+   * without advancing the index.  Used by the orchestrator to include
+   * `nextYtVideoId` in V2Snapshot so clients can preload the next YouTube
+   * iframe before the current one ends.
+   *
+   * Returns null when the shuffle is not active, the playlist is empty, or
+   * the playlist has only one entry (next === current).
+   */
+  peekNext(): { youtubeId: string; title: string } | null {
+    if (!this._active || this._shuffledPlaylist.length < 2) return null;
+    const nextIdx =
+      this._playlistIndex + 1 >= this._shuffledPlaylist.length
+        ? 0
+        : this._playlistIndex + 1;
+    const entry = this._shuffledPlaylist[nextIdx];
+    return entry ? { youtubeId: entry.youtubeId, title: entry.title } : null;
+  }
+
   /** Snapshot for the /health endpoint and admin observability. */
   getInfo(): YtShuffleFallbackInfo {
     return {

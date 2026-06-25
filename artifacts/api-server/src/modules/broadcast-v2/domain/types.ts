@@ -73,6 +73,15 @@ export interface V2Snapshot {
    */
   offAirReason: "empty" | "all_blocked" | null;
   /**
+   * YouTube video ID of the NEXT video in the shuffle playlist.
+   * Only populated when the YouTube shuffle fallback is active (mode=override,
+   * override.kind="youtube"). Clients use this to preload the next YouTube
+   * iframe before the current one ends, enabling seamless gapless transitions.
+   * Null when shuffle is inactive, the playlist has only one entry, or the
+   * next entry is unknown.
+   */
+  nextYtVideoId?: string | null;
+  /**
    * Source quality of the currently-playing item.
    * 'hls'           — adaptive HLS stream (preferred)
    * 'mp4_faststart' — moov-at-byte-0 range-seekable MP4

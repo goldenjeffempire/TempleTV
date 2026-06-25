@@ -66,6 +66,11 @@ export interface V2Snapshot {
    */
   offAirReason?: "empty" | "all_blocked" | null;
   /**
+   * YouTube video ID of the NEXT video in the shuffle playlist.
+   * Optional for back-compat with older server versions.
+   */
+  nextYtVideoId?: string | null;
+  /**
    * Top-level source quality for the current broadcast state.
    * 'hls'           — adaptive HLS stream (preferred)
    * 'mp4_faststart' — moov-at-byte-0 range-seekable MP4
