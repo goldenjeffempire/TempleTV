@@ -53,6 +53,7 @@ import {
   ShieldOff,
   Wifi as WifiIcon,
   Search,
+  Moon,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import {
@@ -571,6 +572,186 @@ function TranscodingProgressPanel() {
               </div>
             ))}
           </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Midnight Prayers window status panel ─────────────────────────────────────
+// Compact always-visible card on the Master Control page that shows whether the
+// Midnight Prayers broadcast window is active, a live countdown to the next
+// boundary (open or close), the currently-playing video title, and a quick link
+// to the full Midnight Prayers management page.
+//
+// Renders null when the feature is disabled so it stays invisible by default.
+
+interface MPWindowConfig {
+  enabled: boolean;
+  startHour: number;
+  endHour: number;
+  timezone: string;
+}
+interface MPWindowQueueData {
+  config: MPWindowConfig;
+  totalVideos: number;
+}
+interface MPWindowStateData {
+  state: {
+    mode: string;
+    current: { title: string; durationSecs: number; startsAtMs: number; endsAtMs: number } | null;
+    meta: {
+      totalVideos: number;
+      cycleLengthMs: number;
+      windowActive: boolean;
+      windowDescription: string;
+    };
+  };
+}
+
+function computeMpCountdown(
+  startHour: number,
+  endHour: number,
+  timezone: string,
+): { inWindow: boolean; msRemaining: number } {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    hour: "numeric",
+    minute: "numeric",
+    second: "numeric",
+    hour12: false,
+  }).formatToParts(now);
+  const get = (type: string) =>
+    parseInt(parts.find((p) => p.type === type)?.value ?? "0", 10);
+  const hour = get("hour") % 24;
+  const minute = get("minute");
+  const second = get("second");
+
+  const nowSecs = hour * 3600 + minute * 60 + second;
+  const startSecs = startHour * 3600;
+  const endSecs = endHour * 3600;
+  const dayS = 24 * 3600;
+
+  let inWindow: boolean;
+  if (endHour > startHour) {
+    inWindow = nowSecs >= startSecs && nowSecs < endSecs;
+  } else {
+    inWindow = nowSecs >= startSecs || nowSecs < endSecs;
+  }
+
+  let targetSecs: number;
+  if (inWindow) {
+    targetSecs = endSecs <= nowSecs ? endSecs + dayS : endSecs;
+  } else {
+    targetSecs = startSecs <= nowSecs ? startSecs + dayS : startSecs;
+  }
+
+  return { inWindow, msRemaining: Math.max(0, (targetSecs - nowSecs) * 1000) };
+}
+
+function formatMpCountdown(ms: number): string {
+  const totalSecs = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(totalSecs / 3600);
+  const m = Math.floor((totalSecs % 3600) / 60);
+  const s = totalSecs % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (h > 0) return `${h}h ${pad(m)}m ${pad(s)}s`;
+  if (m > 0) return `${pad(m)}m ${pad(s)}s`;
+  return `${pad(s)}s`;
+}
+
+function MidnightPrayersStatusPanel() {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 1_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const { data: queueData } = useQuery<MPWindowQueueData>({
+    queryKey: ["midnight-prayers/queue"],
+    queryFn: () => api.get<MPWindowQueueData>("/midnight-prayers/queue"),
+    staleTime: 60_000,
+    refetchInterval: 120_000,
+  });
+
+  const { data: stateData } = useQuery<MPWindowStateData>({
+    queryKey: ["midnight-prayers/state"],
+    queryFn: () => api.get<MPWindowStateData>("/midnight-prayers/state"),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+
+  const config = queueData?.config;
+  if (!config?.enabled) return null;
+
+  const countdown = computeMpCountdown(config.startHour, config.endHour, config.timezone);
+  const windowActive = stateData?.state.meta.windowActive ?? countdown.inWindow;
+  const windowDescription = stateData?.state.meta.windowDescription;
+  const currentTitle = stateData?.state.current?.title;
+  const mode = stateData?.state.mode;
+  const totalVideos = queueData?.totalVideos ?? stateData?.state.meta.totalVideos ?? 0;
+
+  return (
+    <Card className={windowActive
+      ? "border-violet-200/60 dark:border-violet-800/50"
+      : "border-slate-200/60 dark:border-slate-700/40"
+    }>
+      <CardHeader className="pb-2 pt-4">
+        <div className="flex items-center gap-2">
+          <Moon className="h-4 w-4 text-violet-500 shrink-0" />
+          <CardTitle className="text-sm">Midnight Prayers</CardTitle>
+          {windowActive ? (
+            <Badge className="ml-0.5 gap-1 bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300 border-violet-200 dark:border-violet-800 text-[10px] px-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-violet-500 animate-pulse inline-block" />
+              Active
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="ml-0.5 text-[10px] px-1.5 text-muted-foreground">
+              Offline hold
+            </Badge>
+          )}
+          <Link href="/midnight-prayers" className="ml-auto">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-6 px-2 text-[10px] gap-1 text-muted-foreground hover:text-foreground"
+            >
+              Manage →
+            </Button>
+          </Link>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2 pb-4">
+        <div className="rounded-lg border bg-muted/30 p-3 space-y-1">
+          <div className="flex items-center gap-2">
+            <Clock className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <span className="text-xs text-muted-foreground">
+              {windowActive ? "Window closes in" : "Window opens in"}
+            </span>
+            <span className="text-sm font-mono font-semibold tabular-nums">
+              {formatMpCountdown(countdown.msRemaining)}
+            </span>
+          </div>
+          {windowDescription && (
+            <p className="text-[10px] text-muted-foreground pl-5 leading-snug">
+              {windowDescription}
+            </p>
+          )}
+        </div>
+        {windowActive && currentTitle && mode !== "offline_hold" && (
+          <div className="flex items-center gap-2 rounded-md border border-violet-200/60 dark:border-violet-800/40 px-3 py-2">
+            <Moon className="h-3 w-3 text-violet-400 shrink-0" />
+            <span className="flex-1 text-xs truncate min-w-0">{currentTitle}</span>
+            <Badge className="shrink-0 text-[10px] px-1.5 bg-violet-500 hover:bg-violet-500 text-white border-0">
+              On Air
+            </Badge>
+          </div>
+        )}
+        {totalVideos > 0 && (
+          <p className="text-[10px] text-muted-foreground px-1">
+            {totalVideos} video{totalVideos !== 1 ? "s" : ""} in rotation
+          </p>
         )}
       </CardContent>
     </Card>
