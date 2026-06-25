@@ -82,9 +82,9 @@ const WATCHDOG_STABLE_PLAY_MS  = 30_000;
  * even when the DB duration doesn't yet match the encoded file length —
  * the most common cause of SYNCING black-screen gaps between queue items.
  *
- * Matches PRELOAD_LEAD_MS in machine.ts (90 s).
+ * Matches the server default BROADCAST_PRELOAD_LEAD_MS (120 s).
  */
-const NEAR_END_LEAD_SECS = 90;
+const NEAR_END_LEAD_SECS = 120;
 
 /**
  * Return type of `createWebAdapter`.

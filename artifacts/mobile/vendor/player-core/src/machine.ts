@@ -116,7 +116,7 @@ export type IntentHandler = (intent: AdapterIntent) => void;
  * provide a safety margin for slow/congested connections and large MP4 sources
  * where the browser must download the moov atom before `canplay` fires.
  */
-const PRELOAD_LEAD_MS = 90_000;
+const PRELOAD_LEAD_MS = 120_000;
 
 /**
  * How long the active buffer must be stuck (no timeupdate progress) before

@@ -3099,6 +3099,19 @@ class BroadcastOrchestrator extends EventEmitter {
       // heartbeat (15 s window). Without this, clients play the previous item
       // indefinitely because the `event` frame is intentionally ignored by the
       // transport — only `snapshot` frames trigger machine state transitions.
+      const advanceTs = Date.now();
+      logger.info(
+        {
+          itemId: snap.current.id,
+          title: snap.current.title,
+          startsAtMs: snap.current.startsAtMs,
+          endsAtMs: snap.current.endsAtMs,
+          driftMs: advanceTs - snap.current.startsAtMs,
+          sequence: this.sequence,
+          ts: advanceTs,
+        },
+        "[broadcast-v2] item.advanced — emitting snapshot to all clients",
+      );
       void this.bump("item.advanced", { itemId: snap.current.id, title: snap.current.title })
         .catch((err: unknown) => logger.warn({ err }, "[broadcast-v2] tick: item.advanced bump failed (non-fatal)"));
       this.emitSnapshot();
@@ -3136,6 +3149,19 @@ class BroadcastOrchestrator extends EventEmitter {
       const msToEnd = snap.current.endsAtMs - Date.now();
       if (msToEnd <= PRELOAD_LEAD_MS && msToEnd > 0) {
         this.preloadFiredForId = snap.next.id;
+        const preloadTs = Date.now();
+        logger.info(
+          {
+            currentItemId: snap.current.id,
+            nextItemId: snap.next.id,
+            nextTitle: snap.next.title,
+            msToEnd,
+            leadMs: PRELOAD_LEAD_MS,
+            sequence: this.sequence,
+            ts: preloadTs,
+          },
+          "[broadcast-v2] preload frame emitted — next item should begin loading on all clients",
+        );
         this.emitFrame({
           type: "preload",
           sequence: this.sequence,
@@ -3146,7 +3172,7 @@ class BroadcastOrchestrator extends EventEmitter {
           type: "preload_fired",
           itemId: snap.next.id,
           itemTitle: snap.next.title,
-          ts: Date.now(),
+          ts: preloadTs,
           meta: { msToEnd, leadMs: PRELOAD_LEAD_MS },
         });
         // Proactively validate the next item's URL in the background.

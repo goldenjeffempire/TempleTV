@@ -88,9 +88,14 @@ const WATCHDOG_STABLE_PLAY_MS  = 30_000;
  * even when the DB duration doesn't yet match the encoded file length —
  * the most common cause of SYNCING black-screen gaps between queue items.
  *
- * Matches PRELOAD_LEAD_MS in machine.ts (90 s).
+ * Matches PRELOAD_LEAD_MS in machine.ts (90 s) and the server default
+ * BROADCAST_PRELOAD_LEAD_MS (120 s). Using 120 s aligns the client-side
+ * near-end trigger with the server's preload window, ensuring the inactive
+ * buffer starts loading at the same moment the server emits its `preload`
+ * frame — eliminating the race where the server fires first but the client
+ * hasn't started yet (or vice-versa on a slow tick cycle).
  */
-const NEAR_END_LEAD_SECS = 90;
+const NEAR_END_LEAD_SECS = 120;
 
 /**
  * Return type of `createWebAdapter`.

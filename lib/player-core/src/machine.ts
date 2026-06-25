@@ -115,8 +115,11 @@ export type IntentHandler = (intent: AdapterIntent) => void;
  * eliminating the black-screen gap between queue items. Raised from 60 s to
  * provide a safety margin for slow/congested connections and large MP4 sources
  * where the browser must download the moov atom before `canplay` fires.
+ * Set to 120 s to match the server default BROADCAST_PRELOAD_LEAD_MS so the
+ * machine's post-HANDOFF eager-bind threshold is consistent with the server's
+ * preload frame emission timing.
  */
-const PRELOAD_LEAD_MS = 90_000;
+const PRELOAD_LEAD_MS = 120_000;
 
 /**
  * How long the active buffer must be stuck (no timeupdate progress) before
@@ -1150,6 +1153,8 @@ export class PlayerMachine {
     if (bufferId === "A") this.set({ bufferA: null });
     else this.set({ bufferB: null });
 
+    const handoffStartMs = Date.now();
+
     if (!inactiveItem) {
       // Set lastEndedItemId BEFORE requesting a snapshot so that if the
       // immediate GET /state response arrives before the server processes the
@@ -1158,9 +1163,13 @@ export class PlayerMachine {
       // the ended video every time no inactive buffer was preloaded.
       if (endedItemId) {
         this.lastEndedItemId = endedItemId;
-        this.lastEndedAtMs = Date.now();
+        this.lastEndedAtMs = handoffStartMs;
         this.lastEndedItemStartsAtMs = this.snapshot.lastServerSnapshot?.current?.startsAtMs ?? null;
       }
+      console.debug(
+        "[player] buffer-ended → SYNCING (no preloaded inactive buffer)",
+        { bufferId, endedItemId, stateAtEnd: this.snapshot.state, ts: handoffStartMs },
+      );
       // Immediately fetch fresh state rather than waiting for the server's
       // next keep-alive (8 s after the orchestrator change).  This cuts the
       // SYNCING gap to < 1 s for single-item loops and cases where the
@@ -1177,9 +1186,22 @@ export class PlayerMachine {
     // onSnapshot() guards against re-binding it from a stale server snapshot.
     if (endedItemId) {
       this.lastEndedItemId = endedItemId;
-      this.lastEndedAtMs = Date.now();
+      this.lastEndedAtMs = handoffStartMs;
       this.lastEndedItemStartsAtMs = this.snapshot.lastServerSnapshot?.current?.startsAtMs ?? null;
     }
+
+    const inactiveItemId = "id" in inactiveItem ? (inactiveItem as V2Item).id : "override";
+    console.debug(
+      "[player] buffer-ended → HANDOFF",
+      {
+        activeBuffer: bufferId,
+        nextBuffer: inactiveId,
+        endedItemId,
+        nextItemId: inactiveItemId,
+        stateAtEnd: this.snapshot.state,
+        ts: handoffStartMs,
+      },
+    );
 
     this.transition("HANDOFF");
     this.emit({ type: "swap", activeBufferId: inactiveId });
@@ -1187,6 +1209,11 @@ export class PlayerMachine {
     this.emit({ type: "play", bufferId: inactiveId, positionSecs: 0 });
     this.set({ activeBufferId: inactiveId });
     this.transition("PLAYING");
+
+    console.debug(
+      "[player] HANDOFF complete → PLAYING",
+      { activeBuffer: inactiveId, nextItemId: inactiveItemId, handoffDurationMs: Date.now() - handoffStartMs },
+    );
     this.primaryRetries = 0;
 
     // Signal the server that this item ended naturally so it can advance
@@ -1262,7 +1289,18 @@ export class PlayerMachine {
     // placeholder that doesn't match the actual encoded file length).
     const server = this.snapshot.lastServerSnapshot;
     const nextToPreload = server?.next ?? server?.nextNext;
-    if (!nextToPreload) return;
+    if (!nextToPreload) {
+      console.debug(
+        "[player] buffer-near-end: no next item to preload (server snapshot has no next/nextNext)",
+        { bufferId, state: this.snapshot.state },
+      );
+      return;
+    }
+    const nextItemId = "id" in nextToPreload ? nextToPreload.id : "override";
+    console.debug(
+      "[player] buffer-near-end → proactive preload",
+      { bufferId, nextItemId, state: this.snapshot.state },
+    );
     this.bindInactive(nextToPreload);
   }
 
