@@ -245,7 +245,7 @@ const HLS_LIVE_SYNC_INTERVAL_MS = 30_000;
 /**
  * How far before the active buffer's end (ms) to emit a `buffer-near-end`
  * event to the machine. This is the client-side complement to the server's
- * `preload` frame (also 90 s). Emitting near-end from the player guarantees
+ * `preload` frame (also 120 s). Emitting near-end from the player guarantees
  * the machine proactively loads the next item into the inactive buffer even
  * when the server's preload frame arrives late — e.g. during a transport
  * reconnect or a slow-link snapshot delay.
@@ -1140,17 +1140,17 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         }
 
         // ── Near-end preload trigger ──────────────────────────────────────────
-        // Client-side complement to the server's 90 s `preload` frame.
+        // Client-side complement to the server's 120 s `preload` frame.
         //
         // The machine already responds to server-sent preload frames (see
         // `onPreload` in machine.ts) by binding the inactive buffer to the next
-        // queue item ~90 s before the current one ends. However, if the
+        // queue item ~120 s before the current one ends. However, if the
         // transport is reconnecting, the server's preload frame arrives late, or
-        // the snapshot is cached, this 90 s signal can be absent — leaving the
+        // the snapshot is cached, this 120 s signal can be absent — leaving the
         // inactive buffer unloaded right up until the active buffer fires
         // `buffer-ended`, producing a visible black-screen gap between items.
         //
-        // When the active buffer's remaining time enters the 90 s window, emit
+        // When the active buffer's remaining time enters the 120 s window, emit
         // `buffer-near-end` to the machine. The machine's `onBufferNearEnd()`
         // will bind the inactive buffer to `server.next` if it isn't already
         // loaded — guaranteeing the handoff buffer is warming regardless of
@@ -1165,7 +1165,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         //     the shared FSM owned by the primary consumer.
         //   - `nearEndReportedRef.current`: fire once per bind revision only.
         //     The 500 ms status cadence would otherwise flood the machine with
-        //     identical events for the entire 90 s preload window.
+        //     identical events for the entire 120 s preload window.
         //   - Finite `durationMillis > 0`: live HLS has `durationMillis = null`
         //     or `Infinity`. Near-end detection is meaningless for live streams
         //     whose playlist has no fixed end point — the server manages live
