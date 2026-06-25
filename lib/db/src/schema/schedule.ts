@@ -1,4 +1,5 @@
-import { pgTable, text, timestamp, boolean, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, integer, index, check } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import type { z } from "zod/v4";
 
@@ -42,6 +43,17 @@ export const scheduleTable = pgTable("schedule_entries", {
   index("idx_schedule_entries_active").on(table.isActive),
   index("idx_schedule_entries_day_time").on(table.dayOfWeek, table.startTime),
   index("idx_schedule_entries_scheduled_date").on(table.scheduledDate),
+  /**
+   * Enforce weekday range at the DB layer. day_of_week must be NULL (one-time
+   * events that derive the day from scheduledDate) or a valid JS weekday
+   * integer 0 (Sunday) through 6 (Saturday). This prevents the historical bug
+   * where nowMinutes() (range 0-1439) was accidentally used in place of
+   * getDay() (range 0-6), producing values like 313 (= 5*60+13 at 05:13).
+   */
+  check(
+    "chk_schedule_day_of_week_valid",
+    sql`${table.dayOfWeek} IS NULL OR (${table.dayOfWeek} >= 0 AND ${table.dayOfWeek} <= 6)`,
+  ),
 ]);
 
 export const insertScheduleSchema = createInsertSchema(scheduleTable).omit({ createdAt: true });

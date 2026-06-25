@@ -73,13 +73,51 @@ function firedSlotKey(entryId: string, qualifier: string, startMin: number): str
   t.unref?.();
 })();
 
+/**
+ * Parse "HH:MM" → total minutes since midnight (0–1439).
+ *
+ * Returns NaN for malformed input so callers can detect and reject it.
+ * Valid range: 0 (00:00) – 1439 (23:59).
+ *
+ * ⚠  This value is used only for within-day time arithmetic.
+ *    It MUST NOT be used as a day-of-week value — that would reproduce
+ *    the historical bug where, e.g., 05:13 → 313 appeared in a
+ *    WHERE day_of_week = 313 query.
+ */
 function parseTimeToMinutes(t: string): number {
   const parts = t.split(":").map(Number);
-  return (parts[0]! * 60) + (parts[1]! ?? 0);
+  const h = parts[0]!;
+  const m = parts[1] ?? 0;
+  if (!Number.isInteger(h) || !Number.isInteger(m) || h < 0 || h > 23 || m < 0 || m > 59) {
+    return NaN;
+  }
+  return h * 60 + m;
 }
 
-function todayDow(): number { return new Date().getDay(); }
+/**
+ * Returns today's day-of-week as a JS weekday integer (0 = Sunday … 6 = Saturday).
+ *
+ * Uses `getDay()`, which always returns a value in [0, 6].  This is the ONLY
+ * source of day-of-week values for schedule queries.  Do NOT substitute
+ * `nowMinutes()` here — that function returns minutes since midnight (0–1439)
+ * and was the root cause of the `day_of_week = 313` bug at 05:13 local time.
+ */
+function todayDow(): number {
+  const dow = new Date().getDay();
+  // Belt-and-suspenders: getDay() is spec-guaranteed 0–6, but guard anyway
+  // so any future refactor is caught before it reaches a DB query.
+  if (!Number.isInteger(dow) || dow < 0 || dow > 6) {
+    throw new Error(`[schedule-bridge] todayDow() returned out-of-range value: ${dow}`);
+  }
+  return dow;
+}
 
+/**
+ * Returns the current wall-clock minute offset from midnight (0–1439).
+ *
+ * ⚠  This value represents TIME, not a weekday. Never pass it to an
+ *    `eq(sched.dayOfWeek, ...)` query clause.
+ */
 function nowMinutes(): number {
   const d = new Date();
   return d.getHours() * 60 + d.getMinutes();
@@ -91,11 +129,20 @@ function todayDateStr(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+/**
+ * Convert a "HH:MM" end-time string to an absolute millisecond timestamp for
+ * today's date in local time.
+ *
+ * Explicitly decomposes total minutes into hours + minutes before calling
+ * setHours() so the intent is unambiguous and not reliant on JS Date's
+ * silent overflow normalisation.
+ */
 function endTimeMsForToday(endTime: string | null): number | null {
   if (!endTime) return null;
   const mins = parseTimeToMinutes(endTime);
+  if (!Number.isFinite(mins) || mins < 0 || mins > 1439) return null;
   const d = new Date();
-  d.setHours(0, mins, 0, 0);
+  d.setHours(Math.floor(mins / 60), mins % 60, 0, 0);
   return d.getTime();
 }
 
@@ -125,7 +172,14 @@ async function resolveVideoHlsUrl(videoId: string): Promise<string | null> {
 }
 
 export async function scheduleBridgeScan(): Promise<void> {
-  const dow = todayDow();
+  let dow: number;
+  try {
+    dow = todayDow();
+  } catch (err: unknown) {
+    logger.error({ err }, "[schedule-bridge] todayDow() threw — skipping scan to prevent invalid DB query");
+    return;
+  }
+
   const currentMin = nowMinutes();
   const today = todayDateStr();
 
@@ -155,8 +209,27 @@ export async function scheduleBridgeScan(): Promise<void> {
 
   const allEntries = [...recurringEntries, ...oneTimeEntries];
 
+  // Validate any stored dayOfWeek values in the recurring result set —
+  // rows with invalid values (e.g. 313 from the historical nowMinutes() bug)
+  // should be logged and skipped, never silently mis-fired.
+  for (const e of recurringEntries) {
+    const dow_ = e.dayOfWeek;
+    if (dow_ !== null && (!Number.isInteger(dow_) || dow_ < 0 || dow_ > 6)) {
+      logger.error(
+        { entryId: e.id, title: e.title, storedDayOfWeek: dow_ },
+        "[schedule-bridge] schedule entry has invalid day_of_week (expected 0–6) — " +
+          "this row was likely written by the nowMinutes() bug (313 = 05:13). " +
+          "Fix the row via PATCH /api/v1/schedule/:id and check DB for other affected rows.",
+      );
+    }
+  }
+
   const firing = allEntries.filter((e) => {
     const startMin = parseTimeToMinutes(e.startTime);
+    if (!Number.isFinite(startMin)) {
+      logger.warn({ entryId: e.id, startTime: e.startTime }, "[schedule-bridge] unparseable startTime — skipping entry");
+      return false;
+    }
     const diff = currentMin - startMin;
     if (diff < 0 || diff > 2) return false;
     const qualifier = e.scheduledDate ?? String(dow);

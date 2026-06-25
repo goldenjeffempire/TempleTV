@@ -10,10 +10,40 @@ import type {
 
 const sched = schema.scheduleTable;
 
+/**
+ * Derive the weekday (0 = Sunday … 6 = Saturday) from an ISO date string
+ * "YYYY-MM-DD", parsed as a **local** date to avoid UTC-shift issues.
+ *
+ * Throws if the result is not a valid integer weekday — this catches future
+ * refactors that might accidentally pass a time value or a non-date string,
+ * which historically caused `day_of_week = 313` queries (313 = 5*60+13,
+ * the number of minutes since midnight at 05:13).
+ */
 function dayOfWeekFromDate(dateStr: string): number {
-  // Parse "YYYY-MM-DD" as local date (avoid UTC shift from `new Date(dateStr)`)
   const [y, m, d] = dateStr.split("-").map(Number);
-  return new Date(y!, m! - 1, d!).getDay();
+  const result = new Date(y!, m! - 1, d!).getDay();
+  if (!Number.isInteger(result) || result < 0 || result > 6) {
+    throw new Error(
+      `dayOfWeekFromDate: computed invalid weekday ${result} from date "${dateStr}". ` +
+        "Expected 0 (Sunday) through 6 (Saturday).",
+    );
+  }
+  return result;
+}
+
+/**
+ * Validate that a dayOfWeek value is a valid JS weekday integer (0–6).
+ * Throws for any value outside this range, including the nowMinutes()-derived
+ * values like 313 that caused the historical bug.
+ */
+function assertValidDayOfWeek(value: number | null | undefined, context: string): void {
+  if (value === null || value === undefined) return;
+  if (!Number.isInteger(value) || value < 0 || value > 6) {
+    throw new Error(
+      `${context}: invalid day_of_week ${value} (must be 0–6). ` +
+        "Check whether a minute-of-day value (e.g. nowMinutes()) was accidentally used here.",
+    );
+  }
 }
 
 function toDto(row: typeof sched.$inferSelect) {
@@ -81,6 +111,11 @@ export const scheduleService = {
       dayOfWeek = dayOfWeekFromDate(body.scheduledDate);
     }
 
+    // Belt-and-suspenders: Zod has already validated 0–6 for body.dayOfWeek,
+    // but guard the final value again (including the derived one) to catch
+    // any future refactor that re-introduces the nowMinutes() confusion.
+    assertValidDayOfWeek(dayOfWeek, "scheduleService.create");
+
     const [row] = await db
       .insert(sched)
       .values({
@@ -122,6 +157,10 @@ export const scheduleService = {
     if (body.dayOfWeek !== undefined && body.scheduledDate === undefined) {
       patch.dayOfWeek = body.dayOfWeek;
     }
+
+    // Belt-and-suspenders: validate the final dayOfWeek that will be written
+    // to the DB, regardless of source (Zod body, derived from date, or passthrough).
+    assertValidDayOfWeek(patch.dayOfWeek, "scheduleService.update");
 
     if (Object.keys(patch).length === 0) {
       const [row] = await db.select().from(sched).where(eq(sched.id, id)).limit(1);
