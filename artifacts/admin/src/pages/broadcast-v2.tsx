@@ -608,6 +608,17 @@ interface MPWindowStateData {
     };
   };
 }
+interface MPDiagnosticsData {
+  total: number;
+  playable: number;
+  encoding: number;
+  failed: number;
+  queued: number;
+  inRotation: number;
+  deadAirRisk: boolean;
+  windowActive: boolean;
+  config: MPWindowConfig;
+}
 
 function computeMpCountdown(
   startHour: number,
@@ -661,6 +672,30 @@ function formatMpCountdown(ms: number): string {
   return `${pad(s)}s`;
 }
 
+function MpEnforcementRow({
+  label,
+  active,
+  description,
+}: {
+  label: string;
+  active: boolean;
+  description: string;
+}) {
+  return (
+    <div className="flex items-start gap-2">
+      {active
+        ? <ShieldCheck className="h-3.5 w-3.5 text-violet-500 shrink-0 mt-px" />
+        : <ShieldOff className="h-3.5 w-3.5 text-muted-foreground/50 shrink-0 mt-px" />}
+      <div className="min-w-0">
+        <span className={`text-[10px] font-medium ${active ? "text-foreground" : "text-muted-foreground"}`}>
+          {label}
+        </span>
+        <p className="text-[10px] text-muted-foreground leading-snug">{description}</p>
+      </div>
+    </div>
+  );
+}
+
 function MidnightPrayersStatusPanel() {
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -682,6 +717,13 @@ function MidnightPrayersStatusPanel() {
     refetchInterval: 30_000,
   });
 
+  const { data: diagData } = useQuery<MPDiagnosticsData>({
+    queryKey: ["midnight-prayers/diagnostics"],
+    queryFn: () => api.get<MPDiagnosticsData>("/midnight-prayers/diagnostics"),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+
   const config = queueData?.config;
   if (!config?.enabled) return null;
 
@@ -691,6 +733,24 @@ function MidnightPrayersStatusPanel() {
   const currentTitle = stateData?.state.current?.title;
   const mode = stateData?.state.mode;
   const totalVideos = queueData?.totalVideos ?? stateData?.state.meta.totalVideos ?? 0;
+  const inRotation = diagData?.inRotation ?? 0;
+  const deadAirRisk = diagData?.deadAirRisk ?? false;
+  const playable = diagData?.playable ?? 0;
+  const encoding = diagData?.encoding ?? 0;
+  const failed = diagData?.failed ?? 0;
+
+  // Progress bar: % through the current phase (window open vs waiting)
+  const windowDurationMs = (() => {
+    const s = config.startHour * 3_600_000;
+    const e = config.endHour * 3_600_000;
+    return e > s ? e - s : (86_400_000 - s) + e;
+  })();
+  const waitingDurationMs = 86_400_000 - windowDurationMs;
+  const phaseDurationMs = windowActive ? windowDurationMs : waitingDurationMs;
+  const progressPct = Math.min(100, Math.max(0, ((phaseDurationMs - countdown.msRemaining) / phaseDurationMs) * 100));
+
+  // Main channel gate is active when window is open AND there are videos in rotation
+  const mainChannelGated = windowActive && inRotation > 0;
 
   return (
     <Card className={windowActive
@@ -722,23 +782,31 @@ function MidnightPrayersStatusPanel() {
           </Link>
         </div>
       </CardHeader>
-      <CardContent className="space-y-2 pb-4">
-        <div className="rounded-lg border bg-muted/30 p-3 space-y-1">
+      <CardContent className="space-y-3 pb-4">
+
+        {/* ── Countdown + progress bar ───────────────────────────────── */}
+        <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
           <div className="flex items-center gap-2">
             <Clock className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
             <span className="text-xs text-muted-foreground">
               {windowActive ? "Window closes in" : "Window opens in"}
             </span>
-            <span className="text-sm font-mono font-semibold tabular-nums">
+            <span className="ml-auto text-sm font-mono font-semibold tabular-nums">
               {formatMpCountdown(countdown.msRemaining)}
             </span>
           </div>
+          <Progress
+            value={progressPct}
+            className={`h-1.5 ${windowActive ? "[&>div]:bg-violet-500" : ""}`}
+          />
           {windowDescription && (
-            <p className="text-[10px] text-muted-foreground pl-5 leading-snug">
+            <p className="text-[10px] text-muted-foreground leading-snug">
               {windowDescription}
             </p>
           )}
         </div>
+
+        {/* ── Currently on air ──────────────────────────────────────── */}
         {windowActive && currentTitle && mode !== "offline_hold" && (
           <div className="flex items-center gap-2 rounded-md border border-violet-200/60 dark:border-violet-800/40 px-3 py-2">
             <Moon className="h-3 w-3 text-violet-400 shrink-0" />
@@ -748,8 +816,64 @@ function MidnightPrayersStatusPanel() {
             </Badge>
           </div>
         )}
+
+        {/* ── Enforcement layers ────────────────────────────────────── */}
+        <div className="rounded-lg border bg-muted/20 p-3 space-y-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Enforcement layers
+          </p>
+          <MpEnforcementRow
+            label="Queue filter"
+            active
+            description="midnight-prayers videos permanently excluded from main broadcast queue"
+          />
+          <MpEnforcementRow
+            label="YouTube shuffle"
+            active
+            description="midnight-prayers excluded from shuffle fallback catalog"
+          />
+          <MpEnforcementRow
+            label="Schedule bridge"
+            active={windowActive}
+            description={
+              windowActive
+                ? "blocking non-midnight-prayers schedule entries during window"
+                : "allowing all schedule entries (outside window)"
+            }
+          />
+          <MpEnforcementRow
+            label="Main channel gate"
+            active={mainChannelGated}
+            description={
+              mainChannelGated
+                ? "main broadcast returning offline_hold — midnight prayers active"
+                : windowActive
+                  ? "window open but no videos in rotation — main channel serving normally"
+                  : "outside window — main channel serving normal content"
+            }
+          />
+        </div>
+
+        {/* ── Catalog health stats ──────────────────────────────────── */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted-foreground px-1">
+          <span>{totalVideos} video{totalVideos !== 1 ? "s" : ""} in catalog</span>
+          {diagData && (
+            <>
+              <span className="text-green-600 dark:text-green-400">{playable} playable</span>
+              {encoding > 0 && <span className="text-amber-600 dark:text-amber-400">{encoding} encoding</span>}
+              {failed > 0 && <span className="text-red-600 dark:text-red-400">{failed} failed</span>}
+              {inRotation > 0 && <span>{inRotation} in rotation</span>}
+            </>
+          )}
+          {deadAirRisk && (
+            <span className="text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1">
+              <CircleAlert className="h-3 w-3" /> Dead-air risk
+            </span>
+          )}
+        </div>
+
         {totalVideos > 0 && (
-          <p className="text-[10px] text-muted-foreground px-1">
+          <p className="text-[10px] text-muted-foreground px-1 sr-only">
             {totalVideos} video{totalVideos !== 1 ? "s" : ""} in rotation
           </p>
         )}
@@ -4782,6 +4906,9 @@ function BroadcastV2PageInner() {
 
       {/* ── Real-Time Viewer Tracking (heartbeat-based, Redis ZSET) ──────── */}
       <ViewerCountPanel />
+
+      {/* ── Midnight Prayers window status + enforcement layers ─────────── */}
+      <MidnightPrayersStatusPanel />
 
       {/* Viewer sync accuracy panel */}
       <ViewerSyncCard health={engineHealth} />
