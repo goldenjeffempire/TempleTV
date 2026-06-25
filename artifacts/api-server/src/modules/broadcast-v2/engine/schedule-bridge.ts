@@ -45,6 +45,8 @@ import { enqueueIfMissing, scanLibraryAndEnqueue } from "../../broadcast/auto-en
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { scheduleService } from "../../schedule/schedule.service.js";
 import { env } from "../../../config/env.js";
+import { midnightPrayersService } from "../../midnight-prayers/midnight-prayers.service.js";
+import { isWindowActive } from "../../midnight-prayers/window-utils.js";
 
 const sched = schema.scheduleTable;
 const vt = schema.videosTable;
@@ -274,6 +276,14 @@ async function handleEntry(entry: ScheduleRow): Promise<void> {
     ? Math.max(0, endsAtMs - Date.now())
     : 4 * 60 * 60_000;
 
+  // ── Midnight-prayers window enforcement ────────────────────────────────────
+  // Midnight-prayers content is only allowed to air 00:00–03:00 (station TZ).
+  // Non-midnight-prayers content is blocked during that window when the
+  // dedicated midnight-prayers channel has videos available.
+  const mpConfig = midnightPrayersService.getConfig();
+  const mpWindowOpen = isWindowActive(Date.now(), mpConfig);
+  const mpHasVideos = midnightPrayersService.getVideos().length > 0;
+
   switch (entry.contentType) {
     case "video": {
       if (!entry.contentId) {
@@ -281,14 +291,35 @@ async function handleEntry(entry: ScheduleRow): Promise<void> {
         return;
       }
 
-      // Verify video exists
+      // Verify video exists and fetch its category for window enforcement.
       const [video] = await db
-        .select({ id: vt.id, title: vt.title })
+        .select({ id: vt.id, title: vt.title, category: vt.category })
         .from(vt)
         .where(eq(vt.id, entry.contentId))
         .limit(1);
       if (!video) {
         logger.warn({ entryId: entry.id, videoId: entry.contentId }, "[schedule-bridge] video not found — skipping");
+        return;
+      }
+
+      const isMidnightPrayers = video.category === "midnight-prayers";
+
+      // Block midnight-prayers content outside its window.
+      if (isMidnightPrayers && !mpWindowOpen) {
+        logger.info(
+          { entryId: entry.id, videoId: video.id, title: video.title, category: video.category },
+          "[schedule-bridge] midnight-prayers video blocked — outside 00:00–03:00 window",
+        );
+        return;
+      }
+
+      // Block non-midnight-prayers content during the window when the
+      // midnight-prayers channel has videos to play.
+      if (!isMidnightPrayers && mpWindowOpen && mpHasVideos) {
+        logger.info(
+          { entryId: entry.id, videoId: video.id, title: video.title, category: video.category },
+          "[schedule-bridge] non-midnight-prayers video blocked — midnight-prayers window active",
+        );
         return;
       }
 
@@ -368,6 +399,16 @@ async function handleEntry(entry: ScheduleRow): Promise<void> {
     }
 
     case "playlist": {
+      // Block playlist scans during the midnight-prayers window — the main
+      // broadcast channel should not add new non-midnight-prayers items while
+      // the dedicated midnight-prayers channel is active.
+      if (mpWindowOpen && mpHasVideos) {
+        logger.info(
+          { entryId: entry.id },
+          "[schedule-bridge] playlist scan skipped — midnight-prayers window active",
+        );
+        return;
+      }
       const result = await scanLibraryAndEnqueue({ reason: "schedule-bridge-playlist", maxToAdd: 500 });
       logger.info(
         { entryId: entry.id, enqueued: result.enqueued },

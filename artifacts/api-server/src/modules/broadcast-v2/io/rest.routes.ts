@@ -62,6 +62,7 @@ import { assetHealthRepo } from "../repository/asset-health.repo.js";
 import { queueSelfHealingWorker } from "../engine/queue-self-healing-worker.js";
 import { getDeadAirStats } from "../engine/dead-air-tracker.js";
 import { getTranscodingAutoRetryStatus } from "../engine/transcoding-auto-retry.js";
+import { midnightPrayersService, isWindowActive } from "../../midnight-prayers/midnight-prayers.service.js";
 
 const adminGuard = { preHandler: requireAuth("editor") } as const;
 const adminOnlyGuard = { preHandler: requireAuth("admin") } as const;
@@ -889,6 +890,37 @@ export async function restRoutes(app: FastifyInstance) {
     }, (req, reply) => {
       reply.header("Cache-Control", "no-store, max-age=0");
       const now = Date.now();
+
+      // ── Midnight-prayers main-channel gate ───────────────────────────────────
+      // During 00:00–03:00 (station timezone), when the dedicated midnight-prayers
+      // channel has content available, the MAIN broadcast channel returns an
+      // offline_hold snapshot so clients who missed the channel-switch still see
+      // a pause screen rather than non-midnight-prayers content.
+      //
+      // This does NOT stop the internal orchestrator — it continues tracking state
+      // so the queue is ready the moment the window closes. Only the REST/ETag
+      // visible output is gated.
+      const mpConfig = midnightPrayersService.getConfig();
+      const mpWindowOpen = isWindowActive(now, mpConfig);
+      const mpHasVideos = midnightPrayersService.getVideos().length > 0;
+      if (mpWindowOpen && mpHasVideos) {
+        const mpSnap = broadcastOrchestrator.snapshot() as Record<string, unknown>;
+        const offlineSnap = {
+          ...mpSnap,
+          mode: "offline_hold",
+          current: null,
+          next: null,
+          offlineReason: "midnight-prayers-window",
+        };
+        const etag = `W/"mp-offline-${mpConfig.startHour}-${mpConfig.endHour}"`;
+        reply.header("ETag", etag);
+        const ifNoneMatch = req.headers["if-none-match"] as string | undefined;
+        if (ifNoneMatch && (ifNoneMatch === etag || ifNoneMatch === "*")) {
+          return reply.code(304).send();
+        }
+        return { state: offlineSnap };
+      }
+
       if (!_stateCache || _stateCache.expiresAt <= now) {
         _stateCache = { snap: broadcastOrchestrator.snapshot(), expiresAt: now + 2_000 };
       }

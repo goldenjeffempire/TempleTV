@@ -84,6 +84,7 @@ export async function enqueueIfMissing(opts: {
         transcodingStatus: videosTable.transcodingStatus,
         faststartApplied: videosTable.faststartApplied,
         transcodingErrorCode: videosTable.transcodingErrorCode,
+        category: videosTable.category,
       })
       .from(videosTable)
       .where(eq(videosTable.id, opts.videoId))
@@ -342,12 +343,19 @@ export async function scanLibraryAndEnqueue(opts: {
         faststartApplied: videosTable.faststartApplied,
         transcodingErrorCode: videosTable.transcodingErrorCode,
         s3MirroredAt: videosTable.s3MirroredAt,
+        category: videosTable.category,
       })
       .from(videosTable)
       .where(
         and(
           // YouTube is library-only — never enters the broadcast queue.
           ne(videosTable.videoSource, "youtube"),
+          // Midnight-prayers content is NEVER admitted to the main broadcast queue.
+          // It plays exclusively on the dedicated midnight-prayers channel during
+          // its restricted 00:00–03:00 window. Belt-and-suspenders: isPlayableForBroadcast()
+          // also guards per-row, but excluding at the query level is cheaper and prevents
+          // any N-row scan from even considering these videos.
+          ne(videosTable.category, "midnight-prayers"),
           // MP4-first admission: any local video with a source URL is eligible.
           // HLS is preferred (and always admitted) but raw MP4 uploads are not
           // held back — they air immediately and upgrade when transcoding completes.
@@ -445,9 +453,17 @@ function isPlayableForBroadcast(row: {
   transcodingStatus?: string | null;
   faststartApplied?: boolean | null;
   transcodingErrorCode?: string | null;
+  category?: string | null;
 }): boolean {
   // YouTube is library-only — excluded from broadcast entirely.
   if (row.videoSource === "youtube") return false;
+
+  // Midnight-prayers content is NEVER eligible for the MAIN broadcast queue.
+  // It plays exclusively on the dedicated midnight-prayers channel during its
+  // restricted 00:00–03:00 station-timezone window. Any video tagged with
+  // this category must never appear in the main queue regardless of upload
+  // state, transcoding status, or caller reason.
+  if (row.category === "midnight-prayers") return false;
 
   // MP4-only pipeline: any locally-uploaded video with a source URL is
   // admitted immediately. Playback failures are handled at runtime by the

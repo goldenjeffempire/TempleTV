@@ -31,7 +31,7 @@
  *     adminEventBus so admin SSE clients and the activity log can surface state.
  */
 
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, ne } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
@@ -190,6 +190,10 @@ class YtShuffleFallback {
           and(
             eq(videosTable.videoSource, "youtube"),
             isNotNull(videosTable.youtubeId),
+            // Midnight-prayers content is NEVER eligible for the main shuffle
+            // fallback — it plays only on the dedicated midnight-prayers channel
+            // during its restricted 00:00–03:00 window.
+            ne(videosTable.category, "midnight-prayers"),
           ),
         );
 
@@ -404,7 +408,12 @@ class YtShuffleFallback {
       const rows = await db
         .select({ youtubeId: videosTable.youtubeId, title: videosTable.title, duration: videosTable.duration })
         .from(videosTable)
-        .where(and(eq(videosTable.videoSource, "youtube"), isNotNull(videosTable.youtubeId)));
+        .where(and(
+          eq(videosTable.videoSource, "youtube"),
+          isNotNull(videosTable.youtubeId),
+          // Midnight-prayers content excluded from main shuffle — dedicated channel only.
+          ne(videosTable.category, "midnight-prayers"),
+        ));
 
       const freshEntries: YtVideoEntry[] = rows.filter(
         (r): r is { youtubeId: string; title: string; duration: string } =>
