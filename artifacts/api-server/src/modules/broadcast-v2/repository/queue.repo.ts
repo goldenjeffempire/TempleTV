@@ -401,11 +401,21 @@ export function clearBadUrl(url: string): void {
 }
 
 /** Flush the entire bad-URL cache (e.g. operator-triggered "clear blocks").
- * Also resets all per-URL failure counts and all confidence source-sets. */
+ * Also resets all per-URL failure counts, confidence source-sets, per-item
+ * skip counters, and the recentlySuspended list so an operator recovery action
+ * gives every source a completely clean slate — including items that were
+ * accumulating toward the auto-suspend threshold. */
 export function clearAllBadUrls(): void {
   badUrlCache.clear();
   badUrlFailureCounts.clear();
   urlBadSourceSets.clear();
+  // Reset per-item skip counters so items don't immediately re-suspend after
+  // an operator "clear blocks" or "reload" — without this, an item at count=4
+  // would auto-suspend on the very next probe failure after recovery.
+  badUrlSkipCounts.clear();
+  // Clear the recentlySuspended list so the diagnostics panel stops showing
+  // stale suspension entries after the operator has resolved the issue.
+  recentlySuspended.splice(0);
 }
 
 /** True if the URL is currently blacklisted and should not be served. */

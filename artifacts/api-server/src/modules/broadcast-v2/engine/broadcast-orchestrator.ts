@@ -3924,25 +3924,73 @@ class BroadcastOrchestrator extends EventEmitter {
       if (oldest != null) this.probeAttemptedForId.delete(oldest);
     }
 
-    // YouTube sources: use the fast 2 s probe that only classifies
-    // 403/451 (geo-block / takedown) as definitively broken.
+    // YouTube sources: use the fast 2 s probe that classifies 410/451 as
+    // permanent (mark bad immediately), 403/404 as transient (route through
+    // confidence gate), and anything else as ambiguous (do nothing).
+    //
+    // NOTE: probeYouTubeReachability returns "permanent" | "transient" | "ambiguous"
+    // — it never returns "blocked". The previous check `result !== "blocked"` was
+    // always true (dead code). This corrects the comparison so 410/451 and 403/404
+    // YouTube failures are actually handled.
     if (item.source?.kind === "youtube") {
       void (async () => {
         const result = await this.probeYouTubeReachability(url);
-        if (result !== "blocked") return; // ambiguous — leave rotation unchanged
+
+        if (result === "ambiguous") {
+          // timeout / network error / 2xx/5xx — not enough signal to act.
+          logger.debug(
+            { itemId: item.id, title: item.title, url, sequence: this.sequence },
+            "[broadcast-v2] YouTube probe: ambiguous result — leaving rotation unchanged",
+          );
+          return;
+        }
+
         clearSourceApproval(item.id);
-        markBadUrl(url);
+
+        if (result === "permanent") {
+          // HTTP 410 Gone or 451 Unavailable For Legal Reasons — definitively removed.
+          // Mark bad immediately without waiting for a second source confirmation.
+          markBadUrl(url);
+          if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
+          logger.warn(
+            { itemId: item.id, title: item.title, url, result, sequence: this.sequence },
+            "[broadcast-v2] YouTube probe: permanent removal (410/451) — marking bad immediately without confidence gate",
+          );
+          this.emitSnapshot();
+          const failCount = incrementBadUrlSkipCount(item.id);
+          if (failCount >= BAD_URL_SKIP_THRESHOLD) {
+            autoSuspendQueueItem(item.id, item.title ?? null, failCount, url ?? undefined);
+            void this.reload().catch((err) => {
+              logger.warn({ err, itemId: item.id }, "[broadcast-v2] YouTube probe: background reload after permanent-removal auto-suspend failed (non-fatal)");
+            });
+          }
+          return;
+        }
+
+        // result === "transient": HTTP 403 (geo-block / auth required) or 404
+        // (private / deleted). These CAN be transient — route through the
+        // confidence gate so a single CDN hiccup doesn't drop content.
+        const confState = markUrlBadBySource(url, "orchestrator-probe");
+        if (confState === "gap1") {
+          logger.warn(
+            { itemId: item.id, title: item.title, url, result, sequence: this.sequence },
+            "[broadcast-v2] YouTube probe: 403/404 transient failure (gap1 — awaiting second source confirmation before blocking)",
+          );
+          return;
+        }
+
+        // gap2 or gap3: two or more independent sources confirmed broken — block.
         if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
         logger.warn(
-          { itemId: item.id, title: item.title, url, confState, sequence: this.sequence },
-          "[broadcast-v2] YouTube probe: 403/404 confirmed by multiple sources — pre-marking bad",
+          { itemId: item.id, title: item.title, url, result, confState, sequence: this.sequence },
+          "[broadcast-v2] YouTube probe: 403/404 confirmed by multiple sources — pre-marking bad before viewer stalls",
         );
         this.emitSnapshot();
         const failCount = incrementBadUrlSkipCount(item.id);
         if (failCount >= BAD_URL_SKIP_THRESHOLD) {
           autoSuspendQueueItem(item.id, item.title ?? null, failCount, url ?? undefined);
           void this.reload().catch((err) => {
-            logger.warn({ err, itemId: item.id }, "[broadcast-v2] YouTube probe: background reload after auto-suspend failed (non-fatal)");
+            logger.warn({ err, itemId: item.id }, "[broadcast-v2] YouTube probe: background reload after transient-confirmed auto-suspend failed (non-fatal)");
           });
         }
       })().catch((err: unknown) => {
@@ -4114,14 +4162,22 @@ class BroadcastOrchestrator extends EventEmitter {
       if (reachable === false) {
         clearSourceApproval(item.id);
         this.currentItemProbeFailures += 1;
+        // Record the timestamp of the FIRST failure in this window so the
+        // PROBE_FAILURE_WINDOW_MS guard can reset stale counts after 5 min.
+        // Bug fix: this was never set, so the window guard (lines above) could
+        // never fire — old failure counts accumulated indefinitely.
+        if (this.currentItemProbeFailures === 1) {
+          this.currentItemProbeFirstFailureMs = Date.now();
+        }
         logger.warn(
           {
             itemId: item.id,
             title: item.title,
             url,
             failures: this.currentItemProbeFailures,
-            threshold: 4,
+            threshold: 5,
             remainingMs,
+            firstFailureMs: this.currentItemProbeFirstFailureMs,
           },
           `[broadcast-v2] current-item probe: URL returned 4xx (failure ${this.currentItemProbeFailures}/5)`,
         );
