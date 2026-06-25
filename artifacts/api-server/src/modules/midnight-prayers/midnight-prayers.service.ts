@@ -13,12 +13,24 @@
  *   viewer's local midnight) so playback is synchronised within each timezone.
  * - Config (startHour / endHour / timezone) is a singleton DB row; the server
  *   reloads it on PATCH; clients poll /config once per session.
+ * - STRICT SERVER-SIDE WINDOW ENFORCEMENT: getSnapshot() returns offline_hold
+ *   outside the [startHour, endHour) window in the configured timezone. The
+ *   itemWatchTimer tracks window transitions and pushes offline_hold to all
+ *   connected clients the moment the window closes at endHour.
  */
 
 import { eq, and, or, isNotNull, sql } from "drizzle-orm";
 import { db, schema, ensureMidnightPrayersTable } from "../../infrastructure/db.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { logger } from "../../infrastructure/logger.js";
+import {
+  getLocalHour,
+  isWindowActive,
+  windowDescription,
+  type MPWindowConfig,
+} from "./window-utils.js";
+
+export { getLocalHour, isWindowActive, type MPWindowConfig };
 
 // ── Wire types (mirrors lib/player-core/src/types.ts) ────────────────────────
 
@@ -56,6 +68,8 @@ export interface MPV2Snapshot {
     totalDurationSecs: number;
     cycleLengthMs: number;
     epochMs: number;
+    windowActive: boolean;
+    windowDescription: string;
   };
 }
 
@@ -159,6 +173,8 @@ class MidnightPrayersService {
   private heartbeatTimer:    ReturnType<typeof setInterval> | null = null;
   private itemWatchTimer:    ReturnType<typeof setInterval> | null = null;
   private lastBroadcastedId: string | null = null;
+  /** Tracks the last known window state so the timer can detect transitions. */
+  private lastWindowActive: boolean | null = null;
 
   // ── Bootstrap ──────────────────────────────────────────────────────────────
 
@@ -171,7 +187,10 @@ class MidnightPrayersService {
       void this.loadVideos();
     });
 
-    logger.info("[midnight-prayers] service initialised — %d videos loaded", this.videos.length);
+    logger.info("[midnight-prayers] service initialised — %d videos loaded, window=%s",
+      this.videos.length,
+      windowDescription(this.config),
+    );
   }
 
   // ── Config ─────────────────────────────────────────────────────────────────
@@ -280,6 +299,8 @@ class MidnightPrayersService {
 
     // DB write succeeded — now safe to update in-memory state.
     this.config = nextConfig;
+    // Reset window tracking so the timer re-evaluates on the next tick.
+    this.lastWindowActive = null;
 
     // Broadcast config change as a snapshot so connected players know
     // the window has changed without a page reload.
@@ -355,6 +376,7 @@ class MidnightPrayersService {
     queued: number;
     inRotation: number;
     deadAirRisk: boolean;
+    windowActive: boolean;
     statusCounts: Record<string, number>;
     config: MidnightPrayersConfigData;
   }> {
@@ -386,6 +408,7 @@ class MidnightPrayersService {
       const encoding = (statusCounts["encoding"] ?? 0) + (statusCounts["processing"] ?? 0);
       const queued = statusCounts["queued"] ?? 0;
       const failed = statusCounts["failed"] ?? 0;
+      const windowActive = isWindowActive(Date.now(), this.config);
 
       return {
         total,
@@ -394,12 +417,14 @@ class MidnightPrayersService {
         failed,
         queued,
         inRotation: this.videos.length,
-        deadAirRisk: this.config.enabled && this.videos.length === 0,
+        deadAirRisk: this.config.enabled && windowActive && this.videos.length === 0,
+        windowActive,
         statusCounts,
         config: this.getConfig(),
       };
     } catch (err) {
       logger.warn({ err }, "[midnight-prayers] getDiagnostics: DB query failed");
+      const windowActive = isWindowActive(Date.now(), this.config);
       return {
         total: 0,
         playable: 0,
@@ -407,7 +432,8 @@ class MidnightPrayersService {
         failed: 0,
         queued: 0,
         inRotation: this.videos.length,
-        deadAirRisk: this.config.enabled && this.videos.length === 0,
+        deadAirRisk: this.config.enabled && windowActive && this.videos.length === 0,
+        windowActive,
         statusCounts: {},
         config: this.getConfig(),
       };
@@ -419,16 +445,61 @@ class MidnightPrayersService {
   /**
    * Build a V2Snapshot-compatible object for the current moment in time.
    *
+   * STRICT TIME-WINDOW ENFORCEMENT: This method enforces the [startHour,
+   * endHour) window in the configured IANA timezone on every call. Outside
+   * the window it returns mode="offline_hold" with all items null so the
+   * player-core FSM goes dark. This is the authoritative server-side check —
+   * client-side switching is a UX optimisation on top of it, not a substitute.
+   *
    * @param epochMs  The client's local midnight (ms since epoch).
    *                 Defaults to today's midnight in the server's configured
    *                 timezone so the cycle position is deterministic for
    *                 clients that don't supply their own epoch.
    */
   getSnapshot(epochMs?: number): MPV2Snapshot {
-    const epoch = epochMs ?? getTodayMidnightMs(this.config.timezone);
     const now   = Date.now();
+    const epoch = epochMs ?? getTodayMidnightMs(this.config.timezone);
 
+    // ── Server-side window enforcement ────────────────────────────────────
+    const windowActive = isWindowActive(now, this.config);
+    const localHour    = getLocalHour(this.config.timezone, now);
+    const winDesc      = windowDescription(this.config);
+
+    if (!windowActive) {
+      logger.debug(
+        "[midnight-prayers] getSnapshot: outside window %s (localHour=%d) — returning offline_hold",
+        winDesc,
+        localHour,
+      );
+      return {
+        channelId: CHANNEL_ID,
+        sequence: this.sequence,
+        serverTimeMs: now,
+        mode: "offline_hold",
+        current: null,
+        next: null,
+        nextNext: null,
+        override: null,
+        checkpoint: null,
+        failover: { active: false, reason: null },
+        meta: {
+          totalVideos: this.videos.length,
+          totalDurationSecs: 0,
+          cycleLengthMs: 0,
+          epochMs: epoch,
+          windowActive: false,
+          windowDescription: winDesc,
+        },
+      };
+    }
+
+    // ── Window is active ──────────────────────────────────────────────────
     if (this.videos.length === 0) {
+      logger.debug(
+        "[midnight-prayers] getSnapshot: inside window %s (localHour=%d) but no videos — offline_hold",
+        winDesc,
+        localHour,
+      );
       return {
         channelId: CHANNEL_ID,
         sequence: this.sequence,
@@ -445,9 +516,18 @@ class MidnightPrayersService {
           totalDurationSecs: 0,
           cycleLengthMs: 0,
           epochMs: epoch,
+          windowActive: true,
+          windowDescription: winDesc,
         },
       };
     }
+
+    logger.debug(
+      "[midnight-prayers] getSnapshot: inside window %s (localHour=%d) — %d videos in rotation",
+      winDesc,
+      localHour,
+      this.videos.length,
+    );
 
     const totalDurationMs = this.videos.reduce(
       (acc, v) => acc + v.durationSecs * 1_000,
@@ -524,6 +604,8 @@ class MidnightPrayersService {
         totalDurationSecs: Math.round(totalDurationMs / 1_000),
         cycleLengthMs: totalDurationMs,
         epochMs: epoch,
+        windowActive: true,
+        windowDescription: winDesc,
       },
     };
   }
@@ -564,8 +646,11 @@ class MidnightPrayersService {
     // Periodic video list refresh
     this.videoReloadTimer = setInterval(() => {
       void this.loadVideos().then(() => {
-        // If queue length changed, push a new snapshot
-        this.broadcastSnapshot();
+        // Only broadcast if currently inside the window — no point pushing
+        // offline_hold snapshots when we already sent one at window close.
+        if (isWindowActive(Date.now(), this.config)) {
+          this.broadcastSnapshot();
+        }
       });
     }, VIDEO_RELOAD_INTERVAL_MS);
     this.videoReloadTimer.unref?.();
@@ -581,12 +666,46 @@ class MidnightPrayersService {
     }, HEARTBEAT_INTERVAL_MS);
     this.heartbeatTimer.unref?.();
 
-    // Watch for item transitions and push snapshot when current item changes
+    // Watch for item transitions and push snapshot when current item changes.
+    // Also detects window open/close transitions and immediately pushes a
+    // snapshot so all connected clients go offline_hold at exactly endHour
+    // without waiting for the next client poll cycle.
     this.itemWatchTimer = setInterval(() => {
+      const now = Date.now();
+      const windowActive = isWindowActive(now, this.config);
+
+      // ── Window transition detection ────────────────────────────────────
+      if (windowActive !== this.lastWindowActive) {
+        const localHour = getLocalHour(this.config.timezone, now);
+        if (this.lastWindowActive !== null) {
+          // Only log and broadcast on genuine transitions (not the first tick).
+          logger.info(
+            "[midnight-prayers] window %s at localHour=%d tz=%s — broadcasting snapshot",
+            windowActive ? "opened" : "closed",
+            localHour,
+            this.config.timezone,
+          );
+        }
+        this.lastWindowActive = windowActive;
+        // Reset tracked item so the first item inside the window gets logged.
+        this.lastBroadcastedId = null;
+        this.broadcastSnapshot();
+        return;
+      }
+
+      // ── Outside window — nothing to do ────────────────────────────────
+      if (!windowActive) return;
+
+      // ── Inside window — detect item transitions ────────────────────────
       if (this.videos.length === 0) return;
       const snap = this.getSnapshot();
       const currentId = snap.current?.id ?? null;
       if (currentId !== this.lastBroadcastedId) {
+        logger.debug(
+          "[midnight-prayers] item transition: %s → %s",
+          this.lastBroadcastedId ?? "(none)",
+          currentId ?? "(none)",
+        );
         this.lastBroadcastedId = currentId;
         this.broadcastSnapshot();
       }

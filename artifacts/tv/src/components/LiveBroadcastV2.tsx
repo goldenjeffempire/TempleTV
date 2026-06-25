@@ -44,11 +44,39 @@ interface MPScheduleConfig {
   enabled: boolean;
   startHour: number;
   endHour: number;
+  timezone?: string;
 }
 
+/**
+ * Returns the local hour (0–23) in the given IANA timezone using
+ * Intl.DateTimeFormat. Falls back to device local time on unsupported TZ.
+ */
+function getLocalHourInTz(tz: string): number {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hour: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date());
+    return parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10) % 24;
+  } catch {
+    return new Date().getHours();
+  }
+}
+
+/**
+ * Returns true when the current station-local time falls within the
+ * midnight prayer window [startHour, endHour).
+ *
+ * Uses the server-configured IANA timezone (cfg.timezone) so that all
+ * viewers worldwide see the switch at the same moment regardless of their
+ * device's local timezone. Falls back to device local time when the server
+ * hasn't sent a timezone yet.
+ */
 function isInMpWindow(cfg: MPScheduleConfig): boolean {
   if (!cfg.enabled) return false;
-  const h = new Date().getHours();
+  const tz = cfg.timezone ?? "Africa/Lagos";
+  const h = getLocalHourInTz(tz);
   return cfg.endHour > cfg.startHour
     ? h >= cfg.startHour && h < cfg.endHour
     : h >= cfg.startHour || h < cfg.endHour;

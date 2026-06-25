@@ -14,6 +14,17 @@
  *   PATCH /config      – update schedule config (editor+)
  *   GET  /queue        – list midnight-prayers videos (editor+)
  *   POST /queue/refresh – force video list reload (editor+)
+ *
+ * SERVER-SIDE WINDOW ENFORCEMENT:
+ *   All snapshot-returning endpoints (/state, /events, /ws) rely on
+ *   midnightPrayersService.getSnapshot() which enforces the [startHour,
+ *   endHour) window in the configured IANA timezone and returns
+ *   mode="offline_hold" with null items outside the window. Routes do not
+ *   need to duplicate the check — getSnapshot() is authoritative.
+ *
+ *   Cache headers on /state use stale-if-error=10 (not 60) to minimise the
+ *   window during which a browser-cached snapshot can serve midnight-prayer
+ *   content after 3:00 AM.
  */
 
 import type { FastifyInstance } from "fastify";
@@ -40,19 +51,26 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
   // Compatible with V2Transport: returns { state: V2Snapshot }.
   // Accepts ?epochMs=<number> so each viewer can request a cycle anchored to
   // their own local midnight — the server stays stateless w.r.t. timezone.
+  //
+  // Cache notes:
+  //   private, max-age=5  — browser may cache for 5 s; CDN must not cache
+  //                         (epochMs query param varies per caller).
+  //   stale-while-revalidate=10 — serve stale for 10 s while refetching.
+  //   stale-if-error=10   — INTENTIONALLY SHORT: the previous value of 60 s
+  //     could serve a midnight-prayer snapshot for up to 60 s after the
+  //     3 AM window closes. 10 s minimises that leak window.
   app.get("/state", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (req, reply) => {
-    // Short public cache: the player reconstitutes exact position from
-    // startsAtMs on the client side, so a 5 s stale snapshot is fine for
-    // initial load. stale-if-error=60 lets clients survive a 60-second
-    // origin blip without going dark. epochMs query param varies per caller
-    // so Vary: * would be correct, but since CDNs won't cache Vary:* we use
-    // private to restrict caching to the browser only.
     reply
-      .header("Cache-Control", "private, max-age=5, stale-while-revalidate=10, stale-if-error=60")
+      .header("Cache-Control", "private, max-age=5, stale-while-revalidate=10, stale-if-error=10")
       .header("Vary", "Accept-Encoding");
     const query = req.query as Record<string, string>;
     const epochMs = query["epochMs"] ? Number(query["epochMs"]) : undefined;
     const snapshot = midnightPrayersService.getSnapshot(epochMs);
+    logger.debug(
+      "[midnight-prayers] GET /state — mode=%s windowActive=%s",
+      snapshot.mode,
+      String(snapshot.meta.windowActive),
+    );
     return reply.send({ state: snapshot });
   });
 
@@ -120,6 +138,9 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
   // ── GET /events (SSE) ─────────────────────────────────────────────────────
   // Compatible with V2Transport SSE path.
   // Rate-limit the initial connection (30/min per IP) to prevent SSE exhaustion.
+  // Window enforcement is handled entirely by getSnapshot() — connected clients
+  // automatically receive an offline_hold snapshot from the itemWatchTimer at
+  // the moment the window closes.
   app.get("/events", { config: { rateLimit: { max: 30, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, async (req, reply) => {
     reply.raw.writeHead(200, {
       "Content-Type":    "text/event-stream",
@@ -140,8 +161,13 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
       } catch { /* client gone */ }
     };
 
-    // Immediately send hello + current snapshot
+    // Immediately send hello + current snapshot (may be offline_hold outside window)
     const snapshot = midnightPrayersService.getSnapshot(epochMs);
+    logger.debug(
+      "[midnight-prayers] SSE connect — mode=%s windowActive=%s",
+      snapshot.mode,
+      String(snapshot.meta.windowActive),
+    );
     send({ type: "hello", serverTimeMs: Date.now(), sequence: snapshot.sequence });
     send({ type: "snapshot", sequence: snapshot.sequence, state: snapshot });
 
@@ -194,6 +220,9 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
   // ── GET /ws (WebSocket) ───────────────────────────────────────────────────
   // Compatible with V2Transport WS path.
   // Rate-limit the initial WS upgrade (30/min per IP) to prevent exhaustion.
+  // Window enforcement is handled entirely by getSnapshot() — connected clients
+  // automatically receive an offline_hold snapshot from the itemWatchTimer at
+  // the moment the window closes.
   app.get("/ws", { websocket: true, config: { rateLimit: { max: 30, timeWindow: "1 minute" } }, schema: { response: { 429: z.object({ error: z.string() }) } } }, (socket, req) => {
     const send = (frame: MPServerFrame) => {
       try {
@@ -206,6 +235,11 @@ export async function midnightPrayersRoutes(app: FastifyInstance) {
     const epochMs = query["epochMs"] ? Number(query["epochMs"]) : undefined;
 
     const snapshot = midnightPrayersService.getSnapshot(epochMs);
+    logger.debug(
+      "[midnight-prayers] WS connect — mode=%s windowActive=%s",
+      snapshot.mode,
+      String(snapshot.meta.windowActive),
+    );
     send({ type: "hello", serverTimeMs: Date.now(), sequence: snapshot.sequence });
     send({ type: "snapshot", sequence: snapshot.sequence, state: snapshot });
 
