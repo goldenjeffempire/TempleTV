@@ -5975,6 +5975,28 @@ function BroadcastV2PageInner() {
                 Select all
               </Button>
             )}
+            {placeholderDurationCount > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1"
+                disabled={reprobeAllProgress !== null || !!busy}
+                onClick={() => { void reprobeAllHandler(); }}
+                title={`Run ffprobe on all ${placeholderDurationCount} queue item${placeholderDurationCount !== 1 ? "s" : ""} showing a "Duration?" badge. Fixes schedule timing and "Airs in" countdowns.`}
+              >
+                {reprobeAllProgress !== null ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    {reprobeAllProgress.done}/{reprobeAllProgress.total}
+                  </>
+                ) : (
+                  <>
+                    <Search className="h-3 w-3" />
+                    Reprobe {placeholderDurationCount} Duration?
+                  </>
+                )}
+              </Button>
+            )}
             <Button
               size="sm"
               variant="outline"
