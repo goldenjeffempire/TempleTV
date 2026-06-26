@@ -194,6 +194,12 @@ class YtShuffleFallback {
             // fallback — it plays only on the dedicated midnight-prayers channel
             // during its restricted 00:00–03:00 window.
             ne(videosTable.category, "midnight-prayers"),
+            // Only include videos YouTube allows to be embedded on third-party
+            // sites. Non-embeddable videos render as "Video unavailable" inside
+            // the iframe, creating silent dead air the orchestrator cannot detect.
+            // is_embeddable defaults to true so existing rows are always included
+            // until the next sync populates the real embeddability status.
+            eq(videosTable.isEmbeddable, true),
           ),
         );
 
@@ -413,6 +419,8 @@ class YtShuffleFallback {
           isNotNull(videosTable.youtubeId),
           // Midnight-prayers content excluded from main shuffle — dedicated channel only.
           ne(videosTable.category, "midnight-prayers"),
+          // Only include embeddable videos — non-embeddable ones render as dead air.
+          eq(videosTable.isEmbeddable, true),
         ));
 
       const freshEntries: YtVideoEntry[] = rows.filter(

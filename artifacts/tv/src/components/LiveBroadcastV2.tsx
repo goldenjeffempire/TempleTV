@@ -962,6 +962,44 @@ export function LiveBroadcastV2({
     return () => clearInterval(id);
   }, [forceRebind]);
 
+  // ── YouTube embed playback-error detection ────────────────────────────────
+  // When a YouTube iframe fires onError (code 100=not found, 101/150=embedding
+  // disabled), viewers see "Video unavailable" as silent dead air — the server
+  // cannot detect this server-side. Report it so the orchestrator immediately
+  // advances ytShuffleFallback to the next video, self-resolving dead air.
+  const overrideUrl = server?.override?.kind === "youtube" ? server.override.url : null;
+  useEffect(() => {
+    if (!overrideUrl) return;
+    let videoId: string | null = null;
+    try {
+      const u = new URL(overrideUrl);
+      videoId = u.hostname === "youtu.be"
+        ? u.pathname.slice(1).split("?")[0] || null
+        : u.searchParams.get("v");
+    } catch { return; }
+    if (!videoId) return;
+
+    const apiOrigin = resolveApiOrigin();
+    const handler = (evt: MessageEvent) => {
+      if (!evt.origin.includes("youtube")) return;
+      try {
+        const data = typeof evt.data === "string" ? JSON.parse(evt.data) as unknown : evt.data;
+        if (!data || typeof data !== "object") return;
+        const d = data as Record<string, unknown>;
+        if (d["event"] !== "onError") return;
+        const code = typeof d["info"] === "number" ? d["info"] : null;
+        if (code !== 100 && code !== 101 && code !== 150) return;
+        void fetch(`${apiOrigin}/api/broadcast-v2/yt-playback-error`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ videoId, errorCode: code }),
+        }).catch(() => { /* non-fatal */ });
+      } catch { /* ignore malformed messages */ }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [overrideUrl]);
+
   type OverlayContent = { primary: string; secondary?: string; showRefresh?: boolean } | null;
 
   const overlay = useMemo((): OverlayContent => {

@@ -1063,6 +1063,70 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   // Authz piggybacks on the existing /admin RBAC chain — these routes get
   // mounted under both /broadcast-v2 (public read) and /admin/broadcast-v2
   // (full command surface) by the parent plugin.
+  // ── YouTube embed playback-error reporting ────────────────────────────────
+  // Called by TV / web / admin clients when a YouTube iframe fires an onError
+  // event for codes 100 (video not found), 101/150 (embedding disabled by
+  // owner). These codes mean the current shuffle-fallback video is unplayable
+  // — viewers see "Video unavailable" dead air even though the server thinks
+  // it is broadcasting. Calling this endpoint triggers an immediate advance to
+  // the next shuffle video so dead air self-resolves within seconds.
+  //
+  // No auth: any client (including anonymous TV viewers) must be able to
+  // report embed failures. Rate-limited 30/min to prevent thundering-herd
+  // from many simultaneous viewers all reporting the same failure.
+  //
+  // Dedup: reports for the same videoId within 30 s are collapsed so a room
+  // full of TV screens doesn't trigger 50 successive advances on one bad video.
+  const _ytPlaybackErrorDedup = new Map<string, number>();
+  const YT_ERR_DEDUP_TTL_MS = 30_000;
+  app.post("/yt-playback-error", {
+    bodyLimit: 4096,
+    schema: {
+      body: z.object({
+        videoId: z.string().min(1).max(32),
+        errorCode: z.number().int().optional(),
+      }),
+      response: {
+        200: z.object({ ok: z.literal(true), advanced: z.boolean(), reason: z.string() }),
+      },
+    },
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+  }, async (req, _reply) => {
+    const { videoId, errorCode } = req.body as { videoId: string; errorCode?: number };
+
+    const info = ytShuffleFallback.getInfo();
+    if (!info.active || info.videoId !== videoId) {
+      return { ok: true as const, advanced: false, reason: "not-current" };
+    }
+
+    const now = Date.now();
+    const lastMs = _ytPlaybackErrorDedup.get(videoId);
+    if (lastMs && now - lastMs < YT_ERR_DEDUP_TTL_MS) {
+      return { ok: true as const, advanced: false, reason: "dedup" };
+    }
+    _ytPlaybackErrorDedup.set(videoId, now);
+
+    // Prune old dedup entries lazily
+    if (_ytPlaybackErrorDedup.size > 100) {
+      for (const [k, ts] of _ytPlaybackErrorDedup) {
+        if (now - ts > YT_ERR_DEDUP_TTL_MS) _ytPlaybackErrorDedup.delete(k);
+      }
+    }
+
+    logger.warn(
+      { videoId, errorCode },
+      "[broadcast-v2] yt-playback-error: client reported YouTube embed failure — advancing shuffle to next video",
+    );
+
+    void ytShuffleFallback
+      .advance((opts) => broadcastOrchestrator.startOverride(opts))
+      .catch((err: unknown) =>
+        logger.warn({ err }, "[broadcast-v2] yt-playback-error: advance failed (non-fatal)"),
+      );
+
+    return { ok: true as const, advanced: true, reason: "advanced" };
+  });
+
   app.post("/skip", {
     ...adminGuard,
     bodyLimit: 1048576,

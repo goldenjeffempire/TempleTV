@@ -464,6 +464,8 @@ interface PlaylistItem {
 interface VideoDetails {
   duration: string;
   viewCount: string;
+  /** false = YouTube has disabled embedding for this video on third-party sites. */
+  embeddable: boolean;
 }
 
 async function detectYouTubeKeyInvalid(res: Response): Promise<void> {
@@ -577,15 +579,23 @@ async function getVideoDetailsBatch(videoIds: string[], apiKey: string): Promise
     }
     const batch = videoIds.slice(i, i + 50);
     trackQuota("videos.list", 1);
-    const params = new URLSearchParams({ part: "contentDetails,statistics", id: batch.join(","), key: apiKey });
+    const params = new URLSearchParams({ part: "contentDetails,statistics,status", id: batch.join(","), key: apiKey });
     try {
       const res = await fetch(`${YT_API_BASE}/videos?${params}`, { signal: AbortSignal.timeout(15_000) });
       if (!res.ok) continue;
       const data = await res.json() as {
-        items?: { id: string; contentDetails: { duration: string }; statistics: { viewCount?: string } }[];
+        items?: {
+          id: string;
+          contentDetails: { duration: string };
+          statistics: { viewCount?: string };
+          status?: { embeddable?: boolean; privacyStatus?: string };
+        }[];
       };
       for (const item of data.items ?? []) {
-        map.set(item.id, { duration: item.contentDetails?.duration ?? "", viewCount: item.statistics?.viewCount ?? "0" });
+        // embeddable defaults to true when the field is absent (e.g. API key lacks
+        // the quota for status part) so we never mistakenly exclude valid videos.
+        const embeddable = item.status?.embeddable !== false;
+        map.set(item.id, { duration: item.contentDetails?.duration ?? "", viewCount: item.statistics?.viewCount ?? "0", embeddable });
       }
     } catch (err) {
       logger.warn({ err }, "youtube-sync: video details batch failed (non-fatal)");
@@ -644,6 +654,8 @@ interface NormalizedVideo {
   publishedAt: string; thumbnailUrl: string;
   durationSecs: number; viewCount: number;
   category: string; preacher: string;
+  /** Whether YouTube allows this video to be embedded on third-party sites. */
+  embeddable: boolean;
 }
 
 async function fetchAllChannelVideos(
@@ -663,6 +675,7 @@ async function fetchAllChannelVideos(
         durationSecs: 0, viewCount: 0,
         category: detectCategory(v.title, v.description),
         preacher: extractPreacher(v.title),
+        embeddable: true, // RSS has no embeddability data — assume embeddable
       })),
       source: "rss",
       skipped: rss.length - within.length,
@@ -684,6 +697,8 @@ async function fetchAllChannelVideos(
         viewCount: d?.viewCount ? parseInt(d.viewCount, 10) : 0,
         category: detectCategory(item.title, item.description),
         preacher: extractPreacher(item.title),
+        // Default true when details fetch failed for this video (missing from map)
+        embeddable: d?.embeddable ?? true,
       };
     });
     logger.info({ count: videos.length, hitCutoff }, "youtube-sync: Data API fetch complete");
@@ -699,6 +714,7 @@ async function fetchAllChannelVideos(
         durationSecs: 0, viewCount: 0,
         category: detectCategory(v.title, v.description),
         preacher: extractPreacher(v.title),
+        embeddable: true, // RSS has no embeddability data — assume embeddable
       })),
       source: "rss",
       skipped: rss.length - within.length,
@@ -716,6 +732,7 @@ async function fetchWithRssOnly(cutoff: Date): Promise<{ videos: NormalizedVideo
       durationSecs: 0, viewCount: 0,
       category: detectCategory(v.title, v.description),
       preacher: extractPreacher(v.title),
+      embeddable: true, // RSS has no embeddability data — assume embeddable
     })),
     source: "rss",
     skipped: rss.length - within.length,
@@ -738,6 +755,7 @@ interface VideoRow {
   preacher: string;
   transcodingStatus: string;
   sourceCleanupStatus: string;
+  isEmbeddable: boolean;
 }
 
 // ── Per-row validation ────────────────────────────────────────────────────────
@@ -818,6 +836,7 @@ function buildAndValidateRow(v: NormalizedVideo): { row: VideoRow; warnings: str
       viewCount, publishedAt,
       videoSource, category, preacher,
       transcodingStatus, sourceCleanupStatus,
+      isEmbeddable: v.embeddable !== false,
     },
     warnings,
   };
@@ -861,12 +880,14 @@ async function upsertBatch(rows: VideoRow[]): Promise<void> {
           // Preserve admin-curated values when metadata_locked = true.
           category: sql`CASE WHEN managed_videos.metadata_locked THEN managed_videos.category ELSE excluded.category END`,
           preacher: sql`CASE WHEN managed_videos.metadata_locked THEN managed_videos.preacher ELSE excluded.preacher END`,
+          // Always update embeddability status — YouTube can change this at any time.
+          isEmbeddable: sql`excluded.is_embeddable`,
         },
       });
   } catch (err: unknown) {
-    if (!isUndefinedColumnError(err, "metadata_locked")) throw err;
-    // metadata_locked column not yet present in the production DB.
-    // Retry without the lock guard — always overwrite category/preacher.
+    if (!isUndefinedColumnError(err, "metadata_locked") && !isUndefinedColumnError(err, "is_embeddable")) throw err;
+    // One of the newer columns (metadata_locked, is_embeddable) is not yet present
+    // in the production DB. Retry without those columns — always overwrite category/preacher.
     await db
       .insert(v)
       .values(rows)

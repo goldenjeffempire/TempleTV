@@ -2628,6 +2628,46 @@ function BroadcastV2PageInner() {
     staleTime: 8_000,
   });
 
+  // ── YouTube embed playback-error detection (admin preview) ───────────────
+  // The admin broadcast console embeds the live YouTube override via an
+  // iframe. If that video is unembeddable the admin will see "Video unavailable"
+  // and can manually advance, but also report it here so it's auto-recovered.
+  const v2OverrideUrl =
+    v2LiveState?.state?.override && v2LiveState.state.override.kind === "youtube"
+      ? v2LiveState.state.override.url
+      : null;
+  useEffect(() => {
+    if (!v2OverrideUrl) return;
+    let videoId: string | null = null;
+    try {
+      const u = new URL(v2OverrideUrl);
+      videoId = u.hostname === "youtu.be"
+        ? u.pathname.slice(1).split("?")[0] || null
+        : u.searchParams.get("v");
+    } catch { return; }
+    if (!videoId) return;
+
+    const handler = (evt: MessageEvent) => {
+      if (!evt.origin.includes("youtube")) return;
+      try {
+        const data = typeof evt.data === "string" ? JSON.parse(evt.data) as unknown : evt.data;
+        if (!data || typeof data !== "object") return;
+        const d = data as Record<string, unknown>;
+        if (d["event"] !== "onError") return;
+        const code = typeof d["info"] === "number" ? d["info"] : null;
+        if (code !== 100 && code !== 101 && code !== 150) return;
+        void api
+          .post<{ ok: boolean; advanced: boolean; reason: string }>(
+            "/broadcast-v2/yt-playback-error",
+            { videoId, errorCode: code },
+          )
+          .catch(() => { /* non-fatal */ });
+      } catch { /* ignore malformed messages */ }
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [v2OverrideUrl]);
+
   const testWebhookMutation = useMutation({
     mutationFn: () => api.post<WebhookTestResult>("/broadcast-v2/webhook/test", {}),
     onSuccess: (data) => {

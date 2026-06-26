@@ -150,6 +150,14 @@ export const videosTable = pgTable("managed_videos", {
   // Used for filtering in the admin library. Stored as a Postgres text[] array.
   // null = no tags.
   tags: text("tags").array(),
+  // Whether YouTube allows this video to be embedded on third-party sites.
+  // Populated by youtube-sync from the YouTube Data API status.embeddable field.
+  // Defaults to true for existing rows (assume embeddable until sync updates it).
+  // ytShuffleFallback filters on this column to prevent dead air caused by
+  // non-embeddable videos being picked by the shuffle — those videos render as
+  // "Video unavailable" inside the iframe even though the server thinks they
+  // are playing, creating silent dead air that the orchestrator cannot detect.
+  isEmbeddable: boolean("is_embeddable").notNull().default(true),
 }, (table) => [
   index("idx_managed_videos_imported_at").on(table.importedAt),
   index("idx_managed_videos_category").on(table.category),
