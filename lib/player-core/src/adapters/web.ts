@@ -220,10 +220,21 @@ export function createWebAdapter(
     // All listeners pass `{ signal }` so `listenerAbort.abort()` in `destroy()`
     // removes every handler in one call — no manual tracking needed.
     buf.el.addEventListener("loadedmetadata", () => {
+      // `loadedmetadata` fires at readyState=1 (HAVE_METADATA): the browser
+      // has parsed the container header and knows duration/dimensions, but has
+      // NOT yet decoded the first video frame.  Using it to fire `buffer-ready`
+      // allows a handoff before the inactive buffer can render anything →
+      // brief black flash between items.  Clear the load timer here (metadata
+      // arrival confirms the server is reachable and bytes are flowing), but
+      // wait for `canplay` before signalling actual decode readiness.
       clearLoadTimer(id);
-      cb.send({ type: "buffer-ready", bufferId: id });
     }, { signal });
     buf.el.addEventListener("canplay", () => {
+      // `canplay` fires at readyState=3 (HAVE_FUTURE_DATA): the browser has
+      // decoded at least the first frame and estimated it can play without
+      // immediately stopping to re-buffer.  This is the earliest reliable
+      // signal that a swap will produce instant visible output rather than
+      // a black frame.
       clearLoadTimer(id);
       cb.send({ type: "buffer-ready", bufferId: id });
     }, { signal });
@@ -472,6 +483,13 @@ export function createWebAdapter(
       buf.detach();
       buf.detach = undefined;
     }
+    // Ensure aggressive buffering so the inactive buffer pre-downloads as much
+    // of the next video as possible before HANDOFF fires.  `preload="auto"` is
+    // the only standard hint that tells the browser to buffer beyond the first
+    // few seconds; without it some browsers (especially Smart TVs) stall at
+    // readyState=1 waiting for an explicit play() call before fetching data.
+    buf.el.preload = "auto";
+
     const kind = "source" in item ? item.source.kind : item.kind;
     if (kind === "hls") {
       if (buf.el.canPlayType("application/vnd.apple.mpegurl")) {

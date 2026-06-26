@@ -170,11 +170,17 @@ const FATAL_BACKOFF_MAX_MS = 240_000;
  * When the inactive buffer preloaded successfully (typical case, ~120 s of
  * lead time), canplay already fired and the HANDOFF is immediate.  This timer
  * is only the last resort for pathological cases (very slow network, browser
- * throttling) where the inactive buffer still hasn't decoded a first frame
- * by the time the active buffer ends.  3 s caps the "frozen last frame"
- * duration without letting the display hang indefinitely.
+ * throttling, PostgreSQL BYTEA reads under load) where the inactive buffer
+ * still hasn't decoded a first frame by the time the active buffer ends.
+ *
+ * Raised from 3 s → 8 s because the adapter now waits for `canplay`
+ * (readyState ≥ 3, first frame decoded) rather than `loadedmetadata`
+ * (readyState = 1, metadata only).  `canplay` takes slightly longer than
+ * `loadedmetadata` on the first frame, so the safety-valve budget needs to
+ * be correspondingly larger.  8 s is still short enough to avoid a
+ * prolonged black screen while being generous for the BYTEA storage path.
  */
-const MAX_HANDOFF_WAIT_MS = 3_000;
+const MAX_HANDOFF_WAIT_MS = 8_000;
 
 export class PlayerMachine {
   private snapshot: PlayerSnapshot = {

@@ -776,6 +776,7 @@ export function BroadcastPreviewV2({ className }: Props) {
         playsInline
         autoPlay
         muted
+        preload="auto"
         style={{ zIndex: 2, display: "block", willChange: "transform", transform: "translateZ(0)" }}
       />
       <video
@@ -784,6 +785,7 @@ export function BroadcastPreviewV2({ className }: Props) {
         playsInline
         autoPlay
         muted
+        preload="auto"
         style={{ zIndex: 1, opacity: 0, display: "block", willChange: "transform", transform: "translateZ(0)" }}
       />
 
