@@ -1172,7 +1172,22 @@ export default function VideosPage() {
   };
 
   // Auto-clear selection when filters or page change so stale IDs don't linger.
-  const handleSearch = () => { setSearch(searchInput); setPage(1); setSelectedIds(new Set()); };
+  // Commit the current searchInput immediately (e.g. on Enter key press).
+  const commitSearch = (value: string) => {
+    setSearch(value);
+    setPage(1);
+    setSelectedIds(new Set());
+  };
+
+  // Debounce: auto-commit searchInput 350 ms after the user stops typing.
+  // Also clears any pending timer when the component unmounts.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      commitSearch(searchInput);
+    }, 350);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchInput]);
 
   const resetFilters = () => {
     setSearch(""); setSearchInput(""); setStatusFilter("all"); setBroadcastFilter("all");
@@ -1398,19 +1413,42 @@ export default function VideosPage() {
 
       {/* Filters row */}
       <div className="flex flex-wrap gap-2 items-center">
-        {/* Search */}
-        <div className="flex gap-1.5 flex-1 min-w-0 max-w-sm">
-          <div className="relative flex-1">
-            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="Search title, preacher…"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-              className="pl-8 h-8 text-sm"
-            />
+        {/* Search — debounced, results update 350 ms after typing stops */}
+        <div className="relative flex-1 min-w-0 max-w-sm">
+          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <Input
+            placeholder="Search title, preacher…"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                // Immediately commit on Enter — skip the 350 ms wait.
+                clearTimeout(undefined); // the debounce useEffect handles its own timer
+                commitSearch(searchInput);
+              }
+              if (e.key === "Escape") {
+                setSearchInput("");
+                commitSearch("");
+              }
+            }}
+            className="pl-8 pr-8 h-8 text-sm"
+            aria-label="Search videos"
+          />
+          {/* Right-side adornment: spinner while debounce is in-flight, clear × when idle */}
+          <div className="absolute right-2.5 top-1/2 -translate-y-1/2 flex items-center">
+            {searchInput !== search ? (
+              <Loader2 size={13} className="animate-spin text-muted-foreground" aria-label="Searching…" />
+            ) : searchInput ? (
+              <button
+                type="button"
+                onClick={() => { setSearchInput(""); commitSearch(""); }}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+                aria-label="Clear search"
+              >
+                <X size={13} />
+              </button>
+            ) : null}
           </div>
-          <Button size="sm" variant="secondary" className="h-8" onClick={handleSearch}>Search</Button>
         </div>
 
         {/* Category */}
