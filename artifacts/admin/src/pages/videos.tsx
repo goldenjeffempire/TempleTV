@@ -254,7 +254,29 @@ const CATEGORIES: { value: string; label: string }[] = [
   { value: "conference",       label: "Conferences" },
   { value: "testimony",        label: "Testimonies" },
 ];
-const PAGE_SIZE = 20;
+const PAGE_SIZES = [20, 50, 100] as const;
+
+/**
+ * Build a pagination slot array for a sliding-window pagination bar.
+ * Returns numbers for page buttons and the string "…" for ellipsis gaps.
+ * Always shows first, last, and up to `wing` pages on each side of `current`.
+ */
+function buildPageSlots(total: number, current: number, wing = 2): (number | "…")[] {
+  if (total <= 1) return [];
+  const set = new Set<number>();
+  set.add(1);
+  set.add(total);
+  for (let i = Math.max(1, current - wing); i <= Math.min(total, current + wing); i++) set.add(i);
+  const sorted = Array.from(set).sort((a, b) => a - b);
+  const slots: (number | "…")[] = [];
+  let prev = 0;
+  for (const n of sorted) {
+    if (n - prev > 1) slots.push("…");
+    slots.push(n);
+    prev = n;
+  }
+  return slots;
+}
 
 const STATUS_COLORS: Record<string, string> = {
   hls_ready: "default", ready: "default",
@@ -446,6 +468,7 @@ export default function VideosPage() {
 
   // Video list state
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<typeof PAGE_SIZES[number]>(20);
   const [search, setSearch] = useState("");
   const [searchInput, setSearchInput] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -507,9 +530,9 @@ export default function VideosPage() {
   // ── Data fetching ──────────────────────────────────────────────────────────
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["admin-videos", page, search, statusFilter, categoryFilter, sortOrder, tagFilter],
+    queryKey: ["admin-videos", page, pageSize, search, statusFilter, categoryFilter, sortOrder, tagFilter],
     queryFn: () => {
-      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE), sort: sortOrder, source: "local" });
+      const params = new URLSearchParams({ page: String(page), limit: String(pageSize), sort: sortOrder, source: "local" });
       if (search) params.set("search", search);
       if (statusFilter !== "all") params.set("transcodingStatus", statusFilter);
       if (categoryFilter !== "all") params.set("category", categoryFilter);
@@ -1936,39 +1959,99 @@ export default function VideosPage() {
       </Card>
 
       {/* Pagination */}
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-muted-foreground">
-          {data ? `Page ${page} of ${totalPages} · ${data.total.toLocaleString()} total` : ""}
-        </p>
-        {totalPages > 1 && (
-          <div className="flex gap-1">
-            <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage(p => p - 1)} className="h-7" aria-label="Previous page">
-              <ChevronLeft size={13} />
-            </Button>
-            {/* Page number pills — show up to 5 */}
-            {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
-              const mid = Math.min(Math.max(page, 3), totalPages - 2);
-              const start = Math.max(1, totalPages <= 5 ? 1 : mid - 2);
-              const n = start + i;
-              if (n > totalPages) return null;
-              return (
+      {data && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 py-1">
+          {/* Left: result summary */}
+          <p className="text-xs text-muted-foreground shrink-0 order-2 sm:order-1">
+            {(() => {
+              const first = Math.min((page - 1) * pageSize + 1, data.total);
+              const last  = Math.min(page * pageSize, data.total);
+              return data.total === 0
+                ? "No videos found"
+                : `Showing ${first}–${last} of ${data.total.toLocaleString()} video${data.total !== 1 ? "s" : ""}`;
+            })()}
+          </p>
+
+          {/* Right: controls */}
+          <div className="flex items-center gap-3 order-1 sm:order-2">
+            {/* Items per page selector */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-muted-foreground whitespace-nowrap">Per page:</span>
+              <Select
+                value={String(pageSize)}
+                onValueChange={(v) => {
+                  setPageSize(Number(v) as typeof PAGE_SIZES[number]);
+                  setPage(1);
+                  setSelectedIds(new Set());
+                }}
+              >
+                <SelectTrigger className="h-7 w-16 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAGE_SIZES.map((s) => (
+                    <SelectItem key={s} value={String(s)} className="text-xs">{s}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Page navigation — only render when there is more than one page */}
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1">
+                {/* Previous */}
                 <Button
-                  key={n}
                   size="sm"
-                  variant={n === page ? "default" : "outline"}
-                  className="h-7 w-7 text-xs"
-                  onClick={() => setPage(n)}
+                  variant="outline"
+                  disabled={page <= 1}
+                  onClick={() => setPage(p => p - 1)}
+                  className="h-7 px-2"
+                  aria-label="Previous page"
                 >
-                  {n}
+                  <ChevronLeft size={13} />
                 </Button>
-              );
-            })}
-            <Button size="sm" variant="outline" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)} className="h-7" aria-label="Next page">
-              <ChevronRight size={13} />
-            </Button>
+
+                {/* Page slots: numbers + ellipsis */}
+                {buildPageSlots(totalPages, page).map((slot, idx) =>
+                  slot === "…" ? (
+                    <span
+                      key={`ellipsis-${idx}`}
+                      className="h-7 w-7 flex items-center justify-center text-xs text-muted-foreground select-none"
+                      aria-hidden
+                    >
+                      …
+                    </span>
+                  ) : (
+                    <Button
+                      key={slot}
+                      size="sm"
+                      variant={slot === page ? "default" : "outline"}
+                      className="h-7 w-7 text-xs"
+                      onClick={() => setPage(slot)}
+                      aria-label={`Page ${slot}`}
+                      aria-current={slot === page ? "page" : undefined}
+                    >
+                      {slot}
+                    </Button>
+                  )
+                )}
+
+                {/* Next */}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={page >= totalPages}
+                  onClick={() => setPage(p => p + 1)}
+                  className="h-7 px-2"
+                  aria-label="Next page"
+                >
+                  <ChevronRight size={13} />
+                </Button>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* ── Video Preview Dialog ────────────────────────────────────────────── */}
       <Dialog
