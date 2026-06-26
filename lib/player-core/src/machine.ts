@@ -621,6 +621,29 @@ export class PlayerMachine {
     this.set({ lastServerSnapshot: server, lastSequence: nextSeq });
 
     if (server.mode === "override" && server.override) {
+      // If the same override is already active, skip the full engageOverride()
+      // call. The server re-sends a full snapshot on every keepalive (≤15 s),
+      // and calling engageOverride() on each one causes needless A↔B buffer
+      // swaps: bindRevision increments, the load-timeout is re-armed, and
+      // videoReady resets — all for an override that is already running.
+      //
+      // For YouTube overrides this is especially critical: url=null means no
+      // native Video element exists, so the load-timeout always fires after
+      // LOAD_TIMEOUT_MS (onLoad can never clear it). Each keepalive snapshot
+      // therefore starts a 12 s countdown to buffer-error → RECOVERING_PRIMARY
+      // → ExoPlayer tries the raw YouTube watch URL → errors → SKIP_PENDING →
+      // dead air until the escape-valve reconnect fires.
+      if (this.snapshot.state === "LIVE_OVERRIDE_ACTIVE") {
+        const activeId = this.snapshot.activeBufferId;
+        const activeBuffer = activeId === "A" ? this.snapshot.bufferA : this.snapshot.bufferB;
+        if (
+          activeBuffer !== null &&
+          !("source" in activeBuffer) &&
+          (activeBuffer as V2Override).id === server.override.id
+        ) {
+          return; // same override already engaged — nothing to do
+        }
+      }
       return this.engageOverride(server.override);
     }
 

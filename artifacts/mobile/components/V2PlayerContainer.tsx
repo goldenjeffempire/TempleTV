@@ -771,7 +771,15 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
       // with a stale false value and arms the watchdog on a suppressed instance,
       // causing spurious buffer-error → RECOVERING_PRIMARY on the fullscreen
       // stream.
-      if (!suppressEventsRef.current && state.playing && state.active && fsmIsWaitingRef.current) {
+      // Guard: only arm the load timeout when there is actually a URL for
+      // expo-av to load. YouTube overrides have url=null (the native Video
+      // element is deliberately absent — the player shows a branded overlay
+      // instead). Arming the timeout with url=null means it always fires after
+      // LOAD_TIMEOUT_MS (onLoad can never fire without a Video element), which
+      // drives the FSM from LIVE_OVERRIDE_ACTIVE → RECOVERING_PRIMARY → tries
+      // to load the raw YouTube watch URL → ExoPlayer errors → SKIP_PENDING →
+      // dead air until the escape-valve reconnect fires.
+      if (!suppressEventsRef.current && state.playing && state.active && fsmIsWaitingRef.current && url !== null) {
         loadTimeoutRef.current = setTimeout(() => {
           loadTimeoutRef.current = null;
           emit({ type: "buffer-error", bufferId, error: "load-timeout" });
