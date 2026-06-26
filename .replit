@@ -28,10 +28,6 @@ args = "Start API"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "Start Workers"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
 args = "Install and Build"
 
 [[workflows.workflow]]
@@ -55,19 +51,8 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "export PATH=\"/home/runner/workspace/node_modules/.bin:$PATH\" && MALLOC_ARENA_MAX=2 PORT=8080 RUN_MODE=api node --expose-gc --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
+args = "export PATH=\"/home/runner/workspace/node_modules/.bin:$PATH\" && MALLOC_ARENA_MAX=2 PORT=8080 RUN_MODE=all node --expose-gc --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
 waitForPort = 8080
-
-[[workflows.workflow]]
-name = "Start Workers"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "export PATH=\"/home/runner/workspace/node_modules/.bin:$PATH\" && RUN_MODE=worker node --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
-
-[workflows.workflow.metadata]
-outputType = "console"
 
 [[workflows.workflow]]
 name = "Install and Build"
@@ -96,10 +81,6 @@ externalPort = 80
 [[ports]]
 localPort = 8080
 externalPort = 8080
-
-[[ports]]
-localPort = 9001
-externalPort = 4200
 
 [[ports]]
 localPort = 18115
