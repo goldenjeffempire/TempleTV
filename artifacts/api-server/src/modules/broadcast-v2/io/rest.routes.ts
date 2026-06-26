@@ -171,10 +171,46 @@ async function autoEnqueueMissingHls(): Promise<{ triggered: number }> {
 // HLS URL is bad-URL-blocked. No URL suppression is needed at this layer.
 
 async function _doAutoEnqueueMissingHls(): Promise<{ triggered: number }> {
-  // MP4-only pipeline: HLS transcoding is disabled. All uploads broadcast
-  // immediately as raw MP4 (or faststart-optimized MP4). No HLS jobs needed.
-  logger.info("[broadcast-v2] auto-enqueue-missing-hls: skipped (MP4-only pipeline)");
-  return { triggered: 0 };
+  const bq = schema.broadcastQueueTable;
+  const mv = schema.videosTable;
+  const rows = await db
+    .select({ videoId: mv.id, localVideoUrl: mv.localVideoUrl })
+    .from(bq)
+    .innerJoin(mv, eq(bq.videoId, mv.id))
+    .where(
+      and(
+        eq(bq.isActive, true),
+        isNotNull(mv.localVideoUrl),
+        isNull(mv.hlsMasterUrl),
+      ),
+    );
+
+  if (rows.length === 0) {
+    logger.debug("[broadcast-v2] auto-enqueue-missing-hls: no items need HLS transcoding");
+    return { triggered: 0 };
+  }
+
+  let triggered = 0;
+  for (const row of rows) {
+    if (!row.localVideoUrl) continue;
+    try {
+      await enqueueTranscode({
+        videoId: row.videoId,
+        videoPath: row.localVideoUrl,
+        priority: 10,
+      });
+      triggered++;
+    } catch (err) {
+      logger.warn({ err, videoId: row.videoId }, "[broadcast-v2] auto-enqueue-missing-hls: failed to enqueue job");
+    }
+  }
+
+  if (triggered > 0) {
+    transcoderDispatcher.nudge();
+    logger.info({ triggered }, "[broadcast-v2] auto-enqueue-missing-hls: enqueued HLS transcoding jobs");
+  }
+
+  return { triggered };
 }
 
 // ── Remote-transcode disk pre-flight ────────────────────────────────────────

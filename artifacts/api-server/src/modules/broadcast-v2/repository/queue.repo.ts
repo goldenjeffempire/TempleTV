@@ -152,11 +152,15 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
   //                              the dev server running on the same machine.
   const devDomain = process.env["DEV_DOMAIN"];
   const replitDevDomain = process.env["REPLIT_DEV_DOMAIN"];
+  // On Replit, REPLIT_DEV_DOMAIN is always this server's own reachable address —
+  // it takes precedence over API_ORIGIN so locally-uploaded BYTEA blobs are
+  // served from the correct hostname even when API_ORIGIN points to a different
+  // production server or a custom domain not yet pointed at this process.
   const publicBase = (
+    (replitDevDomain ? `https://${replitDevDomain}` : undefined) ??
     (IS_PROD_NODE_ENV ? env.API_ORIGIN : undefined) ??
     process.env["RENDER_EXTERNAL_URL"] ??
-    (devDomain ? `https://${devDomain}` : undefined) ??
-    (replitDevDomain ? `https://${replitDevDomain}` : undefined)
+    (devDomain ? `https://${devDomain}` : undefined)
   )?.replace(/\/+$/, "");
   const base = publicBase ?? `http://localhost:${env.PORT ?? 5000}`;
   const path = raw.startsWith("/") ? raw : `/${raw}`;
@@ -196,11 +200,15 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
 function getOwnBase(): string {
   const devDomain = process.env["DEV_DOMAIN"];
   const replitDevDomain = process.env["REPLIT_DEV_DOMAIN"];
+  // On Replit, REPLIT_DEV_DOMAIN is always this server's own reachable address —
+  // it takes precedence over API_ORIGIN so locally-uploaded BYTEA blobs are
+  // served from the correct hostname even when API_ORIGIN points to a different
+  // production server or a custom domain not yet pointed at this process.
   const publicBase = (
+    (replitDevDomain ? `https://${replitDevDomain}` : undefined) ??
     (IS_PROD_NODE_ENV ? env.API_ORIGIN : undefined) ??
     process.env["RENDER_EXTERNAL_URL"] ??
-    (devDomain ? `https://${devDomain}` : undefined) ??
-    (replitDevDomain ? `https://${replitDevDomain}` : undefined)
+    (devDomain ? `https://${devDomain}` : undefined)
   )?.replace(/\/+$/, "");
   const base = publicBase ?? `http://localhost:${env.PORT ?? 5000}`;
   return /^https?:\/\//i.test(base) ? base : `https://${base}`;

@@ -55,13 +55,6 @@ export async function enqueueTranscode(args: {
   videoPath: string;
   priority?: number;
 }): Promise<{ id: string; reused: boolean }> {
-  // HLS transcoding disabled — MP4-only pipeline.
-  // Videos are served directly from their uploaded MP4 source.
-  logger.info(
-    { videoId: args.videoId },
-    "transcoder: enqueueTranscode called but HLS transcoding is disabled (MP4-only pipeline) — no-op",
-  );
-  return { id: args.videoId, reused: false };
   const priority = args.priority ?? 0;
   // Normalise at the point of DB write so every caller is covered regardless
   // of whether it passed objectPath (bare key) or localVideoUrl (API path).
