@@ -31,7 +31,6 @@ import { PlayerMachine } from "./machine.js";
 import { V2Transport } from "./transport.js";
 import { createMobileAdapter, type MobileAdapter, type MobileAdapterStore } from "./adapters/mobile.js";
 import type { PlayerEvent, PlayerSnapshot } from "./types.js";
-import { scheduleHeartbeat } from "../../../lib/heartbeatScheduler.js";
 
 export interface UseV2BroadcastNativeOptions {
   baseUrl: string;
@@ -170,14 +169,8 @@ const SESSION_IDLE_EVICT_MS = 5 * 60 * 1000;
  */
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
-/**
- * Unsubscribe function returned by scheduleHeartbeat for the janitor tick.
- * Null when no sessions exist and the janitor is not registered.
- * Using the shared HeartbeatScheduler (15 s base, 4 ticks = 60 s) replaces
- * an independent setInterval so the janitor shares a single JS timer with
- * the NetworkContext online-probe, reducing iOS background timer wake-ups.
- */
-let janitorUnsub: (() => void) | null = null;
+/** setInterval handle for the janitor sweep. Null when no sessions exist. */
+let janitorInterval: ReturnType<typeof setInterval> | null = null;
 
 // ── Lightweight Sentry breadcrumb helper ────────────────────────────────────
 // Uses a lazy require so the player-core vendor library does not take a hard
@@ -190,8 +183,10 @@ function _breadcrumb(
   data?: Record<string, unknown>,
 ): void {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const S = require("@sentry/react-native") as {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any
+    // @ts-expect-error — require is available in both RN (native) and the
+    // Metro bundler's CommonJS shim; lib tsconfig doesn't include @types/node.
+    const S = (require as (id: string) => unknown)("@sentry/react-native") as {
       addBreadcrumb: (b: { category: string; message: string; level: string; data?: Record<string, unknown> }) => void;
     };
     S.addBreadcrumb({ category, message, level, data });
@@ -247,22 +242,17 @@ function runJanitor(): void {
       evictSession(baseUrl, entry);
     }
   }
-  // Self-unsubscribe from the shared heartbeat when there are no sessions left.
-  // scheduleHeartbeat uses snapshot iteration so calling unsubscribe() from
-  // inside the tick callback is safe (the subscriber is skipped if already
-  // removed during the current tick).
-  if (sessions.size === 0 && janitorUnsub !== null) {
-    janitorUnsub();
-    janitorUnsub = null;
+  // Stop the interval when no sessions remain.
+  if (sessions.size === 0 && janitorInterval !== null) {
+    clearInterval(janitorInterval);
+    janitorInterval = null;
   }
 }
 
 function startJanitor(): void {
-  if (janitorUnsub !== null) return;
-  // Register with the shared 15 s heartbeat at 4 ticks = 60 s cadence.
-  // The heartbeat itself self-stops when all subscribers unsubscribe, so no
-  // separate cleanup is needed for the heartbeat timer — only for janitorUnsub.
-  janitorUnsub = scheduleHeartbeat(runJanitor, 60_000);
+  if (janitorInterval !== null) return;
+  if (typeof setInterval === "undefined") return;
+  janitorInterval = setInterval(runJanitor, 60_000);
 }
 
 function getOrCreateSession(baseUrl: string): NativeSession {

@@ -67,6 +67,9 @@ export interface V2Snapshot {
   offAirReason?: "empty" | "all_blocked" | null;
   /**
    * YouTube video ID of the NEXT video in the shuffle playlist.
+   * Populated when the YouTube shuffle fallback is active (mode=override,
+   * override.kind="youtube"). Clients use this to preload the next YouTube
+   * iframe before the current one ends for seamless gapless transitions.
    * Optional for back-compat with older server versions.
    */
   nextYtVideoId?: string | null;

@@ -44,15 +44,15 @@ export interface WebAdapterCallbacks {
  * How long to wait for `canplay` / `loadedmetadata` after a `bind` before
  * declaring the source unreachable.
  *
- * 15 s gives headroom for:
+ * 20 s gives headroom for:
  *   - Non-faststart MP4s routed through the media proxy on high-latency
  *     connections (dev → API → CDN chain can add 2–5 s on cold TCP).
  *   - HLS manifest + first segment on a 2–3 Mbps mobile link.
  * The `progress` extension (BIND_PROGRESS_TIMEOUT_MS = 90 s) kicks in as
  * soon as any bytes arrive, so a large file never hits this deadline while
- * data is flowing. Reduced from 20 s to cut per-bad-item dead air.
+ * data is flowing.
  */
-const BIND_LOAD_TIMEOUT_MS = 15_000;
+const BIND_LOAD_TIMEOUT_MS = 20_000;
 
 /**
  * Extended timeout once `progress` fires during the bind phase.
@@ -65,9 +65,15 @@ const BIND_PROGRESS_TIMEOUT_MS = 90_000;
 
 // Watchdog thresholds — per-phase values passed directly to the Watchdog
 // constructor below. See watchdog.ts for the 3-phase model documentation.
-const WATCHDOG_INITIAL_LOAD_MS = 15_000;
-const WATCHDOG_REBUFFER_MS     = 15_000;
-const WATCHDOG_STABLE_MS       = 25_000;
+//
+// Raised from 15/15/25 → 20/20/30 s to give more tolerance for buffering
+// on slow/congested networks without causing spurious stall→skip cascades.
+// Broadcast content (sermons, worship streams) regularly pauses to buffer
+// on mobile links during initial segment fetch and mid-stream rebuffer;
+// the old 15 s thresholds fired false-positive stalls too aggressively.
+const WATCHDOG_INITIAL_LOAD_MS = 20_000;
+const WATCHDOG_REBUFFER_MS     = 20_000;
+const WATCHDOG_STABLE_MS       = 30_000;
 const WATCHDOG_STABLE_PLAY_MS  = 30_000;
 
 /**
@@ -82,7 +88,12 @@ const WATCHDOG_STABLE_PLAY_MS  = 30_000;
  * even when the DB duration doesn't yet match the encoded file length —
  * the most common cause of SYNCING black-screen gaps between queue items.
  *
- * Matches the server default BROADCAST_PRELOAD_LEAD_MS (120 s).
+ * Matches PRELOAD_LEAD_MS in machine.ts (90 s) and the server default
+ * BROADCAST_PRELOAD_LEAD_MS (120 s). Using 120 s aligns the client-side
+ * near-end trigger with the server's preload window, ensuring the inactive
+ * buffer starts loading at the same moment the server emits its `preload`
+ * frame — eliminating the race where the server fires first but the client
+ * hasn't started yet (or vice-versa on a slow tick cycle).
  */
 const NEAR_END_LEAD_SECS = 120;
 
@@ -158,6 +169,26 @@ export function createWebAdapter(
   // when the bound URL or reported duration changes (new item or loop pass).
   const nearEndFiredKey: Record<"A" | "B", string | null> = { A: null, B: null };
 
+  // Tracks whether each buffer has produced at least one real timeupdate
+  // advance since its last bind/load.  This flag is the primary guard
+  // against false-positive `ended` events caused by seek-past-end:
+  //
+  //   When resolvePositionSecs() returns a value ≥ the video's actual
+  //   encoded duration (e.g. because durationSecs in the DB is a 1800 s
+  //   placeholder and the client joins late), the browser clamps
+  //   `currentTime` to `duration` and fires `ended` before any timeupdate
+  //   event — sometimes within tens of milliseconds of the seek.  Without
+  //   this guard, that instant `ended` propagates as a genuine natural-end
+  //   signal, triggering premature HANDOFF and advancing the broadcast anchor
+  //   on the server side, pushing ALL connected clients to the next item far
+  //   too early.
+  //
+  //   By requiring at least one timeupdate advance before honoring `ended`,
+  //   we ensure the video actually played some frames before the transition.
+  //   The flag is reset on every bind() that triggers a full element reload,
+  //   so it stays fresh across item transitions and loop passes.
+  const hasSeenTimeupdateSinceLoad: Record<"A" | "B", boolean> = { A: false, B: false };
+
   // Per-buffer bind load timeout.
   const loadTimers: Record<"A" | "B", ReturnType<typeof setTimeout> | null> = { A: null, B: null };
 
@@ -202,13 +233,31 @@ export function createWebAdapter(
     }, { signal });
     buf.el.addEventListener("ended", () => {
       clearLoadTimer(id);
-      // Clear the bound URL so the next bind() call performs a full
-      // src + load() reset instead of hitting the "same URL + healthy"
-      // early-return. This is critical for single-item queues where the
-      // same URL is looped: without this, the ended element is considered
-      // "healthy" (readyState=4, error=null) and bind() returns without
-      // reloading, leaving the element stuck at the end of the video.
+      // Guard against false-positive `ended` events caused by seek-past-end.
+      //
+      // When resolvePositionSecs() computes a target position ≥ the video's
+      // actual encoded duration (e.g. because the DB carries a 1800 s
+      // placeholder and the client joins late), the browser clamps currentTime
+      // to duration and immediately fires `ended` — often within < 100 ms,
+      // before any timeupdate event has had a chance to fire.  Sending
+      // buffer-ended in this case would trigger premature HANDOFF, advancing
+      // the broadcast anchor on the server and jumping ALL connected clients
+      // to the next item far too early.
+      //
+      // Requiring at least one timeupdate advance since the last bind/load
+      // guarantees the element actually played at least one decoded frame
+      // before the transition is honoured.  A genuine natural-end always
+      // sees timeupdate events during playback; only a seek-that-overshoots
+      // produces `ended` with hasSeenTimeupdateSinceLoad === false.
+      //
+      // Clear the bound URL unconditionally so the next bind() call always
+      // performs a full src + load() reset (critical for single-item loops).
       buf.boundUrl = null;
+      if (!hasSeenTimeupdateSinceLoad[id]) {
+        // False-positive suppressed.  The stall watchdog will fire if the
+        // element is genuinely stuck; do not send buffer-ended here.
+        return;
+      }
       cb.send({ type: "buffer-ended", bufferId: id });
     }, { signal });
 
@@ -233,6 +282,11 @@ export function createWebAdapter(
     }, { signal });
 
     buf.el.addEventListener("timeupdate", () => {
+      // Record that this buffer produced at least one decoded frame since its
+      // last bind.  Set for both active and inactive buffers so that when an
+      // inactive preloaded buffer becomes active after HANDOFF, any earlier
+      // playback progress it made is correctly reflected.
+      if (!hasSeenTimeupdateSinceLoad[id]) hasSeenTimeupdateSinceLoad[id] = true;
       if (id !== activeId) return;
       watchdog.feed(buf.el.currentTime);
       // Fire buffer-near-end based on the video element's ACTUAL duration
@@ -378,10 +432,12 @@ export function createWebAdapter(
 
   function bind(buf: WebBuffer, id: "A" | "B", item: V2Item | V2Override): void {
     const url = "source" in item ? item.source.url : item.url;
-    // Reset the near-end sentinel whenever the bound URL changes so
-    // buffer-near-end fires again for the freshly loaded item.
+    // Reset per-URL sentinels whenever the bound URL changes so they fire
+    // again for the freshly loaded item.
     if (buf.boundUrl !== url) {
       nearEndFiredKey[id] = null;
+      // New URL — the element has not yet played any frames of this content.
+      hasSeenTimeupdateSinceLoad[id] = false;
     }
     if (buf.boundUrl === url) {
       // An ended element reports readyState=4 and error=null — both
@@ -401,6 +457,10 @@ export function createWebAdapter(
         buf.detach = undefined;
       }
       buf.boundUrl = null; // force full reload path
+      // Force-reloading the same URL — treat as a fresh start since the old
+      // element state (playback position, decoded frames) is being discarded.
+      hasSeenTimeupdateSinceLoad[id] = false;
+      nearEndFiredKey[id] = null;
     }
     // Pause the element before detaching / swapping source. An in-flight
     // `play()` promise rejects with AbortError in Chromium when the src is

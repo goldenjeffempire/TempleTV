@@ -55,3 +55,7 @@ upload_certificate.pem
 *.keystore
 android/keystore.properties
 android/upload_certificate.pem
+
+# Prevent a stray standalone pnpm-lock.yaml from shadowing the workspace root lockfile
+# (EAS detects a nested lockfile and treats the app as standalone → frozen-lockfile fails)
+pnpm-lock.yaml
