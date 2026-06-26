@@ -1079,6 +1079,19 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   // full of TV screens doesn't trigger 50 successive advances on one bad video.
   const _ytPlaybackErrorDedup = new Map<string, number>();
   const YT_ERR_DEDUP_TTL_MS = 30_000;
+  /**
+   * Minimum ms a video must have been playing before a client-reported embed
+   * failure can trigger an advance to the next video.
+   *
+   * YouTube iframes sometimes emit an error event during the initial load
+   * negotiation (e.g. buffering stalls, network blip) even for fully embeddable
+   * videos. Without this guard, a brief glitch cascades through N consecutive
+   * videos because each different videoId has its own fresh dedup entry — the
+   * 30-second dedup window only protects against the *same* video ID re-firing.
+   * 15 seconds is long enough for the iframe to resolve buffering and settle,
+   * yet short enough to advance quickly when a video is truly unplayable.
+   */
+  const YT_ERR_MIN_PLAY_MS = 15_000;
   app.post("/yt-playback-error", {
     bodyLimit: 4096,
     schema: {
@@ -1099,7 +1112,19 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       return { ok: true as const, advanced: false, reason: "not-current" };
     }
 
+    // Don't advance if the video only just started — it may still be buffering.
     const now = Date.now();
+    if (
+      info.currentVideoStartedAtMs !== null &&
+      now - info.currentVideoStartedAtMs < YT_ERR_MIN_PLAY_MS
+    ) {
+      req.log.debug(
+        { videoId, elapsedMs: now - info.currentVideoStartedAtMs, minMs: YT_ERR_MIN_PLAY_MS },
+        "[broadcast-v2] yt-playback-error: suppressed — video too new (still buffering?)",
+      );
+      return { ok: true as const, advanced: false, reason: "too-soon" };
+    }
+
     const lastMs = _ytPlaybackErrorDedup.get(videoId);
     if (lastMs && now - lastMs < YT_ERR_DEDUP_TTL_MS) {
       return { ok: true as const, advanced: false, reason: "dedup" };

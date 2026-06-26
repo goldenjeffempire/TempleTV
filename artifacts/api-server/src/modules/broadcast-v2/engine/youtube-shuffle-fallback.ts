@@ -90,6 +90,8 @@ export interface YtShuffleFallbackInfo {
   videoId: string | null;
   videoTitle: string | null;
   activatedAtMs: number | null;
+  /** Wall-clock ms when the currently-playing video started (set on activate/advance). */
+  currentVideoStartedAtMs: number | null;
   lastDeactivatedAtMs: number | null;
   activateCount: number;
   advanceCount: number;
@@ -134,6 +136,13 @@ class YtShuffleFallback {
   private _advanceCount = 0;
   private _deactivateCount = 0;
   private _lastError: string | null = null;
+  /**
+   * Wall-clock ms when the currently-playing video started.
+   * Set in both activate() and advance(). Used by the /yt-playback-error
+   * handler to enforce a minimum-play-time guard before triggering an advance,
+   * preventing cascade skips through buffering or briefly-unresolvable videos.
+   */
+  private _currentVideoStartedAtMs: number | null = null;
   /**
    * Timestamp (ms) of the last activate() call that found an empty catalog.
    * Used to enforce EMPTY_CATALOG_RECHECK_MS cooldown and suppress repeat
@@ -237,6 +246,7 @@ class YtShuffleFallback {
       this._currentVideoId = pick.youtubeId;
       this._currentVideoTitle = pick.title;
       this._activatedAtMs = Date.now();
+      this._currentVideoStartedAtMs = Date.now();
       this._activateCount += 1;
       this._lastError = null;
 
@@ -322,6 +332,7 @@ class YtShuffleFallback {
       this._activeOverrideId = override.id;
       this._currentVideoId = pick.youtubeId;
       this._currentVideoTitle = pick.title;
+      this._currentVideoStartedAtMs = Date.now();
       this._advanceCount += 1;
       this._lastError = null;
 
@@ -430,23 +441,70 @@ class YtShuffleFallback {
 
       if (freshEntries.length === 0) return;
 
+      const freshMap = new Map(freshEntries.map((e) => [e.youtubeId, e]));
+
+      // ── Step 1: Prune videos that are no longer embeddable ────────────────
+      // refreshCatalog() is called after every YouTube sync. If a video's
+      // is_embeddable flag flipped to false on YouTube's side, the sync
+      // updates the DB row but the in-memory playlist still holds the stale
+      // entry. Without pruning, the client eventually sees "Video unavailable"
+      // in the iframe, reports yt-playback-error, and the orchestrator
+      // advances — potentially cascading through a run of bad videos rapidly.
+      const prunedPlaylist: YtVideoEntry[] = [];
+      let removedBeforeIndex = 0;
+      for (let i = 0; i < this._shuffledPlaylist.length; i++) {
+        const entry = this._shuffledPlaylist[i]!;
+        const fresh = freshMap.get(entry.youtubeId);
+        if (fresh) {
+          // Update title/duration in place in case the sync changed them.
+          prunedPlaylist.push({ youtubeId: entry.youtubeId, title: fresh.title, duration: fresh.duration });
+        } else {
+          if (i < this._playlistIndex) removedBeforeIndex++;
+        }
+      }
+      const pruned = this._shuffledPlaylist.length - prunedPlaylist.length;
+      this._shuffledPlaylist = prunedPlaylist;
+      // Adjust the current index so we don't skip the next video after pruning.
+      this._playlistIndex = Math.max(0, this._playlistIndex - removedBeforeIndex);
+      if (this._playlistIndex >= this._shuffledPlaylist.length && this._shuffledPlaylist.length > 0) {
+        this._playlistIndex = 0;
+      }
+
+      if (pruned > 0) {
+        logger.warn(
+          { pruned, remainingCatalog: this._shuffledPlaylist.length },
+          "[yt-shuffle] pruned non-embeddable/removed videos from in-memory playlist",
+        );
+      }
+
+      if (this._shuffledPlaylist.length === 0) {
+        // All catalog videos were pruned — degenerate case; let activate() rebuild.
+        logger.warn("[yt-shuffle] in-memory playlist empty after pruning — will re-activate on next tick");
+        this._active = false;
+        this._activeOverrideId = null;
+        return;
+      }
+
+      // ── Step 2: Add new videos not already in the playlist ───────────────
       const existingIds = new Set(this._shuffledPlaylist.map((e) => e.youtubeId));
       const newEntries = freshEntries.filter((e) => !existingIds.has(e.youtubeId));
 
-      if (newEntries.length === 0) return;
+      if (newEntries.length === 0 && pruned === 0) return;
 
-      // Insert new entries at a random position after the current index so they
-      // enter the rotation without disturbing the currently-playing slot.
-      const insertAfter = Math.max(
-        this._playlistIndex,
-        Math.floor(Math.random() * (this._shuffledPlaylist.length - this._playlistIndex)) +
+      if (newEntries.length > 0) {
+        // Insert new entries at a random position after the current index so they
+        // enter the rotation without disturbing the currently-playing slot.
+        const insertAfter = Math.max(
           this._playlistIndex,
-      );
-      this._shuffledPlaylist.splice(insertAfter + 1, 0, ...fisherYatesShuffle(newEntries));
+          Math.floor(Math.random() * (this._shuffledPlaylist.length - this._playlistIndex)) +
+            this._playlistIndex,
+        );
+        this._shuffledPlaylist.splice(insertAfter + 1, 0, ...fisherYatesShuffle(newEntries));
+      }
 
       logger.info(
-        { newEntries: newEntries.length, totalCatalog: this._shuffledPlaylist.length },
-        "[yt-shuffle] catalog refreshed after YouTube sync — new videos added to rotation",
+        { pruned, newEntries: newEntries.length, totalCatalog: this._shuffledPlaylist.length },
+        "[yt-shuffle] catalog refreshed after YouTube sync",
       );
     } catch (err) {
       logger.warn({ err }, "[yt-shuffle] refreshCatalog() failed (non-fatal)");
@@ -480,6 +538,7 @@ class YtShuffleFallback {
       videoId: this._currentVideoId,
       videoTitle: this._currentVideoTitle,
       activatedAtMs: this._activatedAtMs,
+      currentVideoStartedAtMs: this._currentVideoStartedAtMs,
       lastDeactivatedAtMs: this._lastDeactivatedAtMs,
       activateCount: this._activateCount,
       advanceCount: this._advanceCount,
