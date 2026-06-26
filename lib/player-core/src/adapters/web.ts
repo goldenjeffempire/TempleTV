@@ -66,13 +66,18 @@ const BIND_PROGRESS_TIMEOUT_MS = 90_000;
 // Watchdog thresholds — per-phase values passed directly to the Watchdog
 // constructor below. See watchdog.ts for the 3-phase model documentation.
 //
-// Raised from 15/15/25 → 20/20/30 s to give more tolerance for buffering
-// on slow/congested networks without causing spurious stall→skip cascades.
-// Broadcast content (sermons, worship streams) regularly pauses to buffer
-// on mobile links during initial segment fetch and mid-stream rebuffer;
-// the old 15 s thresholds fired false-positive stalls too aggressively.
-const WATCHDOG_INITIAL_LOAD_MS = 20_000;
-const WATCHDOG_REBUFFER_MS     = 20_000;
+// Raised from 20/20/30 → 45/25/30 s:
+//  • Initial load: 45 s gives MP4 files served from PostgreSQL BYTEA storage
+//    enough time to receive the moov atom and start playing before the watchdog
+//    declares a stall. Faststart-processed uploads begin playback in <2 s, so
+//    the extra headroom only affects unprocessed or very large files.
+//  • Rebuffer: 25 s — slightly more generous than the old 20 s for mid-stream
+//    hiccups on congested links, but still short enough to detect genuinely
+//    frozen streams within half a minute.
+//  • Stable / stable play: unchanged — long-running stable streams (live
+//    services, 2-hour sermons) already benefit from the 30 s threshold.
+const WATCHDOG_INITIAL_LOAD_MS = 45_000;
+const WATCHDOG_REBUFFER_MS     = 25_000;
 const WATCHDOG_STABLE_MS       = 30_000;
 const WATCHDOG_STABLE_PLAY_MS  = 30_000;
 

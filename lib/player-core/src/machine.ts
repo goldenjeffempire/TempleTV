@@ -326,6 +326,18 @@ export class PlayerMachine {
    */
   private skipPendingAnchorMs: number | null = null;
   /**
+   * The item `id` that caused the machine to enter SKIP_PENDING.
+   *
+   * Purpose: guard against re-binding the SAME broken item even when the
+   * orchestrator has issued it a fresh `startsAtMs` (i.e. the cycle wrapped
+   * around back to the only item in a single-item queue).  Without this,
+   * `handleServerSnapshot` sees a new `startsAtMs` → clears the anchor →
+   * rebinds the same broken source → fails → SKIP_PENDING → loop forever.
+   *
+   * Cleared in the same places as `skipPendingAnchorMs`.
+   */
+  private skipPendingItemId: string | null = null;
+  /**
    * Counts successive same-anchor SKIP_PENDING snapshots.  Reaches
    * SKIP_PENDING_FATAL_THRESHOLD then transitions to FATAL.
    */
@@ -434,6 +446,7 @@ export class PlayerMachine {
     this.primaryRetries = 0;
     this.skipPendingCycles = 0;
     this.skipPendingAnchorMs = null;
+    this.skipPendingItemId = null;
 
     // Re-bind the current item. This increments `bindRevision` in the
     // mobile adapter even if the source URL is unchanged — the BroadcastBuffer
@@ -861,9 +874,12 @@ export class PlayerMachine {
         // needed, rather than silently hammering the media pipeline.
         if (
           this.skipPendingAnchorMs !== null &&
-          server.current.startsAtMs === this.skipPendingAnchorMs
+          (server.current.startsAtMs === this.skipPendingAnchorMs ||
+           server.current.id === this.skipPendingItemId)
         ) {
-          // Same slot anchor still airing — count escape-valve reconnect cycles.
+          // Same broken source — either the anchor is unchanged OR the orchestrator
+          // wrapped the cycle and re-issued the same item with a new startsAtMs
+          // (e.g. single-item queue).  Count escape-valve reconnect cycles.
           // Once SKIP_PENDING_FATAL_THRESHOLD is reached the source is considered
           // permanently unplayable on this client; enter FATAL so the UI shows a
           // clear "stream temporarily unavailable" message with a 30 s auto-retry
@@ -872,6 +888,7 @@ export class PlayerMachine {
           if (this.skipPendingCycles >= SKIP_PENDING_FATAL_THRESHOLD) {
             this.skipPendingCycles = 0;
             this.skipPendingAnchorMs = null;
+            this.skipPendingItemId = null;
             // Increment BEFORE transition("FATAL") so transition() sees the
             // updated count and publishes it in the snapshot immediately.
             // This lets UI surfaces (TV overlay, admin preview) display the
@@ -903,8 +920,9 @@ export class PlayerMachine {
           }
           return;
         }
-        // Fresh anchor (or no anchor recorded) — safe to retry.
+        // Fresh anchor AND different item — safe to retry with a clean budget.
         this.skipPendingAnchorMs = null;
+        this.skipPendingItemId = null;
         this.skipPendingCycles = 0;
         this.primaryRetries = 0;
         this.bindActive(server.current);
@@ -979,6 +997,7 @@ export class PlayerMachine {
           }
           this.skipPendingCycles = 0;
           this.skipPendingAnchorMs = null;
+          this.skipPendingItemId = null;
           this.primaryRetries = 0;
           this.bindActive(server.current);
           const positionSecs = resolvePositionSecs(
@@ -1132,6 +1151,13 @@ export class PlayerMachine {
       this.skipPendingAnchorMs =
         srv?.current && "startsAtMs" in srv.current
           ? (srv.current as V2Item).startsAtMs
+          : null;
+      // Also record the item ID so the SKIP_PENDING guard can block rebinds
+      // of the same broken source even when the orchestrator wraps the cycle
+      // and issues a new startsAtMs for the same item (e.g. single-item queue).
+      this.skipPendingItemId =
+        srv?.current && "id" in srv.current
+          ? (srv.current as V2Item).id
           : null;
       this.transition("SKIP_PENDING");
       this.primaryRetries = 0;
@@ -1438,9 +1464,11 @@ export class PlayerMachine {
   }
 
   private onForceSkip(): void {
-    // Operator-triggered skip — clear the anchor so the next server snapshot
-    // is allowed to rebind (the operator explicitly wants to try again or move on).
+    // Operator-triggered skip — clear both anchor and item-ID so the next
+    // server snapshot is allowed to rebind (the operator explicitly wants to
+    // try again or move on, even if it's the same item).
     this.skipPendingAnchorMs = null;
+    this.skipPendingItemId = null;
     this.transition("SKIP_PENDING");
   }
 
