@@ -23,137 +23,12 @@
  *
  * Results are cached and exposed via the /diagnostics endpoint. Non-fatal.
  */
-import { spawn } from "node:child_process";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { sendBroadcastWebhook } from "../webhook/webhook.service.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { normalizeQueueUrl } from "../repository/queue.repo.js";
-import { env } from "../../../config/env.js";
-
-// ── Duration probe helper ─────────────────────────────────────────────────────
-//
-// Multi-strategy ffprobe probe for HTTP(S) URLs.
-// Used by the SUSPICIOUS_DURATION auto-reprobe path.
-// Probes via HTTP range requests — ffprobe reads only the container header
-// (moov atom for MP4) without a full download.
-//
-// Strategy 1: single ffprobe pass reading format+stream duration (JSON).
-// Strategy 2: same with a 32 MB analyze budget for deep containers.
-// Strategy 3: ffmpeg container-open stderr "Duration:" parse.
-//
-// Returns null on any failure (ffprobe unavailable, timeout, corrupt header).
-
-async function probeDurationFromUrl(url: string): Promise<number | null> {
-  const s1 = await _probeUrlFfprobe(url, []);
-  if (s1 !== null) return s1;
-
-  const s2 = await _probeUrlFfprobe(url, ["-analyzeduration", "32M", "-probesize", "32M"]);
-  if (s2 !== null) return s2;
-
-  return _probeUrlFfmpegFallback(url);
-}
-
-/** ffprobe pass querying format+stream duration via JSON; optional extraArgs prepended. */
-function _probeUrlFfprobe(
-  probeUrl: string,
-  extraArgs: string[],
-): Promise<number | null> {
-  return new Promise<number | null>((resolve) => {
-    let proc: ReturnType<typeof spawn> | null = null;
-    try {
-      proc = spawn("ffprobe", [
-        ...extraArgs,
-        "-v", "quiet",
-        "-print_format", "json",
-        "-show_entries", "format=duration:stream=duration",
-        probeUrl,
-      ], { stdio: ["ignore", "pipe", "ignore"] });
-      proc.unref();
-    } catch {
-      resolve(null);
-      return;
-    }
-    if (!proc.stdout) { resolve(null); return; }
-    let stdout = "";
-    proc.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    const t = setTimeout(() => { try { proc?.kill(); } catch { /**/ } resolve(null); }, 45_000);
-    t.unref?.();
-    proc.on("close", () => {
-      clearTimeout(t);
-      try {
-        const parsed = JSON.parse(stdout) as {
-          format?: { duration?: string };
-          streams?: Array<{ duration?: string }>;
-        };
-        const fmtDur = parseFloat(parsed.format?.duration ?? "");
-        if (Number.isFinite(fmtDur) && fmtDur > 0) { resolve(fmtDur); return; }
-        const streamDurs = (parsed.streams ?? [])
-          .map((s) => parseFloat(s.duration ?? ""))
-          .filter((d) => Number.isFinite(d) && d > 0);
-        if (streamDurs.length > 0) { resolve(Math.max(...streamDurs)); return; }
-      } catch { /* JSON parse failure */ }
-      resolve(null);
-    });
-    proc.on("error", () => { clearTimeout(t); resolve(null); });
-  });
-}
-
-/**
- * ffmpeg container-open fallback for HTTP URLs: parses "Duration: HH:MM:SS.ms"
- * from stderr. "Duration: N/A" produces no match -> returns null.
- */
-function _probeUrlFfmpegFallback(probeUrl: string): Promise<number | null> {
-  return new Promise<number | null>((resolve) => {
-    let proc: ReturnType<typeof spawn> | null = null;
-    try {
-      proc = spawn("ffmpeg", [
-        "-hide_banner",
-        "-i", probeUrl,
-      ], { stdio: ["ignore", "ignore", "pipe"] });
-      proc.unref();
-    } catch {
-      resolve(null);
-      return;
-    }
-    if (!proc.stderr) { resolve(null); return; }
-    let stderr = "";
-    proc.stderr.on("data", (b: Buffer) => { stderr += b.toString(); });
-    const t = setTimeout(() => { try { proc?.kill(); } catch { /**/ } resolve(null); }, 30_000);
-    t.unref?.();
-    proc.on("close", () => {
-      clearTimeout(t);
-      const m = stderr.match(/Duration:\s+(\d+):(\d+):(\d+(?:\.\d+)?)/);
-      if (!m) { resolve(null); return; }
-      const secs = parseInt(m[1]!, 10) * 3600 + parseInt(m[2]!, 10) * 60 + parseFloat(m[3]!);
-      resolve(secs > 0 ? secs : null);
-    });
-    proc.on("error", () => { clearTimeout(t); resolve(null); });
-  });
-}
-
-/**
- * Rewrites a local upload URL to a localhost probe URL so ffprobe hits this
- * server directly instead of going through the external API_ORIGIN hostname.
- * External origin probing fails when media is stored in PostgreSQL BYTEA and
- * only THIS server can serve it (e.g. Replit, single-node deployments).
- *
- * Matches paths of the form /api/v1/uploads/… or /api/uploads/…
- * Any other URL is returned unchanged.
- */
-function toLocalUploadProbeUrl(absUrl: string): string {
-  try {
-    const u = new URL(absUrl);
-    if (/^\/api(?:\/v1)?\/uploads?\//.test(u.pathname)) {
-      const port = Number(env.PORT) || 8080;
-      return `http://127.0.0.1:${port}${u.pathname}${u.search}`;
-    }
-  } catch {
-    // malformed URL — return unchanged
-  }
-  return absUrl;
-}
 
 export type IssueSeverity = "error" | "warn" | "info";
 
@@ -211,9 +86,6 @@ class QueueIntegrityValidatorImpl {
         .orderBy(asc(q.sortOrder))
         .limit(2000);
 
-      // Items with SUSPICIOUS_DURATION collected here for background reprobe
-      // after the main issue-detection loop (max 3 per cycle).
-      const suspiciousDurationItems: Array<{ id: string; videoId: string; localUrl: string }> = [];
       // Items with placeholder 1800s on the queue row but a real duration on the
       // joined video row — collected for a single-pass DB UPDATE at the end.
       const placeholderDurationItems: Array<{ id: string; realDur: number }> = [];
@@ -259,7 +131,7 @@ class QueueIntegrityValidatorImpl {
         }
 
         // Detect suspiciously short probe results — likely a probe-failure from
-        // the moov-atom upload race. Background reprobe auto-corrects the duration.
+        // the moov-atom upload race. Duration will self-correct via naturalItemEnd.
         if (row.vDuration) {
           const vDur = parseFloat(row.vDuration);
           if (!isNaN(vDur) && vDur > 0 && vDur < 10) {
@@ -268,11 +140,8 @@ class QueueIntegrityValidatorImpl {
               itemId: row.id,
               itemTitle: row.title,
               code: "SUSPICIOUS_DURATION",
-              message: `video.duration='${row.vDuration}' is < 10 s — likely a probe failure from an upload race; re-process video to fix`,
+              message: `video.duration='${row.vDuration}' is < 10 s — likely a probe failure from an upload race; re-upload video to fix`,
             });
-            if (row.videoId2 !== null && row.vLocalUrl && row.vSource !== "youtube") {
-              suspiciousDurationItems.push({ id: row.id, videoId: row.videoId2, localUrl: row.vLocalUrl });
-            }
           }
         }
 
@@ -598,59 +467,9 @@ class QueueIntegrityValidatorImpl {
         }
       }
 
-      // ── Background: reprobe SUSPICIOUS_DURATION items ─────────────────────
-      // Fire at most 3 concurrent reprobe tasks per cycle (fire-and-forget).
-      // The probe URL is rewritten to localhost so ffprobe hits this server
-      // directly — media stored in PostgreSQL BYTEA is only served locally;
-      // using the external API_ORIGIN URL would fail with a 404 on a
-      // different node or when the origin resolves to a production server.
-      if (suspiciousDurationItems.length > 0) {
-        const toReprobe = suspiciousDurationItems.slice(0, 3);
-        for (const item of toReprobe) {
-          void (async () => {
-            try {
-              const rawUrl = normalizeQueueUrl(item.localUrl);
-              if (!rawUrl) return;
-              // Rewrite external upload URLs to localhost so ffprobe fetches
-              // from THIS server, not from a potentially different host.
-              const absUrl = toLocalUploadProbeUrl(rawUrl);
-              const dur = await probeDurationFromUrl(absUrl);
-              if (!dur || dur < 1) {
-                logger.debug(
-                  { itemId: item.id, url: absUrl },
-                  "[queue-validator] SUSPICIOUS_DURATION reprobe returned no valid duration (non-fatal)",
-                );
-                return;
-              }
-              await db.execute(sql`
-                UPDATE managed_videos SET duration = ${String(dur)} WHERE id = ${item.videoId}
-              `);
-              await db.execute(sql`
-                UPDATE broadcast_queue SET duration_secs = ${Math.ceil(dur)} WHERE id = ${item.id}
-              `);
-              logger.info(
-                { itemId: item.id, videoId: item.videoId, newDurSecs: Math.ceil(dur) },
-                "[queue-validator] AUTO-FIX: SUSPICIOUS_DURATION reprobe corrected duration — managed_videos and broadcast_queue updated",
-              );
-              adminEventBus.push("broadcast-queue-updated", {
-                reason: "integrity-fix-suspicious-duration-reprobe",
-                itemId: item.id,
-                videoId: item.videoId,
-              });
-              adminEventBus.push("videos-library-updated", {
-                reason: "integrity-fix-suspicious-duration-reprobe",
-                itemId: item.id,
-                videoId: item.videoId,
-              });
-            } catch (err) {
-              logger.warn(
-                { err, itemId: item.id },
-                "[queue-validator] SUSPICIOUS_DURATION reprobe failed (non-fatal)",
-              );
-            }
-          })();
-        }
-      }
+      // SUSPICIOUS_DURATION auto-reprobe removed: videos broadcast directly
+      // via their original MP4 source. Duration will self-correct via
+      // naturalItemEnd write-back when the item completes a full play cycle.
 
       const errorIds = new Set(issues.filter((i) => i.severity === "error" && i.itemId).map((i) => i.itemId!));
       const healthyItems = rows.filter((r) => !errorIds.has(r.id)).length;

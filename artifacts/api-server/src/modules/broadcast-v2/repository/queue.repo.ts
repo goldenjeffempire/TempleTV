@@ -1064,10 +1064,9 @@ export const queueRepo = {
     // logged (not silently dropped) so operators can fix the root cause.
     const validated: typeof rows = [];
     for (const r of rows) {
-      // HLS-first: prefer hlsMasterUrl (adaptive HLS) over localVideoUrl (MP4)
-      // to match toItem()'s source priority. Videos not yet transcoded fall back
-      // to localVideoUrl so they still air immediately post-upload.
-      const primaryUrl = r.hlsMasterUrl ?? r.localVideoUrl;
+      // MP4-first: prefer localVideoUrl (original MP4) over hlsMasterUrl (HLS).
+      // Videos broadcast directly via their original source without HLS conversion.
+      const primaryUrl = r.localVideoUrl ?? r.hlsMasterUrl;
       if (!primaryUrl || primaryUrl.trim() === "") {
         logger.warn(
           { itemId: r.id, title: r.title, videoId: r.videoId },
@@ -1198,18 +1197,12 @@ export const queueRepo = {
     // (dev→prod mirror) or API_ORIGIN (production own-origin), or
     // RENDER_EXTERNAL_URL (zero-config Render self-detection), if configured.
     //
-    // HLS-first policy: prefer hlsMasterUrl (adaptive HLS) as the primary source
-    // when available — HLS provides ABR quality switching, segment-level seeking,
-    // and gapless pre-fetch that are essential for a smooth 24/7 broadcast.
-    // localVideoUrl (raw or faststart-optimized MP4) is wired as the failover so
-    // videos that are not yet transcoded still air immediately post-upload.
-    //
-    // Benefits of HLS-first over MP4-first:
-    //   • Adaptive bitrate: quality drops gracefully on slow connections
-    //   • Segment-level seeking: no moov-atom hunting on large files
-    //   • Gapless segment pre-fetch: eliminates the blank-screen gap at item transitions
-    //   • MP4 still wired as failover so brand-new uploads broadcast before HLS is ready
-    const primary = normalizeQueueUrl(row.hlsMasterUrl ?? row.localVideoUrl);
+    // MP4-first policy: prefer localVideoUrl (original MP4) as the primary source.
+    // Videos broadcast directly via their original source without HLS conversion.
+    // hlsMasterUrl is used only as a fallback when no localVideoUrl is present.
+    // The A/B dual-buffer player with 120 s preload lead ensures seamless
+    // zero-blank-screen transitions between MP4 items.
+    const primary = normalizeQueueUrl(row.localVideoUrl ?? row.hlsMasterUrl);
     const mp4 = normalizeQueueUrl(row.localVideoUrl);
 
     // NOTE: the bad-URL cache check is intentionally NOT here.

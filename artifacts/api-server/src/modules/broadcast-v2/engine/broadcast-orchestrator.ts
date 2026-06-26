@@ -149,8 +149,8 @@ const DEAD_AIR_ESCALATION_COOLDOWN_MS = 5 * 60_000;
  * every WS/SSE client heartbeat re-triggered resolveSource() for every item
  * with an invalid URL.
  *
- * Bad-URL cache checks (isKnownBadUrl) remain at snapshot() time because they
- * are fast in-memory lookups and must reflect real-time player stall reports.
+ * Source blocking removed: projectItem() always returns an item and never
+ * checks the bad-URL cache. Videos broadcast directly via MP4/YouTube source.
  */
 interface CachedQueueItem {
   id: string;
@@ -720,9 +720,8 @@ class BroadcastOrchestrator extends EventEmitter {
               // in ~80 s, beating the TTL and creating an infinite restart ↔ dead-air
               // loop.  Fix: skip early-return only when at least one item is not
               // blocked; if all items are bad-URL cached, proceed to clear and reload.
-              const anyPlayable = this.items.some(
-                (item) => !!item.primaryUrl && !isKnownBadUrl(item.primaryUrl),
-              );
+              // Source blocking removed: all items with a resolved source are always playable.
+              const anyPlayable = this.items.length > 0;
               if (anyPlayable) return; // at least one source is live — nothing to do
               const dbCount = await countActiveRaw();
               if (dbCount === 0) return; // truly empty — library scan handles it
@@ -2125,40 +2124,10 @@ class BroadcastOrchestrator extends EventEmitter {
    * time inside reloadInner() and its result is stored in CachedQueueItem.
    */
   private projectItem(item: CachedQueueItem, startsAtMs: number): V2Item | null {
-    const primaryBad = !!(item.primaryUrl && isKnownBadUrl(item.primaryUrl));
-
-    if (primaryBad) {
-      // Primary URL is blocked in the bad-URL cache (e.g. HLS not yet available,
-      // or a transient fetch failure). Promote the failoverSource (MP4) to primary
-      // so the item can air immediately while HLS transcoding is in progress.
-      // Once the bad-URL TTL expires (20 s → 3 min → 5 min) the orchestrator
-      // automatically retries the HLS URL on the next snapshot call.
-      const fo = item.failoverSource;
-      if (fo && !isKnownBadUrl(fo.url)) {
-        logger.debug(
-          { itemId: item.id, blockedUrl: item.primaryUrl, failoverKind: fo.kind },
-          "[broadcast-v2] projectItem: primary URL blocked — serving via failoverSource (MP4)",
-        );
-        // When HLS was the primary source but is blocked, we're now serving the
-        // MP4 fallback. The actual quality depends on whether faststart was applied.
-        const fallbackQuality: "mp4_faststart" | "mp4_raw" =
-          item.faststartApplied ? "mp4_faststart" : "mp4_raw";
-        return {
-          id: item.id,
-          title: item.title,
-          thumbnailUrl: item.thumbnailUrl,
-          durationSecs: item.durationSecs,
-          source: { kind: fo.kind, url: fo.url, expiresAtMs: null },
-          failoverSource: null, // already on the fallback path; no further failover
-          startsAtMs,
-          endsAtMs: startsAtMs + item.durationSecs * 1000,
-          sourceQuality: fallbackQuality,
-        };
-      }
-      // Primary is bad AND no usable failoverSource → skip this slot.
-      return null;
-    }
-
+    // Source blocking removed: items are never skipped due to bad-URL cache.
+    // Videos broadcast directly via their original MP4/YouTube source.
+    // The A/B dual-buffer player handles transient load failures gracefully
+    // without removing items from the broadcast rotation.
     return {
       id: item.id,
       title: item.title,
