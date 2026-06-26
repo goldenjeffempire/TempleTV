@@ -5975,6 +5975,23 @@ function BroadcastV2PageInner() {
                 Select all
               </Button>
             )}
+            {pendingHlsCount > 0 && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1"
+                disabled={busy === "prepare-hls"}
+                onClick={() => { void prepareHls(); }}
+                title={`Queue HLS transcoding for ${pendingHlsCount} item${pendingHlsCount !== 1 ? "s" : ""} currently broadcasting as raw MP4. Items stay live as MP4 while transcoding runs in the background.`}
+              >
+                {busy === "prepare-hls" ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <RotateCw className="h-3 w-3" />
+                )}
+                Prepare HLS ({pendingHlsCount})
+              </Button>
+            )}
             {placeholderDurationCount > 0 && (
               <Button
                 size="sm"
