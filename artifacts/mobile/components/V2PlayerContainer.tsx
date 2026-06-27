@@ -1052,6 +1052,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
       isMuted={effectiveMuted}
       volume={forceMuted ? 0 : 1}
       progressUpdateIntervalMillis={500}
+      allowsExternalPlayback={true}
       onLoad={(loadStatus) => {
         // Capture the actual encoded duration from the native media pipeline.
         // This is the ground-truth duration — independent of the server's

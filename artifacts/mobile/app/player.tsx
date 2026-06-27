@@ -384,6 +384,7 @@ export default function PlayerScreen() {
   const [showChat, setShowChat]         = useState(false);
   const [descExpanded, setDescExpanded] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   // Detected aspect ratio of the loaded video (width / height). Defaults to
   // 16:9 so standard broadcasts / YouTube look correct before onLoad fires.
   // Updated by LocalVideoPlayer.onAspectRatioChange once the source loads.
@@ -972,6 +973,7 @@ export default function PlayerScreen() {
               playerHeightOverride={playerHeight}
               nextVideoUrl={nextHlsForPreload}
               nextHlsMasterUrl={nextHlsForPreload}
+              rate={playbackSpeed}
               onEnd={startCountdown}
               onError={handleVodError}
               onProgress={handleProgressWithPosition}
@@ -1289,6 +1291,31 @@ export default function PlayerScreen() {
             </Pressable>
           )}
 
+          {/* Cast — VOD non-YouTube; AirPlay on iOS, Chromecast guide on Android */}
+          {isVod && !isYoutube && (
+            <Pressable
+              onPress={() =>
+                Alert.alert(
+                  Platform.OS === "ios" ? "AirPlay" : "Cast to Chromecast",
+                  Platform.OS === "ios"
+                    ? "Tap the AirPlay icon (📺) in the video player controls to stream to Apple TV or any AirPlay-compatible device."
+                    : "Make sure your Chromecast and phone are on the same Wi-Fi network. A cast icon will appear in your notification bar while a video plays.",
+                  [{ text: "Got it" }],
+                )
+              }
+              style={styles.actionItem}
+              accessibilityLabel={Platform.OS === "ios" ? "AirPlay — stream to Apple TV" : "Cast to Chromecast"}
+              accessibilityRole="button"
+            >
+              <View style={[styles.actionIconWrap, { backgroundColor: c.card, borderColor: c.border }]}>
+                <Feather name="cast" size={20} color={c.foreground} />
+              </View>
+              <Text style={[styles.actionLabel, { color: c.mutedForeground }]}>
+                {Platform.OS === "ios" ? "AirPlay" : "Cast"}
+              </Text>
+            </Pressable>
+          )}
+
           {/* Chat — live only */}
           {isLive && (
             <Pressable
@@ -1318,6 +1345,37 @@ export default function PlayerScreen() {
             </Pressable>
           )}
         </View>
+
+        {/* ── Speed Control — VOD non-YouTube only ─────────────────────── */}
+        {isVod && !isYoutube && (
+          <View style={[styles.speedBar, { borderBottomColor: c.border }]}>
+            <View style={styles.speedHeader}>
+              <Feather name="zap" size={13} color={c.mutedForeground} />
+              <Text style={[styles.speedHeaderLabel, { color: c.mutedForeground }]}>Playback Speed</Text>
+            </View>
+            <View style={styles.speedPills}>
+              {([0.5, 0.75, 1, 1.25, 1.5, 2] as const).map((s) => (
+                <Pressable
+                  key={s}
+                  onPress={() => setPlaybackSpeed(s)}
+                  style={[
+                    styles.speedPill,
+                    {
+                      backgroundColor: playbackSpeed === s ? c.primary : c.card,
+                      borderColor:     playbackSpeed === s ? c.primary : c.border,
+                    },
+                  ]}
+                  accessibilityLabel={`Set playback speed to ${s === 1 ? "normal" : `${s} times`}`}
+                  accessibilityRole="button"
+                >
+                  <Text style={[styles.speedPillText, { color: playbackSpeed === s ? "#fff" : c.foreground }]}>
+                    {s === 1 ? "Normal" : `${s}×`}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        )}
 
         {/* ── Description (expandable) ──────────────────────────────────── */}
         {!!description && (
@@ -1433,6 +1491,7 @@ export default function PlayerScreen() {
                 fillContainer
                 nextVideoUrl={nextHlsForPreload}
                 nextHlsMasterUrl={nextHlsForPreload}
+                rate={playbackSpeed}
                 onEnd={startCountdown}
                 onError={exitFullscreen}
                 onProgress={handleProgressWithPosition}
@@ -1773,6 +1832,40 @@ const styles = StyleSheet.create({
   reactionsHint: { fontSize: 11, fontWeight: "500" },
   reactionsRow: { flexDirection: "row", justifyContent: "space-around" },
 
+
+  speedBar: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  speedHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  speedHeaderLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    letterSpacing: 0.2,
+    textTransform: "uppercase",
+  },
+  speedPills: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  speedPill: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  speedPillText: {
+    fontSize: 13,
+    fontWeight: "600",
+    letterSpacing: 0.1,
+  },
 
   relatedSection: { paddingTop: 16 },
   relatedHeader: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, marginBottom: 6 },

@@ -219,6 +219,14 @@ interface LocalVideoPlayerProps {
    * the height and passing a pixel value would fight the layout engine.
    */
   fillContainer?: boolean;
+  /**
+   * Playback rate multiplier (0.5–2.0). Default 1.0 (normal speed).
+   * Only applies to native (iOS/Android) expo-av Video. Ignored on web
+   * (web applies rate directly via the HTMLVideoElement.playbackRate API).
+   * Ignored for live/broadcast content — seeking and rate changes are
+   * suppressed on live surfaces intentionally.
+   */
+  rate?: number;
 }
 
 export function LocalVideoPlayer({
@@ -241,6 +249,7 @@ export function LocalVideoPlayer({
   onProgress,
   onAspectRatioChange,
   fillContainer = false,
+  rate = 1.0,
 }: LocalVideoPlayerProps) {
   const effectiveUrl = hlsMasterUrl || videoUrl;
   // Computed next-item URL for the inactive A/B slot. Mirrors
@@ -1084,6 +1093,8 @@ export function LocalVideoPlayer({
             resizeMode={(coverMode ? (ResizeMode?.COVER ?? "cover") : (ResizeMode?.CONTAIN ?? "contain")) as ExpoResizeMode}
             shouldPlay={autoPlay}
             positionMillis={startPositionMs}
+            rate={isBroadcastLive ? 1.0 : rate}
+            allowsExternalPlayback={true}
             onLoad={(st: AVPlaybackStatus) => {
               if (st.isLoaded) {
                 const ns = (st as unknown as { naturalSize?: { width: number; height: number } }).naturalSize;
