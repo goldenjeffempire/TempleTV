@@ -1628,6 +1628,26 @@ export default function PlayerScreen() {
                   </View>
                 )}
 
+                {/* Speed pills — VOD non-YouTube only; tap to change rate without leaving fullscreen */}
+                {isVod && !isYoutube && (
+                  <View style={styles.fsSpeedRow}>
+                    {([0.5, 0.75, 1, 1.25, 1.5, 2] as const).map((s) => (
+                      <Pressable
+                        key={s}
+                        onPress={() => setPlaybackSpeed(s)}
+                        style={[styles.fsSpeedPill, playbackSpeed === s && styles.fsSpeedPillActive]}
+                        hitSlop={8}
+                        accessibilityLabel={`Set speed to ${s === 1 ? "normal" : `${s} times`}`}
+                        accessibilityRole="button"
+                      >
+                        <Text style={[styles.fsSpeedPillText, playbackSpeed === s && styles.fsSpeedPillTextActive]}>
+                          {s === 1 ? "1×" : `${s}×`}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
+
                 <View style={[styles.fsBottomBar, { paddingBottom: Math.max(insets.bottom, 16) }]}>
                   {/* Library prev — VOD only when queue has a predecessor */}
                   {isVod && prevSermon && (
@@ -1890,4 +1910,34 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.40)",
   },
   fsEmojiText: { fontSize: 24 },
+
+  fsSpeedRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingBottom: 10,
+  },
+  fsSpeedPill: {
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.22)",
+  },
+  fsSpeedPillActive: {
+    backgroundColor: "rgba(255,255,255,0.92)",
+    borderColor: "rgba(255,255,255,0.92)",
+  },
+  fsSpeedPillText: {
+    color: "rgba(255,255,255,0.85)",
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.3,
+  },
+  fsSpeedPillTextActive: {
+    color: "#111",
+  },
 });
