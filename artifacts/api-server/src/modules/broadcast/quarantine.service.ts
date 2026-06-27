@@ -262,7 +262,7 @@ export async function getCorruptMediaInventory(opts: {
         errorCode: r.error_code,
         errorMessage: r.error_message,
         transcodingStatus: r.transcoding_status,
-        detectedAt: r.detected_at,
+        detectedAt: r.detected_at ? new Date(r.detected_at).toISOString() : null,
         auditId: r.audit_id,
         reason: r.reason,
         triggeredBy: r.triggered_by,

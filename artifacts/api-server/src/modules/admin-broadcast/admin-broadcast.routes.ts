@@ -1084,7 +1084,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
                 errorCode: z.string().nullable(),
                 errorMessage: z.string().nullable(),
                 transcodingStatus: z.string().nullable(),
-                detectedAt: z.date().nullable(),
+                detectedAt: z.string().nullable(),
                 auditId: z.string(),
                 reason: z.string().nullable(),
                 triggeredBy: z.string(),
