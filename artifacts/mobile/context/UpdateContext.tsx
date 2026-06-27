@@ -1,15 +1,19 @@
 /**
  * Temple TV — Update Context
  *
- * Manages the lifecycle of both OTA and store-update detection across the app.
- * Mounted once at the root layout; all screens subscribe via `useUpdate()`.
+ * Manages the lifecycle of OTA updates, API-based store version checks, AND
+ * Google Play In-App Updates (Android).  Mounted once at the root layout;
+ * all screens subscribe via `useUpdate()`.
  *
  * Behaviours:
  *   - On mount: check OTA immediately; check store version if not recently polled.
  *   - On app foreground (AppState active): re-check OTA silently.
- *   - Background interval: re-check store version every VERSION_CHECK_INTERVAL_MS.
+ *   - Background interval: re-check store version every 6 h.
+ *   - Play In-App Updates (Android only): checked on mount + foreground (throttled
+ *     to 30 min).  Flexible downloads run in-background with progress reporting.
+ *     Mandatory updates (server flag OR stale ≥ 5 days) auto-start IMMEDIATE flow.
  *   - Mandatory updates block the app until the user updates.
- *   - Optional updates show a dismissable banner (snoozed for 24 h after dismiss).
+ *   - Optional updates show a dismissable banner (snoozed 24 h after dismiss).
  *   - OTA updates auto-reload after a brief "Updating…" indicator.
  */
 
@@ -37,26 +41,37 @@ import {
   shouldPollVersionCheck,
   snoozeBanner,
 } from "@/services/appUpdate";
+import {
+  type PlayUpdateActions,
+  type PlayUpdateState,
+  usePlayInAppUpdates,
+} from "@/hooks/usePlayInAppUpdates";
 
-const FOREGROUND_OTA_INTERVAL_MS = 30 * 60 * 1000; // 30 min between foreground OTA checks
+const FOREGROUND_OTA_INTERVAL_MS = 30 * 60 * 1000;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// State + actions types
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface UpdateState {
+  // OTA (expo-updates)
   hasOTAUpdate:       boolean;
   isApplyingOTA:      boolean;
   otaUpdateId:        string | null;
   otaError:           string | null;
 
+  // API-based store version check
   hasStoreUpdate:     boolean;
   isMandatory:        boolean;
   isMandatoryBlocked: boolean;
   latestVersion:      string | null;
   releaseNotes:       string | null;
   storeUrl:           string | null;
-
   bannerVisible:      boolean;
   isChecking:         boolean;
+
+  // Play In-App Updates (Android only)
+  play:               PlayUpdateState;
 }
 
 export interface UpdateActions {
@@ -64,7 +79,39 @@ export interface UpdateActions {
   openStore:          () => Promise<void>;
   dismissBanner:      () => Promise<void>;
   checkNow:           () => Promise<void>;
+
+  // Play In-App Updates actions (Android only — no-ops on other platforms)
+  playActions:        PlayUpdateActions;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Defaults
+// ─────────────────────────────────────────────────────────────────────────────
+
+const defaultPlayState: PlayUpdateState = {
+  isChecking:    false,
+  isAvailable:   false,
+  isDownloading: false,
+  isDownloaded:  false,
+  isMandatory:   false,
+  progress:      0,
+  versionCode:   null,
+  status:        "idle",
+  error:         null,
+  sheetVisible:  false,
+};
+
+const noopAsync = async () => {};
+const noop      = () => {};
+
+const defaultPlayActions: PlayUpdateActions = {
+  startFlexibleUpdate:  noopAsync,
+  startImmediateUpdate: noopAsync,
+  restartForUpdate:     noopAsync,
+  retryDownload:        noopAsync,
+  dismissSheet:         noop,
+  checkNow:             noopAsync,
+};
 
 const defaultState: UpdateState = {
   hasOTAUpdate:       false,
@@ -79,14 +126,20 @@ const defaultState: UpdateState = {
   storeUrl:           null,
   bannerVisible:      false,
   isChecking:         false,
+  play:               defaultPlayState,
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Context
+// ─────────────────────────────────────────────────────────────────────────────
 
 const StateCtx   = createContext<UpdateState>(defaultState);
 const ActionsCtx = createContext<UpdateActions>({
-  applyOTA:      async () => {},
-  openStore:     async () => {},
-  dismissBanner: async () => {},
-  checkNow:      async () => {},
+  applyOTA:      noopAsync,
+  openStore:     noopAsync,
+  dismissBanner: noopAsync,
+  checkNow:      noopAsync,
+  playActions:   defaultPlayActions,
 });
 
 export function useUpdate(): UpdateState & UpdateActions {
@@ -94,15 +147,63 @@ export function useUpdate(): UpdateState & UpdateActions {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Provider
+// ─────────────────────────────────────────────────────────────────────────────
 
 export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<UpdateState>(defaultState);
   const lastOtaCheckRef   = useRef<number>(0);
   const versionPollRef    = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const setPartial = useCallback((patch: Partial<UpdateState>) => {
+  const setPartial = useCallback((patch: Partial<Omit<UpdateState, "play">>) => {
     setState((prev) => ({ ...prev, ...patch }));
   }, []);
+
+  // ── Google Play In-App Updates ─────────────────────────────────────────────
+  // Pass `isMandatory` so the Play update hook auto-escalates when the API
+  // version check marks this version as mandatory.
+
+  const playUpdate = usePlayInAppUpdates(state.isMandatory);
+
+  // Sync play state into the main state tree so the whole app can read it via useUpdate()
+  useEffect(() => {
+    const {
+      startFlexibleUpdate,  // eslint-disable-line
+      startImmediateUpdate, // eslint-disable-line
+      restartForUpdate,     // eslint-disable-line
+      retryDownload,        // eslint-disable-line
+      dismissSheet,         // eslint-disable-line
+      checkNow: _cn,        // eslint-disable-line
+      ...playState
+    } = playUpdate;
+
+    setState((prev) => {
+      // Bail out of re-render if play state hasn't changed
+      if (
+        prev.play.isAvailable   === playState.isAvailable   &&
+        prev.play.isDownloading === playState.isDownloading &&
+        prev.play.isDownloaded  === playState.isDownloaded  &&
+        prev.play.isMandatory   === playState.isMandatory   &&
+        prev.play.progress      === playState.progress      &&
+        prev.play.status        === playState.status        &&
+        prev.play.sheetVisible  === playState.sheetVisible  &&
+        prev.play.error         === playState.error         &&
+        prev.play.versionCode   === playState.versionCode
+      ) return prev;
+      return { ...prev, play: playState };
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    playUpdate.isAvailable,
+    playUpdate.isDownloading,
+    playUpdate.isDownloaded,
+    playUpdate.isMandatory,
+    playUpdate.progress,
+    playUpdate.status,
+    playUpdate.sheetVisible,
+    playUpdate.error,
+    playUpdate.versionCode,
+  ]);
 
   // ── OTA check ──────────────────────────────────────────────────────────────
 
@@ -115,8 +216,8 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     const result = await checkForOTAUpdate();
     if (result.isAvailable && !result.isRollback) {
       setPartial({
-        hasOTAUpdate: true,
-        otaUpdateId:  result.updateId,
+        hasOTAUpdate:  true,
+        otaUpdateId:   result.updateId,
         bannerVisible: true,
       });
     }
@@ -130,7 +231,6 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
 
     const result: VersionCheckResult | null = await checkStoreVersion();
     await markVersionCheckDone();
-
     if (!result?.updateAvailable) return;
 
     const currentVersion = Constants.expoConfig?.version ?? "0.0.0";
@@ -157,39 +257,33 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   const checkNow = useCallback(async () => {
     setPartial({ isChecking: true });
     try {
-      lastOtaCheckRef.current = 0;          // force OTA check
-      await AsyncStorage_clearBannerSnooze(); // force banner visible
+      lastOtaCheckRef.current = 0;
+      await safelyClearBannerSnooze();
       await Promise.all([runOTACheck(), runVersionCheck(true)]);
+      // Also force-trigger the Play update check
+      await playUpdate.checkNow();
     } finally {
       setPartial({ isChecking: false });
     }
-  }, [runOTACheck, runVersionCheck, setPartial]);
+  }, [runOTACheck, runVersionCheck, setPartial, playUpdate.checkNow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── AppState foreground listener ───────────────────────────────────────────
 
   useEffect(() => {
     if (Platform.OS === "web") return;
 
-    // Initial check
     void runOTACheck();
     void runVersionCheck();
 
     const sub = AppState.addEventListener("change", (status: AppStateStatus) => {
       if (status === "active") {
         void runOTACheck();
-        // Also run the store version check — throttled to every 6 h by
-        // shouldPollVersionCheck() unless clearVersionCheckTimestamp() was
-        // called first (e.g. after tapping an app_update push notification),
-        // in which case it fires immediately on foreground.
         void runVersionCheck();
-        // Retry server-side push token registration for any token that was
-        // obtained from EAS but failed to reach the server (e.g. first launch
-        // with no network). The call is a fast no-op when no pending token exists.
         void retryPendingPushToken();
+        // Play In-App Updates has its own AppState listener inside usePlayInAppUpdates
       }
     });
 
-    // Background version poll (6 h interval)
     versionPollRef.current = setInterval(() => {
       void runVersionCheck();
     }, 6 * 60 * 60 * 1000);
@@ -201,12 +295,14 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     };
   }, [runOTACheck, runVersionCheck]);
 
-  // ── Push notification handler — listen for app_update type ────────────────
+  // ── Push notification → app_update ────────────────────────────────────────
+
   useEffect(() => {
     if (Platform.OS === "web") return;
-    const ENV: unknown = Constants?.executionEnvironment;
+    const ENV: unknown       = Constants?.executionEnvironment;
     const OWNERSHIP: unknown = (Constants as { appOwnership?: unknown })?.appOwnership;
-    const isNativeBuild = ENV === "standalone" || ENV === "bare" || OWNERSHIP === "standalone";
+    const isNativeBuild =
+      ENV === "standalone" || ENV === "bare" || OWNERSHIP === "standalone";
     if (!isNativeBuild) return;
 
     let sub: { remove: () => void } | null = null;
@@ -214,19 +310,18 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
       sub = N.addNotificationReceivedListener((notification) => {
         const data = notification.request.content.data as Record<string, unknown>;
         if (data?.type === "app_update") {
-          // Clear the rate-limit timestamp so the upcoming runVersionCheck actually fires,
-          // then run it with force=true to bypass any remaining throttle window.
           clearVersionCheckTimestamp().catch(() => {}).finally(() => {
             void runVersionCheck(true);
+            void playUpdate.checkNow();
           });
         }
       });
     }).catch(() => {});
 
     return () => { sub?.remove(); };
-  }, [runVersionCheck]);
+  }, [runVersionCheck, playUpdate.checkNow]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Actions ────────────────────────────────────────────────────────────────
+  // ── OTA actions ────────────────────────────────────────────────────────────
 
   const applyOTA = useCallback(async () => {
     if (!state.hasOTAUpdate || state.isApplyingOTA) return;
@@ -241,26 +336,38 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
         bannerVisible: false,
       });
     }
-    // On success: reloadAsync() was called; component will unmount — no state update needed
   }, [state.hasOTAUpdate, state.isApplyingOTA, state.otaUpdateId, setPartial]);
 
   const openStore = useCallback(async () => {
     const url = state.storeUrl;
     if (!url) return;
-    try {
-      await Linking.openURL(url);
-    } catch {
-      // Non-fatal
-    }
+    try { await Linking.openURL(url); } catch { /* non-fatal */ }
   }, [state.storeUrl]);
 
   const dismissBanner = useCallback(async () => {
-    if (state.isMandatory) return; // mandatory updates cannot be dismissed
+    if (state.isMandatory) return;
     await snoozeBanner();
     setPartial({ bannerVisible: false });
   }, [state.isMandatory, setPartial]);
 
-  const actions: UpdateActions = { applyOTA, openStore, dismissBanner, checkNow };
+  // ── Play actions proxy ─────────────────────────────────────────────────────
+
+  const playActions: PlayUpdateActions = {
+    startFlexibleUpdate:  playUpdate.startFlexibleUpdate,
+    startImmediateUpdate: playUpdate.startImmediateUpdate,
+    restartForUpdate:     playUpdate.restartForUpdate,
+    retryDownload:        playUpdate.retryDownload,
+    dismissSheet:         playUpdate.dismissSheet,
+    checkNow:             playUpdate.checkNow,
+  };
+
+  const actions: UpdateActions = {
+    applyOTA,
+    openStore,
+    dismissBanner,
+    checkNow,
+    playActions,
+  };
 
   return (
     <StateCtx.Provider value={state}>
@@ -271,11 +378,8 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
   );
 }
 
-// Wrapper so we don't import AsyncStorage in the context body directly
-async function AsyncStorage_clearBannerSnooze() {
-  try {
-    await clearBannerSnooze();
-  } catch {
-    // Non-critical
-  }
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function safelyClearBannerSnooze() {
+  try { await clearBannerSnooze(); } catch { /* non-critical */ }
 }

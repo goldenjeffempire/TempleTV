@@ -1,3 +1,4 @@
+- [Play In-App Updates architecture](play-in-app-updates.md) — CompletableDeferred bridges OnActivityResult→AsyncFunction; runCheckRef breaks circular useCallback deps; scheduleRetry reads ref not closure.
 - [EAS Replit git index workaround](eas-replit-git-index-workaround.md) — cp .git/index /tmp/eas-git-index + GIT_INDEX_FILE=/tmp/eas-git-index lets EAS archive the full 22 MB workspace (with pnpm-lock.yaml) without triggering Replit's index.lock sandbox restriction.
 - [schedule day_of_week=313 bug](schedule-dow-bug.md) — nowMinutes() (0–1439) confused with todayDow() (0–6); 5×60+13=313 at 05:13; fixed with guard, bounds-check, DB CHECK constraint, and assertValidDayOfWeek helper.
 - [zod esbuild externalize on Replit](zod-esbuild-externalize.md) — zod v4 ESM files fail esbuild bundling through pnpm virtual store; must be in external[] in build.mjs.

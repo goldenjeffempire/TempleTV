@@ -65,9 +65,10 @@ import { NetworkBanner } from "@/components/NetworkBanner";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import { setupTrackPlayer } from "@/services/nowPlaying";
 import { useNotificationPreferences } from "@/hooks/useNotificationPreferences";
-import { UpdateProvider } from "@/context/UpdateContext";
+import { UpdateProvider, useUpdate } from "@/context/UpdateContext";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { MandatoryUpdateGate } from "@/components/MandatoryUpdateGate";
+import { FlexibleUpdateSheet } from "@/components/FlexibleUpdateSheet";
 import { DownloadProvider } from "@/context/DownloadContext";
 
 /**
@@ -78,6 +79,30 @@ import { DownloadProvider } from "@/context/DownloadContext";
 function GlobalNetworkBanner() {
   const { isOnline, justRecovered } = useNetworkStatus();
   return <NetworkBanner visible={!isOnline} recovered={justRecovered} />;
+}
+
+/**
+ * PlayFlexibleUpdateOverlay — bridges Google Play In-App Updates state
+ * (from UpdateContext) into the branded FlexibleUpdateSheet component.
+ *
+ * Rendered at the root so it overlays every screen without duplication.
+ * Android-only: FlexibleUpdateSheet already returns null on non-Android.
+ */
+function PlayFlexibleUpdateOverlay() {
+  const { play, playActions } = useUpdate();
+  return (
+    <FlexibleUpdateSheet
+      visible={play.sheetVisible}
+      status={play.status}
+      progress={play.progress}
+      versionCode={play.versionCode}
+      isMandatory={play.isMandatory}
+      error={play.error}
+      onRestart={playActions.restartForUpdate}
+      onLater={playActions.dismissSheet}
+      onRetry={playActions.retryDownload}
+    />
+  );
 }
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -735,6 +760,13 @@ function RootLayout() {
                    * mandatory. Users cannot dismiss it. Only on native builds.
                    */}
                   <MandatoryUpdateGate />
+                  {/*
+                   * PlayFlexibleUpdateOverlay drives the Google Play In-App
+                   * Updates flexible download flow.  Shows a branded bottom
+                   * sheet with download progress, "Restart Now" CTA, and retry.
+                   * Android-only; renders null on all other platforms.
+                   */}
+                  <PlayFlexibleUpdateOverlay />
                 </SafeKeyboardProvider>
               </GestureHandlerRootView>
             </PlayerProvider>

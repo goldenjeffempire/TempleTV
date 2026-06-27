@@ -83,6 +83,7 @@
   "dependencies": {
     "@sentry/react-native": "~7.2.0",
     "expo-av": "~16.0.8",
+    "expo-in-app-updates": "file:./modules/expo-in-app-updates",
     "expo-pip-android": "file:./modules/expo-pip-android",
     "react-native-sse": "^1.2.1",
     "expo-clipboard": "~8.0.8",
@@ -109,7 +110,8 @@
       "reactNativeDirectoryCheck": {
         "exclude": [
           "react-native-track-player",
-          "expo-pip-android"
+          "expo-pip-android",
+          "expo-in-app-updates"
         ]
       }
     }
