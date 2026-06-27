@@ -16,12 +16,17 @@
  *   DELETE /user/history                 — clear entire watch history
  *
  *   GET    /user/continue-watching       — in-progress videos (cross-device resume)
+ *
+ *   GET    /user/watch-later             — list Watch Later items
+ *   POST   /user/watch-later             — add to Watch Later
+ *   DELETE /user/watch-later/:videoId    — remove a specific item
+ *   DELETE /user/watch-later             — clear entire Watch Later list
  */
 
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { eq, and, desc, count } from "drizzle-orm";
+import { eq, and, desc, count, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
@@ -29,6 +34,7 @@ import { authService } from "../auth/auth.service.js";
 
 const favoritesTable = schema.userFavoritesTable;
 const historyTable = schema.userWatchHistoryTable;
+const watchLaterTable = schema.userWatchLaterTable;
 
 /**
  * Strip HTML tags and common HTML entities from a user-provided string.
@@ -530,6 +536,163 @@ export async function userRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const userId = req.principal!.id;
       await db.delete(historyTable).where(eq(historyTable.userId, userId));
+      reply.code(204);
+      return null;
+    },
+  );
+
+  // ── Watch Later ────────────────────────────────────────────────────────────
+
+  const MAX_WATCH_LATER_PER_USER = 1_000;
+
+  const WatchLaterItemSchema = z.object({
+    id: z.string(),
+    videoId: z.string(),
+    videoTitle: z.string(),
+    videoThumbnail: z.string(),
+    videoCategory: z.string(),
+    addedAt: z.string(),
+  });
+
+  r.get(
+    "/watch-later",
+    {
+      preHandler: requireAuth(),
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["user"],
+        summary: "List all Watch Later videos for the authenticated user",
+        security: [{ bearerAuth: [] }],
+        querystring: z.object({
+          limit: z.coerce.number().int().min(1).default(200).catch(200).transform((v) => Math.min(v, 500)),
+          offset: z.coerce.number().int().min(0).default(0),
+        }),
+        response: {
+          200: z.object({ items: z.array(WatchLaterItemSchema) }),
+          429: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req) => {
+      const userId = req.principal!.id;
+      const rows = await db
+        .select()
+        .from(watchLaterTable)
+        .where(eq(watchLaterTable.userId, userId))
+        .orderBy(desc(watchLaterTable.addedAt))
+        .limit(req.query.limit)
+        .offset(req.query.offset);
+      return {
+        items: rows.map((r) => ({
+          id: r.id,
+          videoId: r.videoId,
+          videoTitle: r.videoTitle,
+          videoThumbnail: r.videoThumbnail,
+          videoCategory: r.videoCategory,
+          addedAt: r.addedAt.toISOString(),
+        })),
+      };
+    },
+  );
+
+  r.post(
+    "/watch-later",
+    {
+      preHandler: requireAuth(),
+      config: {
+        rateLimit: { max: 60, timeWindow: "1 minute", keyGenerator: jwtUserKey },
+      },
+      schema: {
+        tags: ["user"],
+        summary: "Add a video to the authenticated user's Watch Later list",
+        security: [{ bearerAuth: [] }],
+        body: z.object({
+          videoId: z.string().min(1),
+          videoTitle: z.string().min(1),
+          videoThumbnail: z.string().default(""),
+          videoCategory: z.string().default(""),
+        }),
+        response: {
+          201: WatchLaterItemSchema,
+          429: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const userId = req.principal!.id;
+      const { videoId } = req.body;
+      const videoTitle     = sanitizeText(req.body.videoTitle);
+      const videoThumbnail = sanitizeText(req.body.videoThumbnail);
+      const videoCategory  = sanitizeText(req.body.videoCategory);
+
+      const [{ wlCount }] = await db
+        .select({ wlCount: count() })
+        .from(watchLaterTable)
+        .where(eq(watchLaterTable.userId, userId));
+      if (wlCount >= MAX_WATCH_LATER_PER_USER) {
+        return reply.code(429).send({
+          error: `Watch Later limit reached (${MAX_WATCH_LATER_PER_USER}). Remove some items before adding more.`,
+        });
+      }
+
+      const [row] = await db
+        .insert(watchLaterTable)
+        .values({ id: nanoid(), userId, videoId, videoTitle, videoThumbnail, videoCategory })
+        .onConflictDoUpdate({
+          target: [watchLaterTable.userId, watchLaterTable.videoId],
+          set: { videoTitle, videoThumbnail, videoCategory },
+        })
+        .returning();
+      reply.code(201);
+      return {
+        id: row!.id,
+        videoId: row!.videoId,
+        videoTitle: row!.videoTitle,
+        videoThumbnail: row!.videoThumbnail,
+        videoCategory: row!.videoCategory,
+        addedAt: row!.addedAt.toISOString(),
+      };
+    },
+  );
+
+  r.delete(
+    "/watch-later/:videoId",
+    {
+      preHandler: requireAuth(),
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["user"],
+        summary: "Remove a video from the authenticated user's Watch Later list",
+        security: [{ bearerAuth: [] }],
+        params: z.object({ videoId: z.string().min(1).max(128) }),
+        response: { 204: z.null(), 429: z.object({ error: z.string() }) },
+      },
+    },
+    async (req, reply) => {
+      const userId = req.principal!.id;
+      await db
+        .delete(watchLaterTable)
+        .where(and(eq(watchLaterTable.userId, userId), eq(watchLaterTable.videoId, req.params.videoId)));
+      reply.code(204);
+      return null;
+    },
+  );
+
+  r.delete(
+    "/watch-later",
+    {
+      preHandler: requireAuth(),
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["user"],
+        summary: "Clear entire Watch Later list for the authenticated user",
+        security: [{ bearerAuth: [] }],
+        response: { 204: z.null(), 429: z.object({ error: z.string() }) },
+      },
+    },
+    async (req, reply) => {
+      const userId = req.principal!.id;
+      await db.delete(watchLaterTable).where(eq(watchLaterTable.userId, userId));
       reply.code(204);
       return null;
     },

@@ -13,6 +13,7 @@ export const APP_CONFIG = {
 export const STORAGE_KEYS = {
   watchHistory: "@temple_tv/watch_history",
   favorites: "@temple_tv/favorites",
+  watchLater: "@temple_tv/watch_later",
   settings: "@temple_tv/settings",
   playbackSettings: "@temple_tv/playback_settings",
   lastLiveCheck: "@temple_tv/last_live_check",

@@ -68,6 +68,7 @@ import { useNotificationPreferences } from "@/hooks/useNotificationPreferences";
 import { UpdateProvider } from "@/context/UpdateContext";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { MandatoryUpdateGate } from "@/components/MandatoryUpdateGate";
+import { DownloadProvider } from "@/context/DownloadContext";
 
 /**
  * Global offline/recovery banner — mounted once at the root so every screen
@@ -692,6 +693,7 @@ function RootLayout() {
       >
         <QueryClientProvider client={queryClient}>
           <AuthProvider>
+            <DownloadProvider>
             <RadioStreamProvider>
             <PlayerProvider>
               <LiveBroadcastSupervisor />
@@ -737,6 +739,7 @@ function RootLayout() {
               </GestureHandlerRootView>
             </PlayerProvider>
             </RadioStreamProvider>
+            </DownloadProvider>
           </AuthProvider>
         </QueryClientProvider>
       </ErrorBoundary>

@@ -51,6 +51,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
  */
 const USER_SCOPED_STORAGE_PREFIXES = [
   "@temple_tv/favorites",
+  "@temple_tv/watch_later",
   "@temple_tv/history",
   "@temple_tv/watch_history",
   "@temple_tv/playlists",

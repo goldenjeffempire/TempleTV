@@ -565,6 +565,18 @@ export default function SettingsScreen() {
           onPress={() => router.push("/favorites")}
         />
         <Row
+          icon="bookmark"
+          label="Watch Later"
+          description="Videos saved to watch later"
+          onPress={() => router.push("/watch-later")}
+        />
+        <Row
+          icon="download"
+          label="Downloads"
+          description="Offline videos saved on this device"
+          onPress={() => router.push("/downloads")}
+        />
+        <Row
           icon="list"
           label="Playlists"
           description="Browse curated sermon playlists"

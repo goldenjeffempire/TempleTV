@@ -29,6 +29,13 @@ import { getCardWidth, CARD_ASPECT_RATIO } from "@/constants/design";
 
 const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
 
+export interface VideoCardAction {
+  label: string;
+  icon: string;
+  onPress: () => void;
+  destructive?: boolean;
+}
+
 interface VideoCardProps {
   sermon: Sermon;
   onPress: () => void;
@@ -41,6 +48,15 @@ interface VideoCardProps {
    * value that guarantees two cards + gap fit in any scroll row from 320 px up.
    */
   cardWidth?: number;
+  /**
+   * Optional context actions shown in a small action button (⋮) on the card.
+   * When provided a bookmark icon appears in the top-right corner of the card.
+   */
+  onLongPressAction?: () => void;
+  /** Icon name for the action button overlay (default "more-vertical") */
+  actionIcon?: string;
+  /** Tint the action button (e.g. primary color when already bookmarked) */
+  actionActive?: boolean;
 }
 
 function formatViews(n: number): string {
@@ -55,6 +71,9 @@ export const VideoCard = React.memo(function VideoCard({
   horizontal = false,
   showLiveBadge = false,
   cardWidth: cardWidthProp,
+  onLongPressAction,
+  actionIcon = "more-vertical",
+  actionActive = false,
 }: VideoCardProps) {
   const c = useColors();
   const { width: screenWidth } = useWindowDimensions();
@@ -69,6 +88,7 @@ export const VideoCard = React.memo(function VideoCard({
     return (
       <Pressable
         onPress={onPress}
+        onLongPress={onLongPressAction}
         style={({ pressed }) => [
           styles.horzContainer,
           { backgroundColor: c.card, borderBottomColor: c.border },
@@ -133,7 +153,22 @@ export const VideoCard = React.memo(function VideoCard({
           </View>
         </View>
 
-        <Feather name="chevron-right" size={16} color={c.mutedForeground} style={{ alignSelf: "center" }} />
+        {onLongPressAction ? (
+          <Pressable
+            onPress={onLongPressAction}
+            hitSlop={8}
+            accessibilityLabel="More options"
+            style={styles.horzActionBtn}
+          >
+            <Feather
+              name={actionIcon as React.ComponentProps<typeof Feather>["name"]}
+              size={18}
+              color={actionActive ? c.primary : c.mutedForeground}
+            />
+          </Pressable>
+        ) : (
+          <Feather name="chevron-right" size={16} color={c.mutedForeground} style={{ alignSelf: "center" }} />
+        )}
       </Pressable>
     );
   }
@@ -142,6 +177,7 @@ export const VideoCard = React.memo(function VideoCard({
   return (
     <Pressable
       onPress={onPress}
+      onLongPress={onLongPressAction}
       style={({ pressed }) => [
         styles.cardContainer,
         { backgroundColor: c.card, borderColor: c.border, width: cardWidth },
@@ -180,6 +216,21 @@ export const VideoCard = React.memo(function VideoCard({
               <Feather name="play" size={14} color="#fff" style={{ marginLeft: 2 }} />
             </View>
           </View>
+        )}
+        {/* Action button overlay — top-right corner */}
+        {onLongPressAction && (
+          <Pressable
+            onPress={(e) => { e.stopPropagation(); onLongPressAction(); }}
+            hitSlop={8}
+            accessibilityLabel="More options"
+            style={[styles.cardActionBtn, { backgroundColor: "rgba(0,0,0,0.55)" }]}
+          >
+            <Feather
+              name={actionIcon as React.ComponentProps<typeof Feather>["name"]}
+              size={14}
+              color={actionActive ? "#fff" : "rgba(255,255,255,0.85)"}
+            />
+          </Pressable>
         )}
       </View>
 
@@ -273,6 +324,21 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 13, fontWeight: "600", lineHeight: 18 },
   cardPreacher: { fontSize: 11 },
   cardMeta: { flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 2 },
+
+  horzActionBtn: {
+    paddingHorizontal: 8,
+    alignSelf: "center",
+  },
+  cardActionBtn: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 
   // ── Shared ────────────────────────────────────────────────────────────────
   badgeTopLeft: {
