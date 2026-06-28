@@ -23,13 +23,11 @@
  * QUEUE_MIN_ITEMS after reconciliation — indicating the library genuinely
  * has fewer eligible videos than the minimum threshold.
  */
-import { and, count, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, count, eq, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
 import { scanLibraryAndEnqueue } from "../../broadcast/auto-enqueue.service.js";
-import { enqueueTranscode } from "../../transcoder/transcoder.queue.js";
-import { transcoderDispatcher } from "../../transcoder/transcoder.dispatcher.js";
 
 const q = schema.broadcastQueueTable;
 const v = schema.videosTable;
@@ -241,36 +239,6 @@ class QueueHealthGuardImpl {
     // ── Phase 3: Duration repair ───────────────────────────────────────────
     // Fix zero-duration queue items so the cycle schedule is accurate.
     await repairZeroDurations();
-
-    // ── Phase 4: HLS auto-trigger ─────────────────────────────────────────
-    // Trigger HLS transcoding for any active queue items that have a local
-    // video source but no hlsMasterUrl yet (uploaded but not yet transcoded).
-    try {
-      const bq = schema.broadcastQueueTable;
-      const mv = schema.videosTable;
-      const hlsRows = await db
-        .select({ videoId: mv.id, localVideoUrl: mv.localVideoUrl })
-        .from(bq)
-        .innerJoin(mv, eq(bq.videoId, mv.id))
-        .where(and(eq(bq.isActive, true), isNotNull(mv.localVideoUrl), isNull(mv.hlsMasterUrl)));
-
-      let hlsTriggered = 0;
-      for (const row of hlsRows) {
-        if (!row.localVideoUrl) continue;
-        try {
-          await enqueueTranscode({ videoId: row.videoId, videoPath: row.localVideoUrl, priority: 10 });
-          hlsTriggered++;
-        } catch (err) {
-          logger.warn({ err, videoId: row.videoId }, "[queue-reconcile] Phase 4: failed to enqueue HLS job");
-        }
-      }
-      if (hlsTriggered > 0) {
-        transcoderDispatcher.nudge();
-        logger.info({ hlsTriggered }, "[queue-reconcile] Phase 4: triggered HLS transcoding for queue items missing HLS");
-      }
-    } catch (err) {
-      logger.warn({ err }, "[queue-reconcile] Phase 4 (HLS auto-trigger) failed (non-fatal)");
-    }
 
     // ── Phase 5: Threshold alerting ────────────────────────────────────────
     const activeCount = await getActiveItemCount();

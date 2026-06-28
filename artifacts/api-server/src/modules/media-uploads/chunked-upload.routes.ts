@@ -30,7 +30,6 @@ import { env } from "../../config/env.js";
 import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { generateQuickThumbnail, normalizeThumbnailBuffer, probeUploadedContainerValidity, probeUploadedDuration, probeVideoMetadata } from "../transcoder/transcoder.service.js";
-import { runFaststart } from "../transcoder/faststart.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
@@ -383,15 +382,6 @@ async function spawnAssemblyRetry(
         log.warn({ err: enqErr, videoId }, "[assembly-retry] enqueueIfMissing failed (non-fatal)");
       }
 
-      if (!vRow.faststartApplied) {
-        try {
-          await runFaststart(videoId, vRow.objectPath, { skipStatusUpdate: false });
-          log.info({ videoId }, "[assembly-retry] faststart applied");
-        } catch (fsErr) {
-          log.warn({ err: fsErr, videoId }, "[assembly-retry] faststart failed (non-fatal)");
-        }
-      }
-
       log.info({ sessionId, videoId, attempt: currentAttempts }, "[assembly-retry] complete ✓");
 
     } catch (err) {
@@ -730,36 +720,19 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           );
 
           // Re-enqueue each recovered video into the broadcast queue and resume
-          // any post-assembly processing (faststart, HLS) that the server crash
-          // interrupted before it could complete.
-          //
-          // All three steps are idempotent:
-          //   • enqueueIfMissing  — no-ops if the queue slot already exists
-          //   • runFaststart      — guarded by faststartApplied=true already set
-          //   • enqueueTranscode  — guarded by hlsMasterUrl IS NOT NULL already set
+          // any post-assembly processing that the server crash interrupted.
           for (const videoId of recoveredVideoIds) {
             void (async () => {
               try {
-                // Step 1: Query current video state first — needed for ffprobe
-                // objectPath and to decide which post-processing is outstanding.
                 const [vRow] = await db
-                  .select({
-                    objectPath: videos.objectPath,
-                    faststartApplied: videos.faststartApplied,
-                    hlsMasterUrl: videos.hlsMasterUrl,
-                    transcodingStatus: videos.transcodingStatus,
-                  })
+                  .select({ objectPath: videos.objectPath })
                   .from(videos)
                   .where(eq(videos.id, videoId))
                   .limit(1);
 
                 if (!vRow?.objectPath) return;
 
-                // Step 2: ffprobe — accurate duration + technical metadata.
-                // On server restart, recovered videos may carry the 1800-second
-                // upload-time placeholder duration if the original finalize task
-                // was interrupted before the probes completed. Run now to
-                // guarantee accurate duration in the broadcast queue slot.
+                // ffprobe — accurate duration + technical metadata.
                 try {
                   const mediaMeta = await probeVideoMetadata(vRow.objectPath);
                   const metaPatch: Partial<typeof videos.$inferInsert> = {};
@@ -778,30 +751,6 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                     { err: probeErr, videoId },
                     "[upload] recovery: ffprobe failed (non-fatal) — using existing duration",
                   );
-                }
-
-
-                // Step 4: HLS-gate — do NOT enqueue here. The transcoder
-                // dispatcher calls enqueueIfMissing() after writing hlsMasterUrl
-                // so every broadcast queue entry is guaranteed to have a valid
-                // HLS stream. Faststart runs as a best-effort optimization only.
-
-                // Step 5: Faststart — BEST-EFFORT OPTIMIZATION ONLY.
-                // Moves the moov atom to the front of the MP4 for better
-                // HTTP range-request performance (makes the source faster to
-                // download for the transcoder). Does not affect broadcast
-                // admission — only HLS completion triggers queue entry.
-                if (!vRow.faststartApplied) {
-                  try {
-                    await runFaststart(videoId, vRow.objectPath, { skipStatusUpdate: false });
-                    app.log.info({ videoId }, "[upload] recovery: faststart applied to recovered video");
-                  } catch (fsErr) {
-                    app.log.warn(
-                      { err: fsErr, videoId },
-                      "[FASTSTART OPTIMIZATION SKIPPED] recovery faststart failed (non-fatal) — " +
-                      "video remains in broadcast queue as raw MP4; HLS transcoding will follow",
-                    );
-                  }
                 }
 
               } catch (err) {
@@ -2366,16 +2315,6 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               }
             } catch (enqErr) {
               capturedLog.warn({ err: enqErr, videoId }, "[finalize:bg] enqueueIfMissing failed (non-fatal)");
-            }
-
-            // MP4-only pipeline: run faststart to move the moov atom to byte-0
-            // for instant playback. No HLS transcoding — the raw MP4 (or the
-            // faststart-optimized copy) is the final broadcast source.
-            try {
-              await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
-              capturedLog.info({ sessionId, videoId }, "[finalize:bg] faststart done");
-            } catch (err) {
-              capturedLog.warn({ err, videoId }, "[finalize:bg] faststart failed (non-fatal) — broadcasting as raw MP4");
             }
 
             capturedLog.info(

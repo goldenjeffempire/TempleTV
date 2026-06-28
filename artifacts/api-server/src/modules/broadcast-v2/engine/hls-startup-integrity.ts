@@ -95,8 +95,8 @@ type QueueRow = {
 
 
 export async function runHlsStartupIntegrityScan(): Promise<void> {
-  const startMs = Date.now();
-  logger.info(`${MODULE} starting HLS startup integrity scan`);
+  // HLS transcoding pipeline disabled — MP4-only broadcast. No-op.
+  return;
 
   let rows: QueueRow[];
   try {

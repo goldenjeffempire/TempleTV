@@ -142,9 +142,8 @@ class TranscoderDispatcher {
   }
 
   start(): void {
-    if (this.timer) return;
-    this.started = true;
-    this.stopped = false;
+    // HLS transcoding pipeline disabled — MP4-only broadcast. No-op.
+    return;
 
     // Register this worker process in the worker registry so the admin UI
     // can display active workers and the lease reclaimer can identify dead ones.

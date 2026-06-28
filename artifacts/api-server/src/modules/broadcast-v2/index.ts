@@ -12,7 +12,6 @@ import { workerSupervisor } from "./engine/worker-supervisor.js";
 import { eventLogRepo } from "./repository/event-log.repo.js";
 import { broadcastFanout } from "./io/broadcast-fanout.js";
 import { installYouTubeAutoOverride, uninstallYouTubeAutoOverride } from "../youtube-live/auto-override.js";
-import { faststartRecoveryWorker } from "./engine/faststart-recovery.js";
 import { reEnableAllSuspended } from "./repository/queue.repo.js";
 import { broadcastHealthMonitorScan, getBroadcastHealthMonitorStatus } from "./engine/broadcast-health-monitor.js";
 import { contentRotationScan, getContentRotationStatus } from "./engine/content-rotation.js";
@@ -28,11 +27,10 @@ import { refreshStorageStats, getStorageStats } from "../../infrastructure/stora
 import { env } from "../../config/env.js";
 import { sendAdminAlert } from "../mail/mail.service.js";
 import { installDeadAirTracker, getDeadAirStats } from "./engine/dead-air-tracker.js";
-import { transcodingAutoRetryScan, getTranscodingAutoRetryStatus } from "./engine/transcoding-auto-retry.js";
 import { queueSelfHealingWorker } from "./engine/queue-self-healing-worker.js";
 
 export { getExhaustionStatus, getAutoRefillStatus, getStorageStats };
-export { getDeadAirStats, getTranscodingAutoRetryStatus };
+export { getDeadAirStats };
 
 export { getQueueHealthGuardStatus };
 
@@ -293,27 +291,6 @@ function startSupervisedWorkers(): void {
     onCircuitOpen: makeCircuitOpenCallback("queue-integrity-validator"),
   });
 
-  // Faststart recovery: detects active queue items whose joined video is
-  // local-source + faststart_applied=false + status in (none/queued/encoding)
-  // — exactly the rows that v2.loadActive() rejects from broadcast. Triggers
-  // runFaststart() with an in-memory attempt cap so the orchestrator can
-  // admit them on the next reload. Closes the v1/v2 admission gap that
-  // produced "Off Air" despite a playable MP4 in the queue.
-  faststartRecoveryWorker.markEnabled();
-  workerSupervisor.spawn({
-    name: "faststart-recovery",
-    fn: () => faststartRecoveryWorker.sweep(),
-    intervalMs: 60_000,
-    initialDelayMs: 15_000,
-    backoffMs: [5_000, 15_000, 30_000, 60_000],
-    onCircuitOpen: makeCircuitOpenCallback("faststart-recovery"),
-    // Explicit deadman: Stage 1 (8 s) + Stage 2 (50 s budget) + Stage 3 (8 s)
-    // + dispatch (negligible) = ~66 s max. 90 s gives comfortable headroom
-    // without the default 2×intervalMs = 120 s that the slow-path probe stage
-    // was routinely exhausting.
-    timeoutMs: 90_000,
-  });
-
   // Viewer-count metrics updater: uses native V2 WS+SSE connection counts from
   // the broadcast-v2 gateways directly — no V1 broadcastEngine dependency.
   // WS (_activeSockets) + SSE (openSseSenders) together cover every connected
@@ -450,20 +427,6 @@ function startSupervisedWorkers(): void {
     initialDelayMs: 30_000,
     backoffMs: [60_000, 5 * 60_000],
   });
-
-  // Transcoding auto-retry: re-enqueues permanently-failed transcoding jobs
-  // (transcodingStatus='failed', objectPath IS NOT NULL, non-terminal error)
-  // after a 24-hour cooldown. Max 3 auto-retries per video by default.
-  // Runs every 6 hours; initial delay of 10 minutes so the system is warm.
-  if (!process.env["TRANSCODING_AUTO_RETRY_DISABLE"]) {
-    workerSupervisor.spawn({
-      name: "transcoding-auto-retry",
-      fn: () => transcodingAutoRetryScan(),
-      intervalMs: 6 * 60 * 60_000,
-      initialDelayMs: 10 * 60_000,
-      backoffMs: [5 * 60_000, 15 * 60_000, 30 * 60_000],
-    });
-  }
 
   // Queue Self-Healing Worker: persistent state machine that tracks repair
   // state (healthy → quarantined → repairing → approved | blocked) for every
@@ -703,13 +666,6 @@ export async function stopBroadcastV2(): Promise<void> {
   //    which sends a Close frame before tearing down the socket.
   closeAllSseSessions();
   closeAllBroadcastV2WsSessions();
-
-  // 3a. Signal the faststart-recovery worker to abort at its next DB-call
-  //     checkpoint.  workerSupervisor.stopAll() (below) cancels the pending
-  //     timer but cannot interrupt an already-executing async sweep().
-  //     Without this, a sweep in progress calls findCandidates() after the
-  //     DB pool is closed, producing "Cannot use a pool after calling end".
-  faststartRecoveryWorker.stop();
 
   // 3b. Stop supervised workers (clears their internal timers + circuit-reset timers).
   workerSupervisor.stopAll();
