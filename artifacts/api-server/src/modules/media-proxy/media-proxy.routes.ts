@@ -45,6 +45,12 @@ const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
   ".ytimg.com",
   "templetv.org.ng",
   ".templetv.org.ng",
+  // Replit workspace domains — own-origin upload URLs on REPLIT_DEV_DOMAIN must be
+  // allowed so that if they ever reach the proxy (e.g. stale URLs, domain migration)
+  // they are not rejected with 403 and the player can recover gracefully.
+  ".replit.app",
+  ".repl.co",
+  ".replit.dev",
   // Loopback only permitted in non-production — gated here to prevent SSRF
   // via the proxy in production deployments.
   ...(IS_PRODUCTION ? [] : ["localhost", "127.0.0.1"]),

@@ -100,7 +100,8 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
       const parsedReplit = new URL(raw);
       if (
         parsedReplit.hostname.endsWith(".replit.app") ||
-        parsedReplit.hostname.endsWith(".repl.co")
+        parsedReplit.hostname.endsWith(".repl.co") ||
+        parsedReplit.hostname.endsWith(".replit.dev")
       ) {
         const ownPublicBase = (
           (IS_PROD_NODE_ENV ? env.API_ORIGIN : undefined) ??
@@ -109,7 +110,8 @@ export function normalizeQueueUrl(raw: string | null | undefined): string | null
         if (
           ownPublicBase &&
           !ownPublicBase.includes(".replit.app") &&
-          !ownPublicBase.includes(".repl.co")
+          !ownPublicBase.includes(".repl.co") &&
+          !ownPublicBase.includes(".replit.dev")
         ) {
           const absBase = /^https?:\/\//i.test(ownPublicBase) ? ownPublicBase : `https://${ownPublicBase}`;
           const baseParsed = new URL(absBase);

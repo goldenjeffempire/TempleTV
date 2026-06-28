@@ -48,10 +48,21 @@ function internalProbeHeaders(): Record<string, string> {
 }
 
 /**
- * Convert an own-origin HLS URL to http://127.0.0.1:PORT/… for local probing.
- * Identical logic to BroadcastOrchestrator.toLocalhostProbeUrl() — keeps probes
- * on loopback so the HLS auth bypass always fires, avoiding 401 failures when
- * REQUIRE_HLS_TOKEN=true and the probe URL uses the external API_ORIGIN.
+ * Convert an own-origin HLS or upload URL to http://127.0.0.1:PORT/… for local
+ * probing. Mirrors BroadcastOrchestrator.toLocalhostProbeUrl() exactly so
+ * HLS *and* locally-uploaded MP4 probes always hit the API via loopback rather
+ * than going out through the external Replit / CDN proxy.
+ *
+ * Why this matters for uploads:
+ *   When NODE_ENV=production and REPLIT_DEV_DOMAIN is set, normalizeQueueUrl()
+ *   absolutises relative /api/v1/uploads/… paths to
+ *   https://<REPLIT_DEV_DOMAIN>/api/v1/uploads/…. Probing that external URL
+ *   requires the request to leave the process, traverse Replit's proxy, hit the
+ *   Vite dev-server at port 5000, be forwarded to port 8080, and then reach the
+ *   upload handler. Any transient proxy hiccup (rate-limit, cold-start, timeout)
+ *   causes the probe to fail and the video to be marked bad — even though the
+ *   BYTEA blob is sitting untouched in PostgreSQL. Loopback probes are immune to
+ *   those external factors.
  */
 function toLocalhostProbeUrl(url: string): string {
   try {
@@ -72,7 +83,9 @@ function toLocalhostProbeUrl(url: string): string {
       })
       .filter(Boolean) as string[];
 
-    if (ownHostnames.includes(u.hostname) && /\/api(?:\/v1)?\/hls\//.test(u.pathname)) {
+    // Match both HLS manifest paths AND locally-uploaded video (uploads) paths.
+    // `uploads?` matches the singular `upload` route alias as well as `uploads`.
+    if (ownHostnames.includes(u.hostname) && /\/api(?:\/v1)?\/(?:hls|uploads?)\//.test(u.pathname)) {
       u.protocol = "http:";
       u.hostname = "127.0.0.1";
       u.port = String(env.PORT ?? 8080);
@@ -646,15 +659,16 @@ class MediaIntegrityScannerImpl {
           let failReason: string | undefined;
           if (url) {
             try {
-              // HLS manifests are validated by fetching and parsing content —
-              // a HEAD probe can return 200 for stale CDN-cached empty playlists.
-              // toLocalhostProbeUrl() rewrites own-origin HLS URLs to localhost so
-              // the probe always hits this server directly (bypassing REQUIRE_HLS_TOKEN).
-              // withHlsToken() adds a token as belt-and-suspenders for multi-node setups.
-              // The bad-URL tracking below uses the original `url` (no token/localhost)
-              // so token-rotation doesn't affect circuit-breaker de-duplication.
-              const localhostUrl = kind === "hls" ? toLocalhostProbeUrl(url) : url;
-              const probeTarget = kind === "hls" ? withHlsToken(localhostUrl) : url;
+              // toLocalhostProbeUrl() rewrites own-origin URLs (both HLS manifests
+              // and locally-uploaded MP4 /api/v1/uploads/ paths) to loopback so every
+              // probe hits the API directly, bypassing REQUIRE_HLS_TOKEN and avoiding
+              // the external Replit proxy round-trip that can time-out and falsely mark
+              // healthy BYTEA blobs as unreachable.
+              // withHlsToken() adds an auth token for HLS; uploads need no token.
+              // Bad-URL tracking still uses the original `url` (no token/localhost)
+              // so token-rotation doesn't disturb circuit-breaker de-duplication.
+              const localhostUrl = toLocalhostProbeUrl(url);
+              const probeTarget = kind === "hls" ? withHlsToken(localhostUrl) : localhostUrl;
               const probe = kind === "hls"
                 ? await probeHlsManifest(probeTarget)
                 : await probeUrl(probeTarget);
