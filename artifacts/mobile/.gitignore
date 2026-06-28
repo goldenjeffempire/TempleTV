@@ -10,9 +10,9 @@ web-build/
 web-dist/
 expo-env.d.ts
 
-# Native
+# Native — anchor to root so local module android/ dirs are tracked by git
 ios/
-android/
+/android/
 *.orig.*
 *.jks
 *.p8
