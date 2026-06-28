@@ -30,6 +30,7 @@ import { env } from "../../config/env.js";
 import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { generateQuickThumbnail, normalizeThumbnailBuffer, probeUploadedContainerValidity, probeUploadedDuration, probeVideoMetadata } from "../transcoder/transcoder.service.js";
+import { runFaststart } from "../transcoder/faststart.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
@@ -2266,56 +2267,92 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               if (mediaMeta.videoBitrate != null) patch.videoBitrate = mediaMeta.videoBitrate;
               if (mediaMeta.videoWidth != null) patch.videoWidth = mediaMeta.videoWidth;
               if (mediaMeta.videoHeight != null) patch.videoHeight = mediaMeta.videoHeight;
-              patch.transcodingStatus = "ready";
+              // Do NOT set transcodingStatus=ready yet — the faststart pipeline
+              // below owns that transition.  Only metadata patches go here.
               if (Object.keys(patch).length > 0) {
                 await db.update(videos).set(patch).where(eq(videos.id, videoId));
                 void invalidateVideosCatalogCache();
                 adminEventBus.push("videos-library-updated", { videoId, reason: "thumbnail-generated" });
               }
-              // Capture for the post-enqueue broadcast_queue update below.
+              // Capture for the post-enqueue broadcast_queue duration stamp below.
               const durSecs = probedSecs ?? mediaMeta.durationSecs;
               if (durSecs != null && durSecs > 10) ffprobeDurSecs = durSecs;
             } catch (err) {
               capturedLog.warn({ err, videoId }, "[finalize:bg] post-upload probes failed (non-fatal)");
-              // Even if probes fail, mark the video as ready so it can air.
-              await db.update(videos).set({ transcodingStatus: "ready" }).where(eq(videos.id, videoId)).catch(() => {});
+              // Probes are non-fatal — faststart runs regardless and will
+              // validate the file independently.
             }
 
-            // ── MP4 broadcast enrollment ──────────────────────────────────────
-            // Enqueue as soon as the blob is confirmed in storage and probed.
-            // The item airs immediately via raw MP4 (faststart is applied in
-            // the background by the faststart worker — no re-enqueue needed).
+            // ── Faststart: moov-atom relocation ──────────────────────────────
+            // Detect the moov atom position, remux with ffmpeg -c copy
+            // -movflags +faststart if needed, validate the output, then
+            // atomically replace the storage blob and stamp DB.
             //
-            // Sequence: probe (done above) → set transcodingStatus=ready → enqueue.
-            // ffprobeDurSecs is hoisted above so we can update the queue row
-            // with the accurate duration immediately after the row is created.
-            try {
-              const enqRes = await enqueueIfMissing({ videoId, reason: "upload-finalize" });
-              if (enqRes.enqueued) {
-                capturedLog.info(
-                  { videoId, queueItemId: enqRes.queueItemId },
-                  "[finalize:bg] video enrolled in broadcast queue (MP4-first)",
-                );
-                // Stamp the accurate ffprobe duration on the new queue row.
-                // The row is inserted with durationSecs = 1800 (upload-time
-                // placeholder). Correcting it now prevents dead-air gaps when
-                // the video ends before its slot expires.
-                if (ffprobeDurSecs != null && ffprobeDurSecs > 10) {
-                  await db
-                    .update(schema.broadcastQueueTable)
-                    .set({ durationSecs: Math.round(ffprobeDurSecs) })
-                    .where(eq(schema.broadcastQueueTable.videoId, videoId))
-                    .catch((err: unknown) =>
-                      capturedLog.warn(
-                        { err, videoId },
-                        "[finalize:bg] queue duration_secs update failed (non-fatal)",
-                      ),
-                    );
+            // CONTRACT: the video is NOT enrolled in the broadcast queue and
+            // NOT exposed to viewers until faststartApplied=true.  A raw MP4
+            // with moov-at-EOF would cause a blank screen on every surface.
+            capturedLog.info(
+              { videoId, objectKey },
+              "[finalize:bg] starting faststart pipeline (moov relocation)",
+            );
+            const fsResult = await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
+            capturedLog.info(
+              {
+                videoId,
+                finalStatus: fsResult.finalStatus,
+                remuxed: fsResult.remuxed ?? false,
+                durationMs: fsResult.durationMs,
+              },
+              "[finalize:bg] faststart pipeline complete",
+            );
+
+            if (!fsResult.ok) {
+              capturedLog.error(
+                {
+                  videoId,
+                  rootCause: fsResult.rootCause,
+                  actions: fsResult.actions,
+                },
+                "[finalize:bg] faststart FAILED — video will not air until operator retries",
+              );
+              adminEventBus.push("transcoding-update", {
+                videoId,
+                status: "failed",
+                errorCode: "FASTSTART_FAILED",
+                errorMessage: fsResult.rootCause ?? "faststart remux failed",
+              });
+              // Do NOT enqueue — a non-faststart MP4 must never reach viewers.
+            } else {
+              // ── MP4 broadcast enrollment ──────────────────────────────────
+              // faststart wrote transcodingStatus=ready + faststartApplied=true.
+              // Enqueue so the orchestrator schedules this video immediately.
+              //
+              // ffprobeDurSecs is hoisted above so we can correct the queue
+              // row's 1800-second placeholder duration right after insert.
+              try {
+                const enqRes = await enqueueIfMissing({ videoId, reason: "upload-finalize" });
+                if (enqRes.enqueued) {
+                  capturedLog.info(
+                    { videoId, queueItemId: enqRes.queueItemId },
+                    "[finalize:bg] video enrolled in broadcast queue (faststart MP4)",
+                  );
+                  if (ffprobeDurSecs != null && ffprobeDurSecs > 10) {
+                    await db
+                      .update(schema.broadcastQueueTable)
+                      .set({ durationSecs: Math.round(ffprobeDurSecs) })
+                      .where(eq(schema.broadcastQueueTable.videoId, videoId))
+                      .catch((err: unknown) =>
+                        capturedLog.warn(
+                          { err, videoId },
+                          "[finalize:bg] queue duration_secs update failed (non-fatal)",
+                        ),
+                      );
+                  }
+                  adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId });
                 }
-                adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId });
+              } catch (enqErr) {
+                capturedLog.warn({ err: enqErr, videoId }, "[finalize:bg] enqueueIfMissing failed (non-fatal)");
               }
-            } catch (enqErr) {
-              capturedLog.warn({ err: enqErr, videoId }, "[finalize:bg] enqueueIfMissing failed (non-fatal)");
             }
 
             capturedLog.info(

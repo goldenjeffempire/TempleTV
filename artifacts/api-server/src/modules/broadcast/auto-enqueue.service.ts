@@ -356,10 +356,13 @@ export async function scanLibraryAndEnqueue(opts: {
           // also guards per-row, but excluding at the query level is cheaper and prevents
           // any N-row scan from even considering these videos.
           ne(videosTable.category, "midnight-prayers"),
-          // MP4-first admission: any local video with a source URL is eligible.
-          // HLS is preferred (and always admitted) but raw MP4 uploads are not
-          // held back — they air immediately and upgrade when transcoding completes.
-          or(isNotNull(videosTable.hlsMasterUrl), isNotNull(videosTable.localVideoUrl)),
+          // Faststart-gated admission: local videos must have faststartApplied=true
+          // before they can enter the broadcast queue.  A raw MP4 with moov-at-EOF
+          // causes a blank screen on every player surface (browser, TV, mobile)
+          // because the player must download the entire file before it can seek.
+          // The faststart pipeline (runFaststart) sets faststartApplied=true after
+          // it has relocated the moov atom and validated HTTP Range support.
+          or(isNotNull(videosTable.hlsMasterUrl), and(isNotNull(videosTable.localVideoUrl), eq(videosTable.faststartApplied, true))),
           // NOT EXISTS subquery — keeps the JOIN cheap and the candidate set
           // small; the dedupe inside enqueueIfMissing is the authoritative
           // backstop for the race where two concurrent scans run at once.
@@ -465,10 +468,14 @@ function isPlayableForBroadcast(row: {
   // state, transcoding status, or caller reason.
   if (row.category === "midnight-prayers") return false;
 
-  // MP4-only pipeline: any locally-uploaded video with a source URL is
-  // admitted immediately. Playback failures are handled at runtime by the
-  // orchestrator's bad-URL cache and auto-skip logic.
-  if (row.localVideoUrl && row.localVideoUrl.trim() !== "") return true;
+  // MP4-only pipeline: local videos are admitted only after faststart has
+  // relocated the moov atom to the front of the file.  A non-faststart MP4
+  // forces the player to download the entire file before it can start — this
+  // causes blank screens on browsers, Smart TVs, and mobile devices.
+  // `faststartApplied = true` is set by runFaststart() after the remux +
+  // upload + validation pipeline completes.  Videos that are still in
+  // 'processing' or whose faststart has not yet run are not admitted.
+  if (row.localVideoUrl && row.localVideoUrl.trim() !== "" && row.faststartApplied === true) return true;
 
   return false;
 }
