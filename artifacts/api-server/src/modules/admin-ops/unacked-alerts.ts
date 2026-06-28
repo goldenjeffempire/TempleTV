@@ -27,6 +27,17 @@ const ESCALATION_DELAY_MS = 10 * 60_000;
 const SWEEP_INTERVAL_MS   = 60_000;
 const EMAIL_COOLDOWN_MS   = 5 * 60_000;
 /**
+ * Maximum age of a stored alert before it is automatically purged from the
+ * in-memory store, regardless of acknowledgment.  Prevents the Map from
+ * growing without bound in a long-running process where many ops-alerts fire
+ * but operators never explicitly acknowledge old entries.
+ *
+ * 2 hours is well past the 10-min escalation window and the 5-min email
+ * cooldown, so no alert can be silently dropped before the operator has had
+ * multiple notification opportunities.
+ */
+const STORE_MAX_AGE_MS = 2 * 60 * 60_000;
+/**
  * Separate cooldown for immediate critical/fatal alerts so they don't
  * consume the batch-escalation cooldown window.  2 minutes prevents alert
  * storms (e.g. repeated OOM restarts) from flooding the inbox while still
@@ -104,6 +115,17 @@ function handleEvent(payload: unknown): void {
 
 async function sweep(): Promise<void> {
   const now = Date.now();
+
+  // ── TTL purge ──────────────────────────────────────────────────────────────
+  // Remove entries older than STORE_MAX_AGE_MS regardless of acknowledgment.
+  // Without this purge the store Map grows without bound in a long-running
+  // process: every ops-alert ever fired accumulates here because sweep() only
+  // sets emailedAtMs but never deletes.  2 h is well past all notification
+  // windows so no alert is silently dropped before operators are notified.
+  for (const [id, a] of store) {
+    if (now - a.receivedAtMs > STORE_MAX_AGE_MS) store.delete(id);
+  }
+
   // Escalate ALL alerts that have not been explicitly acknowledged (via DELETE
   // /ops-alerts/unacked/:id) and have been pending for longer than
   // ESCALATION_DELAY_MS.  The `delivered` flag is surfaced in the GET endpoint

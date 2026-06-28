@@ -497,9 +497,14 @@ function sample() {
     consecutiveArrayBuffersOver++;
     if (consecutiveArrayBuffersOver >= CONSECUTIVE_SLOPE_FOR_ALERT && !arrayBuffersAlertActive) {
       arrayBuffersAlertActive = true;
-      // Proactively trim the HLS segment cache to half its configured limit
-      // before alerting, so a transient burst of segment requests doesn't
-      // trigger unnecessary ops noise if the cache self-corrects.
+      // Trigger GC + expire stale cache entries first.  The HLS segment cache
+      // trim is also attempted for back-compat (it is a no-op on the MP4-only
+      // pipeline but harmless).  Running GC here gives the allocator a chance
+      // to reclaim Buffers that are no longer referenced before escalating to
+      // an ops-alert — reducing false-positive alerts from transient spikes.
+      // NOTE: gcFn is declared later in sample(); use global.gc directly here.
+      purgeExpiredCacheEntries();
+      (global as { gc?: () => void }).gc?.();
       void import("../modules/video-serve/video-serve.routes.js")
         .then(({ trimHlsSegmentCache }) => {
           const hlsCacheMb = env.HLS_SEGMENT_CACHE_MB;
@@ -514,7 +519,7 @@ function sample() {
         .catch(() => {/* non-fatal — video-serve may not be initialised yet */});
       logger.warn(
         { growthMbPerMin: Math.round(abGrowthRate * 10) / 10, threshold: ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN },
-        "[memory-watchdog] ArrayBuffers growth rate exceeded threshold — possible HLS segment cache pressure",
+        "[memory-watchdog] ArrayBuffers growth rate exceeded threshold — possible Buffer/upload-pipeline pressure",
       );
       void import("./sentry.js").then(({ captureEvent }) =>
         captureEvent(
@@ -535,6 +540,10 @@ function sample() {
       // remains active. The first trim fires at alert activation; subsequent
       // trims prevent a sustained leak from re-filling the cache between
       // operator intervention cycles and keep the GC nudge meaningful.
+      // Also purge expired cache entries + nudge GC to help free unreferenced
+      // Buffers before the next sample.
+      purgeExpiredCacheEntries();
+      (global as { gc?: () => void }).gc?.();
       void import("../modules/video-serve/video-serve.routes.js")
         .then(({ trimHlsSegmentCache }) => {
           const hlsCacheMb = env.HLS_SEGMENT_CACHE_MB;

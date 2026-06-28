@@ -249,6 +249,10 @@ class PostgresObjectStorage implements ObjectStorage {
       let offset = 0;
       let chunksRead = 0;
       while (offset < totalSize) {
+        // Stop issuing new DB queries once the process is shutting down.
+        // Mirrors the same guard in readRangeChunks() below so in-flight
+        // streams release their DB connections promptly on SIGTERM.
+        if (_shuttingDown) break;
         const length = Math.min(chunkSize, totalSize - offset);
         // PostgreSQL SUBSTRING is 1-indexed; our offset is 0-based.
         const pgOffset = offset + 1;
@@ -294,7 +298,14 @@ class PostgresObjectStorage implements ObjectStorage {
 
     const body = Readable.from(readChunks(), { objectMode: false });
     _activeStreamCount++;
-    const dec = (): void => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); };
+    // One-shot flag prevents double-decrement when Node.js emits both
+    // 'error' and 'close' on the same Readable (happens on destroy(err)).
+    let _decCalled = false;
+    const dec = (): void => {
+      if (_decCalled) return;
+      _decCalled = true;
+      _activeStreamCount = Math.max(0, _activeStreamCount - 1);
+    };
     body.once("close", dec);
     body.once("error", dec);
 
@@ -388,7 +399,14 @@ class PostgresObjectStorage implements ObjectStorage {
 
     const body = Readable.from(readRangeChunks(), { objectMode: false });
     _activeStreamCount++;
-    const dec = (): void => { _activeStreamCount = Math.max(0, _activeStreamCount - 1); };
+    // One-shot flag prevents double-decrement when Node.js emits both
+    // 'error' and 'close' on the same Readable (happens on destroy(err)).
+    let _decRangeCalled = false;
+    const dec = (): void => {
+      if (_decRangeCalled) return;
+      _decRangeCalled = true;
+      _activeStreamCount = Math.max(0, _activeStreamCount - 1);
+    };
     body.once("close", dec);
     body.once("error", dec);
     // contentLength reports the nominal range length so callers can set the
