@@ -26,7 +26,6 @@ import { installDbPoolHealthMonitor, uninstallDbPoolHealthMonitor } from "./infr
 import { markShuttingDown, markStartupComplete } from "./infrastructure/shutdown-flag.js";
 import { ensureStorageDirectories, logStoragePathConfig, sweepStaleTempDirs } from "./infrastructure/storage-paths.js";
 import { startDiskWatchdog, stopDiskWatchdog } from "./infrastructure/disk-watchdog.js";
-import { runHlsStartupIntegrityScan } from "./modules/broadcast-v2/engine/hls-startup-integrity.js";
 import { schema } from "./infrastructure/db.js";
 import { hashPassword } from "./modules/auth/password.js";
 import { nanoid } from "nanoid";
@@ -390,12 +389,6 @@ async function main() {
     // CDN_BASE_URL is intentionally optional on free-tier deployments.
     // HLS_MAX_CONCURRENT already caps concurrent streams to protect origin.
     // Log at INFO (not WARN/ERROR) — no CDN is the expected free-tier config.
-    if (!env.HLS_TOKEN_SECRET) {
-      configErrors.push(
-        "HLS_TOKEN_SECRET unset — HLS streams use public fallback signing key; " +
-        "enable REQUIRE_HLS_TOKEN=true after setting a real secret",
-      );
-    }
     if (env.MEMORY_RESTART_RSS_MB < 300) {
       // Genuinely unsafe — less than 300 MB leaves no headroom for V8 heap +
       // pg pool + pino buffers and will cause constant OOM restart loops before
@@ -417,11 +410,6 @@ async function main() {
         "memory-constrained instances (512 MiB–1 GiB) — verify HLS_MAX_CONCURRENT " +
         "and TRANSCODER_DISABLE are tuned appropriately for your available memory. " +
         "Formula: MEMORY_RESTART_RSS_MB = 350 + 24×HLS_MAX_CONCURRENT + transcode_peak_mb.",
-      );
-    }
-    if (!env.REQUIRE_HLS_TOKEN) {
-      configWarnings.push(
-        "REQUIRE_HLS_TOKEN=false — HLS video URLs are publicly accessible without auth tokens",
       );
     }
     if (!env.REDIS_URL) {
@@ -627,15 +615,6 @@ async function main() {
   // engine has a valid channel to attach to.
   await seedPrimaryChannelIfAbsent();
 
-  // HLS startup integrity scan: verify every active broadcast_queue item with
-  // hls_master_url actually has a master.m3u8 blob in storage_blobs. Items with
-  // zero blobs are deactivated immediately; others trigger an ops-alert so the
-  // admin dashboard surfaces the problem before any content airs.
-  // Fire-and-forget: non-fatal — never blocks the server from starting.
-  runHlsStartupIntegrityScan().catch((err) =>
-    logger.warn({ err }, "[hls-startup-integrity] scan failed (non-fatal)"),
-  );
-
   // One-time repair: some older uploads stored an absolute URL as objectPath
   // (e.g. "https://api.templetv.org.ng/api/v1/uploads/…") instead of the bare
   // storage key ("uploads/…"). faststart.service.ts now normalises on-the-fly,
@@ -670,23 +649,6 @@ async function main() {
     { isLive: Boolean(overrideBus.active), title: overrideBus.active?.title ?? null },
     "override bus initialised",
   );
-
-  // HLS viewer routes (GET/HEAD /hls/:videoId/*) are intentionally public —
-  // no HMAC token is required from viewers. The private object-storage bucket
-  // is protected by this server acting as a proxy; all surfaces (TV, mobile,
-  // web, Chromecast, VLC) can load manifests and segments without a token.
-  //
-  // REQUIRE_HLS_TOKEN is retained only for the token-signing infrastructure
-  // used by internal orchestrator probes (makeHlsToken / validateHlsToken).
-  // The old auto-enable logic (set REQUIRE_HLS_TOKEN=true when HLS_TOKEN_SECRET
-  // is present) has been removed because it contradicts the intentionally-public
-  // viewer routes and produces a misleading startup log.
-  if (env.HLS_TOKEN_SECRET) {
-    logger.info(
-      "HLS_TOKEN_SECRET is set — HLS token signing available for internal probes. " +
-      "HLS viewer routes remain unconditionally public (no ?t=TOKEN required).",
-    );
-  }
 
   let app: Awaited<ReturnType<typeof buildApp>> | null = null;
 

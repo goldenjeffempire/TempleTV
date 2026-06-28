@@ -2266,6 +2266,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               if (mediaMeta.videoBitrate != null) patch.videoBitrate = mediaMeta.videoBitrate;
               if (mediaMeta.videoWidth != null) patch.videoWidth = mediaMeta.videoWidth;
               if (mediaMeta.videoHeight != null) patch.videoHeight = mediaMeta.videoHeight;
+              patch.transcodingStatus = "ready";
               if (Object.keys(patch).length > 0) {
                 await db.update(videos).set(patch).where(eq(videos.id, videoId));
                 void invalidateVideosCatalogCache();
@@ -2276,16 +2277,16 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               if (durSecs != null && durSecs > 10) ffprobeDurSecs = durSecs;
             } catch (err) {
               capturedLog.warn({ err, videoId }, "[finalize:bg] post-upload probes failed (non-fatal)");
+              // Even if probes fail, mark the video as ready so it can air.
+              await db.update(videos).set({ transcodingStatus: "ready" }).where(eq(videos.id, videoId)).catch(() => {});
             }
 
-            // ── MP4-first broadcast enrollment ────────────────────────────────
+            // ── MP4 broadcast enrollment ──────────────────────────────────────
             // Enqueue as soon as the blob is confirmed in storage and probed.
-            // The item airs immediately via raw MP4 (or faststart MP4 / HLS once
-            // those background workers complete). The transcoder dispatcher will
-            // stamp hls_master_url on the queue row and fire a reload once HLS
-            // is ready — no re-enqueue needed.
+            // The item airs immediately via raw MP4 (faststart is applied in
+            // the background by the faststart worker — no re-enqueue needed).
             //
-            // Sequence: probe (done above) → enqueue → update duration → faststart → HLS.
+            // Sequence: probe (done above) → set transcodingStatus=ready → enqueue.
             // ffprobeDurSecs is hoisted above so we can update the queue row
             // with the accurate duration immediately after the row is created.
             try {

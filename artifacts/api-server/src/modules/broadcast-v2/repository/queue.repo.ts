@@ -802,10 +802,10 @@ export function getItemsHealth(
   const ownBase = getOwnBase();
   const result: Record<string, ItemHealthEntry> = {};
   for (const row of rows) {
-    const primary = normalizeQueueUrl(row.localVideoUrl ?? row.hlsMasterUrl);
+    const primary = normalizeQueueUrl(row.localVideoUrl);
 
     // For external MP4 sources the cache entry is the proxied URL.
-    // For locally-hosted or HLS sources the cache entry is the raw URL.
+    // For locally-hosted sources the cache entry is the raw URL.
     let exp: number | undefined;
     let resolvedBlockedUrl: string | null = null;
 
@@ -880,7 +880,6 @@ export interface RawQueueRow {
   thumbnailUrl: string | null;
   durationSecs: number;
   localVideoUrl: string | null;
-  hlsMasterUrl: string | null;
   /** True when faststart.service.ts successfully relocated the moov atom. */
   faststartApplied: boolean;
   /**
@@ -892,11 +891,10 @@ export interface RawQueueRow {
   videoDuration: string | null;
   /**
    * Computed source quality for this queue item.
-   * 'hls'           — hlsMasterUrl is set (adaptive HLS, preferred)
-   * 'mp4_faststart' — hlsMasterUrl absent but faststart_applied=true
-   * 'mp4_raw'       — hlsMasterUrl absent and faststart not applied
+   * 'mp4_faststart' — faststart applied (moov at byte-0, seekable)
+   * 'mp4_raw'       — raw upload (moov at EOF; still playable in most players)
    */
-  sourceQuality: "hls" | "mp4_faststart" | "mp4_raw";
+  sourceQuality: "mp4_faststart" | "mp4_raw";
 }
 
 /**
@@ -967,34 +965,14 @@ export const queueRepo = {
           // that `toItem()` then fails to project, triggering a needless
           // auto-skip cycle on the orchestrator.
           localVideoUrl: sql<string | null>`COALESCE(${q.localVideoUrl}, ${v.localVideoUrl})`,
-          // Prefer the HLS URL on the queue row itself (set by live-ingest or
-          // an operator override) and fall back to the one on the joined video
-          // row (written by the transcoder when HLS encoding completes).
-          hlsMasterUrl: sql<string | null>`COALESCE(${q.hlsMasterUrl}, ${v.hlsMasterUrl})`,
           faststartApplied: faststartExpr as ReturnType<typeof sql<boolean>>,
-          // Source quality classification — reflects the ACTUAL source that
-          // toItem() will select as the primary stream (MP4-first policy):
-          //
-          //   'mp4_faststart' — faststart applied + localVideoUrl present
-          //                     (moov at byte-0, seekable, ideal for streaming)
-          //   'mp4_raw'       — localVideoUrl present but faststart not applied
-          //                     (raw MP4, broadcast-ready immediately post-upload)
-          //   'hls'           — no localVideoUrl, only HLS master URL available
-          //
-          // Must stay in sync with toItem()'s source selection:
-          //   primary = localVideoUrl ?? hlsMasterUrl  (MP4 always wins when present)
-          //
-          // Mirrors V2SourceQuality and feeds CachedQueueItem.sourceQuality
-          // so every snapshot includes quality metadata without an extra query.
-          sourceQuality: sql<"hls" | "mp4_faststart" | "mp4_raw">`
+          // Source quality: 'mp4_faststart' when moov atom is at byte-0
+          // (browser can seek without a full download); 'mp4_raw' otherwise.
+          sourceQuality: sql<"mp4_faststart" | "mp4_raw">`
             CASE
               WHEN ${faststartExpr} = true
                 AND COALESCE(${v.localVideoUrl}, ${q.localVideoUrl}) IS NOT NULL
                 THEN 'mp4_faststart'
-              WHEN COALESCE(${v.localVideoUrl}, ${q.localVideoUrl}) IS NOT NULL
-                THEN 'mp4_raw'
-              WHEN COALESCE(${q.hlsMasterUrl}, ${v.hlsMasterUrl}) IS NOT NULL
-                THEN 'hls'
               ELSE 'mp4_raw'
             END
           `,
@@ -1010,14 +988,11 @@ export const queueRepo = {
             // on upload finalize" path before the videos row is fully
             // hydrated.
             or(ne(v.videoSource, "youtube"), sql`${v.id} IS NULL`),
-            // Admit every active row that has at least one playable URL.
-            // Transcoding status is no longer a gate — any item with a URL
-            // is scheduled unconditionally and playback failures (moov-at-EOF,
-            // 404 HLS, missing blob) are handled at runtime by the orchestrator's
-            // bad-URL cache and auto-skip logic. Background workers (faststart-
-            // recovery, HLS transcoder, storage-reconciliation) upgrade quality
-            // asynchronously without ever blocking admission.
-            or(isNotNull(q.hlsMasterUrl), isNotNull(v.hlsMasterUrl), isNotNull(v.localVideoUrl), isNotNull(q.localVideoUrl)),
+            // Admit every active row that has at least one playable MP4 URL.
+            // Any item with a localVideoUrl airs immediately; playback failures
+            // are handled at runtime by the orchestrator's bad-URL cache and
+            // auto-skip logic.
+            or(isNotNull(v.localVideoUrl), isNotNull(q.localVideoUrl)),
           ),
         )
         .orderBy(asc(q.sortOrder), asc(q.addedAt))
@@ -1064,9 +1039,8 @@ export const queueRepo = {
     // logged (not silently dropped) so operators can fix the root cause.
     const validated: typeof rows = [];
     for (const r of rows) {
-      // MP4-first: prefer localVideoUrl (original MP4) over hlsMasterUrl (HLS).
-      // Videos broadcast directly via their original source without HLS conversion.
-      const primaryUrl = r.localVideoUrl ?? r.hlsMasterUrl;
+      // MP4-only: localVideoUrl is the only playback source.
+      const primaryUrl = r.localVideoUrl;
       if (!primaryUrl || primaryUrl.trim() === "") {
         logger.warn(
           { itemId: r.id, title: r.title, videoId: r.videoId },
@@ -1197,12 +1171,8 @@ export const queueRepo = {
     // (dev→prod mirror) or API_ORIGIN (production own-origin), or
     // RENDER_EXTERNAL_URL (zero-config Render self-detection), if configured.
     //
-    // MP4-first policy: prefer localVideoUrl (original MP4) as the primary source.
-    // Videos broadcast directly via their original source without HLS conversion.
-    // hlsMasterUrl is used only as a fallback when no localVideoUrl is present.
-    // The A/B dual-buffer player with 120 s preload lead ensures seamless
-    // zero-blank-screen transitions between MP4 items.
-    const primary = normalizeQueueUrl(row.localVideoUrl ?? row.hlsMasterUrl);
+    // MP4-only pipeline: localVideoUrl is the sole playback source.
+    const primary = normalizeQueueUrl(row.localVideoUrl);
     const mp4 = normalizeQueueUrl(row.localVideoUrl);
 
     // NOTE: the bad-URL cache check is intentionally NOT here.
@@ -1225,10 +1195,10 @@ export const queueRepo = {
           id: row.id,
           title: row.title,
           primaryUrl: primary ?? null,
-          rawUrl: (row.localVideoUrl ?? row.hlsMasterUrl) ?? null,
+          rawUrl: row.localVideoUrl ?? null,
         },
         "[broadcast-v2] item has no playable source — will not air" +
-          (!primary || !/^https?:\/\//i.test(row.localVideoUrl ?? row.hlsMasterUrl ?? "")
+          (!primary || !/^https?:\/\//i.test(row.localVideoUrl ?? "")
             ? " (relative URL detected — set API_ORIGIN=https://api.templetv.org.ng in production)"
             : " (URL not in broadcast allowlist — add host to ALLOWED_HOST_SUFFIXES if legitimate)"),
       );

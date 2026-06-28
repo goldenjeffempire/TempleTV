@@ -10,9 +10,6 @@ export const broadcastQueueTable = pgTable("broadcast_queue", {
   thumbnailUrl: text("thumbnail_url").notNull().default(""),
   durationSecs: integer("duration_secs").notNull().default(1800),
   localVideoUrl: text("local_video_url"),
-  // Populated after HLS transcoding completes; takes precedence over
-  // localVideoUrl in the v2 orchestrator source resolver.
-  hlsMasterUrl: text("hls_master_url"),
   videoSource: text("video_source").notNull().default("local"),
   isActive: boolean("is_active").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),

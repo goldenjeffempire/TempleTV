@@ -26,7 +26,6 @@ import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { eq, and, isNull, isNotNull, sql, inArray, or } from "drizzle-orm";
-import { enqueueTranscode, boostTranscodePriority, retryAllFailed } from "../../transcoder/transcoder.queue.js";
 import { probeUploadedDuration } from "../../transcoder/transcoder.service.js";
 import { transcoderDispatcher } from "../../transcoder/transcoder.dispatcher.js";
 import { logger } from "../../../infrastructure/logger.js";
@@ -57,7 +56,6 @@ import { getBroadcastV2SseViewerCount } from "./sse.gateway.js";
 import { getExhaustionStatus } from "../engine/queue-exhaustion-monitor.js";
 import { getAutoRefillStatus } from "../engine/auto-queue-refill.js";
 import { getStorageStats } from "../../../infrastructure/storage.js";
-import { getStitchedBroadcastManifest, invalidateStitchCache } from "../engine/hls-stream-stitcher.js";
 import { assetHealthRepo } from "../repository/asset-health.repo.js";
 import { queueSelfHealingWorker } from "../engine/queue-self-healing-worker.js";
 import { getDeadAirStats } from "../engine/dead-air-tracker.js";
@@ -127,91 +125,6 @@ _idempotencyGcTimer.unref?.();
 // across the lifetime of the API process.
 const PROCESS_BOOTED_AT_MS = Date.now();
 
-// ── Auto-enqueue missing HLS ─────────────────────────────────────────────────
-// Scans every active queue item backed by a local video that has no
-// hlsMasterUrl and enqueues a high-priority HLS job for each one.
-//
-// Used by both the /prepare-hls operator endpoint and the boot-time background
-// scan so the same idempotent logic runs in both contexts.
-//
-// enqueueTranscode handles all cases:
-//   • No job exists          → INSERT a new queued job at priority 10
-//   • Existing failed job    → re-arm (reset attempts, status = queued)
-//   • Queued/processing job  → leave it, return existing id (idempotent)
-//   • Done job with HLS set  → skipped by the hlsMasterUrl IS NULL filter
-//
-// In-flight guard: if a scan is already running (e.g. boot timer and an
-// event both fire within the same 200 ms window on Render multi-instance,
-// or a route call races the timer), the second invocation is a no-op.
-// This prevents duplicate FFmpeg jobs and redundant DB round-trips.
-let _hlsScanInFlight = false;
-
-// Boot-scan guard: registerDomainRoutes is registered twice in app.ts
-// (once for /api/v1 and once for /api legacy prefix). Without this guard
-// two separate _bootHlsScanTimer instances would be created — one fires,
-// completes in <300 ms, and the second fires immediately after, causing a
-// redundant DB scan and an unnecessary orchestrator reload on every restart.
-// Module-scoped so it survives both plugin instantiations in the same process.
-let _bootScanScheduled = false;
-async function autoEnqueueMissingHls(): Promise<{ triggered: number }> {
-  if (_hlsScanInFlight) {
-    logger.info("[broadcast-v2] auto-enqueue-missing-hls: scan already in flight, skipping");
-    return { triggered: 0 };
-  }
-  _hlsScanInFlight = true;
-  try {
-    return await _doAutoEnqueueMissingHls();
-  } finally {
-    _hlsScanInFlight = false;
-  }
-}
-// MISSING_HLS_SUPPRESS_TTL_MS was removed. Items with missing HLS now play
-// via their MP4 failoverSource while transcoding is in progress — the
-// orchestrator's projectItem() promotes failoverSource to primary when the
-// HLS URL is bad-URL-blocked. No URL suppression is needed at this layer.
-
-async function _doAutoEnqueueMissingHls(): Promise<{ triggered: number }> {
-  const bq = schema.broadcastQueueTable;
-  const mv = schema.videosTable;
-  const rows = await db
-    .select({ videoId: mv.id, localVideoUrl: mv.localVideoUrl })
-    .from(bq)
-    .innerJoin(mv, eq(bq.videoId, mv.id))
-    .where(
-      and(
-        eq(bq.isActive, true),
-        isNotNull(mv.localVideoUrl),
-        isNull(mv.hlsMasterUrl),
-      ),
-    );
-
-  if (rows.length === 0) {
-    logger.debug("[broadcast-v2] auto-enqueue-missing-hls: no items need HLS transcoding");
-    return { triggered: 0 };
-  }
-
-  let triggered = 0;
-  for (const row of rows) {
-    if (!row.localVideoUrl) continue;
-    try {
-      await enqueueTranscode({
-        videoId: row.videoId,
-        videoPath: row.localVideoUrl,
-        priority: 10,
-      });
-      triggered++;
-    } catch (err) {
-      logger.warn({ err, videoId: row.videoId }, "[broadcast-v2] auto-enqueue-missing-hls: failed to enqueue job");
-    }
-  }
-
-  if (triggered > 0) {
-    transcoderDispatcher.nudge();
-    logger.info({ triggered }, "[broadcast-v2] auto-enqueue-missing-hls: enqueued HLS transcoding jobs");
-  }
-
-  return { triggered };
-}
 
 // ── Remote-transcode disk pre-flight ────────────────────────────────────────
 //
@@ -912,7 +825,7 @@ export async function restRoutes(app: FastifyInstance) {
   {
     type SnapValue = ReturnType<typeof broadcastOrchestrator.snapshot>;
     let _stateCache: { snap: SnapValue; expiresAt: number } | null = null;
-    broadcastOrchestrator.on("frame", () => { _stateCache = null; invalidateStitchCache(); });
+    broadcastOrchestrator.on("frame", () => { _stateCache = null; });
 
     app.get("/state", {
       schema: { response: { 304: z.void(), 429: _429err } },
@@ -975,45 +888,6 @@ export async function restRoutes(app: FastifyInstance) {
     });
   }
 
-  // ── GET /stream.m3u8 — live stitched HLS broadcast manifest ──────────────
-  // Generates a single continuously-updating HLS manifest that stitches the
-  // current and next broadcast queue items with #EXT-X-DISCONTINUITY.
-  // Mobile and TV HLS players subscribe to this URL and receive gapless
-  // playback across item boundaries without any client-side rebinding.
-  //
-  // Behaviour:
-  //   - Returns 200 + HLS manifest when an HLS item is on air
-  //   - Returns 503 + empty live manifest when off-air or item is MP4/YouTube
-  //     (clients should fall back to the dual-buffer path)
-  //   - Cached for 2 s; invalidated on every orchestrator frame event
-  //   - Rate-limited to 60 req/min — HLS players re-fetch every targetDuration
-  //     seconds (6–10 s); 60/min covers up to ~10 concurrent players safely
-  app.get("/stream.m3u8", {
-    schema: { response: { 429: _429err } },
-    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-  }, async (_req, reply) => {
-    const manifest = await getStitchedBroadcastManifest().catch((err: unknown) => {
-      logger.warn({ err }, "[broadcast-v2] stream.m3u8: stitcher error (non-fatal)");
-      return null;
-    });
-    reply
-      .header("Cache-Control", "no-store, max-age=0")
-      .header("X-Accel-Buffering", "no")
-      .header("Access-Control-Allow-Origin", "*");
-    if (!manifest) {
-      // Off-air or non-HLS item — return an empty live manifest so the player
-      // stays subscribed and picks up the next valid manifest on re-fetch.
-      return reply
-        .code(503)
-        .header("Content-Type", "application/vnd.apple.mpegurl")
-        .header("Retry-After", "5")
-        .send("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:0\n");
-    }
-    return reply
-      .code(200)
-      .header("Content-Type", "application/vnd.apple.mpegurl")
-      .send(manifest);
-  });
 
 const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegative().default(0) });
 
@@ -1946,7 +1820,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
           id: schema.videosTable.id,
           title: schema.videosTable.title,
           objectPath: schema.videosTable.objectPath,
-          hlsMasterUrl: schema.videosTable.hlsMasterUrl,
           videoSource: schema.videosTable.videoSource,
           sourceCleanupStatus: schema.videosTable.sourceCleanupStatus,
         })
@@ -1978,7 +1851,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         queueId: queueRow?.id ?? "",
         title: videoRow.title,
         objectPath: videoRow.objectPath,
-        hlsUrl: videoRow.hlsMasterUrl,
         videoSource: videoRow.videoSource,
         sourceCleanupStatus: videoRow.sourceCleanupStatus,
         triggeredBy: `manual:${req.principal?.email ?? "operator"}`,
@@ -2040,8 +1912,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   //   7. Flush the in-memory bad-URL cache + skip counters (clean slate).
   //   8. Stop stale non-youtube overrides that have no resolvable current source.
   //   9. Library scan — enqueue every eligible video missing from the queue.
-  //  10. Trigger HLS transcoding for queue items with no hlsMasterUrl.
-  //  11. Reset queue hash + reload orchestrator so clients see fresh state.
+  //  10. Reset queue hash + reload orchestrator so clients see fresh state.
   //
   // Returns a full audit report including every URL change applied.
   // Rate-limited to 3 req/min (heavy DB writer — not for polling).
@@ -2072,8 +1943,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
             overrideStopped: z.boolean(),
             libraryScanned: z.number().int(),
             libraryEnqueued: z.number().int(),
-            retriedFailed: z.number().int(),
-            hlsTriggered: z.number().int(),
             orchestratorReloaded: z.boolean(),
             currentItemCount: z.number().int(),
             currentMode: z.string(),
@@ -2096,7 +1965,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
             invalidLibraryUrls: 0, auditedQueueUrls: 0, fixedQueueUrls: 0, orphansDeactivated: 0,
             duplicatesDeactivated: 0, noUrlItemsDeactivated: 0, itemsReEnabled: 0,
             badUrlCacheCleared: false, overrideWasStale: false, overrideStopped: false,
-            libraryScanned: 0, libraryEnqueued: 0, retriedFailed: 0, hlsTriggered: 0,
+            libraryScanned: 0, libraryEnqueued: 0,
             orchestratorReloaded: false, currentItemCount: broadcastOrchestrator.getItemCount(),
             currentMode: dedupSnap.mode, urlChanges: [],
             message: "duplicate request — idempotency key already processed" };
@@ -2115,9 +1984,9 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       let invalidLibraryUrls = 0;
       try {
         const videoRows = await db
-          .select({ id: vt.id, localVideoUrl: vt.localVideoUrl, hlsMasterUrl: vt.hlsMasterUrl })
+          .select({ id: vt.id, localVideoUrl: vt.localVideoUrl })
           .from(vt)
-          .where(or(isNotNull(vt.localVideoUrl), isNotNull(vt.hlsMasterUrl)));
+          .where(isNotNull(vt.localVideoUrl));
 
         for (const row of videoRows) {
           auditedLibraryUrls++;
@@ -2135,20 +2004,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
               }
             }
           }
-          if (row.hlsMasterUrl) {
-            const normalized = normalizeQueueUrl(row.hlsMasterUrl);
-            if (!normalized) {
-              invalidLibraryUrls++;
-            } else if (normalized !== row.hlsMasterUrl) {
-              try {
-                await db.update(vt).set({ hlsMasterUrl: normalized }).where(eq(vt.id, row.id));
-                fixedLibraryUrls++;
-                if (urlChanges.length < 200) urlChanges.push({ table: "managed_videos", id: row.id, field: "hlsMasterUrl", from: row.hlsMasterUrl, to: normalized });
-              } catch (err) {
-                req.log.warn({ err, videoId: row.id }, "[broadcast-v2] repair-queue: library hlsMasterUrl fix failed (non-fatal)");
-              }
-            }
-          }
         }
       } catch (err) {
         req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 1 (library URL audit) failed (non-fatal)");
@@ -2159,9 +2014,9 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       let fixedQueueUrls = 0;
       try {
         const queueRows = await db
-          .select({ id: qt.id, localVideoUrl: qt.localVideoUrl, hlsMasterUrl: qt.hlsMasterUrl })
+          .select({ id: qt.id, localVideoUrl: qt.localVideoUrl })
           .from(qt)
-          .where(or(isNotNull(qt.localVideoUrl), isNotNull(qt.hlsMasterUrl)));
+          .where(isNotNull(qt.localVideoUrl));
 
         for (const row of queueRows) {
           auditedQueueUrls++;
@@ -2174,18 +2029,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
                 if (urlChanges.length < 200) urlChanges.push({ table: "broadcast_queue", id: row.id, field: "localVideoUrl", from: row.localVideoUrl, to: normalized });
               } catch (err) {
                 req.log.warn({ err, itemId: row.id }, "[broadcast-v2] repair-queue: queue localVideoUrl fix failed (non-fatal)");
-              }
-            }
-          }
-          if (row.hlsMasterUrl) {
-            const normalized = normalizeQueueUrl(row.hlsMasterUrl);
-            if (normalized && normalized !== row.hlsMasterUrl) {
-              try {
-                await db.update(qt).set({ hlsMasterUrl: normalized }).where(eq(qt.id, row.id));
-                fixedQueueUrls++;
-                if (urlChanges.length < 200) urlChanges.push({ table: "broadcast_queue", id: row.id, field: "hlsMasterUrl", from: row.hlsMasterUrl, to: normalized });
-              } catch (err) {
-                req.log.warn({ err, itemId: row.id }, "[broadcast-v2] repair-queue: queue hlsMasterUrl fix failed (non-fatal)");
               }
             }
           }
@@ -2257,7 +2100,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
           WHERE bq.id = bq2.id
             AND bq2.is_active = true
             AND COALESCE(
-              bq2.hls_master_url, mv.hls_master_url,
               bq2.local_video_url, mv.local_video_url
             ) IS NULL
           RETURNING bq.id
@@ -2306,21 +2148,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 8 (override stop) failed (non-fatal)");
       }
 
-      // ── Phase 8.5: Retry recoverable failed transcoding jobs ──────────────
-      // Re-arms transcoding_jobs rows where status='failed' and the source
-      // blob is still present. Pairs with Phase 10 (autoEnqueueMissingHls)
-      // which handles items with no HLS but no existing job entry.
-      let retriedFailed = 0;
-      try {
-        retriedFailed = await retryAllFailed();
-        if (retriedFailed > 0) {
-          transcoderDispatcher.nudge();
-          req.log.info({ retriedFailed }, "[broadcast-v2] repair-queue: Phase 8.5 — re-armed failed transcoding jobs");
-        }
-      } catch (err) {
-        req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 8.5 (retry failed jobs) failed (non-fatal)");
-      }
-
       // ── Phase 9: Library scan — enqueue eligible videos ───────────────────
       let libraryScanned = 0;
       let libraryEnqueued = 0;
@@ -2332,22 +2159,13 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 9 (library scan) failed (non-fatal)");
       }
 
-      // ── Phase 10: Trigger HLS for items with no hlsMasterUrl ──────────────
-      let hlsTriggered = 0;
-      try {
-        const hlsResult = await autoEnqueueMissingHls();
-        hlsTriggered = hlsResult.triggered ?? 0;
-      } catch (err) {
-        req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 10 (HLS trigger) failed (non-fatal)");
-      }
-
-      // ── Phase 11: Reload orchestrator ─────────────────────────────────────
+      // ── Phase 10: Reload orchestrator ─────────────────────────────────────
       let orchestratorReloaded = false;
       try {
         await broadcastOrchestrator.reload();
         orchestratorReloaded = true;
       } catch (err) {
-        req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 11 (reload) failed (non-fatal)");
+        req.log.warn({ err }, "[broadcast-v2] repair-queue: Phase 10 (reload) failed (non-fatal)");
       }
 
       // Notify admin dashboards so library + queue panels refresh.
@@ -2366,7 +2184,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
           auditedLibraryUrls, fixedLibraryUrls, invalidLibraryUrls,
           auditedQueueUrls, fixedQueueUrls,
           orphansDeactivated, duplicatesDeactivated, noUrlItemsDeactivated,
-          itemsReEnabled, libraryEnqueued, hlsTriggered,
+          itemsReEnabled, libraryEnqueued,
           currentItemCount: finalItemCount, currentMode: finalSnap.mode,
         },
         "[broadcast-v2] repair-queue: comprehensive repair complete",
@@ -2384,7 +2202,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       } else {
         message =
           "Repair complete. No eligible local-upload videos found in the library. " +
-          "Upload video files or add an HLS stream override to bring the broadcast on air. " +
+          "Upload MP4 files to bring the broadcast on air. " +
           "YouTube-synced videos air automatically via the YouTube Shuffle fallback " +
           "when the queue is empty (currently active if catalogSize > 0).";
       }
@@ -2406,8 +2224,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         overrideStopped,
         libraryScanned,
         libraryEnqueued,
-        retriedFailed,
-        hlsTriggered,
         orchestratorReloaded,
         currentItemCount: finalItemCount,
         currentMode: finalSnap.mode,
@@ -2560,51 +2376,10 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     };
   });
 
-  // ── Admin: trigger HLS transcoding for all queue items missing it ─────
-  // Delegates to autoEnqueueMissingHls() — the same function that runs
-  // automatically 15 s after boot. Idempotent; rate-limited to 3/min
-  // because each call may spawn real FFmpeg processes.
-  app.post("/prepare-hls", {
-    ...adminGuard,
-    bodyLimit: 1048576,
-    schema: {
-      body: StopOverrideCommand,
-      response: {
-        200: z.object({ ok: z.literal(true), triggered: z.number().int().nonnegative(), duplicate: z.boolean().optional() }),
-        400: _400err,
-        429: _429err,
-      },
-    },
-    config: { rateLimit: { max: 3, timeWindow: "1 minute" } },
-  }, async (req, reply) => {
-    reply.header("Cache-Control", "no-store, max-age=0");
-    const body = req.body as z.infer<typeof StopOverrideCommand>;
-    if (!checkIdempotency(body.idempotencyKey)) return { ok: true, triggered: 0, duplicate: true };
 
-    const { triggered } = await autoEnqueueMissingHls();
-    logger.info({ triggered }, "[broadcast-v2] prepare-hls: triggered HLS jobs for queue items");
-    return { ok: true as const, triggered };
-  });
-
-  // ── Admin: repair HLS_STORAGE_MISSING items ───────────────────────────
-  //
-  // POST /broadcast-v2/repair-hls-storage-missing
-  //
-  // One-click operator repair for videos whose HLS master blob is absent from
-  // storage but whose managed_videos row still shows transcodingStatus='hls_ready'.
-  // This happens when storage blobs are deleted externally (migration, S3 lifecycle,
-  // manual cleanup) while the DB metadata is not updated.
-  //
-  // For each confirmed-missing item this endpoint:
-  //   1. Clears hls_master_url on managed_videos (stops the dead URL being served)
-  //   2. Re-enqueues transcoding from localVideoUrl (resets status to 'queued')
-  //   3. When no source URL is available, resets transcodingStatus to 'none'
-  //      so the video appears as "needs re-upload" rather than falsely hls_ready
-  //   4. Deactivates the broadcast_queue item with validator_deactivated_reason=
-  //      'hls_storage_missing' so the orchestrator won't serve the dead HLS URL
-  //      while transcoding runs. The reverse pass re-activates it on completion.
-  //
-  // Checks up to 100 active hls_ready queue items per call.
+  // ── [REMOVED: repair-hls-storage-missing — HLS pipeline removed] ─────────
+  // This route has been removed as part of the MP4-only pipeline migration.
+  // The corresponding repair logic is no longer needed.
   app.post(
     "/repair-hls-storage-missing",
     {
@@ -2651,104 +2426,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         return reply.code(500).send({ error: "DB query failed" });
       }
 
-      if (hlsReadyItems.length === 0) {
-        return { repaired: 0, noSource: 0, alreadyHealthy: 0, message: "No hls_ready active queue items found." };
-      }
-
-      // 2. Check storage_blobs for which HLS keys are actually present
-      const checkKeys = hlsReadyItems.map((r) => `transcoded/${r.video_id}/master.m3u8`);
-      let presentKeys: Set<string>;
-      try {
-        const pr = await db
-          .select({ key: schema.storageBlobsTable.key })
-          .from(schema.storageBlobsTable)
-          .where(inArray(schema.storageBlobsTable.key, checkKeys));
-        presentKeys = new Set(pr.map((r) => r.key));
-      } catch (err) {
-        logger.warn({ err }, "[broadcast-v2] repair-hls-storage-missing: storage_blobs check failed");
-        return reply.code(503).send({ error: "storage_blobs check failed — cannot confirm which blobs are missing" });
-      }
-
-      // 3. For each missing blob: clear hls_master_url, re-enqueue transcoding, deactivate queue item
-      let repaired = 0;
-      let noSource = 0;
-      let alreadyHealthy = 0;
-
-      for (const row of hlsReadyItems) {
-        const hlsKey = `transcoded/${row.video_id}/master.m3u8`;
-        if (presentKeys.has(hlsKey)) {
-          alreadyHealthy++;
-          continue;
-        }
-
-        try {
-          // Deactivate queue item
-          await db
-            .update(schema.broadcastQueueTable)
-            .set({ isActive: false, validatorDeactivatedReason: "hls_storage_missing" })
-            .where(eq(schema.broadcastQueueTable.id, row.queue_id));
-
-          if (row.local_video_url) {
-            // Clear dead HLS URL + re-enqueue transcoding (enqueueTranscode resets status → 'queued')
-            await db
-              .update(schema.videosTable)
-              .set({ hlsMasterUrl: null })
-              .where(eq(schema.videosTable.id, row.video_id));
-            await enqueueTranscode({
-              videoId: row.video_id,
-              videoPath: row.local_video_url,
-              priority: 8,
-            });
-            repaired++;
-            logger.info(
-              { videoId: row.video_id, queueId: row.queue_id },
-              "[broadcast-v2] repair-hls-storage-missing: cleared hls_master_url + re-enqueued transcoding",
-            );
-          } else {
-            // No source — reset to 'none' so the video shows as "needs re-upload"
-            await db
-              .update(schema.videosTable)
-              .set({ hlsMasterUrl: null, transcodingStatus: "none" })
-              .where(eq(schema.videosTable.id, row.video_id));
-            noSource++;
-            logger.warn(
-              { videoId: row.video_id, queueId: row.queue_id },
-              "[broadcast-v2] repair-hls-storage-missing: no source URL — reset to 'none'; operator must re-upload",
-            );
-          }
-        } catch (err) {
-          logger.warn({ err, videoId: row.video_id }, "[broadcast-v2] repair-hls-storage-missing: repair failed for item (non-fatal)");
-        }
-      }
-
-      if (repaired + noSource > 0) {
-        transcoderDispatcher.nudge();
-        adminEventBus.push("broadcast-queue-updated", {
-          reason: "repair-hls-storage-missing",
-          repaired,
-          noSource,
-        });
-        void broadcastOrchestrator.reload().catch((err) => {
-          logger.warn({ err }, "[broadcast-v2] repair-hls-storage-missing: reload failed (non-fatal)");
-        });
-      }
-
-      logger.warn(
-        { repaired, noSource, alreadyHealthy, checked: hlsReadyItems.length },
-        "[broadcast-v2] repair-hls-storage-missing: complete",
-      );
-
-      return {
-        repaired,
-        noSource,
-        alreadyHealthy,
-        message:
-          repaired > 0
-            ? `Repair triggered for ${repaired} item${repaired !== 1 ? "s" : ""}. Transcoding will rebuild HLS; items return to air automatically on completion.`
-            : noSource > 0
-            ? `${noSource} item${noSource !== 1 ? "s" : ""} had no source file — reset to 'needs re-upload'. Re-upload the source videos to restore them.`
-            : "All checked items already have healthy HLS blobs in storage.",
-      };
+      return { repaired: 0, noSource: 0, alreadyHealthy: 0, message: "Route removed: HLS pipeline no longer active. This endpoint is a no-op." };
     },
   );
 
@@ -2789,7 +2467,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
             thumbnailUrl: null,
             durationSecs: 0,
             localVideoUrl: i.localVideoUrl ?? null,
-            hlsMasterUrl: i.hlsMasterUrl ?? null,
             faststartApplied: i.faststartApplied,
             sourceQuality: i.sourceQuality,
             videoDuration: null,
@@ -3078,7 +2755,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         .select({
           id:            schema.broadcastQueueTable.id,
           videoId:       schema.broadcastQueueTable.videoId,
-          hlsMasterUrl:  schema.broadcastQueueTable.hlsMasterUrl,
           localVideoUrl: schema.broadcastQueueTable.localVideoUrl,
           durationSecs:  schema.broadcastQueueTable.durationSecs,
           objectPath:    schema.videosTable.objectPath,
@@ -3092,7 +2768,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         .limit(1);
 
       if (!item) return reply.code(404).send({ error: "Queue item not found" });
-      if (!item.hlsMasterUrl && !item.localVideoUrl && !item.objectPath) {
+      if (!item.localVideoUrl && !item.objectPath) {
         return reply.code(400).send({ error: "Queue item has no probeable source URL" });
       }
 
@@ -3110,14 +2786,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         if (newDur !== null) probeMethod = "object-storage";
       }
 
-      // ── Attempt 2: HLS master playlist → ffprobe EXTINF sum ─────────────────
-      if (newDur === null && item.hlsMasterUrl) {
-        const absUrl = normalizeQueueUrl(item.hlsMasterUrl) ?? item.hlsMasterUrl;
-        newDur = await _reprobeUrl(absUrl);
-        if (newDur !== null) probeMethod = "hls-manifest";
-      }
-
-      // ── Attempt 3: raw localVideoUrl → HTTP range-request probe ─────────────
+      // ── Attempt 2: raw localVideoUrl → HTTP range-request probe ─────────────
       if (newDur === null && item.localVideoUrl) {
         const absUrl = normalizeQueueUrl(item.localVideoUrl) ?? item.localVideoUrl;
         newDur = await _reprobeUrl(absUrl);
@@ -3129,7 +2798,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
           {
             itemId: id,
             objectPath: item.objectPath,
-            hlsMasterUrl: item.hlsMasterUrl,
             localVideoUrl: item.localVideoUrl,
           },
           "[broadcast-v2] reprobe: all probe strategies exhausted — duration could not be determined",
@@ -3287,20 +2955,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
           // Set faststartApplied explicitly (faststart writes it, but be safe)
           // and enqueue for HLS transcoding so the video gets the best possible
           // stream quality after remux recovery.
-          await db
-            .update(schema.videosTable)
-            .set({ transcodingStatus: "queued" })
-            .where(eq(schema.videosTable.id, videoId))
-            .catch(() => {});
-
-          try {
-            await enqueueTranscode({ videoId, videoPath: objectPath });
-            if (!env.TRANSCODER_DISABLE) transcoderDispatcher.nudge();
-            req.log.info({ videoId }, "[broadcast-v2] retry-repair: HLS transcode queued after remux recovery");
-          } catch (tErr: unknown) {
-            req.log.warn({ err: tErr, videoId }, "[broadcast-v2] retry-repair: enqueueTranscode failed (non-fatal — video will broadcast as MP4)");
-          }
-
           adminEventBus.push("videos-library-updated", { videoId, reason: "retry-repair-succeeded" });
           adminEventBus.push("broadcast-queue-updated", { reason: "retry-repair-succeeded", itemId: id, videoId });
           void broadcastOrchestrator.reload().catch(() => {});
@@ -3346,19 +3000,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
 
   // ── POST /broadcast-v2/retry-failed-hls ─────────────────────────────────
   //
-  // Lightweight targeted endpoint: re-arms all non-terminal failed HLS
-  // transcoding jobs for videos that are currently in the active broadcast
-  // queue. Non-terminal means the error code is NOT CORRUPT_SOURCE or
-  // SOURCE_MISSING (i.e. the source file is still present and the failure
-  // was likely transient — disk full, timeout, OOM, etc.).
-  //
-  // This is a subset of the full repair-queue Phase 8.5: it only calls
-  // retryAllFailed() (which already excludes terminal codes) + nudges the
-  // dispatcher to start immediately, then reloads the orchestrator.
-  // Useful when an operator wants to re-arm stuck items without running
-  // the full repair-queue audit.
-  //
-  // Rate-limited to 5 req/min (heavier than a read but lighter than repair-queue).
+  // /retry-failed-hls route removed (MP4-only pipeline, no HLS transcoding jobs).
   app.post(
     "/retry-failed-hls",
     {
@@ -3367,48 +3009,15 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       schema: {
         body: z.object({ idempotencyKey: z.string().optional() }).optional(),
         response: {
-          200: z.object({
-            ok: z.literal(true),
-            retriedJobs: z.number().int(),
-            message: z.string(),
-          }),
+          200: z.object({ ok: z.literal(true), retriedJobs: z.number().int(), message: z.string() }),
           429: _429err,
         },
       },
       config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
     },
-    async (req, reply) => {
+    async (_req, reply) => {
       reply.header("Cache-Control", "no-store, max-age=0");
-      const startMs = Date.now();
-
-      let retriedJobs = 0;
-      try {
-        retriedJobs = await retryAllFailed();
-      } catch (err) {
-        req.log.warn({ err }, "[broadcast-v2] retry-failed-hls: retryAllFailed failed (non-fatal)");
-      }
-
-      if (retriedJobs > 0) {
-        try {
-          transcoderDispatcher.nudge();
-        } catch { /* non-fatal */ }
-        try {
-          await broadcastOrchestrator.reload("retry-failed-hls");
-        } catch { /* non-fatal */ }
-        adminEventBus.push("broadcast-queue-updated", { reason: "retry-failed-hls", count: retriedJobs });
-        adminEventBus.push("videos-library-updated", { reason: "retry-failed-hls" });
-      }
-
-      req.log.info(
-        { retriedJobs, durationMs: Date.now() - startMs },
-        "[broadcast-v2] retry-failed-hls: complete",
-      );
-
-      const message = retriedJobs > 0
-        ? `${retriedJobs} failed HLS job${retriedJobs !== 1 ? "s" : ""} re-queued — encoding will start shortly.`
-        : "No eligible failed HLS jobs found in the broadcast queue. All non-terminal failures may already be queued or processing.";
-
-      return { ok: true as const, retriedJobs, message };
+      return { ok: true as const, retriedJobs: 0, message: "HLS transcoding pipeline removed. This endpoint is a no-op." };
     },
   );
 
@@ -3448,7 +3057,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
 
       // Clear both possible URL slots from the bad-URL cache.
       const cleared: string[] = [];
-      if (queueItem.hlsMasterUrl) { clearBadUrl(queueItem.hlsMasterUrl); cleared.push(queueItem.hlsMasterUrl); }
       if (queueItem.localVideoUrl) { clearBadUrl(queueItem.localVideoUrl); cleared.push(queueItem.localVideoUrl); }
 
       // Re-activate the DB row if it was deactivated (auto-suspend or
@@ -3596,56 +3204,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     );
   }
 
-  // ── Boot-time auto-enqueue scan ──────────────────────────────────────────
-  // Automatically fixes "missing HLS" on startup — handles the case where
-  // queue items existed before the transcoder ran, after a crash recovery,
-  // or after a failed job was cleared without re-arming.
-  //
-  // 15 s delay: lets the DB connection pool warm up, the transcoder
-  // dispatcher start its poll loop, and the orchestrator complete its first
-  // reload before we spawn FFmpeg processes.
-  //
-  // Idempotent — autoEnqueueMissingHls() never double-enqueues; items with
-  // a live queued/processing job or a completed hlsMasterUrl are skipped.
-  //
-  // _bootScanScheduled guard: registerDomainRoutes is registered at both
-  // /api/v1 and /api prefixes — without this guard the plugin body runs twice
-  // creating two timers. The second fires 288 ms after the first completes,
-  // causing a redundant DB scan + orchestrator reload on every restart.
-  if (!_bootScanScheduled) {
-    _bootScanScheduled = true;
-    // Boot HLS scan with retry: attempt up to 3 times with 30 s backoff so a
-    // transient DB connection error at startup does not permanently skip the
-    // scan. Only the first attempt is delayed (15 s startup grace); subsequent
-    // retries follow immediately after the 30 s backoff.
-    const MAX_BOOT_HLS_ATTEMPTS = 3;
-    const BOOT_HLS_RETRY_DELAY_MS = 30_000;
-    const runBootHlsScan = (attempt: number) => {
-      autoEnqueueMissingHls()
-        .then(({ triggered }) => {
-          if (triggered > 0) {
-            logger.info({ triggered, attempt }, "[broadcast-v2] boot-time HLS scan triggered transcoding jobs");
-          }
-        })
-        .catch((err: unknown) => {
-          logger.warn(
-            { err, attempt, maxAttempts: MAX_BOOT_HLS_ATTEMPTS },
-            "[broadcast-v2] boot-time auto-enqueue HLS scan failed (non-fatal)",
-          );
-          if (attempt < MAX_BOOT_HLS_ATTEMPTS) {
-            const retryTimer = setTimeout(() => runBootHlsScan(attempt + 1), BOOT_HLS_RETRY_DELAY_MS);
-            retryTimer.unref?.();
-          } else {
-            logger.error(
-              { maxAttempts: MAX_BOOT_HLS_ATTEMPTS },
-              "[broadcast-v2] boot-time HLS scan exhausted all retry attempts — videos may be missing HLS variants until next repair-queue",
-            );
-          }
-        });
-    };
-    const _bootHlsScanTimer = setTimeout(() => runBootHlsScan(1), 15_000);
-    _bootHlsScanTimer.unref?.();
-  }
+  // Boot-time HLS scan removed (MP4-only pipeline).
 
   // ── Webhook status & test ──────────────────────────────────────────────────
 

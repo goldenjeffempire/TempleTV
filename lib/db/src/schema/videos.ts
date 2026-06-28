@@ -210,7 +210,7 @@ export const videosTable = pgTable("managed_videos", {
   // CHECK violation rather than silently corrupting the state machine.
   check(
     "managed_videos_transcoding_status_check",
-    sql`${table.transcodingStatus} IN ('none','queued','encoding','processing','ready','hls_ready','failed')`,
+    sql`${table.transcodingStatus} IN ('none','processing','ready','failed')`,
   ),
   // Prevent duplicate video rows when the same file is uploaded multiple times.
   // A partial unique index (WHERE object_path IS NOT NULL) lets YouTube-synced
