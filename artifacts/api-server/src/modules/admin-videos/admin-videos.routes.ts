@@ -104,6 +104,13 @@ const VideoRowSchema = z.object({
   chapters: z.array(z.object({ startSecs: z.number().nonnegative(), title: z.string().max(200) })).nullable(),
   /** Free-form admin-assigned tags. null = no tags. */
   tags: z.array(z.string()).nullable(),
+  /**
+   * Whether the MP4 moov atom has been relocated to the start of the file.
+   * - true  → faststart applied; video plays from byte 0 on all surfaces.
+   * - false → faststart explicitly ran and failed (moov still at end-of-file).
+   * - null  → never attempted (pre-migration DBs) or not applicable (YouTube).
+   */
+  faststartApplied: z.boolean().nullable(),
 });
 
 const ListQuerySchema = z.object({
@@ -253,6 +260,7 @@ function toDto(row: typeof videos.$inferSelect, progress: number | null = null):
       const filtered = raw.filter((t): t is string => typeof t === "string");
       return filtered.length > 0 ? filtered : null;
     })(),
+    faststartApplied: row.faststartApplied ?? null,
   };
 }
 

@@ -91,6 +91,11 @@ interface AdminVideo {
   scheduledPublishAt: string | null;
   scheduledUnpublishAt: string | null;
   chapters: { startSecs: number; title: string }[] | null;
+  /**
+   * Whether the MP4 moov atom has been relocated to the start of the file.
+   * true = faststart done; false = faststart ran and failed; null = never attempted / YouTube.
+   */
+  faststartApplied: boolean | null;
 }
 
 interface VideoListResponse {
@@ -524,6 +529,13 @@ export default function VideosPage() {
   const [dialogDragOver, setDialogDragOver] = useState(false);
   const [titleErrors, setTitleErrors] = useState<Set<string>>(new Set());
 
+  // Faststart in-flight tracking: Set of video IDs with faststart currently
+  // running server-side (triggered by the operator or recovery worker).
+  // Cleared when the query data confirms faststartApplied=true or on SSE.
+  const [faststartPendingIds, setFaststartPendingIds] = useState<Set<string>>(new Set());
+  // Brief "Faststart ready!" flash (3 s) after the spinner clears.
+  const [faststartJustDoneIds, setFaststartJustDoneIds] = useState<Set<string>>(new Set());
+
   // Upload queue — used only to show active count in the button
   const { summary } = useUploadQueue();
 
@@ -585,6 +597,46 @@ export default function VideosPage() {
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
   });
+
+  // broadcast-source-upgraded is emitted by faststart.service (via the caller)
+  // and by the transcoder dispatcher when a source upgrades to mp4_faststart or
+  // hls. Use it to immediately clear the faststart spinner for the specific
+  // video — this fires before the next polling cycle picks up the change.
+  useSSEEvent("broadcast-source-upgraded", (payload) => {
+    void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+    const p = payload as { videoId?: string } | null;
+    const vid = p?.videoId;
+    if (vid) {
+      setFaststartPendingIds((prev) => {
+        if (!prev.has(vid)) return prev;
+        const next = new Set(prev); next.delete(vid); return next;
+      });
+      setFaststartJustDoneIds((prev) => new Set([...prev, vid]));
+      setTimeout(() => setFaststartJustDoneIds((prev) => {
+        const next = new Set(prev); next.delete(vid); return next;
+      }), 3000);
+    }
+  });
+
+  // Watch query data for faststart completions when SSE was missed.
+  // When a pending video's faststartApplied flips to true (server confirmed),
+  // move it from "pending" to "just done" and schedule a 3 s flash clear.
+  useEffect(() => {
+    if (!data || faststartPendingIds.size === 0) return;
+    const readyIds = data.videos
+      .filter((v) => faststartPendingIds.has(v.id) && v.faststartApplied === true)
+      .map((v) => v.id);
+    if (readyIds.length === 0) return;
+    setFaststartPendingIds((prev) => {
+      const next = new Set(prev); readyIds.forEach((id) => next.delete(id)); return next;
+    });
+    setFaststartJustDoneIds((prev) => new Set([...prev, ...readyIds]));
+    const t = setTimeout(() => setFaststartJustDoneIds((prev) => {
+      const next = new Set(prev); readyIds.forEach((id) => next.delete(id)); return next;
+    }), 3000);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
 
   // Belt-and-suspenders: when any upload completes, force-invalidate all
   // affected query caches so the newly uploaded video appears immediately
@@ -863,8 +915,12 @@ export default function VideosPage() {
   const faststartMutation = useMutation({
     mutationFn: (id: string) =>
       api.post<{ ok: boolean; videoId: string }>(`/admin/videos/${id}/faststart`),
-    onSuccess: () => {
-      toast.success("Faststart started — status will update to 'ready' in ~30–90 seconds");
+    onMutate: (id) => {
+      // Immediately show the spinner on the card while the server works.
+      setFaststartPendingIds((prev) => new Set([...prev, id]));
+    },
+    onSuccess: (_, id) => {
+      toast.success("Faststart started — the card updates automatically when complete");
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
       void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
       // Broadcast queue shows source URL status — invalidate so the Broadcast
@@ -880,7 +936,11 @@ export default function VideosPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     },
-    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Faststart request failed"),
+    onError: (e, id) => {
+      // Clear the spinner immediately on error so the operator knows it didn't start.
+      setFaststartPendingIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
+      toast.error(e instanceof HttpError ? e.message : "Faststart request failed");
+    },
   });
 
   const thumbnailMutation = useMutation({
@@ -1857,6 +1917,36 @@ export default function VideosPage() {
                         <span className="text-[9px] text-muted-foreground tabular-nums">{v.transcodingProgress}%</span>
                       </div>
                     )}
+                    {/* Faststart progress pill — local MP4 uploads only.
+                        Pending → amber spinner; Just done → 3 s emerald flash;
+                        faststartApplied=false → amber "Faststart needed" warning. */}
+                    {v.videoSource === "local" && v.localVideoUrl && (
+                      faststartPendingIds.has(v.id) ? (
+                        <span
+                          className="text-[9px] text-amber-600 dark:text-amber-400 flex items-center gap-0.5"
+                          title="Relocating moov atom to start of file — card updates automatically when complete"
+                        >
+                          <Loader2 size={8} className="animate-spin flex-shrink-0" />
+                          Applying faststart…
+                        </span>
+                      ) : faststartJustDoneIds.has(v.id) ? (
+                        <span
+                          className="text-[9px] text-emerald-600 dark:text-emerald-400 flex items-center gap-0.5"
+                          title="Moov atom relocated — video is now broadcast-ready from byte 0"
+                        >
+                          <CheckCircle2 size={8} className="flex-shrink-0" />
+                          Faststart ready!
+                        </span>
+                      ) : v.faststartApplied === false ? (
+                        <span
+                          className="text-[9px] text-amber-600 dark:text-amber-400 flex items-center gap-0.5 cursor-help"
+                          title="Moov atom is at end-of-file — TV and mobile players may buffer before playback starts. Use Actions → Re-apply faststart to fix."
+                        >
+                          <AlertTriangle size={8} className="flex-shrink-0" />
+                          Faststart needed
+                        </span>
+                      ) : null
+                    )}
                     {v.transcodingStatus === "failed" && v.videoSource === "local" && (
                       <>
                         {v.sourceAvailable === false ? (
@@ -1954,11 +2044,17 @@ export default function VideosPage() {
                       {v.videoSource === "local" && (v.transcodingStatus === "queued" || v.transcodingStatus === "failed" || v.transcodingStatus === "none") && (
                         <DropdownMenuItem
                           onClick={() => faststartMutation.mutate(v.id)}
-                          disabled={faststartMutation.isPending}
-                          title="Relocate the moov atom to the front of the MP4 file so it can play from byte 0 — takes 30–90 seconds"
+                          disabled={faststartMutation.isPending || faststartPendingIds.has(v.id)}
+                          title={
+                            faststartPendingIds.has(v.id)
+                              ? "Faststart is already running for this video…"
+                              : "Relocate the moov atom to the front of the MP4 file so it plays from byte 0 on all surfaces — auto-enqueues for broadcast on success"
+                          }
                         >
-                          <Clapperboard size={13} className="mr-2 text-orange-500" />
-                          Re-apply faststart
+                          {faststartPendingIds.has(v.id)
+                            ? <Loader2 size={13} className="mr-2 text-orange-400 animate-spin" />
+                            : <Clapperboard size={13} className="mr-2 text-orange-500" />}
+                          {faststartPendingIds.has(v.id) ? "Applying faststart…" : "Re-apply faststart"}
                         </DropdownMenuItem>
                       )}
                       <DropdownMenuItem
