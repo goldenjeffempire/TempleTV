@@ -78,11 +78,12 @@ const TICK_MS = 2_000;
  * How often the position checkpoint is persisted to DB.
  * Only writes when checkpointDirty=true (state has actually changed), so
  * this interval is an upper bound on write frequency, not a guaranteed rate.
- * Reduced from 30 s to 5 s for tighter crash-recovery (max 5 s position
- * loss on restart). The dirty-flag gate keeps actual DB write rate low
- * during quiet periods; only active broadcasts incur the extra writes.
+ * Raised from 5 s back to 15 s: under load the 5 s cadence produced 12
+ * pool checkouts/minute from checkpoints alone (BEGIN + INSERT ON CONFLICT +
+ * COMMIT per tick). The dirty-flag gate already suppresses writes during idle
+ * periods, so 15 s loses at most 15 s of position on crash — acceptable.
  */
-const CHECKPOINT_INTERVAL_MS = 5_000;
+const CHECKPOINT_INTERVAL_MS = 15_000;
 const EVENT_LOG_TRIM_INTERVAL_MS = 60_000;
 
 /**

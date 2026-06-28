@@ -126,6 +126,51 @@ setInterval(() => {
 // endpoint reports their live sizes without needing a dedicated API call.
 registerNamedStore("sse-sub-tokens", () => sseTokenStore.size);
 
+// ── Shared platform-breakdown cache ──────────────────────────────────────────
+// Problem: each connected admin SSE tab was independently running
+// `fetchPlatformBreakdown()` every 15 s, so 3 tabs = 3 pool connections
+// every 15 s = one pool checkout every 5 s purely for this query.
+// Solution: one module-level background fetch every 15 s; SSE connections
+// read the cached value and push it to their own client immediately.
+// The cache is also populated once on first SSE connect (initial snapshot).
+interface PlatformBreakdown { web: number; tv: number; mobile: number; total: number; asOf: number }
+let _platformBreakdownCache: PlatformBreakdown = { web: 0, tv: 0, mobile: 0, total: 0, asOf: 0 };
+let _platformBreakdownFetchInFlight = false;
+const _platformBreakdownListeners = new Set<(bd: PlatformBreakdown) => void>();
+
+async function _fetchAndCachePlatformBreakdown(): Promise<void> {
+  if (_platformBreakdownFetchInFlight) return;
+  _platformBreakdownFetchInFlight = true;
+  try {
+    const rows = (await db.execute(sql`
+      SELECT platform, COUNT(*)::int AS count
+      FROM viewer_sessions
+      WHERE ended_at IS NULL
+        AND last_heartbeat_at > NOW() - INTERVAL '5 minutes'
+      GROUP BY platform
+    `)).rows as Array<{ platform: string; count: number }>;
+    const out: PlatformBreakdown = { web: 0, tv: 0, mobile: 0, total: 0, asOf: Date.now() };
+    for (const r of rows) {
+      const n = Number(r.count) || 0;
+      if (r.platform === "web") out.web = n;
+      else if (r.platform === "tv") out.tv = n;
+      else if (r.platform === "mobile") out.mobile = n;
+      out.total += n;
+    }
+    _platformBreakdownCache = out;
+    for (const listener of _platformBreakdownListeners) {
+      try { listener(out); } catch { /* ignore closed connections */ }
+    }
+  } catch {
+    /* non-fatal — stale cache is fine */
+  } finally {
+    _platformBreakdownFetchInFlight = false;
+  }
+}
+
+// Single global 15 s timer replaces N per-tab timers.
+setInterval(() => { void _fetchAndCachePlatformBreakdown(); }, 15_000).unref();
+
 // Force-close registry: populated by the admin SSE handler for each open
 // connection. closeAllAdminSseSessions() is called during graceful shutdown so
 // the drain loop completes in O(ms) instead of hitting the drain timeout.
@@ -4175,42 +4220,22 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       send("snapshot", broadcastEngine.snapshot());
       send("viewer-count", { count: broadcastEngine.getViewerCount() });
 
-      // Helper: query viewer_sessions for active sessions grouped by platform.
-      // "Active" = no ended_at AND last_heartbeat_at within 5 minutes.
-      // Uses a raw sql template so we don't need additional drizzle-orm imports.
-      async function fetchPlatformBreakdown(): Promise<{ web: number; tv: number; mobile: number; total: number }> {
-        const rows = (await db.execute(sql`
-          SELECT platform, COUNT(*)::int AS count
-          FROM viewer_sessions
-          WHERE ended_at IS NULL
-            AND last_heartbeat_at > NOW() - INTERVAL '5 minutes'
-          GROUP BY platform
-        `)).rows as Array<{ platform: string; count: number }>;
-        const out = { web: 0, tv: 0, mobile: 0, total: 0 };
-        for (const r of rows) {
-          const n = Number(r.count) || 0;
-          if (r.platform === "web") out.web = n;
-          else if (r.platform === "tv") out.tv = n;
-          else if (r.platform === "mobile") out.mobile = n;
-          out.total += n;
-        }
-        return out;
+      // Push the current cached breakdown immediately (zero extra DB queries).
+      // The module-level background timer keeps this value fresh every 15 s
+      // with a single shared query regardless of how many tabs are open.
+      // On first ever connect the cache may be zeroed — trigger a fetch so the
+      // value is populated soon (the in-flight guard prevents double-fetches).
+      if (_platformBreakdownCache.asOf > 0) {
+        send("viewer-platform-breakdown", _platformBreakdownCache);
+      } else {
+        void _fetchAndCachePlatformBreakdown();
       }
 
-      // Send an initial breakdown immediately so the UI doesn't wait for
-      // the first periodic tick to populate the surface breakdown chart.
-      fetchPlatformBreakdown()
-        .then((bd) => send("viewer-platform-breakdown", { ...bd, asOf: Date.now() }))
-        .catch(() => {/* non-fatal — SSE still works without breakdown */});
-
-      // Re-emit every 15 s so the breakdown stays live without requiring a
-      // polling endpoint.  15 s balances freshness against DB load.
-      const viewerBreakdownInterval = setInterval(() => {
-        fetchPlatformBreakdown()
-          .then((bd) => send("viewer-platform-breakdown", { ...bd, asOf: Date.now() }))
-          .catch(() => {});
-      }, 15_000);
-      viewerBreakdownInterval.unref?.();
+      // Subscribe to future cache refreshes for the lifetime of this SSE conn.
+      const onBreakdownUpdate = (bd: PlatformBreakdown) => {
+        send("viewer-platform-breakdown", bd);
+      };
+      _platformBreakdownListeners.add(onBreakdownUpdate);
 
       const onEvent = (e: { type: string; data: unknown }) => {
         send(e.type, e.data);
@@ -4261,7 +4286,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         openAdminSseSends.delete(send);
         clearInterval(heartbeat);
         clearInterval(zombieCheck);
-        clearInterval(viewerBreakdownInterval);
+        _platformBreakdownListeners.delete(onBreakdownUpdate);
         broadcastEngine.off("event", onEvent);
         adminEventBus.off("admin-event", onAdminEvent);
         adminSseDecrement(ip);

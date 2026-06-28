@@ -1533,7 +1533,17 @@ export function scheduleStaleDataCleanup(): void {
   const INTERVAL_MS = 6 * 60 * 60 * 1_000; // 6 hours
   const STARTUP_DELAY_MS = 30_000;           // don't compete with boot queries
 
+  // Reentrancy guard: the 6 h timer is safe, but defence-in-depth prevents
+  // a hypothetically slow cleanup from overlapping with the next scheduled
+  // run (double connection hold + duplicate DELETE work).
+  let _cleanupInFlight = false;
+
   async function runCleanup(): Promise<void> {
+    if (_cleanupInFlight) {
+      logger.warn("db: stale-data cleanup already in flight — skipping this tick");
+      return;
+    }
+    _cleanupInFlight = true;
     const client = await pool.connect();
     try {
       const results: Record<string, number> = {};
@@ -1583,19 +1593,31 @@ export function scheduleStaleDataCleanup(): void {
            AND created_at < NOW() - INTERVAL '48 hours'`);
       await run("broadcast_event_log_old",
         "DELETE FROM broadcast_event_log WHERE created_at < NOW() - INTERVAL '14 days'");
-      // rate_limit is an in-process sliding-window counter table used as a
-      // Redis fallback when REDIS_URL is absent.  Rows accumulate indefinitely
-      // (no TTL column, no expiry sweep) and are meaningless across restarts
-      // because the counter state is rebuilt from scratch in memory.  TRUNCATE
-      // removes the entire historical accumulation in O(1) — this is safe
-      // because a single process restart already resets the in-memory counters
-      // that back the table.
-      // ignoreMissingTable=true: on a fresh DB or a deploy where Redis is
-      // configured (so the pg-fallback table was never created), the TRUNCATE
-      // would emit a noisy WARN every 6 h.  We silently skip 42P01 here.
-      await run("rate_limit",
-        "TRUNCATE TABLE rate_limit",
-        { ignoreMissingTable: true });
+
+      // ── rate_limit TRUNCATE — isolated on its own connection ──────────────
+      // TRUNCATE TABLE takes an AccessExclusiveLock.  Running it on the same
+      // connection as the DELETEs above means the lock is held for the entire
+      // cleanup duration, blocking any concurrent rate-limit reads/writes on
+      // that connection.  Isolating it on a short-lived connection keeps the
+      // lock window to just the TRUNCATE statement itself.
+      // ignoreMissingTable=true: on fresh DBs or when Redis is configured
+      // the rate_limit pg-fallback table may not exist — skip 42P01 silently.
+      try {
+        const rlClient = await pool.connect();
+        try {
+          await rlClient.query("TRUNCATE TABLE rate_limit");
+          results["rate_limit"] = 0; // TRUNCATE doesn't return rowCount
+        } catch (err) {
+          const pg = err as { code?: string };
+          if (pg.code !== "42P01") {
+            logger.warn({ err, sweep: "rate_limit" }, "db: stale-data cleanup step 'rate_limit' failed (non-fatal)");
+          }
+        } finally {
+          rlClient.release();
+        }
+      } catch {
+        /* pool.connect() failed — not fatal, skip truncate this cycle */
+      }
 
       // ── Stuck-processing recovery ─────────────────────────────────────
       // 'processing' is the transient state set by runFaststart while it
@@ -1672,6 +1694,7 @@ export function scheduleStaleDataCleanup(): void {
       logger.warn({ err }, "db: stale-data cleanup failed (non-fatal)");
     } finally {
       client.release();
+      _cleanupInFlight = false;
     }
   }
 
