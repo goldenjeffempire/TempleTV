@@ -331,7 +331,7 @@ function classifySourceFailure(
         scope: "likely-all-surfaces",
         headline: "MP4 source issue — may affect viewers",
         reason:
-          "The browser could not load this MP4 upload. Most likely the moov metadata block is still at the end of the file (faststart pending — runs automatically 30–90 s after upload). Once Faststart completes, all surfaces will play normally.",
+          "The browser could not load this MP4 upload. Most likely the moov metadata block is still at the end of the file (faststart not yet applied). Click Re-apply faststart below to trigger it immediately — or the background worker retries automatically every 5 minutes.",
         viewerNote:
           "With MP4-first broadcasting, TV and mobile viewers receive the same MP4 source when HLS is not yet ready. Apply Faststart to fix playback for everyone, or wait for it to complete automatically.",
         urlHint: url,

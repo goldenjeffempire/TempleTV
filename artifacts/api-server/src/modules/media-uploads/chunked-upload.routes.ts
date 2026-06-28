@@ -371,16 +371,39 @@ async function spawnAssemblyRetry(
         log.warn({ err: probeErr, videoId }, "[assembly-retry] ffprobe failed (non-fatal) — using existing duration");
       }
 
-      // MP4-first broadcast enrollment: enqueue immediately with raw MP4 source.
-      // The transcoder dispatcher will upgrade to HLS when transcoding completes.
-      try {
-        const enqRes = await enqueueIfMissing({ videoId, reason: "assembly-retry" });
-        if (enqRes.enqueued) {
-          log.info({ videoId, queueItemId: enqRes.queueItemId }, "[assembly-retry] video enrolled in broadcast queue (MP4-first)");
-          adminEventBus.push("broadcast-queue-updated", { reason: "assembly-retry", videoId });
+      // ── Faststart: moov-atom relocation ───────────────────────────────────
+      // Must run BEFORE enqueueing — a non-faststart MP4 with moov-at-EOF
+      // causes blank-screen playback on every surface.  The broadcast gate
+      // in enqueueIfMissing() rejects local videos with faststartApplied=false.
+      log.info({ videoId, objectKey: vRow.objectPath }, "[assembly-retry] running faststart pipeline (moov relocation)");
+      const fsResult = await runFaststart(videoId, vRow.objectPath!, { skipStatusUpdate: false });
+      log.info(
+        { videoId, finalStatus: fsResult.finalStatus, remuxed: fsResult.remuxed ?? false, durationMs: fsResult.durationMs },
+        "[assembly-retry] faststart pipeline complete",
+      );
+
+      if (!fsResult.ok) {
+        log.error(
+          { videoId, rootCause: fsResult.rootCause, actions: fsResult.actions },
+          "[assembly-retry] faststart FAILED — video will not air until operator retries",
+        );
+        adminEventBus.push("transcoding-update", {
+          videoId,
+          status: "failed",
+          errorCode: "FASTSTART_FAILED",
+          errorMessage: fsResult.rootCause ?? "faststart remux failed",
+        });
+      } else {
+        // faststart wrote faststartApplied=true — now safe to enroll in broadcast queue.
+        try {
+          const enqRes = await enqueueIfMissing({ videoId, reason: "assembly-retry" });
+          if (enqRes.enqueued) {
+            log.info({ videoId, queueItemId: enqRes.queueItemId }, "[assembly-retry] video enrolled in broadcast queue (faststart MP4)");
+            adminEventBus.push("broadcast-queue-updated", { reason: "assembly-retry", videoId });
+          }
+        } catch (enqErr) {
+          log.warn({ err: enqErr, videoId }, "[assembly-retry] enqueueIfMissing failed (non-fatal)");
         }
-      } catch (enqErr) {
-        log.warn({ err: enqErr, videoId }, "[assembly-retry] enqueueIfMissing failed (non-fatal)");
       }
 
       log.info({ sessionId, videoId, attempt: currentAttempts }, "[assembly-retry] complete ✓");

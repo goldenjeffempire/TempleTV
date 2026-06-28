@@ -9,6 +9,7 @@ import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { storage } from "../../infrastructure/storage.js";
 import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
+import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
 import { runFaststart } from "../transcoder/faststart.service.js";
 import { isUndefinedColumnError, SAFE_VIDEO_COLS } from "../../infrastructure/db-schema-guard.js";
@@ -922,7 +923,25 @@ export async function adminVideosRoutes(app: FastifyInstance) {
 
       void (async () => {
         try {
-          await runFaststart(id, row.objectPath!, { skipStatusUpdate: false });
+          const fsResult = await runFaststart(id, row.objectPath!, { skipStatusUpdate: false });
+          if (fsResult.ok) {
+            // faststart relocated the moov atom — enqueue for broadcast automatically
+            // so the operator doesn't need a separate manual step.
+            try {
+              const enqRes = await enqueueIfMissing({ videoId: id, reason: "faststart-complete" });
+              if (enqRes.enqueued) {
+                adminEventBus.push("broadcast-queue-updated", { reason: "manual-faststart-complete", videoId: id });
+                req.log.info({ videoId: id, queueItemId: enqRes.queueItemId }, "admin: faststart succeeded — video enrolled in broadcast queue");
+              } else {
+                req.log.info({ videoId: id }, "admin: faststart succeeded — video already in broadcast queue");
+              }
+            } catch (enqErr) {
+              req.log.warn({ err: enqErr, videoId: id }, "admin: enqueueIfMissing after faststart failed (non-fatal)");
+            }
+            adminEventBus.push("videos-library-updated", { videoId: id, reason: "faststart-complete" });
+          } else {
+            req.log.warn({ videoId: id, rootCause: fsResult.rootCause }, "admin: manual faststart failed");
+          }
         } catch (err) {
           req.log.warn({ err, videoId: id }, "admin: manual faststart failed (non-fatal)");
         }
