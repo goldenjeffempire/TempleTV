@@ -13,10 +13,7 @@ import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
 
@@ -29,7 +26,6 @@ class ExpoInAppUpdatesModule : Module() {
         private const val RESULT_TIMEOUT_MS        = 120_000L
     }
 
-    private val scope   = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var manager: AppUpdateManager? = null
     private var installListener: InstallStateUpdatedListener? = null
 
@@ -63,7 +59,6 @@ class ExpoInAppUpdatesModule : Module() {
             detachInstallListener()
             pendingResult?.cancel()
             pendingResult = null
-            scope.cancel()
             manager = null
         }
 
@@ -83,25 +78,27 @@ class ExpoInAppUpdatesModule : Module() {
 
         AsyncFunction("checkForUpdate") {
             val mgr = manager ?: return@AsyncFunction noUpdateMap()
-            return@AsyncFunction try {
-                val info: AppUpdateInfo = mgr.appUpdateInfo.await()
-                val avail = info.updateAvailability()
+            runBlocking {
+                try {
+                    val info: AppUpdateInfo = mgr.appUpdateInfo.await()
+                    val avail = info.updateAvailability()
 
-                val isAvailable = avail == UpdateAvailability.UPDATE_AVAILABLE ||
-                    avail == UpdateAvailability.DEVELOPER_TRIGGERED_UPDATE_IN_PROGRESS
-                val isAlreadyDownloaded = info.installStatus() == InstallStatus.DOWNLOADED
+                    val isAvailable = avail == UpdateAvailability.UPDATE_AVAILABLE ||
+                        avail == UpdateAvailability.DEVELOPER_TRIGGERED_UPDATE_IN_PROGRESS
+                    val isAlreadyDownloaded = info.installStatus() == InstallStatus.DOWNLOADED
 
-                mapOf(
-                    "isAvailable"          to isAvailable,
-                    "isAlreadyDownloaded"  to isAlreadyDownloaded,
-                    "allowsFlexible"       to (isAvailable && info.isUpdateTypeAllowed(AppUpdateType.FLEXIBLE)),
-                    "allowsImmediate"      to (isAvailable && info.isUpdateTypeAllowed(AppUpdateType.IMMEDIATE)),
-                    "staleDays"            to info.clientVersionStalenessDays(),
-                    "availableVersionCode" to if (isAvailable || isAlreadyDownloaded)
-                                                info.availableVersionCode() else null,
-                )
-            } catch (_: Exception) {
-                noUpdateMap()
+                    mapOf(
+                        "isAvailable"          to isAvailable,
+                        "isAlreadyDownloaded"  to isAlreadyDownloaded,
+                        "allowsFlexible"       to (isAvailable && info.isUpdateTypeAllowed(AppUpdateType.FLEXIBLE)),
+                        "allowsImmediate"      to (isAvailable && info.isUpdateTypeAllowed(AppUpdateType.IMMEDIATE)),
+                        "staleDays"            to info.clientVersionStalenessDays(),
+                        "availableVersionCode" to if (isAvailable || isAlreadyDownloaded)
+                                                    info.availableVersionCode() else null,
+                    )
+                } catch (_: Exception) {
+                    noUpdateMap()
+                }
             }
         }
 
@@ -116,29 +113,31 @@ class ExpoInAppUpdatesModule : Module() {
 
         AsyncFunction("startUpdate") { updateType: Int ->
             val mgr = manager ?: return@AsyncFunction Activity.RESULT_CANCELED
-            return@AsyncFunction try {
-                attachInstallListener()
+            runBlocking {
+                try {
+                    attachInstallListener()
 
-                val info: AppUpdateInfo = mgr.appUpdateInfo.await()
-                val type    = if (updateType == UpdateType.IMMEDIATE) AppUpdateType.IMMEDIATE
-                              else AppUpdateType.FLEXIBLE
-                val options = AppUpdateOptions.newBuilder(type).build()
+                    val info: AppUpdateInfo = mgr.appUpdateInfo.await()
+                    val type    = if (updateType == UpdateType.IMMEDIATE) AppUpdateType.IMMEDIATE
+                                  else AppUpdateType.FLEXIBLE
+                    val options = AppUpdateOptions.newBuilder(type).build()
 
-                // Discard any stale deferred from a previous, non-completed call.
-                pendingResult?.cancel()
-                val deferred = CompletableDeferred<Int>()
-                pendingResult = deferred
+                    // Discard any stale deferred from a previous, non-completed call.
+                    pendingResult?.cancel()
+                    val deferred = CompletableDeferred<Int>()
+                    pendingResult = deferred
 
-                // This starts the Play-managed activity (dialog or full-screen).
-                // The result arrives via OnActivityResult above.
-                mgr.startUpdateFlowForResult(info, currentActivity, options, UPDATE_REQUEST_CODE)
+                    // This starts the Play-managed activity (dialog or full-screen).
+                    // The result arrives via OnActivityResult above.
+                    mgr.startUpdateFlowForResult(info, currentActivity, options, UPDATE_REQUEST_CODE)
 
-                // Suspend until the activity result fires or we time out.
-                withTimeout(RESULT_TIMEOUT_MS) { deferred.await() }
-            } catch (_: Exception) {
-                pendingResult?.cancel()
-                pendingResult = null
-                Activity.RESULT_CANCELED
+                    // Suspend until the activity result fires or we time out.
+                    withTimeout(RESULT_TIMEOUT_MS) { deferred.await() }
+                } catch (_: Exception) {
+                    pendingResult?.cancel()
+                    pendingResult = null
+                    Activity.RESULT_CANCELED
+                }
             }
         }
 
@@ -146,9 +145,11 @@ class ExpoInAppUpdatesModule : Module() {
         // Triggers an app restart to apply a downloaded flexible update.
 
         AsyncFunction("completeUpdate") {
-            try {
-                manager?.completeUpdate()?.await()
-            } catch (_: Exception) { /* non-fatal — app restart handled by Play */ }
+            runBlocking {
+                try {
+                    manager?.completeUpdate()?.await()
+                } catch (_: Exception) { /* non-fatal — app restart handled by Play */ }
+            }
             return@AsyncFunction null
         }
 
