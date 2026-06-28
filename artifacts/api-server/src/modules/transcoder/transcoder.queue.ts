@@ -54,3 +54,15 @@ export async function boostTranscodePriority(_videoId: string): Promise<boolean>
 export async function queueStats() {
   return { pending: 0, encoding: 0, done: 0, failed: 0, dead_letter: 0, cancelled: 0, total: 0 };
 }
+
+export async function requeueFromDlq(_id: string): Promise<{ ok: boolean; reason?: string }> {
+  return { ok: false, reason: "transcoding disabled" };
+}
+
+export async function purgeDlqEntry(_id: string): Promise<boolean> {
+  return false;
+}
+
+export async function purgeDlqAll(): Promise<number> {
+  return 0;
+}
