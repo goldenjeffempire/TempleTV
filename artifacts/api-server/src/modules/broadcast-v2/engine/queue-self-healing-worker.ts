@@ -54,8 +54,6 @@ function buildSuggestedFix(errorCode: string | null): string {
       return "Re-upload video or check that the CDN/hosting URL is reachable";
     case "OPERATOR_QUARANTINE":
       return "Investigate the source reported by the operator, then approve";
-    case "HLS_STORAGE_MISSING":
-      return "Re-transcode or re-upload — HLS segments are missing from storage";
     default:
       return "Review the source URL and re-upload if needed";
   }

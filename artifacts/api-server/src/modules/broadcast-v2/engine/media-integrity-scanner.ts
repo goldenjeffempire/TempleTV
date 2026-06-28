@@ -32,12 +32,10 @@ import {
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { playbackAnalytics } from "./playback-analytics.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
-import { withHlsToken } from "../../../shared/hls-token.js";
-
 /**
  * Build the X-Internal-Token headers for internal probe requests.
- * Mirrors the orchestrator's internalProbeHeaders() so the scanner
- * benefits from the same HLS-auth bypass.
+ * Sent with every probe so the /uploads/* handler's optional internal-bypass
+ * path can skip external proxy delays when INTERNAL_HLS_BYPASS_SECRET is set.
  */
 function internalProbeHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
@@ -194,344 +192,6 @@ async function probeUrl(url: string): Promise<{ ok: boolean; status: number | nu
   }
 }
 
-/**
- * Extract the first variant playlist URI from a master HLS manifest body.
- * Returns a fully-resolved absolute URL, or null if none can be found.
- *
- * HLS spec: a URI immediately follows each #EXT-X-STREAM-INF line.
- * The URI may be relative (resolved against the master URL's directory)
- * or absolute.
- */
-function extractFirstVariantUrl(masterText: string, masterUrl: string): string | null {
-  const lines = masterText.split("\n");
-  for (let i = 0; i < lines.length - 1; i++) {
-    const line = lines[i]?.trim() ?? "";
-    if (!line.startsWith("#EXT-X-STREAM-INF")) continue;
-    // The URI is on the very next non-comment, non-blank line.
-    const uri = lines[i + 1]?.trim() ?? "";
-    if (!uri || uri.startsWith("#")) continue;
-    if (uri.startsWith("http://") || uri.startsWith("https://")) return uri;
-    // Resolve relative URI against master playlist's directory.
-    try {
-      const base = new URL(masterUrl);
-      // Strip filename component so relative URIs resolve correctly.
-      base.pathname = base.pathname.replace(/\/[^/]*$/, "/");
-      return new URL(uri, base).href;
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-/**
- * Extract the first segment URI from a variant HLS playlist body.
- * Returns a fully-resolved absolute URL, or null if none can be found.
- * Non-comment, non-blank lines that are not #EXT* tags are segment URIs.
- */
-function extractFirstSegmentUrl(variantText: string, variantUrl: string): string | null {
-  const lines = variantText.split("\n");
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
-    try {
-      const base = new URL(variantUrl);
-      base.pathname = base.pathname.replace(/\/[^/]*$/, "/");
-      return new URL(trimmed, base).href;
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-/**
- * Extract the LAST segment URI from a variant HLS playlist body.
- * Returns a fully-resolved absolute URL, or null if none can be found.
- * Probing the last segment catches partial uploads where early segments
- * were written successfully but later segments are missing from storage.
- */
-function extractLastSegmentUrl(variantText: string, variantUrl: string): string | null {
-  const lines = variantText.split("\n");
-  let lastUri: string | null = null;
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    lastUri = trimmed;
-  }
-  if (!lastUri) return null;
-  if (lastUri.startsWith("http://") || lastUri.startsWith("https://")) return lastUri;
-  try {
-    const base = new URL(variantUrl);
-    base.pathname = base.pathname.replace(/\/[^/]*$/, "/");
-    return new URL(lastUri, base).href;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Return true when the given URL is served by this API server itself.
- * Used to distinguish own-origin HLS segment 5xx errors (our server is
- * definitely broken — hard failure) from external CDN 5xx (transient).
- */
-function isOwnOriginUrl(url: string): boolean {
-  try {
-    const u = new URL(url);
-    const candidates = [
-      env.API_ORIGIN,
-      process.env["RENDER_EXTERNAL_URL"],
-      process.env["DEV_DOMAIN"],
-      "http://127.0.0.1",
-      "http://localhost",
-    ];
-    const ownHostnames = candidates
-      .filter(Boolean)
-      .map((h) => {
-        try {
-          return new URL(/^https?:\/\//i.test(h!) ? h! : `https://${h!}`).hostname;
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean) as string[];
-    return ownHostnames.includes(u.hostname);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * HEAD-probe a single HLS segment to confirm it is accessible.
- *
- * Failure classification:
- *   • 404            — definitive hard failure regardless of origin.
- *   • 5xx + ownOrigin — hard failure: our own server is definitely broken,
- *                        not a transient CDN hiccup.
- *   • 5xx external   — soft (ok: true): CDN/upstream transient; avoids
- *                        false-positive deactivations on otherwise healthy items.
- *   • timeout/error  — soft (ok: true): network hiccup, not a storage gap.
- *
- * @param ownOrigin Set true when the segment URL is served by this API
- *                  server (detected by isOwnOriginUrl). Enables strict 5xx
- *                  handling so server-side errors are surfaced immediately.
- */
-async function probeHlsSegment(
-  url: string,
-  intHeaders: Record<string, string>,
-  ownOrigin = false,
-): Promise<{ ok: boolean; status: number | null; reason?: string }> {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, { method: "HEAD", signal: ac.signal, headers: { ...intHeaders } });
-    clearTimeout(t);
-    if (res.status === 404) {
-      return { ok: false, status: 404, reason: "segment 404 — deleted or expired from storage" };
-    }
-    if (ownOrigin && res.status >= 500) {
-      return { ok: false, status: res.status, reason: `own-origin segment server error: HTTP ${res.status}` };
-    }
-    return { ok: true, status: res.status };
-  } catch {
-    clearTimeout(t);
-    return { ok: true, status: null };
-  }
-}
-
-/**
- * Probe a single HLS variant playlist to confirm it has actual segments (#EXTINF).
- * A valid master playlist can reference a variant that is 404 or empty, causing
- * all clients to stall without the server ever seeing an error on the master URL.
- * This probe catches that failure mode before the item ever reaches air.
- *
- * Additionally probes the first segment URI to catch the case where segments
- * were deleted from storage after the playlist was written (e.g. storage migration,
- * TTL-based cleanup, or a partial-success transcode that wrote the playlist but
- * failed before uploading all segments).
- */
-async function probeHlsVariant(
-  url: string,
-): Promise<{ ok: boolean; status: number | null; reason?: string }> {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
-  const intHeaders = internalProbeHeaders();
-  try {
-    const res = await fetch(url, {
-      method: "GET",
-      signal: ac.signal,
-      headers: { ...intHeaders, Accept: "application/vnd.apple.mpegurl, application/x-mpegurl, */*" },
-    });
-    clearTimeout(t);
-    if (!res.ok) {
-      await res.body?.cancel().catch(() => {});
-      return { ok: false, status: res.status, reason: `variant HTTP ${res.status}` };
-    }
-    // Read up to 32 KB — enough for any real variant playlist.
-    const HLS_VARIANT_MAX_BYTES = 32 * 1024;
-    const reader = res.body?.getReader();
-    let text = "";
-    if (reader) {
-      const decoder = new TextDecoder();
-      let received = 0;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done || !value) break;
-        received += value.byteLength;
-        text += decoder.decode(value, { stream: !done });
-        if (received >= HLS_VARIANT_MAX_BYTES) {
-          reader.cancel().catch(() => undefined);
-          break;
-        }
-      }
-    } else {
-      text = await res.text();
-    }
-    if (!text.includes("#EXTINF")) {
-      return {
-        ok: false,
-        status: res.status,
-        reason: "HLS variant playlist contains no #EXTINF segments",
-      };
-    }
-
-    // Probe the first and last segment URIs to catch two distinct failure modes:
-    //   • First segment: confirms segments were uploaded at all (partial-success
-    //     transcodes that wrote the playlist but failed before any segment upload).
-    //   • Last segment:  confirms the upload ran to completion (partial uploads
-    //     where early segments landed but later ones are missing — HLS clients
-    //     stall near the end of the content with no error surfaced to the server).
-    //
-    // For own-origin segments (served by this API server), 5xx is treated as a
-    // hard failure because our own server returning 5xx is a definitive signal,
-    // not a CDN transient. External 5xx remains soft (ok: true) to avoid
-    // false-positive deactivations from upstream CDN hiccups.
-    //
-    // Segment URLs inherit the variant URL's internal token via relative-URL
-    // resolution against the already-tokenised variant URL (the token is already
-    // embedded in `url` by the caller).
-    const firstSegUrl = extractFirstSegmentUrl(text, url);
-    if (firstSegUrl) {
-      const firstIsOwn = isOwnOriginUrl(firstSegUrl);
-      const segResult = await probeHlsSegment(withHlsToken(firstSegUrl), intHeaders, firstIsOwn);
-      if (!segResult.ok) {
-        return {
-          ok: false,
-          status: segResult.status,
-          reason: `HLS first segment unreachable: ${segResult.reason ?? `HTTP ${segResult.status}`}`,
-        };
-      }
-    }
-
-    // Probe the last segment only when it differs from the first (single-segment
-    // playlists already covered above; duplicate probe would add latency with no value).
-    const lastSegUrl = extractLastSegmentUrl(text, url);
-    if (lastSegUrl && lastSegUrl !== firstSegUrl) {
-      const lastIsOwn = isOwnOriginUrl(lastSegUrl);
-      const lastSegResult = await probeHlsSegment(withHlsToken(lastSegUrl), intHeaders, lastIsOwn);
-      if (!lastSegResult.ok) {
-        return {
-          ok: false,
-          status: lastSegResult.status,
-          reason: `HLS last segment unreachable: ${lastSegResult.reason ?? `HTTP ${lastSegResult.status}`}`,
-        };
-      }
-    }
-    return { ok: true, status: res.status };
-  } catch (err) {
-    clearTimeout(t);
-    const reason =
-      err instanceof Error && err.name === "AbortError"
-        ? "variant probe timeout"
-        : "variant probe network error";
-    return { ok: false, status: null, reason };
-  }
-}
-
-/**
- * Validate an HLS manifest URL by fetching it and checking content.
- *
- * HEAD probes can return 200 for stale/empty manifests cached by a CDN.
- * A GET + content check ensures the playlist is actually valid:
- *   • Starts with #EXTM3U (required HLS header)
- *   • Contains at least one stream variant (#EXT-X-STREAM-INF) or
- *     segment reference (#EXTINF) — guards against empty master playlists
- *     from ingest sources that are live but not yet streaming.
- */
-async function probeHlsManifest(url: string): Promise<{ ok: boolean; status: number | null; reason?: string }> {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
-  const intHeaders = internalProbeHeaders();
-  try {
-    const res = await fetch(url, {
-      method: "GET",
-      signal: ac.signal,
-      headers: { ...intHeaders, Accept: "application/vnd.apple.mpegurl, application/x-mpegurl, */*" },
-    });
-    clearTimeout(t);
-    if (!res.ok) return { ok: false, status: res.status, reason: `HTTP ${res.status}` };
-
-    // Guard against CDN returning a multi-MB garbage body for a "200 OK"
-    // manifest URL. Read at most 64 KB — enough for any real HLS playlist.
-    const HLS_MAX_BODY_BYTES = 64 * 1024;
-    const contentLength = Number(res.headers.get("content-length") ?? 0);
-    if (contentLength > HLS_MAX_BODY_BYTES) {
-      return { ok: false, status: res.status, reason: `HLS manifest too large (${contentLength} bytes) — not a valid playlist` };
-    }
-    const reader = res.body?.getReader();
-    let text = "";
-    if (reader) {
-      const decoder = new TextDecoder();
-      let received = 0;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done || !value) break;
-        received += value.byteLength;
-        text += decoder.decode(value, { stream: !done });
-        if (received >= HLS_MAX_BODY_BYTES) {
-          reader.cancel().catch(() => undefined);
-          break;
-        }
-      }
-    } else {
-      text = await res.text();
-    }
-    if (!text.trimStart().startsWith("#EXTM3U")) {
-      return { ok: false, status: res.status, reason: "invalid HLS manifest (missing #EXTM3U header)" };
-    }
-    const hasStreams = text.includes("#EXT-X-STREAM-INF");
-    const hasSegments = text.includes("#EXTINF");
-    if (!hasStreams && !hasSegments) {
-      return { ok: false, status: res.status, reason: "empty HLS manifest (no streams or segments)" };
-    }
-    // Deep validation: master playlists (#EXT-X-STREAM-INF present, no #EXTINF)
-    // may reference variant playlists that are 404 or empty. The master returns
-    // HTTP 200 with valid structure, but every client stalls immediately when it
-    // tries to load the variant. Probe the first variant URI to catch this before
-    // the item airs — "silent dead air" from broken variant playlists is the most
-    // common undetected HLS failure mode.
-    if (hasStreams && !hasSegments) {
-      const variantUrl = extractFirstVariantUrl(text, url);
-      if (variantUrl) {
-        const variantProbe = await probeHlsVariant(withHlsToken(toLocalhostProbeUrl(variantUrl)));
-        if (!variantProbe.ok) {
-          return {
-            ok: false,
-            status: variantProbe.status,
-            reason: `HLS variant unreachable: ${variantProbe.reason ?? "unknown"}`,
-          };
-        }
-      }
-    }
-    return { ok: true, status: res.status };
-  } catch (err) {
-    clearTimeout(t);
-    const reason = err instanceof Error && err.name === "AbortError" ? "timeout" : "network error";
-    return { ok: false, status: null, reason };
-  }
-}
-
 class MediaIntegrityScannerImpl {
   // Split into two fields so stop() can unconditionally clear both without
   // a fragile instanceof check. `bootTimer` holds the initial-delay setTimeout;
@@ -640,18 +300,15 @@ class MediaIntegrityScannerImpl {
       const batch = rows.slice(i, i + MAX_CONCURRENT);
       const batchResults = await Promise.all(
         batch.map(async (row): Promise<ScanItemResult> => {
-          const rawUrl = row.hlsMasterUrl ?? row.localVideoUrl ?? null;
-          // Normalize relative paths (e.g. /api/hls/…/master.m3u8) to absolute
+          // MP4-only pipeline: localVideoUrl is the sole playback source.
+          const rawUrl = row.localVideoUrl ?? null;
+          // Normalize relative paths (e.g. /api/v1/uploads/…) to absolute
           // before probing. Relative URLs always fail the HEAD/GET fetch — the
           // scanner must resolve them using the same origin resolution order
-          // (API_ORIGIN → RENDER_EXTERNAL_URL → localhost)
+          // (REPLIT_DEV_DOMAIN → API_ORIGIN → RENDER_EXTERNAL_URL → localhost)
           // that the orchestrator's toItem() uses.
           const url = normalizeQueueUrl(rawUrl);
-          const kind: ScanItemResult["kind"] = row.hlsMasterUrl
-            ? "hls"
-            : row.localVideoUrl
-              ? "mp4"
-              : "unknown";
+          const kind: ScanItemResult["kind"] = row.localVideoUrl ? "mp4" : "unknown";
           const prev = this.failureCounts.get(row.id) ?? { count: 0, lastFailedAtMs: null };
 
           let ok = false;
@@ -659,26 +316,22 @@ class MediaIntegrityScannerImpl {
           let failReason: string | undefined;
           if (url) {
             try {
-              // toLocalhostProbeUrl() rewrites own-origin URLs (both HLS manifests
-              // and locally-uploaded MP4 /api/v1/uploads/ paths) to loopback so every
-              // probe hits the API directly, bypassing REQUIRE_HLS_TOKEN and avoiding
-              // the external Replit proxy round-trip that can time-out and falsely mark
-              // healthy BYTEA blobs as unreachable.
-              // withHlsToken() adds an auth token for HLS; uploads need no token.
-              // Bad-URL tracking still uses the original `url` (no token/localhost)
-              // so token-rotation doesn't disturb circuit-breaker de-duplication.
+              // toLocalhostProbeUrl() rewrites own-origin /api/v1/uploads/… URLs
+              // to http://127.0.0.1:PORT/… so probes hit the API directly via
+              // loopback, bypassing the external Replit proxy. This prevents
+              // transient proxy timeouts from falsely marking healthy BYTEA blobs
+              // as unreachable and triggering bad-URL blocks.
+              // Bad-URL tracking uses the original `url` (pre-loopback rewrite)
+              // so the cache key matches what the orchestrator resolves.
               const localhostUrl = toLocalhostProbeUrl(url);
-              const probeTarget = kind === "hls" ? withHlsToken(localhostUrl) : localhostUrl;
-              const probe = kind === "hls"
-                ? await probeHlsManifest(probeTarget)
-                : await probeUrl(probeTarget);
+              const probe = await probeUrl(localhostUrl);
               ok = probe.ok;
               httpStatus = probe.status;
               failReason = probe.reason;
             } catch (probeErr) {
-              // probeHlsManifest / probeUrl should not throw (they catch
-              // internally), but guard here so one item's unexpected error
-              // can't abort the entire batch via Promise.all rejection.
+              // probeUrl should not throw (it catches internally), but guard here
+              // so one item's unexpected error can't abort the entire batch via
+              // Promise.all rejection.
               ok = false;
               failReason = probeErr instanceof Error ? probeErr.message : String(probeErr);
               logger.warn(
