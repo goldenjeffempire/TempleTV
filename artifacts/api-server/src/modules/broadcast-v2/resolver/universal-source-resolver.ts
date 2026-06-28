@@ -108,21 +108,9 @@ const ALLOWED_HOST_SUFFIXES: ReadonlyArray<string> = [
   "127.0.0.1",
 ];
 
-// HLS master/variant playlist extension. Must be checked BEFORE MP4_EXT because
-// .ts (MPEG-2 transport stream) appears in MP4_EXT but is a segment URL, not a
-// full HLS source. The playlist (.m3u8 / .m3u) is the entry point for hls.js
-// and native HLS — only that URL should be classified as "hls".
-const HLS_MANIFEST_EXT = /\.m3u8?(?:$|\?|#)/i;
-// Internal HLS path pattern: transcoder outputs playlists at
-// /api/v1/hls/{videoId}/{level}/playlist.m3u8. Matching by path ensures that
-// HLS master playlists served from this server's own transcoding pipeline are
-// always classified as "hls" even if the URL is constructed without a file
-// extension (e.g. a CDN rewrite layer strips extensions).
-const HLS_PATH_RE = /\/api\/v1\/hls\//i;
 // Expanded to cover all common video container formats served as progressive
-// download or via a CDN. The player's <video> element handles all of these
-// natively or via MSE — classifying them all as "mp4" is safe because the
-// distinction only matters for HLS (needs hls.js) vs progressive MP4.
+// download or via a CDN. All platform content is raw MP4; classifying all
+// these extensions as "mp4" is safe — the player uses native <video> decode.
 const MP4_EXT = /\.(mp4|m4v|mov|mkv|webm|avi|wmv|flv|ogg|ogv|3gp|ts|mts|m2ts)(?:$|\?|#)/i;
 const YT_HOST = /(?:^|\.)(youtube\.com|youtu\.be)$/i;
 // Vimeo player/CDN hosts
@@ -137,7 +125,7 @@ export interface ResolverInput {
 
 export interface ResolvedSource {
   source: V2Source;
-  failoverSource: { kind: "hls" | "mp4"; url: string } | null;
+  failoverSource: { kind: "mp4"; url: string } | null;
 }
 
 export class SourceAllowlistError extends Error {
@@ -241,13 +229,6 @@ function classify(url: string): V2Source["kind"] | null {
   // player must handle them via the Vimeo embed API, not a raw <video>.
   // Vimeo CDN URLs (vimeocdn.com) serve actual MP4 bytes directly.
   if (VIMEO_HOST.test(parsed.hostname) && !parsed.hostname.includes("cdn")) return "youtube";
-  // HLS master/variant playlists — checked BEFORE MP4_EXT because .ts is in
-  // MP4_EXT (transport stream segments) but a .m3u8/.m3u playlist URL is the
-  // entry point that hls.js and native HLS players actually require. Without
-  // this check, transcoded videos whose only URL is an HLS master playlist
-  // (/api/v1/hls/…/playlist.m3u8) would fall through to `return null` and be
-  // silently rejected from the broadcast queue.
-  if (HLS_MANIFEST_EXT.test(parsed.pathname) || HLS_PATH_RE.test(parsed.pathname)) return "hls";
   if (MP4_EXT.test(parsed.pathname) || MP4_EXT.test(url)) return "mp4";
   // No recognized file extension — default to mp4 for known upload paths.
   // Locally-uploaded videos are served at /api/v1/uploads/{key} (and the
@@ -286,10 +267,8 @@ export function resolveSource(input: ResolverInput): ResolvedSource | null {
     return null; // no classifiable URL — caller logs and skips this item
   }
 
-  // Prefer raw MP4 over HLS — the platform serves direct MP4 (no transcoding).
-  // MP4 via native <video> element gives zero-gap A/B buffer transitions and
-  // avoids hls.js overhead. HLS is kept in the sort so that any legacy HLS
-  // URLs already stored in the DB still resolve rather than being dropped.
+  // Platform serves direct MP4 (no HLS transcoding). MP4 via native <video>
+  // gives zero-gap A/B buffer transitions with no hls.js overhead.
   const order: Record<V2Source["kind"], number> = { mp4: 0, hls: 1, dash: 2, youtube: 3 };
   candidates.sort((a, b) => order[a.kind] - order[b.kind]);
 
@@ -298,12 +277,12 @@ export function resolveSource(input: ResolverInput): ResolvedSource | null {
     return null; // SSRF allowlist rejection — caller logs with URL context
   }
 
-  // Failover: prefer an MP4/HLS different from the primary.
+  // Failover: use a secondary MP4 URL if available and different from primary.
   let failoverSource: ResolvedSource["failoverSource"] = null;
   for (let i = 1; i < candidates.length; i++) {
     const c = candidates[i]!;
     if (c.url === primary.url) continue;
-    if (c.kind === "mp4" || c.kind === "hls") {
+    if (c.kind === "mp4") {
       if (!isAllowed(c.url)) continue;
       failoverSource = { kind: c.kind, url: c.url };
       break;

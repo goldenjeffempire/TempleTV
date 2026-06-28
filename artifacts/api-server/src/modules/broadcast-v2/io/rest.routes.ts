@@ -3892,7 +3892,7 @@ interface RemediationIssue {
   severity: "error" | "warn";
   message: string;
   /** Source quality for FAILED_IN_QUEUE issues: null = no playable source. */
-  sourceQuality?: "hls" | "mp4_faststart" | "mp4_raw" | null;
+  sourceQuality?: "mp4_faststart" | "mp4_raw" | null;
 }
 
 interface RemediationReportData {

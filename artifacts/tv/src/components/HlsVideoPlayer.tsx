@@ -1,61 +1,35 @@
 /**
- * HlsVideoPlayer — Production HLS/MP4 player for Temple TV Smart TV.
+ * Mp4VideoPlayer — Production MP4 player for Temple TV Smart TV.
  *
- * Rebuilt from scratch. Supports:
- *  • hls.js ABR on Chromium/Firefox (Samsung, LG, Fire TV browsers)
- *  • Native HLS on Safari / WKWebView / some Smart TV stacks
- *  • Samsung AVPlay (Tizen) via webapis.avplay
+ * Exported as HlsVideoPlayer for backwards compatibility with callers.
+ * All content is raw MP4 — no hls.js, no manifests, no segments.
+ *
+ * Features:
  *  • A/B dual-buffer: inactive slot preloads `nextHlsUrl` for instant cuts
  *  • D-pad + media-key remote controls (tvKeys.ts)
- *  • Quality-level OSD (Auto / 1080p / 720p / …)
  *  • Seek OSD (+15 s / −15 s flash)
  *  • Auto-hide controls after 5 s
  *  • Buffering spinner + cinematic loading veil
- *  • OMEGA failover chain: primary → failoverHlsUrl → onSkipItem()
+ *  • Stall-recovery watchdog for 24/7 broadcast stability
+ *  • Failover chain: primary → failoverHlsUrl → onSkipItem()
  *
  * Live mode (isLive=true):
  *  • No control bar — TV-channel behavior, no pause/seek/progress
  *  • BACK still navigates away
  *
  * VOD mode (isLive=false):
- *  • Full playback controls with progress scrubber, quality selector
- *  • onProgress callback for persist resume points
+ *  • Full playback controls with progress scrubber
+ *  • onProgress callback for resume-point persistence
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { keyEventToAction } from "../lib/tvKeys";
 import { BroadcastChannelBug } from "./BroadcastChannelBug";
-import { isPlainVideoUrl } from "@workspace/broadcast-sync";
-
-// ── Samsung AVPlay ambient declarations ───────────────────────────────────────
-declare global {
-  interface Window {
-    webapis?: {
-      avplay?: {
-        open: (url: string) => void;
-        close: () => void;
-        prepare: () => void;
-        play: () => void;
-        pause: () => void;
-        stop: () => void;
-        seekTo: (ms: number) => void;
-        getCurrentTime: () => number;
-        getDuration: () => number;
-        setDisplayRect: (x: number, y: number, w: number, h: number) => void;
-        setListener: (l: {
-          onbufferingstart?: () => void;
-          onbufferingcomplete?: () => void;
-          oncurrentplaytime?: (ms: number) => void;
-          onerror?: (msg: string) => void;
-        }) => void;
-      };
-    };
-  }
-}
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
 export interface HlsVideoPlayerProps {
+  /** Primary MP4 URL (prop name kept for backwards compatibility). */
   hlsUrl: string;
   title: string;
   onBack: () => void;
@@ -63,12 +37,12 @@ export interface HlsVideoPlayerProps {
   startPositionSecs?: number;
   /**
    * URL of the next item to preload in the inactive slot. When `hlsUrl`
-   * then advances to this URL the player swaps instead of reloading.
+   * advances to this URL the player swaps instead of reloading — instant cut.
    */
   nextHlsUrl?: string | null;
   /** Live mode: no controls, no pause/seek. */
   isLive?: boolean;
-  /** Called when this live item fails and the queue should advance. */
+  /** Called when this item fails and the queue should advance. */
   onSkipItem?: () => void;
   /** Primary-failure fallback URL before onSkipItem() is called. */
   failoverHlsUrl?: string | null;
@@ -76,10 +50,8 @@ export interface HlsVideoPlayerProps {
   onProgress?: (positionSecs: number, durationSecs: number) => void;
   /**
    * Thumbnail / poster URL for the current item.
-   * When provided, a blurred, darkened version fills letterbox/pillarbox
-   * areas produced by object-contain — the same cinematic ambient technique
-   * used by Netflix, Apple TV+, and Disney+. Omitting this prop is safe;
-   * the player falls back to a plain black background.
+   * A blurred, darkened version fills letterbox/pillarbox areas —
+   * the cinematic ambient technique used by Netflix, Apple TV+, Disney+.
    */
   thumbnailUrl?: string | null;
 }
@@ -92,26 +64,15 @@ const PROGRESS_TICK_MS   = 5_000;
 const MAX_RETRIES        = 3;
 const WATCHDOG_MS        = 9_000;
 /**
- * How long a `stalled` or `waiting` event may persist before we attempt
- * a load() + play() recovery. 15 s gives hls.js enough time to exhaust
- * its own retry cycle (fragLoadingMaxRetry×delay ≈ 8 s) before we step
- * in — preventing a double-recovery on transient congestion. Chosen to
- * be longer than WATCHDOG_MS (9 s) so the one-shot initial-load watchdog
- * fires first; this timer covers stalls during ongoing playback.
+ * How long a `stalled` or `waiting` event may persist before we attempt a
+ * load() + play() recovery. 15 s gives the browser enough time to exhaust its
+ * own retry before we step in — preventing double-recovery on transient
+ * congestion. Longer than WATCHDOG_MS (9 s) so the one-shot initial-load
+ * watchdog fires first; this timer covers stalls during ongoing playback.
  */
 const STALL_FAIL_MS      = 15_000;
 
 type Slot = "A" | "B";
-
-function levelLabel(h?: number): string {
-  if (!h) return "Auto";
-  if (h >= 2160) return "4K";
-  if (h >= 1080) return "1080p";
-  if (h >= 720)  return "720p";
-  if (h >= 480)  return "480p";
-  if (h >= 360)  return "360p";
-  return "240p";
-}
 
 function fmtTime(s: number): string {
   if (!Number.isFinite(s) || s < 0) return "0:00";
@@ -121,10 +82,6 @@ function fmtTime(s: number): string {
   return h > 0
     ? `${h}:${String(m).padStart(2, "0")}:${String(ss).padStart(2, "0")}`
     : `${m}:${String(ss).padStart(2, "0")}`;
-}
-
-function isTizen(): boolean {
-  return typeof navigator !== "undefined" && /Tizen/i.test(navigator.userAgent);
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -151,14 +108,9 @@ export function HlsVideoPlayer({
   const loadedUrlA = useRef<string | null>(null);
   const loadedUrlB = useRef<string | null>(null);
 
-  // HLS instances
-  const hlsARef = useRef<import("hls.js").default | null>(null);
-  const hlsBRef = useRef<import("hls.js").default | null>(null);
-
   // Failover + retry state
   const retryCount = useRef(0);
   const usingFailover = useRef(false);
-  const currentFailoverUrl = useRef<string | null>(null);
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -167,7 +119,6 @@ export function HlsVideoPlayer({
   const [controlsVisible, setControlsVisible] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration]       = useState(0);
-  const [qualityLabel, setQualityLabel] = useState("Auto");
   const [seekOsd, setSeekOsd]         = useState<"+15s" | "-15s" | null>(null);
   const [isFs, setIsFs]               = useState(false);
   const seekOsdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -175,10 +126,6 @@ export function HlsVideoPlayer({
   const progressTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const getVideo = (slot: Slot) => slot === "A" ? videoA.current : videoB.current;
-  const setHls   = (slot: Slot, h: import("hls.js").default | null) => {
-    if (slot === "A") hlsARef.current = h; else hlsBRef.current = h;
-  };
-  const getHls   = (slot: Slot) => slot === "A" ? hlsARef.current : hlsBRef.current;
   const setLoaded = (slot: Slot, url: string | null) => {
     if (slot === "A") loadedUrlA.current = url; else loadedUrlB.current = url;
   };
@@ -194,215 +141,23 @@ export function HlsVideoPlayer({
     controlsHideTimer.current = setTimeout(() => setControlsVisible(false), CONTROLS_HIDE_MS);
   }, [isLive]);
 
-  // ── hls.js loader ────────────────────────────────────────────────────────
+  // ── MP4 loader ───────────────────────────────────────────────────────────
+  //
+  // Direct <video src> assignment — no hls.js, no MSE, no manifest parsing.
+  // Native browser/Smart TV MP4 decode gives zero-gap A/B transitions and
+  // eliminates the hls.js VRAM overhead that caused long-session instability
+  // on Samsung Tizen / LG webOS chipsets.
 
-  const loadHls = useCallback((slot: Slot, video: HTMLVideoElement, url: string) => {
-    const oldHls = getHls(slot);
-    if (oldHls) { try { oldHls.destroy(); } catch { /* noop */ } }
-    setHls(slot, null);
+  const loadVideo = useCallback((slot: Slot, video: HTMLVideoElement, url: string) => {
+    // Clear any previously loaded src so the browser releases the decode buffer
+    // before assigning the new one.  On Samsung Tizen / LG webOS skipping this
+    // step causes the compositor to keep a stale YUV texture in VRAM.
+    try { video.pause(); } catch { /* noop */ }
+    try { video.removeAttribute("src"); video.load(); } catch { /* noop */ }
 
-    if (isTizen() && window.webapis?.avplay) {
-      // Tizen 5+ has native HLS support via the browser engine; set src and
-      // mark the slot loaded. `setLoaded` must be called so the preload effect
-      // doesn't re-fetch the same URL and so instant-swap detection works.
-      video.src = url;
-      video.load();
-      setLoaded(slot, url);
-      return;
-    }
-
-    if (isPlainVideoUrl(url)) {
-      video.src = url;
-      setLoaded(slot, url);
-      return;
-    }
-
-    import("hls.js").then(({ default: HlsLib }) => {
-      const safariNative = (() => {
-        const v = document.createElement("video");
-        return v.canPlayType("application/vnd.apple.mpegurl") !== "";
-      })();
-      if (safariNative) {
-        video.src = url;
-        setLoaded(slot, url);
-        return;
-      }
-      if (!HlsLib.isSupported()) {
-        video.src = url;
-        setLoaded(slot, url);
-        return;
-      }
-      let mediaErrCount = 0;
-      // Detect constrained TV chipsets (2017-2019 Tizen/webOS) that cannot
-      // sustain a 30 s VRAM buffer without exhausting GPU memory after 2-3
-      // hours of 24/7 playback. Same heuristic as LiveBroadcastV2 for
-      // consistent behaviour across both the live and VOD player surfaces:
-      //   • jsHeapSizeLimit ≤ 256 MiB — MediaTek / Mstar budget SoCs
-      //   • Tizen UA year ≤ 2019     — Samsung pre-2020 smart TVs
-      //   • webOS UA year  ≤ 2019    — LG pre-2020 smart TVs
-      const isConstrainedTv = (() => {
-        try {
-          const heapLimit = (performance as { memory?: { jsHeapSizeLimit?: number } }).memory?.jsHeapSizeLimit ?? Infinity;
-          if (heapLimit <= 256 * 1024 * 1024) return true;
-          const ua = navigator.userAgent ?? "";
-          const tizenYear = /Tizen[/ ](201[0-9])/.exec(ua)?.[1];
-          if (tizenYear && parseInt(tizenYear, 10) <= 2019) return true;
-          const webosYear = /Web0S[;/ ](\d{4})/.exec(ua)?.[1] ?? /webOS.com\/(\d{4})/.exec(ua)?.[1];
-          if (webosYear && parseInt(webosYear, 10) <= 2019) return true;
-        } catch { /* ignore — defensive IIFE */ }
-        return false;
-      })();
-      const hls = new HlsLib({
-        enableWorker: true,
-        workerPath: undefined,  // inline Web Worker (no external script needed)
-        autoStartLoad: true,    // begin fragment loading immediately on loadSource()
-        // 30 s forward buffer is sufficient for smooth broadcast replay on
-        // typical broadband; the previous 60 s caused gradual VRAM exhaustion
-        // on Samsung Tizen / LG webOS after hours of continuous 24/7 playback
-        // (these chipsets have ~1.5–2 GB total and keep YUV textures in GPU
-        // memory proportional to the buffered segment count).
-        // Constrained chipsets get a 20 s cap — same as LiveBroadcastV2.
-        // backBufferLength 0: broadcast TV never seeks backward — freeing back-
-        // buffer VRAM immediately after the playhead advances gives a
-        // significant long-session stability improvement on TV hardware.
-        maxBufferLength: isConstrainedTv ? 20 : 30,
-        backBufferLength: 0,
-        maxMaxBufferLength: isConstrainedTv ? 20 : 60,
-        startLevel: -1,              // auto-select by bandwidth probe
-        capLevelToPlayerSize: true,  // don't load 1080p into a small container
-        debug: false,
-        // Start ABR with an optimistic 10 Mbps estimate — same as
-        // LiveBroadcastV2. On fast connections probes the highest rendition
-        // first; on slow links converges down within 2–3 segments.
-        abrEwmaDefaultEstimate: 10_000_000,
-        // Conservative bandwidth estimate (0.92) reduces unnecessary quality
-        // downswitches during brief link fluctuations — keeps a stable level.
-        // Faster up-factor (0.82) recovers quality within 2–3 stable segments
-        // after a bandwidth dip without oscillating, matched to LiveBroadcastV2.
-        abrBandWidthFactor: 0.92,
-        abrBandWidthUpFactor: 0.82,
-        // Fast EWMA reacts quickly to bandwidth drops; slow EWMA provides a
-        // stable long-term baseline for quality selection. Values match
-        // LiveBroadcastV2 — they have been tuned for typical church/LTE links.
-        abrEwmaFastLive: 3.0,
-        abrEwmaSlowLive: 9.0,
-        // Frame-pacing: disable live-sync nudge — queue playback is VOD-style;
-        // nudging causes jarring seek artefacts on Smart TV decoders.
-        liveSyncDurationCount: 3,
-        liveMaxLatencyDurationCount: 10,
-        // Fetch next fragment before current one ends (zero-gap transitions).
-        startFragPrefetch: true,
-        // SW AES fallback for Smart TV runtimes without HW crypto.
-        enableSoftwareAES: true,
-        // Tighter fragment boundary matching reduces gaps at segment joins.
-        maxFragLookUpTolerance: 0.15,
-        // Retry MSE append errors 8× before escalating — matches LiveBroadcastV2.
-        // Codec/pipeline hiccups on Tizen/webOS often clear within 3–5 retries.
-        appendErrorMaxRetry: 8,
-        // Buffer health / segment continuity
-        // highBufferWatchdogPeriod: nudge stalled high-buffer streams every 3 s
-        // (catches the rare case where the decode pipeline is frozen even though
-        // the buffer is ahead of the playhead — common on some LG webOS builds).
-        highBufferWatchdogPeriod: 3,
-        // maxBufferHole: bridge fragment discontinuities ≤ 250 ms so the player
-        // jumps over tiny timestamp gaps instead of stalling. Default is 500 ms;
-        // the tighter 250 ms threshold produces crisper segment joins and avoids
-        // audible pops on content with minor mux imperfections.
-        maxBufferHole: 0.25,
-        // progressive: deliver decoded frames as bytes arrive rather than waiting
-        // for the full 2 s segment — meaningful latency reduction on slower links.
-        progressive: true,
-        // Retry budgets — aligned with LiveBroadcastV2 for consistent recovery
-        // behaviour across all TV player surfaces. Lower delays (400 ms vs 500)
-        // recover faster from transient CDN hiccups; higher retry counts (12/10)
-        // survive sustained weak-signal environments common on church Wi-Fi.
-        lowLatencyMode: false,
-        fragLoadingMaxRetry: 12,
-        fragLoadingRetryDelay: 400,
-        fragLoadingMaxRetryTimeout: 6_000,
-        manifestLoadingMaxRetry: 10,
-        manifestLoadingRetryDelay: 400,
-        levelLoadingMaxRetry: 10,
-        levelLoadingRetryDelay: 400,
-        nudgeMaxRetry: 10,
-        nudgeOffset: 0.2,
-      });
-      hls.attachMedia(video);
-      hls.loadSource(url);
-      hls.on(HlsLib.Events.MANIFEST_PARSED, () => {
-        setLoaded(slot, url);
-        if (slot === activeSlotRef.current) {
-          video.play().catch(() => {});
-        }
-      });
-      hls.on(HlsLib.Events.LEVEL_SWITCHED, (_e, d) => {
-        setQualityLabel(levelLabel(hls.levels[d.level]?.height));
-      });
-      let stallLevelDropped = false;
-      // Track the recovery timer so we can cancel it if the HLS instance is
-      // destroyed before the 30 s window elapses — prevents calling
-      // hls.currentLevel = -1 on a dead instance.
-      let stallRecoveryTimerHls: ReturnType<typeof setTimeout> | null = null;
-      const originalHlsDestroy = hls.destroy.bind(hls);
-      hls.destroy = () => {
-        if (stallRecoveryTimerHls !== null) {
-          clearTimeout(stallRecoveryTimerHls);
-          stallRecoveryTimerHls = null;
-        }
-        originalHlsDestroy();
-      };
-      hls.on(HlsLib.Events.ERROR, (_e, data) => {
-        // ABR stall-drop: on non-fatal load stalls, immediately drop to the
-        // lowest available rendition (if not already there) to shed a bitrate
-        // that the current link cannot sustain. Regardless of the starting
-        // level, always schedule an auto-recovery timer so the ABR engine
-        // returns to automatic quality selection after 30 s of stable play.
-        //
-        // Previous bug: the recovery timer was inside the `currentLevel > 0`
-        // guard, so streams already at level 0 (e.g. on a slow connection where
-        // HLS.js had already auto-selected the lowest rendition) never scheduled
-        // the recovery — meaning the ABR engine stayed pinned at level 0
-        // permanently even after the connection recovered, causing sustained
-        // low-quality video for the rest of the session.
-        if (!data.fatal) {
-          const isLoadStall =
-            data.details === HlsLib.ErrorDetails.FRAG_LOAD_TIMEOUT ||
-            data.details === HlsLib.ErrorDetails.FRAG_LOAD_ERROR ||
-            data.details === HlsLib.ErrorDetails.LEVEL_LOAD_TIMEOUT ||
-            data.details === HlsLib.ErrorDetails.LEVEL_LOAD_ERROR;
-          if (isLoadStall && !stallLevelDropped) {
-            stallLevelDropped = true;
-            if (hls.currentLevel > 0) {
-              hls.currentLevel = 0; // drop to lowest bitrate
-            }
-            // Always schedule auto-recovery — fires even when already at level 0.
-            stallRecoveryTimerHls = setTimeout(() => {
-              stallRecoveryTimerHls = null;
-              try { stallLevelDropped = false; hls.currentLevel = -1; } catch { /* destroyed */ }
-            }, 30_000);
-          }
-          return;
-        }
-        if (slot !== activeSlotRef.current) return;
-        // Two-stage MEDIA_ERROR recovery — flush MSE pipeline before
-        // giving up. Handles codec/decoder reset issues on Samsung/LG TVs.
-        if (data.type === HlsLib.ErrorTypes.MEDIA_ERROR) {
-          if (mediaErrCount === 0) {
-            mediaErrCount++;
-            hls.recoverMediaError();
-            return;
-          }
-          if (mediaErrCount === 1) {
-            mediaErrCount++;
-            hls.swapAudioCodec();
-            hls.recoverMediaError();
-            return;
-          }
-        }
-        handleError(slot);
-      });
-      setHls(slot, hls);
-    }).catch(() => { video.src = url; setLoaded(slot, url); });
+    video.src = url;
+    video.load();
+    setLoaded(slot, url);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -418,14 +173,13 @@ export function HlsVideoPlayer({
     }
     if (failoverHlsUrl && !usingFailover.current) {
       usingFailover.current = true;
-      currentFailoverUrl.current = failoverHlsUrl;
       retryCount.current = 0;
       const v = getVideo(slot);
-      if (v) loadHls(slot, v, failoverHlsUrl);
+      if (v) loadVideo(slot, v, failoverHlsUrl);
       return;
     }
     onSkipItem?.();
-  }, [failoverHlsUrl, loadHls, onSkipItem]);
+  }, [failoverHlsUrl, loadVideo, onSkipItem]);
 
   // ── Watchdog ──────────────────────────────────────────────────────────────
 
@@ -452,29 +206,21 @@ export function HlsVideoPlayer({
     const slot = activeSlotRef.current;
     const inactive = slot === "A" ? "B" : "A";
 
-    // Check if the inactive slot already has this URL preloaded.
+    // Instant swap: the inactive slot already has the desired content buffered.
     if (getLoaded(inactive) === hlsUrl) {
-      // Instant swap: the inactive slot already has the desired content
-      // buffered, so we can transition with zero rebuffer time.
       const incoming = getVideo(inactive)!;
       const outgoing = getVideo(slot);
       incoming.muted  = false;
       incoming.volume = 1;
       incoming.play().catch(() => {});
       try { outgoing?.pause(); } catch { /* noop */ }
-      // Clear the outgoing slot's loaded-URL so the preload effect treats it
-      // as available for the NEXT nextHlsUrl. Without this, the outgoing slot
-      // retains the old URL, and a subsequent nextHlsUrl that matches it would
-      // be a false-positive "already preloaded" hit.
+      // Clear the outgoing slot so the preload effect treats it as available
+      // for the NEXT nextHlsUrl.
       setLoaded(slot, null);
       const nextSlot: Slot = slot === "A" ? "B" : "A";
       activeSlotRef.current = nextSlot;
       setActiveSlot(nextSlot);
       setLoading(false);
-      // Start the stall watchdog for the newly-active slot so that a preloaded
-      // video that stalls mid-play (HLS buffer underrun after the swap) is
-      // caught and recovered — the watchdog is normally started in the
-      // canplay handler of the fresh-load path but is bypassed here.
       startWatchdog();
       return;
     }
@@ -482,7 +228,7 @@ export function HlsVideoPlayer({
     // Fresh load into active slot.
     const v = getVideo(slot);
     if (!v) return;
-    loadHls(slot, v, hlsUrl);
+    loadVideo(slot, v, hlsUrl);
 
     const onCanPlay = () => {
       setLoading(false);
@@ -507,7 +253,7 @@ export function HlsVideoPlayer({
     if (!v) return;
     v.muted  = true;
     v.volume = 0;
-    loadHls(inactive, v, nextHlsUrl);
+    loadVideo(inactive, v, nextHlsUrl);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nextHlsUrl]);
 
@@ -569,29 +315,9 @@ export function HlsVideoPlayer({
     else el.requestFullscreen?.().catch(() => {});
   }, []);
 
-  // Track fullscreen state and recalibrate HLS ABR after each transition.
-  //
-  // Problem: capLevelToPlayerSize queries clientWidth/clientHeight to cap the
-  // quality level. During a fullscreen transition the container's dimensions
-  // are in flux; hls.js may read 0 or the pre-fullscreen size and trigger a
-  // quality switch. A quality switch flushes the video decode pipeline, which
-  // freezes the frame for 1-3 s while the audio buffer (independently decoded)
-  // keeps running — the classic "audio continues, video frozen" symptom.
-  //
-  // Fix: after fullscreenchange fires (browser has finished compositing and
-  // clientWidth/clientHeight now reflect the fullscreen viewport), we use a
-  // double rAF to ensure layout is fully settled, then reset the current level
-  // to -1 (auto). This forces the ABR engine to re-evaluate at the correct
-  // dimensions and pick the optimal quality without a pipeline-flushing switch.
   useEffect(() => {
     const onFsChange = () => {
-      const entering = !!document.fullscreenElement;
-      setIsFs(entering);
-      if (!entering) return;
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        const hls = activeSlotRef.current === "A" ? hlsARef.current : hlsBRef.current;
-        if (hls) hls.currentLevel = -1;
-      }));
+      setIsFs(!!document.fullscreenElement);
     };
     document.addEventListener("fullscreenchange", onFsChange);
     document.addEventListener("webkitfullscreenchange", onFsChange);
@@ -599,7 +325,6 @@ export function HlsVideoPlayer({
       document.removeEventListener("fullscreenchange", onFsChange);
       document.removeEventListener("webkitfullscreenchange", onFsChange);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Video events (time update, ended) ─────────────────────────────────────
@@ -615,27 +340,10 @@ export function HlsVideoPlayer({
 
   // ── Continuous stall watchdog ─────────────────────────────────────────────
   //
-  // hls.js handles most HLS-level stalls internally via its retry/error cycle.
-  // However, on Smart TV browsers (Tizen, webOS) the underlying <video> element
-  // can stall without firing an hls.js fatal error — manifesting as a frozen
-  // frame while audio continues (or silence). The `stalled` and `waiting` events
-  // from the video element bridge this gap:
-  //
-  //   stalled — browser stopped downloading data (network-level stall)
-  //   waiting  — playback paused waiting for more data (MSE buffer drained)
-  //
-  // When either fires we arm a timer. If the video doesn't recover within
-  // STALL_FAIL_MS the timer fires a load() + play() recovery attempt —
-  // identical to what the one-shot WATCHDOG_MS timer does after canplay,
-  // but applicable throughout the entire playback lifetime.
-  //
-  // The timer is cancelled immediately when the video proves it has recovered:
-  //   `playing`    — decoder resumed
-  //   `timeupdate` — time is advancing (proxy for "playing without stutter")
-  //   `canplay`    — buffer refilled
-  //
-  // We re-run this effect whenever the active slot or the current URL changes
-  // so listeners always target the correct <video> element.
+  // On Smart TV browsers (Tizen, webOS) the <video> element can stall without
+  // firing a fatal error — manifesting as a frozen frame. `stalled` and
+  // `waiting` events bridge this gap: if the video hasn't recovered within
+  // STALL_FAIL_MS we reload and resume.
 
   useEffect(() => {
     const v = getVideo(activeSlotRef.current);
@@ -673,8 +381,6 @@ export function HlsVideoPlayer({
       v.removeEventListener("timeupdate", clearStall);
       v.removeEventListener("canplay", clearStall);
     };
-  // activeSlot state drives slot change re-runs; hlsUrl ensures we
-  // reattach when a new stream loads into the same slot.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSlot, hlsUrl]);
 
@@ -687,15 +393,11 @@ export function HlsVideoPlayer({
       if (stallTimerRef.current) clearTimeout(stallTimerRef.current);
       if (seekOsdTimer.current) clearTimeout(seekOsdTimer.current);
       if (progressTimer.current) clearInterval(progressTimer.current);
-      // Destroy hls.js instances and explicitly release the GPU video texture.
-      // On Samsung Tizen and LG webOS the compositor keeps the YUV texture
-      // in VRAM until the <video> src is cleared and load() is called — skipping
-      // this step causes a steady GPU memory leak when navigating between
-      // catalogue items or switching live/VOD modes. hls.destroy() alone only
-      // detaches MSE; it does not release the decoded frame buffer.
+      // Explicitly release the GPU video texture on Samsung Tizen / LG webOS.
+      // The compositor keeps the YUV texture in VRAM until src is cleared and
+      // load() is called — skipping this causes steady GPU memory leaks when
+      // navigating between catalogue items or switching live/VOD modes.
       for (const slot of ["A", "B"] as const) {
-        try { getHls(slot)?.destroy(); } catch { /* noop */ }
-        setHls(slot, null);
         const v = getVideo(slot);
         if (v) {
           try { v.pause(); } catch { /* noop */ }
@@ -713,19 +415,11 @@ export function HlsVideoPlayer({
       ref={containerRef}
       style={{
         position: "relative", width: "100%", height: "100%", background: "#000",
-        // overflow:hidden clips the scaled ambient background so blur edges
-        // stay invisible. In fullscreen this same clip causes the GPU compositor
-        // (Samsung Tizen, LG webOS) to paint the video texture only within the
-        // pre-fullscreen bounds → black screen while audio continues. We clear
-        // it via the :fullscreen CSS rule AND here via React state so both the
-        // CSS-pseudo-class path and older browsers that fire fullscreenchange
-        // without supporting :fullscreen are covered.
+        // overflow:hidden clips the ambient background blur edges.
+        // In fullscreen this same clip causes the GPU compositor to paint the
+        // video texture only within the pre-fullscreen bounds → black screen.
+        // Clear it in fullscreen mode and rely on the container bg for the rest.
         overflow: isFs ? "visible" : "hidden",
-        // contain:paint implies its own paint boundary (similar to overflow:hidden
-        // for compositing), so we disable it in fullscreen for the same reason
-        // we clear overflow. contain:layout+style is always safe — it prevents
-        // overlay repaints (control bar, quality badge, spinner) from triggering
-        // full-page layout recalculations.
         contain: isFs ? "layout style" : "layout style paint",
         isolation: "isolate",
       }}
@@ -753,13 +447,7 @@ export function HlsVideoPlayer({
         />
       )}
 
-      {/* Slot A — active/inactive surface.
-          background is intentionally omitted: the ambient layer or the
-          container's own bg-#000 shows through the transparent letterbox
-          areas that object-contain leaves around non-16:9 content.
-          willChange+translateZ promote the element to its own GPU compositor
-          layer, enabling zero-copy hardware decode and preventing overlay
-          repaints (controls, title, badge) from invalidating the video pipeline. */}
+      {/* Slot A — active/inactive surface. */}
       <video
         ref={videoA}
         style={{
@@ -768,13 +456,8 @@ export function HlsVideoPlayer({
           opacity: activeSlot === "A" ? 1 : 0,
           transition: "opacity 0.18s ease",
           zIndex: activeSlot === "A" ? 2 : 1,
-          // willChange includes opacity so the compositor pre-promotes the
-          // layer before the opacity animation begins — prevents a flash on
-          // first slot swap caused by late promotion.
           willChange: "transform, opacity",
           transform: "translateZ(0)",
-          // Prevent back-face ghost frames on 3D-transform hardware paths
-          // (some AMD/Mali GPU drivers on Fire TV / LG webOS).
           WebkitBackfaceVisibility: "hidden",
           backfaceVisibility: "hidden",
           display: "block",
@@ -815,13 +498,12 @@ export function HlsVideoPlayer({
           display: "flex", alignItems: "center", justifyContent: "center",
           flexDirection: "column", gap: 18,
         }}>
-          {/* Cinematic SVG ring spinner — matches LiveBroadcastV2 style */}
           <div style={{ position: "relative", width: 52, height: 52 }}>
             <svg
               viewBox="0 0 52 52"
               style={{
                 position: "absolute", inset: 0, width: "100%", height: "100%",
-                animation: "hls-spin 1.4s linear infinite",
+                animation: "mp4-spin 1.4s linear infinite",
               }}
             >
               <circle cx="26" cy="26" r="22" fill="none" stroke="rgba(167,139,250,0.18)" strokeWidth="3" />
@@ -836,11 +518,11 @@ export function HlsVideoPlayer({
             <div style={{
               position: "absolute", inset: "30%", borderRadius: "50%",
               background: "rgba(167,139,250,0.6)",
-              animation: "hls-pulse 2s ease-in-out infinite",
+              animation: "mp4-pulse 2s ease-in-out infinite",
             }} />
           </div>
           <span style={{ color: "rgba(255,255,255,0.55)", fontSize: 13, fontWeight: 500, letterSpacing: "0.05em" }}>
-            Loading stream…
+            Loading…
           </span>
         </div>
       )}
@@ -862,7 +544,7 @@ export function HlsVideoPlayer({
       {/* Broadcast channel bug (live mode) */}
       {isLive && <BroadcastChannelBug />}
 
-      {/* Back button (always visible on hover / always live) */}
+      {/* Back button */}
       {(controlsVisible || isLive) && (
         <button
           onClick={onBack}
@@ -882,36 +564,17 @@ export function HlsVideoPlayer({
         </button>
       )}
 
-      {/* Quality badge */}
-      {controlsVisible && !isLive && (
-        <div style={{
-          position: "absolute",
-          top: "var(--tv-safe-v, 24px)",
-          right: "var(--tv-safe-h, 32px)",
-          zIndex: 30,
-          background: "rgba(0,0,0,0.6)", border: "1px solid rgba(255,255,255,0.15)",
-          borderRadius: 8, padding: "4px 10px",
-          fontSize: 12, fontWeight: 700, color: "rgba(255,255,255,0.65)",
-          backdropFilter: "blur(8px)",
-        }}>
-          {qualityLabel}
-        </div>
-      )}
-
       {/* VOD control bar */}
       {!isLive && controlsVisible && (
         <div style={{
           position: "absolute", bottom: 0, left: 0, right: 0, zIndex: 30,
-          // Taller gradient for better legibility over bright content
           background: "linear-gradient(to top, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.6) 55%, transparent 100%)",
-          // Respect TV safe areas — bottom/left/right edges may be in the overscan
-          // zone on Samsung/LG panels; splitting padding shorthand allows CSS vars.
           paddingTop: 56,
           paddingLeft: "var(--tv-safe-h, 40px)",
           paddingRight: "var(--tv-safe-h, 40px)",
           paddingBottom: "var(--tv-safe-v, 28px)",
         }}>
-          {/* Title + quality row */}
+          {/* Title row */}
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 14, gap: 16 }}>
             <div>
               <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.12em", color: "rgba(255,255,255,0.45)", textTransform: "uppercase", marginBottom: 4 }}>
@@ -926,7 +589,7 @@ export function HlsVideoPlayer({
               borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 700,
               color: "rgba(255,255,255,0.7)", backdropFilter: "blur(8px)", alignSelf: "flex-end",
             }}>
-              {qualityLabel}
+              MP4
             </div>
           </div>
 
@@ -938,7 +601,7 @@ export function HlsVideoPlayer({
             </span>
           </div>
 
-          {/* Progress bar — 6px with interactive scrub */}
+          {/* Progress bar */}
           <div
             style={{
               height: 6, borderRadius: 3, background: "rgba(255,255,255,0.18)",
@@ -952,7 +615,7 @@ export function HlsVideoPlayer({
               v.currentTime = pct * duration;
             }}
           >
-            {/* Buffered range — light tint showing what's preloaded */}
+            {/* Buffered range */}
             <div style={{
               position: "absolute", top: 0, left: 0, height: "100%", borderRadius: 3,
               background: "rgba(255,255,255,0.15)",
@@ -965,7 +628,6 @@ export function HlsVideoPlayer({
             }} />
             {/* Playback fill */}
             <div style={{ width: `${progress}%`, height: "100%", background: "#a855f7", borderRadius: 3, transition: "width 0.4s linear", position: "relative" }}>
-              {/* Scrub thumb */}
               <div style={{
                 position: "absolute", right: -6, top: "50%", transform: "translateY(-50%)",
                 width: 14, height: 14, borderRadius: "50%", background: "#fff",
@@ -989,10 +651,8 @@ export function HlsVideoPlayer({
       />
 
       <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes hls-spin { to { transform: rotate(360deg); } }
-        @keyframes hls-pulse {
+        @keyframes mp4-spin { to { transform: rotate(360deg); } }
+        @keyframes mp4-pulse {
           0%, 100% { opacity: 0.4; transform: scale(0.85); }
           50%       { opacity: 1;   transform: scale(1.15); }
         }

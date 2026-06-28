@@ -73,10 +73,8 @@ class QueueIntegrityValidatorImpl {
           durationSecs: q.durationSecs,
           sortOrder: q.sortOrder,
           qLocalUrl: q.localVideoUrl,
-          qHlsUrl: q.hlsMasterUrl,
           videoId2: v.id,
           vLocalUrl: v.localVideoUrl,
-          vHlsUrl: v.hlsMasterUrl,
           vDuration: v.duration,
           vSource: v.videoSource,
         })
@@ -91,11 +89,9 @@ class QueueIntegrityValidatorImpl {
       const placeholderDurationItems: Array<{ id: string; realDur: number }> = [];
 
       for (const row of rows) {
-        // A playable URL is either a local MP4 URL or an HLS master playlist URL,
-        // on either the queue row itself or the joined managed_videos row.
-        // Both HLS and MP4 sources are accepted so that purely-HLS videos are not
-        // incorrectly flagged as missing content.
-        const hasAnyUrl = row.qLocalUrl || row.vLocalUrl || row.qHlsUrl || row.vHlsUrl;
+        // A playable URL is the local MP4 URL on either the queue row itself or
+        // the joined managed_videos row (platform is MP4-only).
+        const hasAnyUrl = row.qLocalUrl || row.vLocalUrl;
 
         if (!hasAnyUrl) {
           issues.push({
@@ -118,9 +114,8 @@ class QueueIntegrityValidatorImpl {
         }
 
         // ORPHANED_VIDEO_REF: the joined video row exists but has no playable URL
-        // on it at all (neither a local MP4 nor an HLS master playlist).  Items
-        // that have only an HLS URL on the *queue* row (qHlsUrl) are not orphaned.
-        if (row.videoId && row.videoId2 !== null && !row.vLocalUrl && !row.vHlsUrl && !row.qHlsUrl && !row.qLocalUrl) {
+        // on it at all (neither a local MP4 on the queue row nor on the video row).
+        if (row.videoId && row.videoId2 !== null && !row.vLocalUrl && !row.qLocalUrl) {
           issues.push({
             severity: "error",
             itemId: row.id,

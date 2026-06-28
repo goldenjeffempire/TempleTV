@@ -162,15 +162,14 @@ interface CachedQueueItem {
   /** Stored for fast bad-URL cache lookups in snapshot(). */
   primaryUrl: string | null;
   source: V2Source;
-  failoverSource: { kind: "hls" | "mp4"; url: string } | null;
+  failoverSource: { kind: "mp4"; url: string } | null;
   /**
    * Quality tier of the primary source, computed once at queue-load time in
    * reloadInner() so projectItem() and snapshot() incur zero extra DB I/O.
-   *   "hls"           — HLS master playlist available (best quality)
    *   "mp4_faststart" — faststart applied: moov at byte-0, fully seekable
    *   "mp4_raw"       — raw upload, moov may be at EOF (range-stream only)
    */
-  sourceQuality: "hls" | "mp4_faststart" | "mp4_raw";
+  sourceQuality: "mp4_faststart" | "mp4_raw";
   /** Whether faststart was applied — used to derive quality when HLS is blocked. */
   faststartApplied: boolean;
 }
@@ -4472,11 +4471,11 @@ class BroadcastOrchestrator extends EventEmitter {
    * Used by the play-now endpoint to build the new ordered list without
    * an extra DB round-trip — the items array is always in sync after reload.
    */
-  getItems(): { id: string; localVideoUrl: string | null; hlsMasterUrl: string | null; faststartApplied: boolean; sourceQuality: "hls" | "mp4_faststart" | "mp4_raw" }[] {
+  getItems(): { id: string; localVideoUrl: string | null; hlsMasterUrl: string | null; faststartApplied: boolean; sourceQuality: "mp4_faststart" | "mp4_raw" }[] {
     return this.items.map((i) => ({
       id: i.id,
-      localVideoUrl: i.source.kind === "mp4" || i.source.kind === "youtube" ? i.source.url : null, // youtube watch URLs stored here
-      hlsMasterUrl: i.source.kind === "hls" || i.source.kind === "dash" ? i.source.url : null,
+      localVideoUrl: i.source.kind === "mp4" || i.source.kind === "youtube" ? i.source.url : null,
+      hlsMasterUrl: i.source.kind === "dash" ? i.source.url : null,
       faststartApplied: i.faststartApplied,
       sourceQuality: i.sourceQuality,
     }));
@@ -4739,7 +4738,7 @@ class BroadcastOrchestrator extends EventEmitter {
    */
   upgradeItemSource(opts: {
     videoId: string;
-    quality: "hls" | "mp4_faststart" | "mp4_raw";
+    quality: "mp4_faststart" | "mp4_raw";
   }): boolean {
     try {
       const idx = this.items.findIndex((it) => it.videoId === opts.videoId);
@@ -4796,7 +4795,7 @@ class BroadcastOrchestrator extends EventEmitter {
       title: string;
       durationSecs: number;
       thumbnailUrl: string | null;
-      sourceQuality: "hls" | "mp4_faststart" | "mp4_raw";
+      sourceQuality: "mp4_faststart" | "mp4_raw";
     }>;
   } | null {
     if (this.items.length === 0 || this.cycleDurationMs === 0) return null;

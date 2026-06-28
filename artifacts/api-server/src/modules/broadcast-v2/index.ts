@@ -17,17 +17,12 @@ import { broadcastHealthMonitorScan, getBroadcastHealthMonitorStatus } from "./e
 import { contentRotationScan, getContentRotationStatus } from "./engine/content-rotation.js";
 import { queueHealthGuard, getQueueHealthGuardStatus } from "./engine/queue-health-guard.js";
 import { scheduleBridgeScan } from "./engine/schedule-bridge.js";
-import { storageReconciliationWorker } from "./engine/storage-reconciliation-worker.js";
-import { storageBlobRecoveryService } from "./engine/storage-blob-recovery.service.js";
-import { db, schema } from "../../infrastructure/db.js";
-import { eq, and } from "drizzle-orm";
 import { startExhaustionMonitor, stopExhaustionMonitor, getExhaustionStatus } from "./engine/queue-exhaustion-monitor.js";
 import { startAutoQueueRefill, stopAutoQueueRefill, getAutoRefillStatus } from "./engine/auto-queue-refill.js";
 import { refreshStorageStats, getStorageStats } from "../../infrastructure/storage.js";
 import { env } from "../../config/env.js";
 import { sendAdminAlert } from "../mail/mail.service.js";
 import { installDeadAirTracker, getDeadAirStats } from "./engine/dead-air-tracker.js";
-import { queueSelfHealingWorker } from "./engine/queue-self-healing-worker.js";
 
 export { getExhaustionStatus, getAutoRefillStatus, getStorageStats };
 export { getDeadAirStats };
@@ -401,24 +396,8 @@ function startSupervisedWorkers(): void {
     backoffMs: [15_000, 30_000, 60_000],
   });
 
-  // Storage Reconciliation Worker: bidirectional DB↔object-storage integrity
-  // check across all active broadcast queue items and a rolling library-wide
-  // pass. Detects zero-byte blobs, external HLS bypass, and YouTube source
-  // bypass. Only quarantines after 3+ consecutive failing passes to avoid
-  // false positives from transient storage glitches. Runs every 10 min with
-  // a 3-min initial delay (after queue-health-guard and validator warm up).
-  // Circuit-open alert fires if the reconciliation itself fails repeatedly.
-  workerSupervisor.spawn({
-    name: "storage-reconciliation",
-    fn: () => storageReconciliationWorker.run(),
-    intervalMs: 10 * 60_000,
-    initialDelayMs: 3 * 60_000,
-    backoffMs: [60_000, 5 * 60_000, 10 * 60_000],
-    onCircuitOpen: makeCircuitOpenCallback("storage-reconciliation"),
-  });
-
   // Storage capacity stats: refreshes total storage bytes + blob count from
-  // storage_blobs every 5 minutes and exposes them via getStorageStats() +
+  // object storage every 5 minutes and exposes them via getStorageStats() +
   // the /health endpoint. Initial delay of 30 s ensures DB is warm.
   workerSupervisor.spawn({
     name: "storage-capacity-stats",
@@ -426,23 +405,6 @@ function startSupervisedWorkers(): void {
     intervalMs: 5 * 60_000,
     initialDelayMs: 30_000,
     backoffMs: [60_000, 5 * 60_000],
-  });
-
-  // Queue Self-Healing Worker: persistent state machine that tracks repair
-  // state (healthy → quarantined → repairing → approved | blocked) for every
-  // active broadcast queue item. Detects sources degraded to gap2/gap3 URL
-  // confidence, attempts cache-clear + reprobe repair, and escalates to
-  // "blocked" after MAX_REPAIR_ATTEMPTS (3) consecutive failures.
-  // Emits ops-alert SSE events when items are blocked. Runs every 2 min with
-  // a 3-min initial delay (after queue-health-guard and integrity validator
-  // complete their first passes so the queue is in a known-good state first).
-  workerSupervisor.spawn({
-    name: "queue-self-healing",
-    fn: () => queueSelfHealingWorker.scan(),
-    intervalMs: 2 * 60_000,
-    initialDelayMs: 3 * 60_000,
-    backoffMs: [15_000, 30_000, 60_000],
-    onCircuitOpen: makeCircuitOpenCallback("queue-self-healing"),
   });
 
   // Queue exhaustion monitor + auto-refill run as lightweight interval-based
@@ -548,68 +510,6 @@ export function ensureBroadcastV2Started(): Promise<void> {
           logger.warn({ err }, "[broadcast-v2] YouTube live-status service install failed (non-fatal)");
         }
 
-        // ── One-time boot repair: "19 5 24 Intro" ─────────────────────────
-        // This asset experienced a zero-byte blob from an interrupted putObject
-        // call.  Run the storage waterfall once, 45 s after boot (after the
-        // orchestrator is fully stable), so it is repaired on the next restart
-        // without operator intervention.  The waterfall is idempotent — if the
-        // asset is already healthy it returns tier="healthy" immediately.
-        const REPAIR_VIDEO_ID = "02d31acf-d200-41e9-ab3d-f08f1a933cac";
-        const repairTimer = setTimeout(() => {
-          void (async () => {
-            try {
-              const videoRow = await db
-                .select({
-                  id: schema.videosTable.id,
-                  title: schema.videosTable.title,
-                  objectPath: schema.videosTable.objectPath,
-                  hlsMasterUrl: schema.videosTable.hlsMasterUrl,
-                  videoSource: schema.videosTable.videoSource,
-                  sourceCleanupStatus: schema.videosTable.sourceCleanupStatus,
-                })
-                .from(schema.videosTable)
-                .where(eq(schema.videosTable.id, REPAIR_VIDEO_ID))
-                .limit(1)
-                .then((r) => r[0] ?? null)
-                .catch(() => null);
-
-              if (!videoRow) {
-                logger.debug({ videoId: REPAIR_VIDEO_ID }, "[broadcast-v2] boot-repair: video not found — skipping");
-                return;
-              }
-
-              const queueRow = await db
-                .select({ id: schema.broadcastQueueTable.id })
-                .from(schema.broadcastQueueTable)
-                .where(and(
-                  eq(schema.broadcastQueueTable.videoId, REPAIR_VIDEO_ID),
-                  eq(schema.broadcastQueueTable.isActive, true),
-                ))
-                .limit(1)
-                .then((r) => r[0] ?? null)
-                .catch(() => null);
-
-              const result = await storageBlobRecoveryService.runWaterfall({
-                videoId: REPAIR_VIDEO_ID,
-                queueId: queueRow?.id ?? "",
-                title: videoRow.title,
-                objectPath: videoRow.objectPath,
-                hlsUrl: videoRow.hlsMasterUrl,
-                videoSource: videoRow.videoSource,
-                sourceCleanupStatus: videoRow.sourceCleanupStatus,
-                triggeredBy: "boot-repair:zero-byte-recovery",
-              });
-
-              logger.info(
-                { videoId: REPAIR_VIDEO_ID, title: videoRow.title, tier: result.tier, message: result.message },
-                "[broadcast-v2] boot-repair: storage waterfall complete",
-              );
-            } catch (err) {
-              logger.warn({ err, videoId: REPAIR_VIDEO_ID }, "[broadcast-v2] boot-repair: waterfall error (non-fatal)");
-            }
-          })();
-        }, 45_000);
-        repairTimer.unref?.();
       })
       .catch((err) => {
         startAttempts += 1;

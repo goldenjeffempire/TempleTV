@@ -108,9 +108,7 @@ async function reactivateSystemDeactivated(): Promise<number> {
         AND bq.video_id = mv.id
         AND mv.video_source != 'youtube'
         AND (
-          bq.hls_master_url  IS NOT NULL
-          OR bq.local_video_url IS NOT NULL
-          OR mv.hls_master_url  IS NOT NULL
+          bq.local_video_url IS NOT NULL
           OR mv.local_video_url IS NOT NULL
         )
         AND (
