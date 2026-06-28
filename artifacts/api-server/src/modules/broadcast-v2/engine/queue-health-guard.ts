@@ -285,7 +285,10 @@ class QueueHealthGuardImpl {
     // any newly-uploaded or re-activated videos are admitted within 2 minutes
     // rather than waiting the full workerSupervisor interval.
     // The timer is not re-armed if one is already pending (dedup guard).
-    if (!this.adaptiveTimer) {
+    // Suppress on YouTube-only deployments where ytShuffleFallback is the
+    // permanent broadcast driver — the local queue is always 0 by design and
+    // rapid re-scans just add unnecessary DB load without changing anything.
+    if (!this.adaptiveTimer && !ytShuffleActive) {
       this.adaptiveTimer = setTimeout(() => {
         this.adaptiveTimer = null;
         void this.scan().catch((err) =>

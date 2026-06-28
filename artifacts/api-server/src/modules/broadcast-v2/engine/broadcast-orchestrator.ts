@@ -2725,24 +2725,35 @@ class BroadcastOrchestrator extends EventEmitter {
       this.overrideEndTimer = null;
     }
     const OVERRIDE_END_MAX_LEAD_MS = 4 * 60 * 60 * 1000; // 4 h guard
-    const delayMs = Math.max(0, endsAtMs - Date.now());
-    if (delayMs > OVERRIDE_END_MAX_LEAD_MS) return; // too far away — selfHealEmptyTimer handles it
+    // Pre-advance lead: fire this many milliseconds BEFORE the override's
+    // endsAtMs so that advance() — which includes a DB write for the new
+    // override — completes before the old override expires on the client.
+    // With warm DB connections advance() typically takes 100–400 ms, so a
+    // 2-second lead gives a comfortable safety margin.  The net effect is
+    // that the YouTube player transitions to the next video ~2 s early
+    // (no visible gap) rather than showing 1–4 s of dead air after expiry.
+    const PRE_ADVANCE_LEAD_MS = 2_000;
+    const delayMs = Math.max(0, endsAtMs - Date.now() - PRE_ADVANCE_LEAD_MS);
+    if (endsAtMs - Date.now() > OVERRIDE_END_MAX_LEAD_MS) return; // too far away — selfHealEmptyTimer handles it
     this.overrideEndTimer = setTimeout(() => {
       this.overrideEndTimer = null;
       if (!this.started) return;
       if (!ytShuffleFallback.isActive || env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE) return;
-      // Guard: only advance if the override is still the same expired one.
-      // startOverride() for a new video resets overrideEndTimer, so this
-      // callback should never fire for a stale override — but be defensive.
-      if (this.override?.endsAtMs == null || this.override.endsAtMs > Date.now() + 2_000) return;
+      // Guard: only advance if the override in memory is still the one we
+      // scheduled for.  If a NEW override has been applied (different endsAtMs),
+      // skip — startOverride() for the new video will have rescheduled the timer.
+      // Allow up to PRE_ADVANCE_LEAD_MS + 3 s drift to account for the early-fire
+      // offset and wall-clock jitter.
+      const overrideEndsAtMs = this.override?.endsAtMs ?? 0;
+      if (Math.abs(overrideEndsAtMs - endsAtMs) > PRE_ADVANCE_LEAD_MS + 3_000) return;
       logger.info(
-        { overrideId: this.override?.id, endsAtMs },
-        "[broadcast-v2] overrideEndTimer: YouTube override expired — advancing to next video (zero dead-air)",
+        { overrideId: this.override?.id, endsAtMs, leadMs: PRE_ADVANCE_LEAD_MS },
+        "[broadcast-v2] overrideEndTimer: pre-advancing YouTube shuffle to next video (seamless transition)",
       );
       void ytShuffleFallback
         .advance((opts) => this.startOverride(opts))
         .catch((err: unknown) =>
-          logger.warn({ err }, "[broadcast-v2] overrideEndTimer: YouTube shuffle advance failed (non-fatal)"),
+          logger.warn({ err }, "[broadcast-v2] overrideEndTimer: YouTube shuffle pre-advance failed (non-fatal)"),
         );
     }, delayMs);
     this.overrideEndTimer.unref?.();

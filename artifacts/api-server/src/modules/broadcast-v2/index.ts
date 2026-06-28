@@ -23,6 +23,7 @@ import { refreshStorageStats, getStorageStats } from "../../infrastructure/stora
 import { env } from "../../config/env.js";
 import { sendAdminAlert } from "../mail/mail.service.js";
 import { installDeadAirTracker, getDeadAirStats } from "./engine/dead-air-tracker.js";
+import { queueSelfHealingWorker } from "./engine/queue-self-healing-worker.js";
 
 export { getExhaustionStatus, getAutoRefillStatus, getStorageStats };
 export { getDeadAirStats };
@@ -405,6 +406,22 @@ function startSupervisedWorkers(): void {
     intervalMs: 5 * 60_000,
     initialDelayMs: 30_000,
     backoffMs: [60_000, 5 * 60_000],
+  });
+
+  // Queue Self-Healing Worker: proactively detects quarantined / blocked /
+  // unhealthy queue items and attempts automated repair (bad-URL cache clear,
+  // re-probe, source-set clearance).  Runs every 2 min with a 5-min initial
+  // delay so the integrity validator and media scanner have already completed
+  // their first passes before the self-healer acts on their findings.
+  // onCircuitOpen fires an ops-alert + admin email so the team is notified
+  // if repair attempts fail repeatedly (e.g. persistent CDN outage).
+  workerSupervisor.spawn({
+    name: "queue-self-healing",
+    fn: () => queueSelfHealingWorker.scan(),
+    intervalMs: 2 * 60_000,
+    initialDelayMs: 5 * 60_000,
+    backoffMs: [30_000, 60_000, 2 * 60_000],
+    onCircuitOpen: makeCircuitOpenCallback("queue-self-healing"),
   });
 
   // Queue exhaustion monitor + auto-refill run as lightweight interval-based
