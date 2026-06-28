@@ -62,7 +62,7 @@
  *
  * Non-fatal: DB/storage errors are caught and logged; the pass aborts cleanly.
  */
-import { and, inArray, gt } from "drizzle-orm";
+import { and, inArray, gt, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";

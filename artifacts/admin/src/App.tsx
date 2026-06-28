@@ -81,6 +81,7 @@ const SystemHealth      = lazyPage(() => import("@/pages/system-health"));
 const SelfHealing       = lazyPage(() => import("@/pages/self-healing"));
 const AppVersions       = lazyPage(() => import("@/pages/app-versions"));
 const OtaUpdates        = lazyPage(() => import("@/pages/ota-updates"));
+const StorageHealth     = lazyPage(() => import("@/pages/storage-health"));
 
 // ── Error Boundary ────────────────────────────────────────────────────────────
 
@@ -524,6 +525,7 @@ function AuthenticatedApp() {
             <Route path="/diagnostics">{() => <AdminRoute component={Diagnostics} />}</Route>
             <Route path="/app-versions">{() => <AdminRoute component={AppVersions} />}</Route>
             <Route path="/ota-updates">{() => <AdminRoute component={OtaUpdates} />}</Route>
+            <Route path="/storage-health">{() => <AdminRoute component={StorageHealth} />}</Route>
             <Route component={NotFound} />
           </Switch>
         </Suspense>

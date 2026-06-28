@@ -1806,6 +1806,110 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     },
   );
 
+  // ── GET /broadcast-v2/mp4-blob-status ────────────────────────────────────
+  //
+  // Per-item MP4 blob availability for all active broadcast queue items.
+  // Returns blob key, size, upload date, and presence for each non-YouTube
+  // queue item.  Used by the Storage Health admin page.
+  //
+  // Requires admin auth.  Rate-limited to 20 req/min.
+  app.get(
+    "/mp4-blob-status",
+    {
+      ...adminGuard,
+      schema: { response: { 429: _429err } },
+      config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+    },
+    async (_req, reply) => {
+      reply.header("Cache-Control", "no-store, max-age=0");
+
+      const rows = await db.execute<{
+        queueId: string;
+        videoId: string;
+        title: string;
+        objectPath: string | null;
+        transcodingStatus: string | null;
+        videoSource: string | null;
+        sourceCleanupStatus: string | null;
+        blobKey: string | null;
+        blobSizeBytes: string | null;
+        blobUpdatedAt: string | null;
+      }>(sql`
+        SELECT
+          bq.id                     AS "queueId",
+          mv.id                     AS "videoId",
+          mv.title                  AS "title",
+          mv.object_path            AS "objectPath",
+          mv.transcoding_status     AS "transcodingStatus",
+          mv.video_source           AS "videoSource",
+          mv.source_cleanup_status  AS "sourceCleanupStatus",
+          sb.key                    AS "blobKey",
+          sb.size_bytes::text       AS "blobSizeBytes",
+          sb.updated_at::text       AS "blobUpdatedAt"
+        FROM broadcast_queue bq
+        JOIN managed_videos mv ON mv.id = bq.video_id
+        LEFT JOIN storage_blobs sb ON (
+          sb.key = mv.object_path
+          OR sb.key = regexp_replace(mv.object_path, '^/api(?:/v1)?/uploads/', 'uploads/')
+          OR sb.key = regexp_replace(mv.object_path, '^https?://[^/]+/api(?:/v1)?/uploads/', 'uploads/')
+        )
+        WHERE bq.is_active = true
+          AND mv.video_source != 'youtube'
+        ORDER BY bq.sort_order ASC NULLS LAST, bq.created_at ASC
+        LIMIT 200
+      `).then((r) => r.rows).catch(() => []);
+
+      const reconStats = storageBlobRecoveryService.getStats();
+      const gapRegistry = storageBlobRecoveryService.getFailureRegistry();
+
+      const items = rows.map((r) => {
+        const sizeBytes = r.blobSizeBytes !== null ? Number(r.blobSizeBytes) : null;
+        const isSourceDeleted = r.sourceCleanupStatus === "deleted";
+        return {
+          queueId: r.queueId,
+          videoId: r.videoId,
+          title: r.title,
+          objectPath: r.objectPath,
+          transcodingStatus: r.transcodingStatus ?? "none",
+          videoSource: r.videoSource ?? "local",
+          sourceCleanupStatus: r.sourceCleanupStatus,
+          blobKey: r.blobKey,
+          blobSizeBytes: sizeBytes,
+          blobUpdatedAt: r.blobUpdatedAt,
+          blobPresent: r.blobKey !== null && (sizeBytes ?? 0) > 0,
+          isSourceDeleted,
+          hasGap: gapRegistry.has(r.videoId),
+          gapCount: gapRegistry.get(r.videoId)?.consecutiveGaps ?? 0,
+        };
+      });
+
+      const totalItems = items.length;
+      const healthyCount = items.filter((i) => i.blobPresent || i.isSourceDeleted).length;
+      const missingCount = items.filter((i) => !i.blobPresent && !i.isSourceDeleted && i.objectPath).length;
+      const noObjectPath = items.filter((i) => !i.objectPath && !i.isSourceDeleted).length;
+
+      return {
+        generatedAtMs: Date.now(),
+        items,
+        totalItems,
+        healthyCount,
+        missingCount,
+        noObjectPath,
+        reconStats: {
+          itemsChecked:           reconStats.itemsChecked,
+          blobsVerified:          reconStats.blobsVerified,
+          gapsFound:              reconStats.gapsFound,
+          recoveries:             reconStats.recoveries,
+          orphanedBlobCount:      reconStats.orphanedBlobCount,
+          deletedOrphanBlobCount: reconStats.deletedOrphanBlobCount,
+          consecutiveErrors:      reconStats.consecutiveErrors,
+          lastRunAt:              reconStats.lastRunAt,
+          lastPassElapsedMs:      reconStats.lastPassElapsedMs,
+        },
+      };
+    },
+  );
+
   // ── POST /broadcast-v2/storage-repair/:videoId ───────────────────────────
   //
   // Manually trigger the storage recovery waterfall for a specific video.
