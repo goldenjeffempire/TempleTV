@@ -1,0 +1,29 @@
+apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android'
+
+android {
+    compileSdkVersion 36
+    namespace "expo.modules.pipandroid"
+
+    defaultConfig {
+        minSdkVersion 24
+        targetSdkVersion 35
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    buildFeatures {
+        buildConfig false
+    }
+}
+
+dependencies {
+    compileOnly project(':expo-modules-core')
+}

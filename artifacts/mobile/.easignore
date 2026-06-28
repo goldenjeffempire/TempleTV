@@ -18,8 +18,10 @@ web-dist/
 expo-env.d.ts
 
 # Native (generated — EAS regenerates these from managed config)
+# Anchored to root only — local module android/ dirs (e.g. modules/expo-pip-android/android/)
+# must be included in the EAS archive so Gradle can build them.
 ios/
-android/
+/android/
 *.orig.*
 *.jks
 *.p8
