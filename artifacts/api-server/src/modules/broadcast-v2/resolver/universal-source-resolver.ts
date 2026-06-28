@@ -286,12 +286,11 @@ export function resolveSource(input: ResolverInput): ResolvedSource | null {
     return null; // no classifiable URL — caller logs and skips this item
   }
 
-  // Prefer adaptive HLS over progressive MP4, then DASH, then YouTube iframe.
-  // HLS provides segment-level seeking, ABR quality switching, and gapless
-  // segment pre-fetch — essential for a smooth 24/7 broadcast experience.
-  // MP4 is the fallback for videos not yet transcoded or for clients that need
-  // a direct byte-range stream (e.g. non-hls.js mobile downloads).
-  const order: Record<V2Source["kind"], number> = { hls: 0, mp4: 1, dash: 2, youtube: 3 };
+  // Prefer raw MP4 over HLS — the platform serves direct MP4 (no transcoding).
+  // MP4 via native <video> element gives zero-gap A/B buffer transitions and
+  // avoids hls.js overhead. HLS is kept in the sort so that any legacy HLS
+  // URLs already stored in the DB still resolve rather than being dropped.
+  const order: Record<V2Source["kind"], number> = { mp4: 0, hls: 1, dash: 2, youtube: 3 };
   candidates.sort((a, b) => order[a.kind] - order[b.kind]);
 
   const primary = candidates[0]!;

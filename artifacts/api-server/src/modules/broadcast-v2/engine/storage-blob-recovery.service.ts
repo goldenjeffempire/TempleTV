@@ -72,23 +72,13 @@
 import { eq, sql, and, gt } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db, schema } from "../../../infrastructure/db.js";
-import { storage } from "../../../infrastructure/storage.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { quarantineVideo } from "../../broadcast/quarantine.service.js";
-import { enqueueTranscode } from "../../transcoder/transcoder.queue.js";
+import { enqueueIfMissing } from "../../broadcast/auto-enqueue.service.js";
 
 const MODULE = "[storage-blob-recovery]";
-
-// ── HLS tier metadata for master.m3u8 synthesis ──────────────────────────────
-// Matches HLS_TIERS constants in transcoder.service.ts.
-const HLS_TIER_META: Readonly<Record<string, { bandwidth: number; resolution: string; codecs: string }>> = {
-  "240p": { bandwidth:   364_000, resolution: "426x240",  codecs: "avc1.4d4015,mp4a.40.2" },
-  "360p": { bandwidth:   596_000, resolution: "640x360",  codecs: "avc1.4d401e,mp4a.40.2" },
-  "480p": { bandwidth: 1_128_000, resolution: "854x480",  codecs: "avc1.4d401f,mp4a.40.2" },
-  "720p": { bandwidth: 2_660_000, resolution: "1280x720", codecs: "avc1.64001f,mp4a.40.2" },
-} as const;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -379,128 +369,6 @@ class StorageBlobRecoveryServiceImpl {
         return { tier: "bypassed", videoId, message: `External HLS URL — not in local storage (${hlsUrl.slice(0, 80)})` };
       }
 
-      // ── Stage 1: HLS master.m3u8 physical verification ───────────────────
-      const masterKey = `transcoded/${videoId}/master.m3u8`;
-      const masterHead = await headObjectWithSizeCheck(masterKey);
-
-      if (masterHead.exists) {
-        // Blob confirmed present and non-empty.  Promote hlsMasterUrl + status.
-        const restoredUrl = `/api/hls/${videoId}/master.m3u8`;
-        const needsUpdate = !hlsUrl || !isOwnHlsUrl(hlsUrl, videoId) || !hlsUrl.includes(videoId);
-        if (needsUpdate) {
-          await db.update(schema.videosTable)
-            .set({ hlsMasterUrl: restoredUrl, transcodingStatus: "hls_ready" })
-            .where(eq(schema.videosTable.id, videoId))
-            .catch((err) => { logger.warn({ err, videoId }, `${MODULE} failed to promote hlsMasterUrl (non-fatal)`); });
-          adminEventBus.push("broadcast-queue-updated", { reason: "storage-blob-recovery-hls-promoted", videoId });
-        }
-        this.clearGap(videoId);
-        this.stats.consecutiveErrors = 0;
-        return { tier: "healthy", videoId, message: `HLS master.m3u8 confirmed present (${masterHead.contentLength} B)` };
-      }
-
-      // ── Stage 2: HLS segment recovery ────────────────────────────────────
-      const segmentCountResult = await db.execute<{ cnt: number }>(sql`
-        SELECT COUNT(*)::int AS cnt FROM storage_blobs
-        WHERE key LIKE ${"transcoded/" + videoId + "/%"}
-          ${env.STORAGE_RECON_SIZE_CHECK ? sql`AND size_bytes > 0` : sql``}
-      `);
-      const segmentCount = Number(segmentCountResult.rows[0]?.cnt ?? 0);
-
-      if (segmentCount > 0) {
-        // 2a: Try MP4 source for full re-transcode (produces correct master + all tiers)
-        const rawKey = objectPath ? toStorageKeyCandidates(objectPath)[0] ?? "" : "";
-        const mp4Head = rawKey ? await headObjectWithSizeCheck(rawKey) : { exists: false, contentLength: 0 };
-
-        if (mp4Head.exists) {
-          // Clear hlsMasterUrl so autoEnqueueMissingHls also picks this up
-          await db.update(schema.videosTable)
-            .set({ hlsMasterUrl: null })
-            .where(eq(schema.videosTable.id, videoId))
-            .catch(() => { /* non-fatal */ });
-          await enqueueTranscode({ videoId, videoPath: rawKey, priority: 8 });
-          adminEventBus.push("broadcast-queue-updated", { reason: "storage-blob-recovery-tier1", videoId });
-          adminEventBus.push("ops-alert", {
-            level: "warn", component: triggeredBy,
-            message: `"${title}" (${videoId}): HLS master.m3u8 missing but ${segmentCount} segment blob(s) and MP4 source found — re-transcoding at priority 8.`,
-            videoId, queueId, segmentCount,
-          });
-          this.clearGap(videoId);
-          this.stats.consecutiveErrors = 0;
-          return { tier: "tier1_retranscode", videoId, message: `${segmentCount} segment blob(s) found; MP4 present — re-transcoding` };
-        }
-
-        // 2b: No MP4, but variant playlists exist — synthesise master.m3u8
-        const variantResult = await db.execute<{ key: string }>(sql`
-          SELECT key FROM storage_blobs
-          WHERE key LIKE ${"transcoded/" + videoId + "/%/playlist.m3u8"}
-          ORDER BY key
-        `).catch(() => ({ rows: [] as { key: string }[] }));
-
-        if (variantResult.rows.length > 0) {
-          const variantLines: string[] = [];
-          for (const row of variantResult.rows) {
-            const tierName = row.key.split("/")[2];
-            const meta = tierName ? HLS_TIER_META[tierName] : undefined;
-            if (!meta) continue;
-            variantLines.push(
-              `#EXT-X-STREAM-INF:BANDWIDTH=${meta.bandwidth},RESOLUTION=${meta.resolution},CODECS="${meta.codecs}"`,
-              `${tierName}/playlist.m3u8`,
-            );
-          }
-
-          if (variantLines.length > 0) {
-            const masterContent = [
-              "#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-INDEPENDENT-SEGMENTS",
-              ...variantLines,
-            ].join("\n") + "\n";
-
-            await storage().putObject({
-              key: masterKey,
-              body: Buffer.from(masterContent, "utf-8"),
-              contentType: "application/vnd.apple.mpegurl",
-            });
-            const restoredUrl = `/api/hls/${videoId}/master.m3u8`;
-            await db.update(schema.videosTable)
-              .set({ hlsMasterUrl: restoredUrl, transcodingStatus: "hls_ready" })
-              .where(eq(schema.videosTable.id, videoId))
-              .catch((err) => { logger.warn({ err, videoId }, `${MODULE} tier2a-promote: failed to set hlsMasterUrl`); });
-            adminEventBus.push("broadcast-queue-updated", { reason: "storage-blob-recovery-tier2a-promoted", videoId });
-            adminEventBus.push("ops-alert", {
-              level: "warn", component: triggeredBy,
-              message: `"${title}" (${videoId}): HLS master.m3u8 was missing but ${variantResult.rows.length} variant playlist(s) survived — synthesised and uploaded new master.m3u8.`,
-              videoId, queueId, variantCount: variantResult.rows.length,
-            });
-            this.clearGap(videoId);
-            this.stats.consecutiveErrors = 0;
-            return { tier: "tier1_promoted", videoId, message: `master.m3u8 synthesised from ${variantResult.rows.length} variant playlist(s)` };
-          }
-        }
-
-        // 2c: HLS segments exist but no master, no variants, no MP4 — deactivate
-        if (queueId) {
-          await db.update(schema.broadcastQueueTable)
-            .set({ isActive: false, validatorDeactivatedReason: "hls_master_missing_no_source" })
-            .where(eq(schema.broadcastQueueTable.id, queueId))
-            .catch((err) => { logger.warn({ err, videoId, queueId }, `${MODULE} tier2c: failed to deactivate queue item`); });
-        }
-        await quarantineVideo(videoId, {
-          errorCode: "SOURCE_MISSING",
-          reason: `HLS master.m3u8 and all variant playlists missing; ${segmentCount} orphaned segment blob(s) present with no MP4 source. Recovery impossible — re-upload the source video.`,
-          triggeredBy,
-          metadata: { segmentCount, hlsUrl, objectPath, detectedAtMs: Date.now() },
-        }).catch((err) => { logger.warn({ err, videoId }, `${MODULE} tier2c: quarantine call failed`); });
-        adminEventBus.push("broadcast-queue-updated", { reason: "storage-blob-recovery-tier2c-deactivated", videoId, queueId });
-        adminEventBus.push("ops-alert", {
-          level: "error", component: triggeredBy,
-          message: `"${title}" (${videoId}): HLS master.m3u8 + all variant playlists missing; ${segmentCount} orphaned segment blob(s) present but no recoverable source. Video quarantined — re-upload required.`,
-          videoId, queueId, segmentCount,
-        });
-        this.clearGap(videoId);
-        this.stats.consecutiveErrors = 0;
-        return { tier: "tier1_alert_only", videoId, message: `${segmentCount} HLS segment blob(s) but no playlists or MP4 source — quarantined` };
-      }
-
       // ── Stage 3: Alternative key resolution ───────────────────────────────
       // objectPath may be stored in different formats (absolute URL, leading slash,
       // v1/uploads prefix, etc.).  Try all normalised variants before giving up.
@@ -510,20 +378,20 @@ class StorageBlobRecoveryServiceImpl {
           if (candidate === (toStorageKeyCandidates(objectPath)[0] ?? "")) continue; // primary already tried below in Stage 4
           const altHead = await headObjectWithSizeCheck(candidate);
           if (altHead.exists) {
-            await enqueueTranscode({ videoId, videoPath: candidate, priority: 6 });
             // Fix the stored objectPath to use the normalised key
             await db.update(schema.videosTable)
               .set({ objectPath: candidate })
               .where(eq(schema.videosTable.id, videoId))
               .catch(() => { /* non-fatal */ });
+            adminEventBus.push("broadcast-queue-updated", { reason: "storage-blob-recovery-key-normalised", videoId });
             adminEventBus.push("ops-alert", {
               level: "warn", component: triggeredBy,
-              message: `"${title}" (${videoId}): objectPath normalisation found blob at key "${candidate}" — objectPath corrected, re-transcoding at priority 6.`,
+              message: `"${title}" (${videoId}): objectPath normalisation found blob at key "${candidate}" — objectPath corrected. MP4 source confirmed present.`,
               videoId, queueId, candidate,
             });
             this.clearGap(videoId);
             this.stats.consecutiveErrors = 0;
-            return { tier: "tier2_retranscode", videoId, message: `Alt key "${candidate}" confirmed present — re-transcoding` };
+            return { tier: "tier2_retranscode", videoId, message: `Alt key "${candidate}" confirmed present — objectPath normalised` };
           }
         }
       }
@@ -538,16 +406,19 @@ class StorageBlobRecoveryServiceImpl {
         if (primaryKey) {
           const mp4Head = await headObjectWithSizeCheck(primaryKey);
           if (mp4Head.exists) {
-            await enqueueTranscode({ videoId, videoPath: primaryKey, priority: 5 });
-            adminEventBus.push("transcoding-update", { videoId, status: "queued", progress: 0 });
+            // MP4 blob confirmed present — ensure the item is in the broadcast queue.
+            void enqueueIfMissing({ videoId, reason: "assembly-retry" }).catch(
+              (err: unknown) => logger.warn({ err, videoId }, `${MODULE} enqueueIfMissing failed (non-fatal)`),
+            );
+            adminEventBus.push("broadcast-queue-updated", { reason: "storage-blob-recovery-mp4-present", videoId });
             adminEventBus.push("ops-alert", {
               level: "warn", component: triggeredBy,
-              message: `"${title}" (${videoId}): no HLS output in storage; MP4 source blob confirmed present — re-enqueued for transcoding.`,
+              message: `"${title}" (${videoId}): MP4 source blob confirmed present — broadcast queue re-synced.`,
               videoId, queueId,
             });
             this.clearGap(videoId);
             this.stats.consecutiveErrors = 0;
-            return { tier: "tier2_retranscode", videoId, message: "No HLS blobs; MP4 source present — re-transcoding" };
+            return { tier: "tier2_retranscode", videoId, message: "MP4 source blob present — queue re-synced" };
           }
         }
       }
@@ -578,7 +449,7 @@ class StorageBlobRecoveryServiceImpl {
       // ── Stage 6: Retry-gated quarantine ──────────────────────────────────
       const diagnostics: Record<string, unknown> = {
         hlsUrl, objectPath, videoSource, sourceCleanupStatus,
-        segmentCount, detectedAtMs: Date.now(),
+        detectedAtMs: Date.now(),
         sourceIntentionallyDeleted,
       };
 
