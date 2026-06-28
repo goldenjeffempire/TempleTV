@@ -33,6 +33,7 @@ import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { runFaststart } from "../../transcoder/faststart.service.js";
 import { enqueueIfMissing } from "../../broadcast/auto-enqueue.service.js";
+import { scheduleVideoValidation } from "../../transcoder/video-validation.service.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -203,6 +204,13 @@ async function doSweep(): Promise<void> {
             "[faststart-recovery] enqueueIfMissing failed (non-fatal — queue self-heal will retry)",
           );
         }
+
+        // Schedule comprehensive playback validation now that faststart is confirmed.
+        // Fire-and-forget: sets validationStatus='pending' immediately, runs all
+        // 9 checks asynchronously without blocking the recovery sweep.
+        scheduleVideoValidation(row.id, objectKey, {
+          faststartApplied: true,
+        });
       } else {
         failed++;
         logger.warn(

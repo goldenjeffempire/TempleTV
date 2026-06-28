@@ -30,6 +30,7 @@ import { env } from "../../config/env.js";
 import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { generateQuickThumbnail, normalizeThumbnailBuffer, probeUploadedContainerValidity, probeUploadedDuration, probeVideoMetadata } from "../transcoder/transcoder.service.js";
+import { scheduleVideoValidation } from "../transcoder/video-validation.service.js";
 import { runFaststart } from "../transcoder/faststart.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
@@ -403,6 +404,13 @@ async function spawnAssemblyRetry(
           }
         } catch (enqErr) {
           log.warn({ err: enqErr, videoId }, "[assembly-retry] enqueueIfMissing failed (non-fatal)");
+        }
+
+        // Schedule comprehensive playback validation now that faststart is confirmed.
+        // Fire-and-forget: sets validationStatus='pending' immediately, runs all
+        // 9 checks without blocking the assembly-retry response.
+        if (vRow?.objectPath) {
+          scheduleVideoValidation(videoId, vRow.objectPath, { faststartApplied: true });
         }
       }
 

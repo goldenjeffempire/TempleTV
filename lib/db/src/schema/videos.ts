@@ -158,6 +158,26 @@ export const videosTable = pgTable("managed_videos", {
   // "Video unavailable" inside the iframe even though the server thinks they
   // are playing, creating silent dead air that the orchestrator cannot detect.
   isEmbeddable: boolean("is_embeddable").notNull().default(true),
+  // ── Broadcast-grade playback validation ───────────────────────────────────
+  // Set by video-validation.service.ts after faststart completes. 9 isolated
+  // checks verify codec compatibility, keyframe intervals, A/V sync, first +
+  // last frame decodability, duration accuracy, and HTTP Range support.
+  //
+  // Values:
+  //   null       — never validated (pre-feature rows; not gated)
+  //   'pending'  — validation scheduled but not yet started
+  //   'running'  — validation in progress
+  //   'passed'   — all checks passed; safe to broadcast on all surfaces
+  //   'warn'     — non-fatal issues detected (e.g. HEVC codec, wide keyframes)
+  //               — still broadcast-eligible; operator review recommended
+  //   'failed'   — one or more fatal checks failed (corrupt mdat, truncated
+  //               file, moov missing) — BLOCKED from broadcast admission
+  validationStatus: text("validation_status"),
+  // Full JSON report from the last validation run (VideoValidationReport type).
+  // Contains per-check results, repairsPerformed, remainingIssues, durationMs.
+  validationReport: jsonb("validation_report"),
+  // UTC timestamp of the most recent completed validation run.
+  validationCompletedAt: timestamp("validation_completed_at", { withTimezone: true }),
 }, (table) => [
   index("idx_managed_videos_imported_at").on(table.importedAt),
   index("idx_managed_videos_category").on(table.category),

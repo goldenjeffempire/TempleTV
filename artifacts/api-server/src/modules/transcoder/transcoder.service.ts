@@ -1486,7 +1486,7 @@ export async function validateLocalSourceFile(
  *           transient slowness does not permanently reject healthy files.
  *   false — decode explicitly failed (clear media-data corruption signal).
  */
-async function probeCanDecodeFirstFrame(inputPath: string): Promise<boolean> {
+export async function probeCanDecodeFirstFrame(inputPath: string): Promise<boolean> {
   return new Promise((resolve) => {
     const proc = spawn("ffmpeg", [
       "-v", "error",
