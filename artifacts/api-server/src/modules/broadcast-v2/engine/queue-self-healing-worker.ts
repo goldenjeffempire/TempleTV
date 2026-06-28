@@ -94,10 +94,8 @@ async function probeSource(url: string): Promise<ProbeResult> {
 
 function resolveItemUrl(item: {
   localVideoUrl: string | null;
-  hlsMasterUrl: string | null;
   videoSource: string;
 }): string | null {
-  if (item.hlsMasterUrl) return item.hlsMasterUrl;
   if (item.localVideoUrl) return item.localVideoUrl;
   return null;
 }
@@ -180,7 +178,6 @@ export const queueSelfHealingWorker = {
           videoId: schema.broadcastQueueTable.videoId,
           title: schema.broadcastQueueTable.title,
           localVideoUrl: schema.broadcastQueueTable.localVideoUrl,
-          hlsMasterUrl: schema.broadcastQueueTable.hlsMasterUrl,
           videoSource: schema.broadcastQueueTable.videoSource,
         })
         .from(schema.broadcastQueueTable)
@@ -209,7 +206,7 @@ export const queueSelfHealingWorker = {
           if (!healthRow || healthRow.state === "healthy" || healthRow.state === "approved") {
             await assetHealthRepo.markQuarantined(item.id, {
               errorCode: "NO_PLAYABLE_URL",
-              error: `Queue item "${item.title}" has no playable URL (no localVideoUrl or hlsMasterUrl)`,
+              error: `Queue item "${item.title}" has no playable URL (no localVideoUrl)`,
               suggestedFix: buildSuggestedFix("NO_PLAYABLE_URL"),
             });
             result.quarantined++;

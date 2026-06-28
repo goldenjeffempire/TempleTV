@@ -25,6 +25,7 @@ description: Key constraints and gotchas from switching to MP4-only broadcast wi
 | `queue-integrity-validator.ts` | Removed `qHlsUrl`/`vHlsUrl` from select; `hasAnyUrl` = `qLocalUrl || vLocalUrl` only |
 | `queue-health-guard.ts` | Removed `bq.hls_master_url IS NOT NULL` from re-enable SQL |
 | `rest.routes.ts` | `RemediationIssue.sourceQuality` type: `"mp4_faststart"\|"mp4_raw"\|null` (no `"hls"`) |
+| `queue-self-healing-worker.ts` | Removed `hlsMasterUrl: schema.broadcastQueueTable.hlsMasterUrl` from SELECT (undefined column → Drizzle generates invalid SQL → 42703 at DB); `resolveItemUrl()` now checks only `localVideoUrl` |
 | `HlsVideoPlayer.tsx` (TV) | Rewritten as pure MP4 A/B dual-buffer player (no hls.js) |
 | `LiveBroadcastV2.tsx` (TV) | **Intentionally keeps hls.js** — YouTube Live streams are HLS from Google's servers |
 
