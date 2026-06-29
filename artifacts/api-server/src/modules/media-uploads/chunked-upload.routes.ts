@@ -291,6 +291,10 @@ async function spawnAssemblyRetry(
         // computed before the upload began.  Any mismatch causes the transaction
         // to roll back so no corrupt blob is ever committed.
         expectedSha256: session.expectedFileSha256 ?? undefined,
+        // Validate that storage_upload_parts contains exactly this many rows
+        // so phantom parts (from any uploadId collision) cannot silently corrupt
+        // the assembled blob.
+        totalChunks: session.totalChunks,
       });
 
       // ── Step 3: Verify assembled blob integrity ───────────────────────────
@@ -1926,6 +1930,85 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         }
       }
 
+      // ── Storage layer integrity pre-flight ─────────────────────────────────
+      // Verify that storage_upload_parts has exactly session.totalChunks BYTEA
+      // rows for this uploadId.  The chunk count check above validated
+      // upload_chunks (metadata), but uploadPart() writes to storage_upload_parts
+      // (BYTEA data) in a separate DB call.  If that second write fails (e.g. a
+      // transient DB hiccup between the two INSERTs), the metadata says N chunks
+      // but the storage has < N parts.  completeMultipartUpload would then fail
+      // inside the transaction with ASSEMBLY_SEQUENCE_GAP after the video row
+      // has already been pre-committed — creating a dangling video in a failed
+      // state.
+      //
+      // Checking here (before pre-commit) lets us reset the session lock and
+      // give the client a clear, actionable error so it can re-upload only the
+      // missing chunks without touching the video row.
+      if (session.uploadId) {
+        type PartsCountRow = { cnt: string };
+        const partsCountResult = await db.execute<PartsCountRow>(sql`
+          SELECT COUNT(*)::text AS cnt
+          FROM storage_upload_parts
+          WHERE upload_id = ${session.uploadId}
+        `).catch(() => null);
+        const partsCountRows: PartsCountRow[] = partsCountResult
+          ? ((partsCountResult as unknown as { rows?: PartsCountRow[] }).rows ??
+             (partsCountResult as unknown as PartsCountRow[]))
+          : [];
+        const actualPartsCount = parseInt(partsCountRows[0]?.cnt ?? "0", 10);
+
+        if (actualPartsCount !== session.totalChunks) {
+          // Query which part numbers are present so the error message names the
+          // specific chunks that need to be re-uploaded.
+          type PartNumRow = { part_number: number };
+          const presentPartsResult = await db.execute<PartNumRow>(sql`
+            SELECT part_number
+            FROM storage_upload_parts
+            WHERE upload_id = ${session.uploadId}
+            ORDER BY part_number ASC
+          `).catch(() => null);
+          const presentRows: PartNumRow[] = presentPartsResult
+            ? ((presentPartsResult as unknown as { rows?: PartNumRow[] }).rows ??
+               (presentPartsResult as unknown as PartNumRow[]))
+            : [];
+          const presentSet = new Set(presentRows.map((r) => r.part_number));
+          const missingPartNums = Array.from(
+            { length: session.totalChunks },
+            (_, i) => i + 1,
+          ).filter((n) => !presentSet.has(n));
+
+          await resetLock();
+          req.log.error(
+            {
+              sessionId,
+              uploadId: session.uploadId,
+              expectedParts: session.totalChunks,
+              actualParts: actualPartsCount,
+              missingPartNumbers: missingPartNums.slice(0, 20),
+            },
+            "[finalize] storage integrity pre-flight FAILED — storage_upload_parts count mismatch",
+          );
+          throw Object.assign(
+            new Error(
+              `Storage integrity check failed: received ${allChunks.length} chunk records ` +
+              `but storage_upload_parts only has ${actualPartsCount} BYTEA data rows ` +
+              `(expected ${session.totalChunks}) for uploadId=${session.uploadId}. ` +
+              (missingPartNums.length > 0
+                ? `Missing chunk part numbers (1-based): ${missingPartNums.slice(0, 10).join(", ")}` +
+                  (missingPartNums.length > 10 ? ` … and ${missingPartNums.length - 10} more` : "") +
+                  `. Re-upload these chunks before retrying finalization.`
+                : "Re-upload the missing chunks before retrying finalization."),
+            ),
+            { statusCode: 422 },
+          );
+        }
+
+        req.log.debug(
+          { sessionId, uploadId: session.uploadId, partsCount: actualPartsCount },
+          "[finalize] storage_upload_parts count verified ✓",
+        );
+      }
+
       // ── Path A: "db" backend — pre-commit video row and respond immediately ──
       //
       // For db sessions the object key is fixed at init time, so the storage URL
@@ -2157,6 +2240,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               // Any mismatch causes the transaction to roll back: no corrupt blob is
               // ever committed to storage_blobs.
               expectedSha256: session.expectedFileSha256 ?? undefined,
+              // Validate that storage_upload_parts contains exactly this many rows
+              // so phantom parts (from any uploadId collision) cannot silently corrupt
+              // the assembled blob inside the transaction.
+              totalChunks: session.totalChunks,
             });
             // Blob is now committed in storage_blobs.  Any exception thrown
             // after this point must NOT delete the object.
@@ -2574,27 +2661,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         // starts, so the client can obtain the video id without waiting for the
         // full assembly to finish.
         //
-        // Derive real assembly percentage from the dest blob's current size.
-        // Non-fatal: if the query fails or objectKey is null (db_fallback mode
-        // that hasn't run completeMultipartUpload yet), assemblyPercent stays null
-        // and the client falls back to its fake-tick progress animation.
-        let assemblyPercent: number | null = null;
-        if (session.objectKey && session.sizeBytes > 0) {
-          try {
-            type BlobRow = { size_bytes: string | number };
-            const blobResult = await db.execute<BlobRow>(
-              sql`SELECT size_bytes FROM storage_blobs WHERE key = ${session.objectKey} LIMIT 1`,
-            );
-            const rows = (blobResult as unknown as { rows?: BlobRow[] }).rows ?? (blobResult as unknown as BlobRow[]);
-            const currentBytes = Number(rows[0]?.size_bytes ?? 0);
-            if (currentBytes > 0) {
-              assemblyPercent = Math.max(1, Math.min(99, Math.round((currentBytes / session.sizeBytes) * 100)));
-            }
-          } catch {
-            // Non-fatal: storage query failed, client keeps fake-tick animation.
-          }
-        }
-        return { status: "assembling" as const, videoId: session.completedVideoId ?? null, assemblyPercent };
+        // assemblyPercent is always null with the transactional bytea_agg assembly:
+        // the entire INSERT runs inside a single PostgreSQL transaction and the new
+        // storage_blobs row is only visible to other connections after COMMIT.
+        // There is no intermediate state to query — the client should show an
+        // indeterminate progress indicator during assembly.
+        return { status: "assembling" as const, videoId: session.completedVideoId ?? null, assemblyPercent: null };
       }
       return { status: "uploading" as const, videoId: null, assemblyPercent: null };
     },

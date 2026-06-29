@@ -472,6 +472,21 @@ class PostgresObjectStorage implements ObjectStorage {
     if (_shuttingDown) {
       throw Object.assign(new Error("Storage is shutting down — upload rejected"), { code: "STORAGE_SHUTDOWN" });
     }
+    // Reject empty parts before they reach the DB. An empty Buffer in
+    // storage_upload_parts would produce a truncated blob after bytea_agg
+    // assembly and trigger the per-part non-empty check inside the
+    // completeMultipartUpload transaction (ASSEMBLY_EMPTY_PARTS error).
+    // Failing fast here gives a clearer error to the caller and avoids
+    // writing a zero-byte row that would need to be cleaned up later.
+    if (!body || body.length === 0) {
+      throw Object.assign(
+        new Error(
+          `uploadPart: empty body rejected for uploadId=${uploadId} partNumber=${partNumber}. ` +
+          `Re-upload this chunk with its correct bytes.`,
+        ),
+        { code: "STORAGE_EMPTY_PART" },
+      );
+    }
     const etag = `"${createHash("md5").update(body).digest("hex")}"`;
     await db.execute(sql`
       INSERT INTO storage_upload_parts (upload_id, part_number, etag, data, created_at)
@@ -483,7 +498,7 @@ class PostgresObjectStorage implements ObjectStorage {
     return { etag };
   }
 
-  async completeMultipartUpload({ key, uploadId, expectedSha256 }: { key: string; uploadId: string; parts: MultipartPart[]; expectedSha256?: string }): Promise<{ key: string; etag: string | null; location: string | null }> {
+  async completeMultipartUpload({ key, uploadId, expectedSha256, totalChunks }: { key: string; uploadId: string; parts: MultipartPart[]; expectedSha256?: string; totalChunks?: number }): Promise<{ key: string; etag: string | null; location: string | null }> {
     if (_shuttingDown) {
       throw Object.assign(new Error("Storage is shutting down — multipart assembly rejected"), { code: "STORAGE_SHUTDOWN" });
     }
@@ -541,6 +556,32 @@ class PostgresObjectStorage implements ObjectStorage {
             `(idempotent re-call), never uploaded, or aborted concurrently.`,
           ),
           { code: "ASSEMBLY_NO_PARTS" },
+        );
+      }
+
+      // Validate partCount === totalChunks when the caller supplies the
+      // expected count.  Guards against:
+      //   • Phantom parts from a previous upload session that reused the same
+      //     uploadId (should never happen since uploadIds are random UUIDs, but
+      //     belt-and-suspenders).
+      //   • Off-by-one in client chunk numbering (e.g. 1-indexed vs 0-indexed)
+      //     producing more parts than the session declared.
+      //   • Late-arriving duplicate chunks that were re-uploaded after the
+      //     chunk count was validated in the finalize pre-flight.
+      //
+      // The check runs BEFORE sequence/empty-part validation so the error
+      // message clearly identifies the count problem without the noise of
+      // sequence-gap messages that would follow from an unexpected part count.
+      if (totalChunks !== undefined && partCount !== totalChunks) {
+        throw Object.assign(
+          new Error(
+            `Part count mismatch: expected ${totalChunks} parts but ` +
+            `storage_upload_parts contains ${partCount} for uploadId=${uploadId} key=${key}. ` +
+            `This may indicate phantom parts from a prior session, an off-by-one in ` +
+            `chunk numbering, or a late-arriving duplicate chunk. ` +
+            `Re-initialize the upload session to recover.`,
+          ),
+          { code: "ASSEMBLY_WRONG_PART_COUNT" },
         );
       }
 

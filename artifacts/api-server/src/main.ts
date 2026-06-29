@@ -287,6 +287,33 @@ async function startWorkers() {
     const { startContentSchedulingWorker } = await import("./modules/broadcast-v2/engine/content-scheduling-worker.js");
     startContentSchedulingWorker();
   }
+
+  // Upload integrity monitor: scans storage_blobs for corrupt/zero-byte rows,
+  // detects videos whose blobs went missing after confirmation, and cleans up
+  // orphaned storage_upload_parts rows to reclaim wasted PostgreSQL space.
+  // Runs every 30 minutes with a 5-minute initial delay so the first pass
+  // doesn't compete with the boot-time broadcast orchestrator warm-up.
+  workerSupervisor.spawn({
+    name: "upload-integrity-monitor",
+    intervalMs: 30 * 60_000,      // every 30 minutes
+    initialDelayMs: 5 * 60_000,   // 5-minute startup delay
+    timeoutMs: 10 * 60_000,       // 10-minute hard timeout per pass
+    maxConsecutiveFailures: 5,
+    fn: async () => {
+      const { runUploadIntegrityScan } = await import("./modules/media-uploads/upload-integrity-monitor.js");
+      await runUploadIntegrityScan();
+    },
+    onCircuitOpen: (name, n) => {
+      void import("./modules/admin-ops/admin-event-bus.js").then(({ adminEventBus }) => {
+        adminEventBus.push("ops-alert", {
+          level: "error",
+          component: name,
+          message: `Upload integrity monitor circuit opened after ${n} consecutive failures — storage integrity checks are paused.`,
+        });
+      });
+    },
+  });
+  logger.info("upload integrity monitor registered (30-min interval, 5-min initial delay)");
 }
 
 async function stopWorkers() {
