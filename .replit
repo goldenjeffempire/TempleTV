@@ -51,8 +51,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "export PATH=\"/home/runner/workspace/node_modules/.bin:$PATH\" && MALLOC_ARENA_MAX=2 PORT=8080 RUN_MODE=all TRANSCODER_DISABLE=1 TRANSCODING_AUTO_RETRY_DISABLE=1 node --expose-gc --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
-waitForPort = 8080
+args = "export PATH=\"/home/runner/workspace/node_modules/.bin:$PATH\" && MALLOC_ARENA_MAX=2 MEMORY_WARN_RSS_MB=1500 MEMORY_RESTART_RSS_MB=2200 PORT=8080 RUN_MODE=all TRANSCODER_DISABLE=1 TRANSCODING_AUTO_RETRY_DISABLE=1 node --expose-gc --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
 
 [[workflows.workflow]]
 name = "Install and Build"
