@@ -30,11 +30,19 @@ import { sql } from "drizzle-orm";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { queueAutoRefillTotal } from "../../../infrastructure/metrics.js";
-import { enqueueIfMissing } from "../../broadcast/auto-enqueue.service.js";
+import { enqueueIfMissing, repairMissingS3MirroredAt } from "../../broadcast/auto-enqueue.service.js";
 
-const TRIGGER_MS = Number(process.env["QUEUE_REFILL_TRIGGER_MS"] ?? 30 * 60 * 1000);
+// Trigger threshold: start refilling when estimated remaining queue duration
+// falls below this value. Raised from 30 min to 60 min so the refill scan
+// fires with ample headroom before the queue empties — ytShuffleFallback only
+// activates AFTER the queue empties, so more lead time means cleaner handoffs.
+const TRIGGER_MS = Number(process.env["QUEUE_REFILL_TRIGGER_MS"] ?? 60 * 60 * 1000);
 const BATCH = Math.max(1, Math.min(20, Number(process.env["QUEUE_REFILL_BATCH"] ?? 5)));
-const INTERVAL_MS = 90_000;
+// Interval reduced from 90 s to 45 s: more frequent polling catches low-queue
+// conditions earlier, especially important during active upload sessions where
+// new content arrives continuously and the 30-minute window can be breached
+// faster than a 90 s scan cycle would detect.
+const INTERVAL_MS = 45_000;
 const COOLDOWN_MS = 5 * 60 * 1000;
 
 export interface AutoRefillStatus {
@@ -104,17 +112,41 @@ async function run(): Promise<void> {
       "[auto-refill] queue running low — attempting auto-refill",
     );
 
-    // Find library videos with a playable source (MP4 or HLS) that are NOT currently
-    // active in the broadcast queue.  MP4-first policy: raw MP4 uploads (localVideoUrl)
-    // are admitted immediately — HLS is an async upgrade, not a gate.
-    // Excludes YouTube-sourced videos — those are served through the ytShuffleFallback
-    // override mechanism (activated when the local queue is empty) and should never be
-    // inserted into the broadcast_queue directly.
+    // ── Repair silently-failed s3MirroredAt stamps before scanning ──────────
+    // completeMultipartUpload commits the blob to storage_blobs atomically, but
+    // the subsequent s3MirroredAt DB stamp is a best-effort update that can
+    // fail silently (e.g. connection blip after the transaction commits).
+    // repairMissingS3MirroredAt() re-stamps videos where the blob exists in
+    // storage_blobs but s3MirroredAt is NULL so they become eligible for the
+    // blob-confirmed filter below (same pre-pass that scanLibraryAndEnqueue runs).
+    try {
+      await repairMissingS3MirroredAt();
+    } catch (repairErr) {
+      logger.warn({ err: repairErr }, "[auto-refill] repairMissingS3MirroredAt failed (non-fatal — continuing)");
+    }
+
+    // Find library videos with a confirmed storage blob and a playable source
+    // (MP4 or HLS) that are NOT currently active in the broadcast queue.
+    //
+    // Blob-confirmed filter for local videos (mp4_upload source):
+    //   mv.s3_mirrored_at IS NOT NULL — the blob is confirmed in storage_blobs.
+    //   Without this check, videos pre-committed before assembly completes (where
+    //   local_video_url is set but the blob doesn't exist yet) enter the queue
+    //   and cause "Blob not found in storage" errors in the source resolver.
+    //
+    // HLS videos (hls_master_url only, no local_video_url) are externally hosted
+    // and have no storage blob to verify — they pass through without s3MirroredAt.
+    //
+    // Excludes YouTube-sourced videos — those are served through ytShuffleFallback
+    // and must never be inserted into broadcast_queue directly.
     const candidates = await db.execute<{ id: string; title: string }>(sql`
       SELECT mv.id, mv.title
       FROM managed_videos mv
       WHERE
-        (mv.hls_master_url IS NOT NULL OR mv.local_video_url IS NOT NULL)
+        (
+          mv.hls_master_url IS NOT NULL
+          OR (mv.local_video_url IS NOT NULL AND mv.s3_mirrored_at IS NOT NULL)
+        )
         AND mv.video_source != 'youtube'
         AND NOT EXISTS (
           SELECT 1 FROM broadcast_queue bq

@@ -81,6 +81,12 @@ export async function enqueueIfMissing(opts: {
         transcodingErrorCode: videosTable.transcodingErrorCode,
         category: videosTable.category,
         validationStatus: videosTable.validationStatus,
+        // Required for blob-existence gate in isPlayableForBroadcast: s3MirroredAt
+        // is stamped only after completeMultipartUpload commits the blob to
+        // storage_blobs. NULL means the blob is still assembling, the stamp failed,
+        // or the row was pre-committed before assembly started — all cases where
+        // broadcasting would cause "Blob not found in storage" errors.
+        s3MirroredAt: videosTable.s3MirroredAt,
       })
       .from(videosTable)
       .where(eq(videosTable.id, opts.videoId))
@@ -534,6 +540,29 @@ function isPlayableForBroadcast(row: {
   transcodingErrorCode?: string | null;
   category?: string | null;
   validationStatus?: string | null;
+  /**
+   * Optional: when provided, gates broadcast admission on blob confirmation.
+   *
+   * s3MirroredAt is stamped by the upload finalize path AFTER
+   * completeMultipartUpload commits the blob to storage_blobs. A NULL value
+   * means one of:
+   *   (a) the upload session is still assembling (blob not yet committed),
+   *   (b) the post-assembly DB stamp silently failed (repairMissingS3MirroredAt
+   *       will recover this within 90 s), or
+   *   (c) the video row was pre-committed before the assembly background task
+   *       ran (the pre-commit sets transcodingStatus="none" + localVideoUrl but
+   *       the blob write is still pending).
+   *
+   * In ALL cases, broadcasting a video without a confirmed blob causes
+   * "Blob not found in storage" errors in the faststart service and the
+   * source resolver. Setting s3MirroredAt=null here blocks admission until the
+   * blob is confirmed so the error can never originate from the queue.
+   *
+   * Callers that do not provide this field (e.g. listMissingFromQueue, which
+   * is diagnostic-only and does not modify the queue) receive undefined, which
+   * skips this gate entirely — backward-compatible behaviour.
+   */
+  s3MirroredAt?: Date | null;
 }): boolean {
   // YouTube is library-only — excluded from broadcast entirely.
   if (row.videoSource === "youtube") return false;
@@ -562,14 +591,22 @@ function isPlayableForBroadcast(row: {
   //            Block until the operator repairs and re-validates.
   if (row.validationStatus === "failed") return false;
 
-  // Raw MP4 is admitted to broadcast immediately after assembly — faststart
-  // (moov-atom relocation) is a background quality upgrade, NOT a broadcast
-  // gate. HTTP byte-range streaming works regardless of moov position; the
-  // player fetches the moov from EOF on first play and caches it. The
-  // faststartRecoveryWorker upgrades quality in the background; the
-  // orchestrator emits broadcast-source-upgraded when faststartApplied flips
-  // to true, allowing the next play cycle to use the optimised source.
   if (row.localVideoUrl && row.localVideoUrl.trim() !== "") {
+    // ── Blob-existence gate ─────────────────────────────────────────────────
+    // Only gate when s3MirroredAt was explicitly fetched and provided (not
+    // undefined). undefined = caller doesn't filter on blob confirmation (e.g.
+    // listMissingFromQueue — diagnostic only, never writes to the queue).
+    //
+    // s3MirroredAt IS NULL → blob not yet confirmed in storage_blobs.
+    // Admitting this video to the broadcast queue would cause:
+    //   • faststart service: "Blob not found in storage" errors
+    //   • source resolver: storage.getObject() → 404 → dead-air
+    //   • queue validator: MISSING_BLOB → auto-deactivate loop
+    //
+    // repairMissingS3MirroredAt() repairs silently-failed stamps within 90 s,
+    // after which this gate passes automatically (no operator action required).
+    if (row.s3MirroredAt !== undefined && !row.s3MirroredAt) return false;
+
     return true;
   }
 
