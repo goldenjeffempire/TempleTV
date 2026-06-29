@@ -293,6 +293,85 @@ export async function repairMissingS3MirroredAt(): Promise<{ repaired: number }>
 }
 
 /**
+ * Startup blob audit: scans all local managed_videos rows that have a
+ * `localVideoUrl` and confirms each one has a corresponding row in
+ * `storage_blobs`.  Videos whose blob is absent are logged as errors so
+ * operators can identify and re-upload them.  This is a read-only diagnostic
+ * — it does NOT deactivate queue items (the queue integrity validator handles
+ * that) or delete video rows.
+ *
+ * Returns a summary of how many videos were checked and how many are missing.
+ */
+export async function auditMissingBlobs(): Promise<{ checked: number; missing: number; missingIds: string[] }> {
+  try {
+    const candidates = await db
+      .select({
+        id: videosTable.id,
+        title: videosTable.title,
+        localVideoUrl: videosTable.localVideoUrl,
+        objectPath: videosTable.objectPath,
+      })
+      .from(videosTable)
+      .where(
+        and(
+          ne(videosTable.videoSource, "youtube"),
+          isNotNull(videosTable.localVideoUrl),
+        ),
+      )
+      .limit(2000);
+
+    if (candidates.length === 0) return { checked: 0, missing: 0, missingIds: [] };
+
+    // Derive storage keys — prefer objectPath (exact DB key) over localVideoUrl.
+    const withKeys = candidates.flatMap((r) => {
+      // objectPath is the authoritative storage key (e.g. "uploads/2024/01/15/abc.mp4").
+      const keyFromPath = r.objectPath?.trim() || null;
+      const keyFromUrl = deriveStorageKeyFromUrl(r.localVideoUrl ?? "");
+      const key = keyFromPath ?? keyFromUrl;
+      return key ? [{ id: r.id, title: r.title, key }] : [];
+    });
+
+    if (withKeys.length === 0) return { checked: candidates.length, missing: 0, missingIds: [] };
+
+    const keys = withKeys.map((r) => r.key);
+    const presentRows = await db
+      .select({ key: schema.storageBlobsTable.key })
+      .from(schema.storageBlobsTable)
+      .where(inArray(schema.storageBlobsTable.key, keys));
+    const presentSet = new Set(presentRows.map((r) => r.key));
+
+    const missingEntries = withKeys.filter((r) => !presentSet.has(r.key));
+
+    if (missingEntries.length > 0) {
+      logger.error(
+        {
+          count: missingEntries.length,
+          checked: withKeys.length,
+          missing: missingEntries.map((e) => ({ id: e.id, title: e.title, key: e.key })).slice(0, 20),
+        },
+        "[auto-enqueue] STARTUP BLOB AUDIT: found local videos with missing storage blobs — " +
+        "these videos cannot be played; re-upload them to restore. " +
+        "The queue integrity validator will deactivate their broadcast queue items.",
+      );
+    } else {
+      logger.info(
+        { checked: withKeys.length },
+        "[auto-enqueue] STARTUP BLOB AUDIT: all local video blobs confirmed present in storage_blobs ✓",
+      );
+    }
+
+    return {
+      checked: withKeys.length,
+      missing: missingEntries.length,
+      missingIds: missingEntries.map((e) => e.id),
+    };
+  } catch (err) {
+    logger.warn({ err }, "[auto-enqueue] auditMissingBlobs failed (non-fatal)");
+    return { checked: 0, missing: 0, missingIds: [] };
+  }
+}
+
+/**
  * Scan the entire library for playable videos that are NOT in the broadcast
  * queue, and enqueue every one of them. Two call sites:
  *

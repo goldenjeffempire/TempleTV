@@ -256,46 +256,89 @@ async function spawnAssemblyRetry(
         "[assembly-retry] starting background re-assembly",
       );
 
-      // ── Step 2: Run the assembly ──────────────────────────────────────────
-      // MinIO multipart path: assemble from existing part ETags.
-      if (!session.uploadId) {
-        throw new Error("session.uploadId is null — cannot re-assemble MinIO session");
+      // ── Step 2: Blob-exists shortcut + assembly ───────────────────────────
+      //
+      // CRITICAL IDEMPOTENCY GUARD: check whether the blob is already present
+      // in storage_blobs BEFORE attempting completeMultipartUpload.
+      //
+      // WHY THIS IS NECESSARY:
+      //   completeMultipartUpload deletes staging parts from storage_upload_parts
+      //   inside the same transaction as assembly (idempotency safety). If assembly
+      //   succeeds but a later post-processing step throws (telemetry write, DB
+      //   hiccup in the s3MirroredAt stamp, etc.), the catch block in the finalize
+      //   handler resets the session to "uploading" with assemblyAttempts++. The
+      //   reconciliation timer then calls spawnAssemblyRetry again. Without this
+      //   guard, the retry calls completeMultipartUpload with an uploadId whose
+      //   parts are GONE → ASSEMBLY_NO_PARTS → marks the video permanently failed
+      //   even though the blob is fully intact in storage_blobs. This guard
+      //   prevents that cascade by recognising an already-assembled blob and
+      //   jumping straight to post-processing.
+      //
+      //   The same scenario can also occur when the assembly watchdog fires
+      //   (resets session to "uploading") after a successful assembly whose
+      //   cleanup step timed out.
+      let blobAlreadyPresent = false;
+      try {
+        const existingBlob = await storage().headObject(objectKey);
+        if (existingBlob.exists && (existingBlob.contentLength ?? 0) > 0) {
+          log.info(
+            { sessionId, videoId, objectKey, blobSizeBytes: existingBlob.contentLength },
+            "[assembly-retry] blob already present in storage_blobs — skipping re-assembly; running post-processing only",
+          );
+          blobAlreadyPresent = true;
+        }
+      } catch (headErr) {
+        log.warn(
+          { err: headErr, sessionId, videoId, objectKey },
+          "[assembly-retry] headObject pre-check failed (non-fatal) — proceeding with full re-assembly",
+        );
       }
-      const allChunks = await db
-        .select({ chunkIndex: chunks.chunkIndex, s3Etag: chunks.s3Etag })
-        .from(chunks)
-        .where(eq(chunks.sessionId, sessionId))
-        .orderBy(asc(chunks.chunkIndex));
 
-      if (allChunks.length !== session.totalChunks) {
-        throw new Error(
-          `Chunk count mismatch: expected ${session.totalChunks}, found ${allChunks.length}`,
-        );
+      if (!blobAlreadyPresent) {
+        if (!session.uploadId) {
+          throw new Error("session.uploadId is null — cannot re-assemble (re-upload required)");
+        }
+        const allChunks = await db
+          .select({ chunkIndex: chunks.chunkIndex, s3Etag: chunks.s3Etag })
+          .from(chunks)
+          .where(eq(chunks.sessionId, sessionId))
+          .orderBy(asc(chunks.chunkIndex));
+
+        if (allChunks.length !== session.totalChunks) {
+          throw new Error(
+            `Chunk count mismatch: expected ${session.totalChunks}, found ${allChunks.length} in upload_chunks — ` +
+            "chunks may have been cleaned up after a successful assembly; re-upload to recover if this persists",
+          );
+        }
+        const missingEtags = allChunks.filter((c) => !c.s3Etag);
+        if (missingEtags.length > 0) {
+          throw new Error(
+            `${missingEtags.length} chunk(s) are missing ETags in upload_chunks — ` +
+            "parts may have been cleaned up; re-upload to recover",
+          );
+        }
+        // completeMultipartUpload assembles all staging parts from
+        // storage_upload_parts into the final blob in storage_blobs.
+        // The transaction deletes staging parts on success so a re-call
+        // after crash would fail with ASSEMBLY_NO_PARTS — prevented above
+        // by the blobAlreadyPresent shortcut.
+        await storage().completeMultipartUpload({
+          key: objectKey,
+          uploadId: session.uploadId,
+          parts: allChunks.map((c) => ({
+            partNumber: c.chunkIndex + 1,
+            etag: c.s3Etag as string,
+          })),
+          // Re-verify the assembled blob's SHA-256 against the hash the client
+          // computed before the upload began.  Any mismatch causes the transaction
+          // to roll back so no corrupt blob is ever committed.
+          expectedSha256: session.expectedFileSha256 ?? undefined,
+          // Validate that storage_upload_parts contains exactly this many rows
+          // so phantom parts (from any uploadId collision) cannot silently corrupt
+          // the assembled blob.
+          totalChunks: session.totalChunks,
+        });
       }
-      const missingEtags = allChunks.filter((c) => !c.s3Etag);
-      if (missingEtags.length > 0) {
-        throw new Error(
-          `${missingEtags.length} chunk(s) are missing MinIO ETags — parts may have been cleaned up`,
-        );
-      }
-      // completeMultipartUpload reassembles all uploaded parts into the final
-      // MinIO object. Idempotent when called again after a crash.
-      await storage().completeMultipartUpload({
-        key: objectKey,
-        uploadId: session.uploadId,
-        parts: allChunks.map((c) => ({
-          partNumber: c.chunkIndex + 1,
-          etag: c.s3Etag as string,
-        })),
-        // Re-verify the assembled blob's SHA-256 against the hash the client
-        // computed before the upload began.  Any mismatch causes the transaction
-        // to roll back so no corrupt blob is ever committed.
-        expectedSha256: session.expectedFileSha256 ?? undefined,
-        // Validate that storage_upload_parts contains exactly this many rows
-        // so phantom parts (from any uploadId collision) cannot silently corrupt
-        // the assembled blob.
-        totalChunks: session.totalChunks,
-      });
 
       // ── Step 3: Verify assembled blob integrity ───────────────────────────
       const head = await storage().headObject(objectKey);
@@ -2269,7 +2312,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             await Promise.all([
               db
                 .update(sessions)
-                .set({ status: "completed", storageBackend: "minio", updatedAt: new Date() })
+                .set({ status: "completed", storageBackend: "db", updatedAt: new Date() })
                 .where(eq(sessions.sessionId, sessionId))
                 .catch((err: unknown) =>
                   capturedLog.warn({ err, sessionId }, "[finalize:bg] session completed update failed (non-fatal)"),

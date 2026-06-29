@@ -788,7 +788,20 @@ async function main() {
     void (async () => {
       await new Promise<void>((resolve) => { const t = setTimeout(resolve, 5_000); t.unref?.(); });
       try {
-        const { scanLibraryAndEnqueue, repairMissingS3MirroredAt } = await import("./modules/broadcast/auto-enqueue.service.js");
+        const { scanLibraryAndEnqueue, repairMissingS3MirroredAt, auditMissingBlobs } = await import("./modules/broadcast/auto-enqueue.service.js");
+
+        // Blob audit: log any local videos whose storage_blobs row is absent.
+        // This is a read-only diagnostic — deactivation of queue items for
+        // missing-blob videos is handled by the queue integrity validator which
+        // runs shortly after (inside the orchestrator startup sequence).
+        const auditResult = await auditMissingBlobs();
+        if (auditResult.missing > 0) {
+          logger.error(
+            { missing: auditResult.missing, checked: auditResult.checked },
+            "[startup] BLOB AUDIT: detected local videos with missing storage blobs — " +
+            "queue integrity validator will deactivate their broadcast queue items automatically",
+          );
+        }
 
         // Run the s3MirroredAt repair first so videos whose post-assembly stamp
         // silently failed are healed before the candidate query runs.

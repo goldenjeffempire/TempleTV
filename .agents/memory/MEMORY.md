@@ -1,3 +1,4 @@
+- [Blob-not-found permanent fix](blob-not-found-fix.md) — 4-layer fix: spawnAssemblyRetry blob-exists shortcut + storageBackend="db" + MISSING_BLOB queue validator + startup blob audit.
 - [Memory leak fixes (RSS/External/ArrayBuffers)](memory-leak-fixes.md) — unacked-alerts store unbounded growth; storage dec() double-decrement; readChunks missing _shuttingDown guard; watchdog missing GC on ArrayBuffers alert.
 - [Faststart recovery Category C + timing fixes](faststart-recovery-category-c.md) — recovery worker now catches transcodingStatus='none' videos (inline trigger missed); initial delay 5→1 min; batch 10→20; faststartApplied=false hoisted to top-level AND.
 - [Admin broadcastFilter is client-side only](admin-broadcast-filter-client-side.md) — broadcastFilter in videos.tsx is applied client-side via displayVideos; API has no broadcastReady param; do NOT add it to query key or send to API.

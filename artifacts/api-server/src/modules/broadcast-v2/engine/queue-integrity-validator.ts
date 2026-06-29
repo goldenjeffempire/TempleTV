@@ -6,6 +6,11 @@
  *
  *   NO_PLAYABLE_URL        — item has no URL on either the queue row or the
  *                            joined video row after COALESCE
+ *   MISSING_BLOB           — item has a localVideoUrl but no corresponding row
+ *                            in storage_blobs (blob was never assembled, was
+ *                            deleted, or the key derivation failed).
+ *                            AUTO-FIXED: item deactivated; reverse pass
+ *                            re-activates when the blob appears.
  *   DUPLICATE_SORT_ORDER   — two or more items share the same sort_order;
  *                            queue ordering becomes non-deterministic
  *   EXCESSIVE_DURATION     — item duration > 12 h (likely data corruption)
@@ -29,6 +34,35 @@ import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { normalizeQueueUrl } from "../repository/queue.repo.js";
+
+/**
+ * Derive the storage_blobs key from a localVideoUrl.
+ *
+ * localVideoUrl formats seen in the wild:
+ *   /api/v1/uploads/2024/01/15/abc.mp4        → uploads/2024/01/15/abc.mp4
+ *   /api/uploads/2024/01/15/abc.mp4            → uploads/2024/01/15/abc.mp4
+ *   https://api.../api/v1/uploads/path/f.mp4   → uploads/path/f.mp4
+ *   uploads/2024/01/15/abc.mp4                 → uploads/2024/01/15/abc.mp4 (already a key)
+ *
+ * Returns null when the URL cannot be mapped to a storage key (e.g. external
+ * YouTube URLs, HLS master playlists stored elsewhere, or malformed URLs).
+ */
+function deriveStorageKey(localVideoUrl: string): string | null {
+  if (!localVideoUrl || localVideoUrl.trim() === "") return null;
+  // Absolute URL — extract the path segment after /api/v[N]/uploads/ or /api/uploads/
+  if (/^https?:\/\//i.test(localVideoUrl)) {
+    const marker1 = "/api/v1/uploads/";
+    const idx1 = localVideoUrl.indexOf(marker1);
+    if (idx1 !== -1) return "uploads/" + localVideoUrl.slice(idx1 + marker1.length);
+    const marker2 = "/api/uploads/";
+    const idx2 = localVideoUrl.indexOf(marker2);
+    if (idx2 !== -1) return "uploads/" + localVideoUrl.slice(idx2 + marker2.length);
+    return null; // External URL — not in our storage
+  }
+  // Relative URL: /api/v1/uploads/... or /api/uploads/... or bare uploads/...
+  const stripped = localVideoUrl.replace(/^\/(?:api\/(?:v\d+\/)?)?/, "");
+  return stripped.startsWith("uploads/") ? stripped : null;
+}
 
 export type IssueSeverity = "error" | "warn" | "info";
 
@@ -175,6 +209,66 @@ class QueueIntegrityValidatorImpl {
               code: "PLACEHOLDER_DURATION",
               message: `Queue row still carries 1800-s placeholder but managed_videos.duration=${row.vDuration} — auto-correcting`,
             });
+          }
+        }
+      }
+
+      // ── MISSING_BLOB: localVideoUrl set but no blob in storage_blobs ──────
+      // Even though a queue item may have a localVideoUrl, the underlying
+      // storage_blobs row can be absent (upload never completed, blob was
+      // deleted manually, or the key derivation is stale after a migration).
+      // The orchestrator will fail at play time with "Blob not found in storage"
+      // for every attempt, causing repeated auto-skip cycles.
+      //
+      // Strategy: batch-derive storage keys for all items that have a URL,
+      // then single-query storage_blobs to check which keys are present.
+      // Only items with a derivable "uploads/" key are checked — external URLs
+      // (YouTube, HLS CDN) are skipped.
+      {
+        type BlobCheckEntry = { itemId: string; itemTitle: string; key: string };
+        const blobCheckEntries: BlobCheckEntry[] = [];
+
+        for (const row of rows) {
+          // Only check items that have a URL (no URL → already flagged NO_PLAYABLE_URL)
+          const effectiveUrl = row.qLocalUrl ?? row.vLocalUrl;
+          if (!effectiveUrl) continue;
+          const key = deriveStorageKey(effectiveUrl);
+          if (!key) continue; // External/YouTube/CDN URL — not in our storage
+          blobCheckEntries.push({
+            itemId: row.id,
+            itemTitle: row.title ?? "(untitled)",
+            key,
+          });
+        }
+
+        if (blobCheckEntries.length > 0) {
+          try {
+            const keysToCheck = blobCheckEntries.map((e) => e.key);
+            const presentRows = await db
+              .select({ key: schema.storageBlobsTable.key })
+              .from(schema.storageBlobsTable)
+              .where(inArray(schema.storageBlobsTable.key, keysToCheck));
+            const presentSet = new Set(presentRows.map((r) => r.key));
+
+            for (const entry of blobCheckEntries) {
+              if (!presentSet.has(entry.key)) {
+                issues.push({
+                  severity: "error",
+                  itemId: entry.itemId,
+                  itemTitle: entry.itemTitle,
+                  code: "MISSING_BLOB",
+                  message:
+                    `storage_blobs has no row for key="${entry.key}" — ` +
+                    "the blob was never assembled, was deleted, or the upload failed. " +
+                    "Re-upload the video to restore it.",
+                });
+              }
+            }
+          } catch (blobCheckErr) {
+            logger.warn(
+              { err: blobCheckErr },
+              "[queue-validator] MISSING_BLOB check failed (non-fatal) — skipping blob verification this cycle",
+            );
           }
         }
       }
@@ -376,6 +470,120 @@ class QueueIntegrityValidatorImpl {
               { err: fixErr, count: restoredIds.length },
               "[queue-validator] AUTO-FIX (reverse): failed to re-activate restored items (non-fatal)",
             );
+          }
+        }
+      }
+
+      // ── Auto-fix: deactivate MISSING_BLOB items ──────────────────────────
+      // Items whose storage blob is absent are removed from the active rotation
+      // so the orchestrator stops trying to play them (repeated source resolution
+      // failures drive the auto-skip counter up and cause dead-air bursts).
+      // The reverse pass below re-activates them when the blob is restored
+      // (e.g. after a successful re-upload or a manual blob repair).
+      const missingBlobIds = issues
+        .filter((i) => i.severity === "error" && i.code === "MISSING_BLOB" && i.itemId)
+        .map((i) => i.itemId!);
+      if (missingBlobIds.length > 0) {
+        try {
+          await db
+            .update(schema.broadcastQueueTable)
+            .set({ isActive: false, validatorDeactivatedReason: "missing_blob" })
+            .where(inArray(schema.broadcastQueueTable.id, missingBlobIds));
+          logger.error(
+            { count: missingBlobIds.length, itemIds: missingBlobIds },
+            "[queue-validator] AUTO-FIX: deactivated MISSING_BLOB items — storage_blobs has no row " +
+            "for their localVideoUrl key; re-upload or restore the video blob to return them to rotation",
+          );
+          adminEventBus.push("broadcast-queue-updated", {
+            reason: "integrity-fix-missing-blob",
+            count: missingBlobIds.length,
+          });
+          adminEventBus.push("videos-library-updated", {
+            reason: "integrity-fix-missing-blob",
+            count: missingBlobIds.length,
+          });
+          sendBroadcastWebhook("item_deactivated", "main", {
+            reason: "missing_blob",
+            count: missingBlobIds.length,
+            itemIds: missingBlobIds,
+          });
+        } catch (fixErr) {
+          logger.warn(
+            { err: fixErr, count: missingBlobIds.length },
+            "[queue-validator] AUTO-FIX: failed to deactivate MISSING_BLOB items (non-fatal)",
+          );
+        }
+      }
+
+      // ── Auto-fix (reverse): re-activate MISSING_BLOB items whose blob is now present ──
+      {
+        type BlobRestoredRow = { id: string; title: string; local_video_url: string | null; q_local_url: string | null };
+        let blobRestoredRows: BlobRestoredRow[] = [];
+        try {
+          const result = await db.execute<BlobRestoredRow>(sql`
+            SELECT bq.id, bq.title, mv.local_video_url, bq.local_video_url AS q_local_url
+            FROM broadcast_queue bq
+            LEFT JOIN managed_videos mv ON mv.id = bq.video_id
+            WHERE bq.is_active = false
+              AND bq.validator_deactivated_reason = 'missing_blob'
+          `);
+          blobRestoredRows = (result.rows as BlobRestoredRow[]) ?? [];
+        } catch (qErr) {
+          logger.debug({ err: qErr }, "[queue-validator] reverse-MISSING_BLOB query failed (non-fatal)");
+        }
+
+        if (blobRestoredRows.length > 0) {
+          // For each deactivated item, check if its blob is now present.
+          const reactivatableIds: string[] = [];
+          try {
+            const withKeys = blobRestoredRows.flatMap((r) => {
+              const effectiveUrl = r.q_local_url ?? r.local_video_url;
+              if (!effectiveUrl) return [];
+              const key = deriveStorageKey(effectiveUrl);
+              if (!key) return [];
+              return [{ id: r.id, key }];
+            });
+
+            if (withKeys.length > 0) {
+              const keys = withKeys.map((e) => e.key);
+              const presentRows = await db
+                .select({ key: schema.storageBlobsTable.key })
+                .from(schema.storageBlobsTable)
+                .where(inArray(schema.storageBlobsTable.key, keys));
+              const presentSet = new Set(presentRows.map((r) => r.key));
+              for (const entry of withKeys) {
+                if (presentSet.has(entry.key)) reactivatableIds.push(entry.id);
+              }
+            }
+          } catch (blobCheckErr) {
+            logger.debug({ err: blobCheckErr }, "[queue-validator] reverse-MISSING_BLOB blob check failed (non-fatal)");
+          }
+
+          if (reactivatableIds.length > 0) {
+            try {
+              await db
+                .update(schema.broadcastQueueTable)
+                .set({ isActive: true, validatorDeactivatedReason: null })
+                .where(inArray(schema.broadcastQueueTable.id, reactivatableIds));
+              logger.info(
+                { count: reactivatableIds.length, itemIds: reactivatableIds },
+                "[queue-validator] AUTO-FIX (reverse): re-activated MISSING_BLOB items " +
+                "whose storage blob has been restored — items returned to broadcast rotation",
+              );
+              adminEventBus.push("broadcast-queue-updated", {
+                reason: "integrity-fix-blob-restored",
+                count: reactivatableIds.length,
+              });
+              adminEventBus.push("videos-library-updated", {
+                reason: "integrity-fix-blob-restored",
+                count: reactivatableIds.length,
+              });
+            } catch (fixErr) {
+              logger.warn(
+                { err: fixErr, count: reactivatableIds.length },
+                "[queue-validator] AUTO-FIX (reverse): failed to re-activate MISSING_BLOB items (non-fatal)",
+              );
+            }
           }
         }
       }
