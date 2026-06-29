@@ -423,23 +423,11 @@ async function spawnAssemblyRetry(
         log.warn({ err: probeErr, videoId }, "[assembly-retry] ffprobe failed (non-fatal) — using existing duration");
       }
 
-      // ── Early broadcast enrollment (raw MP4) ──────────────────────────────
-      // Enroll immediately so the video can air as raw MP4 while faststart runs.
-      try {
-        const earlyEnqRes = await enqueueIfMissing({ videoId, reason: "assembly-retry" });
-        if (earlyEnqRes.enqueued) {
-          log.info({ videoId, queueItemId: earlyEnqRes.queueItemId }, "[assembly-retry] video enrolled in broadcast queue (raw MP4 — faststart pending)");
-          adminEventBus.push("broadcast-queue-updated", { reason: "assembly-retry", videoId });
-        }
-      } catch (earlyEnqErr) {
-        log.warn({ err: earlyEnqErr, videoId }, "[assembly-retry] early enqueueIfMissing failed (non-fatal)");
-      }
-
-      // ── Faststart: moov-atom relocation ───────────────────────────────────
-      // Relocate the moov atom to the front of the file for instant-start
-      // playback on all surfaces.  No re-encoding — stream-copy only.
-      // The video is already in the queue as raw MP4; this upgrades it in-place.
-      log.info({ videoId, objectKey: vRow.objectPath }, "[assembly-retry] running faststart pipeline (moov relocation)");
+      // ── Faststart: moov-atom relocation (REQUIRED before broadcast) ─────────
+      // FastStart MUST complete before the video enters the broadcast queue.
+      // Raw MP4 with moov at EOF causes blank screens on TV/mobile/web.
+      // enqueueIfMissing is called ONLY after faststart succeeds.
+      log.info({ videoId, objectKey: vRow.objectPath }, "[assembly-retry] running faststart pipeline (moov relocation — broadcast gated on success)");
       const fsResult = await runFaststart(videoId, vRow.objectPath!, { skipStatusUpdate: false });
       log.info(
         { videoId, finalStatus: fsResult.finalStatus, remuxed: fsResult.remuxed ?? false, durationMs: fsResult.durationMs },
@@ -447,31 +435,33 @@ async function spawnAssemblyRetry(
       );
 
       if (!fsResult.ok) {
-        log.warn(
+        log.error(
           { videoId, rootCause: fsResult.rootCause, actions: fsResult.actions },
-          "[assembly-retry] faststart FAILED — video airing as raw MP4; faststartRecoveryWorker will retry automatically",
+          "[assembly-retry] faststart FAILED — video HELD from broadcast queue; faststartRecoveryWorker will retry and enqueue on success",
         );
+        // DO NOT enqueue: video stays out of broadcast until moov is relocated.
+        // faststartRecoveryWorker sweeps every 5 min, retries up to MAX_ATTEMPTS,
+        // and calls enqueueIfMissing only after runFaststart succeeds.
         adminEventBus.push("transcoding-update", {
           videoId,
           status: "failed",
           errorCode: "FASTSTART_FAILED",
           errorMessage: fsResult.rootCause ?? "faststart remux failed",
         });
-        // Video remains in the broadcast queue as raw MP4 and continues to air
-        // while the faststartRecoveryWorker retries in the background.
+        adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-failed" });
       } else {
-        // Faststart complete — video upgraded to faststart-optimised MP4.
-        // Belt-and-suspenders: ensure the video is in the queue (idempotent).
+        // Faststart complete — moov atom is now at byte 0. SAFE to enqueue.
         try {
-          await enqueueIfMissing({ videoId, reason: "assembly-retry" });
+          const enqRes = await enqueueIfMissing({ videoId, reason: "faststart-complete" });
+          if (enqRes.enqueued) {
+            log.info({ videoId, queueItemId: enqRes.queueItemId }, "[assembly-retry] video enrolled in broadcast queue (faststart MP4 — moov at byte 0)");
+            adminEventBus.push("broadcast-queue-updated", { reason: "assembly-retry-faststart", videoId });
+          }
         } catch { /* non-fatal */ }
         adminEventBus.push("broadcast-source-upgraded", { videoId, quality: "mp4_faststart" });
         adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-complete" });
         void invalidateVideosCatalogCache();
 
-        // Schedule comprehensive playback validation now that faststart is confirmed.
-        // Fire-and-forget: sets validationStatus='pending' immediately, runs all
-        // 9 checks without blocking the assembly-retry response.
         if (vRow?.objectPath) {
           scheduleVideoValidation(videoId, vRow.objectPath, { faststartApplied: true });
         }
@@ -2435,44 +2425,14 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               // validate the file independently.
             }
 
-            // ── Early broadcast enrollment (raw MP4) ─────────────────────────
-            // Enroll immediately so the video can air as raw MP4 while faststart
-            // runs in the background.  The orchestrator upgrades sourceQuality to
-            // mp4_faststart transparently when faststart emits broadcast-source-upgraded.
-            try {
-              const earlyEnqRes = await enqueueIfMissing({ videoId, reason: "upload-finalize" });
-              if (earlyEnqRes.enqueued) {
-                capturedLog.info(
-                  { videoId, queueItemId: earlyEnqRes.queueItemId },
-                  "[finalize:bg] video enrolled in broadcast queue (raw MP4 — faststart pending)",
-                );
-                if (ffprobeDurSecs != null && ffprobeDurSecs > 10) {
-                  await db
-                    .update(schema.broadcastQueueTable)
-                    .set({ durationSecs: Math.round(ffprobeDurSecs) })
-                    .where(eq(schema.broadcastQueueTable.videoId, videoId))
-                    .catch((err: unknown) =>
-                      capturedLog.warn(
-                        { err, videoId },
-                        "[finalize:bg] queue duration_secs early update failed (non-fatal)",
-                      ),
-                    );
-                }
-                adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId });
-              }
-            } catch (earlyEnqErr) {
-              capturedLog.warn({ err: earlyEnqErr, videoId }, "[finalize:bg] early enqueueIfMissing failed (non-fatal)");
-            }
-
-            // ── Faststart: moov-atom relocation ──────────────────────────────
-            // Relocate the moov atom to the front of the file for instant-start
-            // playback on all player surfaces (browser, TV, mobile).  No
-            // re-encoding — audio/video data are copied byte-for-byte.
-            // The video is already in the broadcast queue as raw MP4; this
-            // operation upgrades it in-place and signals broadcast-source-upgraded.
+            // ── Faststart: moov-atom relocation (REQUIRED before broadcast) ──
+            // FastStart MUST complete before the video enters the broadcast queue.
+            // Raw MP4 with moov at EOF stalls browsers, TVs, and mobile players
+            // (they must download the entire file before rendering one frame).
+            // enqueueIfMissing is called ONLY after faststart succeeds.
             capturedLog.info(
               { videoId, objectKey },
-              "[finalize:bg] starting faststart pipeline (moov relocation)",
+              "[finalize:bg] starting faststart pipeline (moov relocation — broadcast gated on success)",
             );
             const fsResult = await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
             capturedLog.info(
@@ -2486,44 +2446,53 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             );
 
             if (!fsResult.ok) {
-              capturedLog.warn(
+              capturedLog.error(
                 {
                   videoId,
                   rootCause: fsResult.rootCause,
                   actions: fsResult.actions,
                 },
-                "[finalize:bg] faststart FAILED — video airing as raw MP4; faststartRecoveryWorker will retry automatically",
+                "[finalize:bg] faststart FAILED — video HELD from broadcast queue; faststartRecoveryWorker will retry and enqueue on success",
               );
+              // DO NOT enqueue: video stays out of broadcast until moov is relocated.
+              // faststartRecoveryWorker sweeps every 5 min, retries up to MAX_ATTEMPTS,
+              // and calls enqueueIfMissing ONLY after runFaststart succeeds.
               adminEventBus.push("transcoding-update", {
                 videoId,
                 status: "failed",
                 errorCode: "FASTSTART_FAILED",
                 errorMessage: fsResult.rootCause ?? "faststart remux failed",
               });
-              // Video remains in the broadcast queue as raw MP4 and continues
-              // to air while the faststartRecoveryWorker retries in the background.
+              adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-failed" });
             } else {
-              // Faststart complete — video upgraded from raw MP4 to faststart-optimised
-              // (moov atom at byte 0, instant-start on all surfaces).
-              // Belt-and-suspenders: ensure the video is in the queue (idempotent).
+              // FastStart complete — moov atom at byte 0. NOW safe to enqueue.
+              // Video will stream from byte-0 on all surfaces with no buffering.
               try {
-                await enqueueIfMissing({ videoId, reason: "upload-finalize" });
+                const enqRes = await enqueueIfMissing({ videoId, reason: "faststart-complete" });
+                if (enqRes.enqueued) {
+                  capturedLog.info(
+                    { videoId, queueItemId: enqRes.queueItemId },
+                    "[finalize:bg] video enrolled in broadcast queue (faststart MP4 — moov at byte 0)",
+                  );
+                  // Update queue row with accurate ffprobe duration now that we have it.
+                  if (ffprobeDurSecs != null && ffprobeDurSecs > 10) {
+                    await db
+                      .update(schema.broadcastQueueTable)
+                      .set({ durationSecs: Math.round(ffprobeDurSecs) })
+                      .where(eq(schema.broadcastQueueTable.videoId, videoId))
+                      .catch((err: unknown) =>
+                        capturedLog.warn({ err, videoId }, "[finalize:bg] queue duration_secs update failed (non-fatal)"),
+                      );
+                  }
+                  adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId });
+                }
               } catch { /* non-fatal */ }
 
-              // Notify all connected admin tabs that faststart completed and
-              // the video source quality has been upgraded to mp4_faststart.
-              // broadcast-source-upgraded clears the "Applying faststart…"
-              // spinner immediately in the admin videos page without waiting
-              // for the next polling cycle.
               void invalidateVideosCatalogCache();
               adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-complete" });
               adminEventBus.push("broadcast-source-upgraded", { videoId, quality: "mp4_faststart" });
 
-              // ── Comprehensive playback validation ─────────────────────────
-              // Fire-and-forget after successful faststart. Runs 9 checks
-              // (codec compat, keyframe interval, A/V sync, first+last frame,
-              // duration accuracy, HTTP Range) and writes the report to DB.
-              // A 'failed' report will gate subsequent re-enqueue attempts.
+              // Comprehensive playback validation — fire-and-forget after faststart.
               scheduleVideoValidation(videoId, objectKey, {
                 faststartApplied: true,
                 storedDurationSecs: ffprobeDurSecs ?? null,

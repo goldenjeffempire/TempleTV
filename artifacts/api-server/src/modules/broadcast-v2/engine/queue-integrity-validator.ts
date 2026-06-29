@@ -25,6 +25,11 @@
  *   SUSPICIOUS_DURATION    — video.duration < 10 s — likely a probe failure;
  *                            background ffprobe reprobe auto-corrects it.
  *   ZERO_DURATION          — item carries zero or negative durationSecs.
+ *   FASTSTART_PENDING      — queue item's video has faststartApplied=false;
+ *                            moov atom not yet relocated to byte 0. Raw MP4
+ *                            stalls all player surfaces. AUTO-FIXED: item
+ *                            deactivated; reverse pass re-activates when
+ *                            faststartApplied flips to true.
  *
  * Results are cached and exposed via the /diagnostics endpoint. Non-fatal.
  */
@@ -111,6 +116,7 @@ class QueueIntegrityValidatorImpl {
           vLocalUrl: v.localVideoUrl,
           vDuration: v.duration,
           vSource: v.videoSource,
+          vFaststart: v.faststartApplied,
         })
         .from(q)
         .leftJoin(v, eq(q.videoId, v.id))
@@ -191,6 +197,27 @@ class QueueIntegrityValidatorImpl {
             itemTitle: row.title,
             code: "ZERO_DURATION",
             message: `Item has durationSecs=${row.durationSecs} — orchestrator applies a 60 s floor; re-probe the source file or correct the duration`,
+          });
+        }
+
+        // FASTSTART_PENDING: queue item references a local MP4 whose moov atom
+        // has not yet been relocated. Raw MP4 (moov at EOF) stalls players —
+        // blank screens on TV/mobile/web. Deactivate until faststart completes.
+        // The reverse pass below re-activates when faststartApplied flips to true.
+        if (
+          row.videoId2 !== null &&
+          row.vSource !== "youtube" &&
+          (row.qLocalUrl || row.vLocalUrl) &&
+          row.vFaststart !== true
+        ) {
+          issues.push({
+            severity: "error",
+            itemId: row.id,
+            itemTitle: row.title,
+            code: "FASTSTART_PENDING",
+            message:
+              `Video '${row.videoId}' has faststartApplied=false — moov atom not yet relocated. ` +
+              "Item deactivated until faststartRecoveryWorker completes moov relocation.",
           });
         }
 
@@ -588,6 +615,95 @@ class QueueIntegrityValidatorImpl {
         }
       }
 
+      // ── Auto-fix: deactivate FASTSTART_PENDING items ──────────────────────
+      // Items whose video has faststartApplied=false are held from broadcast:
+      // moov at EOF stalls every player surface. Deactivate them so the
+      // orchestrator stops serving them. The faststartRecoveryWorker will call
+      // enqueueIfMissing once moov relocation succeeds, and the reverse pass
+      // below re-activates the item when faststartApplied flips to true.
+      const faststartPendingIds = issues
+        .filter((i) => i.severity === "error" && i.code === "FASTSTART_PENDING" && i.itemId)
+        .map((i) => i.itemId!);
+      if (faststartPendingIds.length > 0) {
+        try {
+          await db
+            .update(schema.broadcastQueueTable)
+            .set({ isActive: false, validatorDeactivatedReason: "faststart_pending" })
+            .where(inArray(schema.broadcastQueueTable.id, faststartPendingIds));
+          logger.warn(
+            { count: faststartPendingIds.length, itemIds: faststartPendingIds },
+            "[queue-validator] AUTO-FIX: deactivated FASTSTART_PENDING items — moov not yet relocated; " +
+            "faststartRecoveryWorker will re-enqueue when faststart succeeds",
+          );
+          adminEventBus.push("broadcast-queue-updated", {
+            reason: "integrity-fix-faststart-pending",
+            count: faststartPendingIds.length,
+          });
+          adminEventBus.push("videos-library-updated", {
+            reason: "integrity-fix-faststart-pending",
+            count: faststartPendingIds.length,
+          });
+          sendBroadcastWebhook("item_deactivated", "main", {
+            reason: "faststart_pending",
+            count: faststartPendingIds.length,
+            itemIds: faststartPendingIds,
+          });
+        } catch (fixErr) {
+          logger.warn(
+            { err: fixErr, count: faststartPendingIds.length },
+            "[queue-validator] AUTO-FIX: failed to deactivate FASTSTART_PENDING items (non-fatal)",
+          );
+        }
+      }
+
+      // ── Auto-fix (reverse): re-activate FASTSTART_PENDING items where faststart now done ──
+      {
+        type FaststartReadyRow = { id: string; title: string };
+        let fastReadyRows: FaststartReadyRow[] = [];
+        try {
+          const result = await db.execute<FaststartReadyRow>(sql`
+            SELECT bq.id, bq.title
+            FROM broadcast_queue bq
+            INNER JOIN managed_videos mv ON mv.id = bq.video_id
+            WHERE bq.is_active = false
+              AND bq.validator_deactivated_reason = 'faststart_pending'
+              AND mv.faststart_applied = true
+              AND mv.local_video_url IS NOT NULL
+          `);
+          fastReadyRows = (result.rows as FaststartReadyRow[]) ?? [];
+        } catch (qErr) {
+          logger.debug({ err: qErr }, "[queue-validator] reverse-FASTSTART_PENDING query failed (non-fatal)");
+        }
+
+        if (fastReadyRows.length > 0) {
+          const fastReadyIds = fastReadyRows.map((r) => r.id);
+          try {
+            await db
+              .update(schema.broadcastQueueTable)
+              .set({ isActive: true, validatorDeactivatedReason: null })
+              .where(inArray(schema.broadcastQueueTable.id, fastReadyIds));
+            logger.info(
+              { count: fastReadyIds.length, itemIds: fastReadyIds },
+              "[queue-validator] AUTO-FIX (reverse): re-activated FASTSTART_PENDING items " +
+              "whose video now has faststartApplied=true — items returned to broadcast rotation",
+            );
+            adminEventBus.push("broadcast-queue-updated", {
+              reason: "integrity-fix-faststart-ready",
+              count: fastReadyIds.length,
+            });
+            adminEventBus.push("videos-library-updated", {
+              reason: "integrity-fix-faststart-ready",
+              count: fastReadyIds.length,
+            });
+          } catch (fixErr) {
+            logger.warn(
+              { err: fixErr, count: fastReadyIds.length },
+              "[queue-validator] AUTO-FIX (reverse): failed to re-activate FASTSTART_PENDING items (non-fatal)",
+            );
+          }
+        }
+      }
+
       // ── Auto-fix (reverse): re-activate ORPHANED_VIDEO_REF items that now have a local URL ──
       {
         type RevivedRow = { id: string; title: string };
@@ -600,6 +716,7 @@ class QueueIntegrityValidatorImpl {
             WHERE bq.is_active = false
               AND bq.validator_deactivated_reason = 'orphaned_video_ref'
               AND mv.local_video_url IS NOT NULL
+              AND mv.faststart_applied = true
           `);
           revivedRows = (result.rows as RevivedRow[]) ?? [];
         } catch (qErr) {
@@ -612,8 +729,6 @@ class QueueIntegrityValidatorImpl {
         if (revivedRows.length > 0) {
           const revivedIds = revivedRows.map((r) => r.id);
           try {
-            // Re-activate when local_video_url is present — raw MP4 is admitted
-            // directly; no faststart gate required.
             await db
               .update(schema.broadcastQueueTable)
               .set({ isActive: true, validatorDeactivatedReason: null })
@@ -621,7 +736,7 @@ class QueueIntegrityValidatorImpl {
             logger.warn(
               { count: revivedIds.length, itemIds: revivedIds },
               "[queue-validator] AUTO-FIX (reverse): re-activated ORPHANED_VIDEO_REF items " +
-              "whose video now has a local URL (raw MP4 admitted) — items returned to broadcast rotation",
+              "whose video now has a local URL with faststartApplied=true — items returned to broadcast rotation",
             );
             adminEventBus.push("broadcast-queue-updated", {
               reason: "integrity-fix-revived-orphaned-video-ref",

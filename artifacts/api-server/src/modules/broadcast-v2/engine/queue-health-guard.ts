@@ -88,12 +88,12 @@ async function repairZeroDurations(): Promise<number> {
  * validator or a prior automated process disabled.
  *
  * The validator's own per-reason reverse passes (corrupt_upload,
- * orphaned_video_ref, missing_video_join, hls_storage_missing) run every
- * 2 minutes and handle the fine-grained re-activation logic for each
- * deactivation class. This function is a belt-and-suspenders backstop
- * that catches any residual items those passes miss — for example, items
- * deactivated by an older version of the code whose deactivation policy
- * has since been narrowed.
+ * orphaned_video_ref, missing_video_join, hls_storage_missing,
+ * faststart_pending) run every 2 minutes and handle the fine-grained
+ * re-activation logic for each deactivation class. This function is a
+ * belt-and-suspenders backstop that catches any residual items those passes
+ * miss — for example, items deactivated by an older version of the code
+ * whose deactivation policy has since been narrowed.
  */
 async function reactivateSystemDeactivated(): Promise<number> {
   try {
@@ -111,10 +111,12 @@ async function reactivateSystemDeactivated(): Promise<number> {
           bq.local_video_url IS NOT NULL
           OR mv.local_video_url IS NOT NULL
         )
+        AND mv.faststart_applied = true
         AND (
           mv.transcoding_error_code IS NULL
           OR mv.transcoding_error_code NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING', 'ASSEMBLY_FAILED')
         )
+        AND bq.validator_deactivated_reason != 'faststart_pending'
       RETURNING bq.id
     `);
     const count = (result.rows as unknown[]).length;

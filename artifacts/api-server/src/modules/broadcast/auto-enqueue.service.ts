@@ -30,18 +30,15 @@ import { ConflictError } from "../../shared/errors.js";
  * What counts as "playable" for auto-enqueue:
  *  • YouTube  — excluded from broadcast. YouTube content is library-only and
  *    surfaces only through catalog/search endpoints, never the broadcast queue.
- *  • Local    — admitted as soon as a source URL exists on the video row,
- *    regardless of transcoding status. This is the MP4-first policy:
- *      – Raw MP4 (localVideoUrl set, no HLS) airs immediately after upload.
+ *  • Local    — admitted ONLY after faststartApplied=true. This is the
+ *    FastStart-first policy:
+ *      – Raw MP4 (faststartApplied=false) is HELD from the queue until the
+ *        faststartRecoveryWorker relocates the moov atom. Moov at EOF causes
+ *        blank screens and buffering stalls on TV, mobile, and web players.
  *      – Faststart MP4 (faststartApplied=true) streams from byte-0 with
- *        instant seek — preferred over HLS-first for low-latency on-air.
- *      – HLS (hlsMasterUrl set) provides adaptive bitrate when available.
- *    Background workers (faststart, HLS transcoder) upgrade quality
- *    asynchronously. Runtime playback failures (moov-at-EOF, 404, bad blob)
- *    are handled by the orchestrator's bad-URL cache and auto-skip logic —
- *    they never block a video from entering the queue.
- *    Call sites: upload finalize, faststart completion, transcoder dispatcher,
- *    faststart-recovery worker, schedule-bridge, manual repair endpoints.
+ *        instant-start on all surfaces — the ONLY format admitted to broadcast.
+ *    Call sites: upload finalize (after faststart), faststart-recovery worker
+ *    (after recovery), schedule-bridge, manual repair endpoints.
  */
 
 const queueTable = schema.broadcastQueueTable;
@@ -437,10 +434,13 @@ export async function scanLibraryAndEnqueue(opts: {
           // also guards per-row, but excluding at the query level is cheaper and prevents
           // any N-row scan from even considering these videos.
           ne(videosTable.category, "midnight-prayers"),
-          // MP4-only pipeline: admit any local video that has a URL.
-          // Raw MP4 (moov-at-EOF) is supported — the player handles progressive
-          // download gracefully. No faststart gate.
+          // FastStart gate: only admit local videos whose moov atom has been
+          // relocated to the start of the file. faststartApplied=false means
+          // the moov is still at EOF — raw MP4 stalls players. The
+          // faststartRecoveryWorker runs every 5 min and calls enqueueIfMissing
+          // after each successful relocation.
           isNotNull(videosTable.localVideoUrl),
+          eq(videosTable.faststartApplied, true),
           // NOT EXISTS subquery — keeps the JOIN cheap and the candidate set
           // small; the dedupe inside enqueueIfMissing is the authoritative
           // backstop for the race where two concurrent scans run at once.
@@ -564,9 +564,15 @@ function isPlayableForBroadcast(row: {
   //            Block until the operator repairs and re-validates.
   if (row.validationStatus === "failed") return false;
 
-  // MP4-only pipeline: admit any local video that has a URL.
-  // Raw MP4 is supported; no faststart gate required.
-  if (row.localVideoUrl && row.localVideoUrl.trim() !== "") return true;
+  // FastStart gate: the moov atom MUST be at the front of the file before
+  // the video enters the broadcast queue. Raw MP4 (moov at EOF) causes players
+  // to buffer the entire file before rendering — blank screens on TV/mobile/web.
+  // faststartRecoveryWorker relocates moov in the background and calls
+  // enqueueIfMissing once faststartApplied flips to true.
+  if (row.localVideoUrl && row.localVideoUrl.trim() !== "") {
+    if (row.faststartApplied !== true) return false;
+    return true;
+  }
 
   return false;
 }
