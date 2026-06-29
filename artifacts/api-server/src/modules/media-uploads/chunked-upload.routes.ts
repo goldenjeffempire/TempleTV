@@ -2384,6 +2384,16 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               } catch (enqErr) {
                 capturedLog.warn({ err: enqErr, videoId }, "[finalize:bg] enqueueIfMissing failed (non-fatal)");
               }
+
+              // ── Comprehensive playback validation ─────────────────────────
+              // Fire-and-forget after successful faststart. Runs 9 checks
+              // (codec compat, keyframe interval, A/V sync, first+last frame,
+              // duration accuracy, HTTP Range) and writes the report to DB.
+              // A 'failed' report will gate subsequent re-enqueue attempts.
+              scheduleVideoValidation(videoId, objectKey, {
+                faststartApplied: true,
+                storedDurationSecs: ffprobeDurSecs ?? null,
+              });
             }
 
             capturedLog.info(

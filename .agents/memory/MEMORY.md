@@ -72,3 +72,4 @@
 - [YouTube dual-slot transition timing](yt-dual-slot-timing.md) — optimal A/B iframe swap delays in LiveBroadcastV2.tsx; gapless unmute is immediate, non-gapless unmute 300ms, preload handoffs 100/300ms; nextYtVideoId already typed on V2Snapshot (no cast needed).
 - [YouTube override mobile dead-air — load-timeout cascade](yt-override-mobile-dead-air.md) — BroadcastBuffer load timeout arms even when url=null; onSnapshot calls engageOverride on every keepalive. Two fixes: url!==null guard + onSnapshot same-ID guard.
 - [Faststart MP4 pipeline — moov gating](faststart-mp4-pipeline.md) — faststartApplied=true is the hard gate for broadcast admission; non-faststart MP4s are never exposed to viewers.
+- [Video validation service — e2e pipeline](video-validation-service.md) — 9-check ffprobe/ffmpeg validation; status null/pending/running/passed/warn = allow; failed = blocked; all isPlayableForBroadcast call sites must select validationStatus.

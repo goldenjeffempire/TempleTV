@@ -14,6 +14,7 @@ import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
 import { runFaststart } from "../transcoder/faststart.service.js";
 import { isUndefinedColumnError, SAFE_VIDEO_COLS } from "../../infrastructure/db-schema-guard.js";
 import { generateThumbnailForVideo } from "./thumbnail-generator.service.js";
+import { runVideoValidation, scheduleVideoValidation, getStoredValidationReport } from "../transcoder/video-validation.service.js";
 
 /**
  * Admin video listing + metadata management.
@@ -111,6 +112,18 @@ const VideoRowSchema = z.object({
    * - null  → never attempted (pre-migration DBs) or not applicable (YouTube).
    */
   faststartApplied: z.boolean().nullable(),
+  /**
+   * Result of the comprehensive 9-check broadcast validation pipeline.
+   * null      — never validated (pre-feature rows or YouTube videos).
+   * 'pending' — validation scheduled, not yet started.
+   * 'running' — validation is currently in progress.
+   * 'passed'  — all checks passed; safe to broadcast on all surfaces.
+   * 'warn'    — non-fatal issues (e.g. HEVC codec, wide keyframe interval).
+   * 'failed'  — one or more fatal checks failed; blocked from broadcast.
+   */
+  validationStatus: z.enum(["pending", "running", "passed", "warn", "failed"]).nullable(),
+  /** ISO-8601 UTC timestamp of the most recent completed validation run. */
+  validationCompletedAt: z.string().nullable(),
 });
 
 const ListQuerySchema = z.object({
@@ -261,6 +274,12 @@ function toDto(row: typeof videos.$inferSelect, progress: number | null = null):
       return filtered.length > 0 ? filtered : null;
     })(),
     faststartApplied: row.faststartApplied ?? null,
+    validationStatus: (() => {
+      const vs = (row as { validationStatus?: string | null }).validationStatus;
+      if (vs === "pending" || vs === "running" || vs === "passed" || vs === "warn" || vs === "failed") return vs;
+      return null;
+    })(),
+    validationCompletedAt: (row as { validationCompletedAt?: Date | null }).validationCompletedAt?.toISOString() ?? null,
   };
 }
 
@@ -1107,6 +1126,127 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         skipped,
         message: `${queued} video${queued === 1 ? "" : "s"} queued for HLS transcoding${skipped > 0 ? `, ${skipped} skipped (no source file)` : ""}.`,
       };
+    },
+  );
+
+  // ── GET /admin/videos/:id/validation ──────────────────────────────────────
+  r.get(
+    "/videos/:id/validation",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Get the stored validation report for a local video (9-check broadcast-grade validation)",
+        security: [{ bearerAuth: [] }],
+        params: z.object({ id: z.string().min(1) }),
+        response: {
+          200: z.object({
+            videoId: z.string(),
+            validationStatus: z.enum(["pending", "running", "passed", "warn", "failed"]).nullable(),
+            validationCompletedAt: z.string().nullable(),
+            report: z.unknown().nullable(),
+          }),
+          404: z.object({ error: z.string() }),
+          429: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const { id } = req.params;
+
+      const [row] = await db
+        .select({
+          id: videos.id,
+          validationStatus: videos.validationStatus,
+          validationCompletedAt: videos.validationCompletedAt,
+        })
+        .from(videos)
+        .where(eq(videos.id, id))
+        .limit(1);
+
+      if (!row) return reply.code(404).send({ error: "Video not found" });
+
+      const report = await getStoredValidationReport(id);
+      const vs = row.validationStatus;
+
+      return {
+        videoId: id,
+        validationStatus: (vs === "pending" || vs === "running" || vs === "passed" || vs === "warn" || vs === "failed") ? vs : null,
+        validationCompletedAt: row.validationCompletedAt?.toISOString() ?? null,
+        report,
+      };
+    },
+  );
+
+  // ── POST /admin/videos/:id/validation/run ─────────────────────────────────
+  r.post(
+    "/videos/:id/validation/run",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Trigger a fresh validation run for a local video (9-check broadcast-grade validation). Non-blocking: returns immediately, runs in background.",
+        security: [{ bearerAuth: [] }],
+        params: z.object({ id: z.string().min(1) }),
+        body: z.object({
+          /** If true, wait for validation to finish and return the full report. Default: false (fire-and-forget). */
+          sync: z.boolean().default(false),
+        }).default({}),
+        response: {
+          200: z.object({
+            videoId: z.string(),
+            message: z.string(),
+            report: z.unknown().nullable(),
+          }),
+          404: z.object({ error: z.string() }),
+          422: z.object({ error: z.string() }),
+          429: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      const { id } = req.params;
+      const { sync } = req.body;
+
+      const [row] = await db
+        .select({
+          id: videos.id,
+          objectPath: videos.objectPath,
+          videoSource: videos.videoSource,
+          faststartApplied: videos.faststartApplied,
+          localVideoUrl: videos.localVideoUrl,
+          duration: videos.duration,
+        })
+        .from(videos)
+        .where(eq(videos.id, id))
+        .limit(1);
+
+      if (!row) return reply.code(404).send({ error: "Video not found" });
+      if (row.videoSource !== "local") {
+        return reply.code(422).send({ error: "Validation only applies to locally-uploaded MP4 files, not YouTube videos" });
+      }
+      if (!row.objectPath) {
+        return reply.code(422).send({ error: "Video has no source file — upload or re-upload required before validation" });
+      }
+
+      if (sync) {
+        const report = await runVideoValidation(id, row.objectPath, {
+          faststartApplied: row.faststartApplied ?? null,
+          localVideoUrl: row.localVideoUrl ?? null,
+          storedDurationSecs: row.duration ? parseFloat(row.duration) : null,
+        });
+        return { videoId: id, message: `Validation complete — status: ${report.status}`, report };
+      }
+
+      scheduleVideoValidation(id, row.objectPath, {
+        faststartApplied: row.faststartApplied ?? null,
+        localVideoUrl: row.localVideoUrl ?? null,
+        storedDurationSecs: row.duration ? parseFloat(row.duration) : null,
+      });
+
+      return { videoId: id, message: "Validation scheduled — check GET /admin/videos/:id/validation for results", report: null };
     },
   );
 

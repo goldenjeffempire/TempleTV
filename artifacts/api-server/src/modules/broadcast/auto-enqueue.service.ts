@@ -85,6 +85,7 @@ export async function enqueueIfMissing(opts: {
         faststartApplied: videosTable.faststartApplied,
         transcodingErrorCode: videosTable.transcodingErrorCode,
         category: videosTable.category,
+        validationStatus: videosTable.validationStatus,
       })
       .from(videosTable)
       .where(eq(videosTable.id, opts.videoId))
@@ -344,6 +345,7 @@ export async function scanLibraryAndEnqueue(opts: {
         transcodingErrorCode: videosTable.transcodingErrorCode,
         s3MirroredAt: videosTable.s3MirroredAt,
         category: videosTable.category,
+        validationStatus: videosTable.validationStatus,
       })
       .from(videosTable)
       .where(
@@ -457,6 +459,7 @@ function isPlayableForBroadcast(row: {
   faststartApplied?: boolean | null;
   transcodingErrorCode?: string | null;
   category?: string | null;
+  validationStatus?: string | null;
 }): boolean {
   // YouTube is library-only — excluded from broadcast entirely.
   if (row.videoSource === "youtube") return false;
@@ -467,6 +470,23 @@ function isPlayableForBroadcast(row: {
   // this category must never appear in the main queue regardless of upload
   // state, transcoding status, or caller reason.
   if (row.category === "midnight-prayers") return false;
+
+  // Validation gate: if comprehensive playback validation explicitly failed
+  // (corrupt mdat, truncated file, moov missing after faststart, A/V sync
+  // > 2 s, etc.) the video is blocked from broadcast until repaired.
+  //
+  // null / 'pending' / 'running' / 'passed' / 'warn' → all allow broadcast:
+  //   null    — pre-feature rows (never validated); backward compatible.
+  //   pending — validation scheduled, not yet started.
+  //   running — validation in progress.
+  //   passed  — all 9 checks passed; safe to broadcast.
+  //   warn    — non-fatal issues (HEVC codec, wide keyframes); operator
+  //             review recommended but video is still broadcast-eligible.
+  //
+  // 'failed' → at least one fatal check (FILE_INTEGRITY, FIRST_FRAME,
+  //            LAST_FRAME, AV_SYNC > 2s, DURATION_ACCURACY > 30%) failed.
+  //            Block until the operator repairs and re-validates.
+  if (row.validationStatus === "failed") return false;
 
   // MP4-only pipeline: local videos are admitted only after faststart has
   // relocated the moov atom to the front of the file.  A non-faststart MP4
