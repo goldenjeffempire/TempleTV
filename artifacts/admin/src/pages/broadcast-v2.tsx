@@ -3114,11 +3114,29 @@ function BroadcastV2PageInner() {
     },
   });
 
-  // Sync library → queue: scans managed_videos for playable rows not yet in
-  // broadcast_queue and inserts them. Idempotent — safe to call repeatedly.
+  // Sync library → queue: comprehensive 7-phase reconciliation that removes
+  // phantom/duplicate entries, deactivates failed-validation items, compacts
+  // sort order, flushes the bad-URL cache, and enqueues any missing eligible
+  // videos. Idempotent — safe to call repeatedly at any time.
   const syncLibraryMutation = useMutation({
     mutationFn: () =>
-      api.post<{ ok: boolean; scanned: number; enqueued: number; skipped: number }>(
+      api.post<{
+        ok: boolean;
+        durationMs: number;
+        s3StampsRepaired: number;
+        phantomsRemoved: number;
+        duplicatesRemoved: number;
+        failedValidationDeactivated: number;
+        sortOrderRebuilt: boolean;
+        badUrlCacheCleared: boolean;
+        scanned: number;
+        enqueued: number;
+        skipped: number;
+        orchestratorReloaded: boolean;
+        currentItemCount: number;
+        currentMode: string;
+        message: string;
+      }>(
         "/broadcast-v2/sync-library",
         { idempotencyKey: safeRandomUUID() },
       ),
@@ -3135,12 +3153,23 @@ function BroadcastV2PageInner() {
       // Newly enqueued items kick off HLS jobs — refresh the transcoding panel
       // so operators see the queued jobs without waiting for the next SSE push.
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-transcoding-panel"] });
-      if (result.enqueued > 0) {
-        toast.success(
-          `Synced ${result.enqueued} video${result.enqueued !== 1 ? "s" : ""} into the broadcast queue (scanned ${result.scanned}).`,
-        );
+
+      // Build a human-readable summary from all phase results.
+      const parts: string[] = [];
+      if (result.enqueued > 0)
+        parts.push(`added ${result.enqueued} video${result.enqueued !== 1 ? "s" : ""}`);
+      const removed = result.phantomsRemoved + result.duplicatesRemoved + result.failedValidationDeactivated;
+      if (removed > 0)
+        parts.push(`removed ${removed} stale item${removed !== 1 ? "s" : ""}`);
+      if (result.s3StampsRepaired > 0)
+        parts.push(`repaired ${result.s3StampsRepaired} blob stamp${result.s3StampsRepaired !== 1 ? "s" : ""}`);
+
+      if (parts.length > 0) {
+        toast.success(`Library sync: ${parts.join(", ")} (${result.currentItemCount} items in queue).`);
       } else {
-        toast.success(`Library scan complete — all ${result.scanned} playable video${result.scanned !== 1 ? "s" : ""} already in queue.`);
+        toast.success(
+          `Queue fully in sync — ${result.scanned} local video${result.scanned !== 1 ? "s" : ""} checked, nothing to change.`,
+        );
       }
     },
     onError: (err) => {

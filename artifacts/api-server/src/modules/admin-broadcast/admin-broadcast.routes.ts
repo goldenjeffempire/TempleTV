@@ -331,15 +331,24 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
         if (!video) throw new NotFoundError(`videoId ${slim.videoId} not found in managed_videos`);
 
         // ── Dedupe ───────────────────────────────────────────────────────
-        // If this videoId is already in the queue, return the existing row
-        // instead of creating a duplicate. The admin UI sees a normal 200
+        // If this videoId is already ACTIVE in the queue, return the existing
+        // row instead of creating a duplicate. The admin UI sees a normal 200
         // response and refreshes — exactly what they'd want either way.
         // Prevents accidental dup-add from rapid double-clicks, retries of
         // the upload auto-queue path, or re-adding from the library picker.
+        //
+        // IMPORTANT: filter to is_active = true. An inactive queue row means
+        // the item was previously dequeued by the operator or deactivated by
+        // the integrity validator (e.g. MISSING_BLOB, DUPLICATE_ACTIVE_VIDEO).
+        // Treating it as "already queued" would permanently block the video
+        // from re-entering the broadcast — the orchestrator only loads
+        // is_active = true rows, so inactive rows are effectively invisible.
+        // The correct behaviour is to insert a fresh active row so the video
+        // re-enters rotation immediately.
         const [existing] = await db
           .select()
           .from(queueTable)
-          .where(eq(queueTable.videoId, slim.videoId))
+          .where(and(eq(queueTable.videoId, slim.videoId), eq(queueTable.isActive, true)))
           .limit(1);
         if (existing) {
           const existingHls = await db

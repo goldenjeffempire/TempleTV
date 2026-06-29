@@ -20,7 +20,7 @@ import {
 } from "../domain/commands.js";
 import { requireAuth } from "../../../middleware/auth.js";
 import { broadcastService } from "../../broadcast/broadcast.service.js";
-import { scanLibraryAndEnqueue, listMissingFromQueue } from "../../broadcast/auto-enqueue.service.js";
+import { scanLibraryAndEnqueue, listMissingFromQueue, repairMissingS3MirroredAt } from "../../broadcast/auto-enqueue.service.js";
 import { markBadUrl, clearAllBadUrls, clearBadUrl, getItemsHealth, getBadUrlStats, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl, getUrlBadSourceSetsSize, persistBadUrlCache, clearSourceApproval, clearAllSourceApprovals } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
@@ -2533,27 +2533,251 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     return playbackAnalytics.getReport(windowMs);
   });
 
-  // ── Admin: manual library → queue sync ───────────────────────────────
-  // Scans managed_videos for playable rows not yet in broadcast_queue and
-  // inserts them. Idempotent — already-queued videos are silently skipped.
-  // Typical use: after a bulk YouTube import, after a DB migration, or
-  // whenever the operator wants to confirm nothing was missed by the
-  // automatic pipeline. Rate-limited to prevent accidental double-clicks
-  // from hammering the DB with back-to-back full-library scans.
+  // ── Admin: comprehensive library → queue sync ────────────────────────
+  //
+  // Full transactional reconciliation between managed_videos and
+  // broadcast_queue. Safe to call at any time — all phases are wrapped in
+  // try/catch so a failure in any phase is non-fatal and the rest continue.
+  //
+  // Phases (run sequentially):
+  //   0. repairMissingS3MirroredAt — stamp s3_mirrored_at for any local
+  //      video whose post-assembly DB stamp silently failed; makes repaired
+  //      videos visible to the blob-confirmed filter in Phase 6.
+  //   1. Phantom removal — deactivate queue items whose videoId references
+  //      a managed_videos row that no longer exists (hard-deleted video).
+  //   2. Duplicate collapse — when the same videoId has multiple active
+  //      queue rows (race condition or manual insert), keep the one with the
+  //      lowest sort_order and deactivate the rest.
+  //   3. Failed-validation deactivation — deactivate queue items for videos
+  //      whose validation_status = 'failed' (corrupt/truncated files).
+  //   4. Sort-order gap compaction — renumber active items sequentially
+  //      (×10 spacing) so sort_order is monotonic without gaps after
+  //      Phases 1–3 removed rows.
+  //   5. Bad-URL cache flush — clear all in-memory bad-URL entries so fresh
+  //      reachability probes run on the next orchestrator tick.
+  //   6. Library scan — enqueue every eligible local video missing from the
+  //      active queue (up to 500 per call; YouTube excluded by policy).
+  //   7. Orchestrator reload + SSE events — clients receive a real-time
+  //      push so the admin queue panel refreshes without polling.
+  //
+  // Rate-limited to 6 req/min — each call is a multi-phase DB writer.
+  // The body accepts an optional idempotencyKey for safe client-side retry.
   app.post("/sync-library", {
     ...adminGuard,
     bodyLimit: 1048576,
     schema: {
+      body: z.object({ idempotencyKey: z.string().optional() }).optional(),
       response: {
-        200: z.object({ ok: z.literal(true), scanned: z.number().int(), enqueued: z.number().int(), skipped: z.number().int() }),
+        200: z.object({
+          ok: z.literal(true),
+          durationMs: z.number().int(),
+          s3StampsRepaired: z.number().int(),
+          phantomsRemoved: z.number().int(),
+          duplicatesRemoved: z.number().int(),
+          failedValidationDeactivated: z.number().int(),
+          sortOrderRebuilt: z.boolean(),
+          badUrlCacheCleared: z.boolean(),
+          scanned: z.number().int(),
+          enqueued: z.number().int(),
+          skipped: z.number().int(),
+          orchestratorReloaded: z.boolean(),
+          currentItemCount: z.number().int(),
+          currentMode: z.string(),
+          message: z.string(),
+        }),
         429: _429err,
       },
     },
     config: { rateLimit: { max: 6, timeWindow: "1 minute" } },
   }, async (_req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
-    const result = await scanLibraryAndEnqueue({ reason: "manual", maxToAdd: 500 });
-    return { ok: true, ...result };
+    const startMs = Date.now();
+
+    let s3StampsRepaired = 0;
+    let phantomsRemoved = 0;
+    let duplicatesRemoved = 0;
+    let failedValidationDeactivated = 0;
+    let sortOrderRebuilt = false;
+    let badUrlCacheCleared = false;
+    let orchestratorReloaded = false;
+
+    // ── Phase 0: Repair silently-failed s3MirroredAt stamps ──────────────
+    try {
+      const repairResult = await repairMissingS3MirroredAt();
+      s3StampsRepaired = repairResult.repaired;
+    } catch (err) {
+      logger.warn({ err }, "[sync-library] Phase 0 (s3MirroredAt repair) failed (non-fatal)");
+    }
+
+    // ── Phase 1: Deactivate phantom queue items ───────────────────────────
+    // A phantom is a queue row whose videoId references a managed_videos row
+    // that has been hard-deleted. These items can never be resolved by the
+    // orchestrator and permanently waste sort-order slots.
+    try {
+      const phantomResult = await db.execute<{ id: string }>(sql`
+        UPDATE broadcast_queue
+        SET is_active = false,
+            validator_deactivated_reason = 'MISSING_VIDEO_JOIN'
+        WHERE is_active = true
+          AND video_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM managed_videos mv WHERE mv.id = broadcast_queue.video_id
+          )
+        RETURNING id
+      `);
+      phantomsRemoved = phantomResult.rows?.length ?? (Array.isArray(phantomResult) ? phantomResult.length : 0);
+      if (phantomsRemoved > 0) {
+        logger.info({ phantomsRemoved }, "[sync-library] Phase 1: phantom queue items deactivated");
+      }
+    } catch (err) {
+      logger.warn({ err }, "[sync-library] Phase 1 (phantom removal) failed (non-fatal)");
+    }
+
+    // ── Phase 2: Collapse duplicate active entries per videoId ────────────
+    // When the same videoId appears in multiple active rows (race condition,
+    // manual insert, or prod-sync duplicate) keep the lowest sort_order copy
+    // and deactivate all others. The orchestrator would never play duplicates
+    // correctly — they'd both advance at the same time and corrupt the sequence.
+    try {
+      const dupeResult = await db.execute<{ id: string }>(sql`
+        WITH ranked AS (
+          SELECT id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY video_id
+                   ORDER BY sort_order ASC, added_at ASC
+                 ) AS rn
+          FROM broadcast_queue
+          WHERE is_active = true AND video_id IS NOT NULL
+        )
+        UPDATE broadcast_queue
+        SET is_active = false,
+            validator_deactivated_reason = 'DUPLICATE_ACTIVE_VIDEO'
+        WHERE id IN (SELECT id FROM ranked WHERE rn > 1)
+        RETURNING id
+      `);
+      duplicatesRemoved = dupeResult.rows?.length ?? (Array.isArray(dupeResult) ? dupeResult.length : 0);
+      if (duplicatesRemoved > 0) {
+        logger.info({ duplicatesRemoved }, "[sync-library] Phase 2: duplicate active items deactivated");
+      }
+    } catch (err) {
+      logger.warn({ err }, "[sync-library] Phase 2 (duplicate collapse) failed (non-fatal)");
+    }
+
+    // ── Phase 3: Deactivate items for failed-validation videos ────────────
+    // Videos whose comprehensive validation run determined the file is
+    // corrupt, truncated, or unplayable are flagged validation_status='failed'
+    // in managed_videos. Any queue item pointing at such a video must also
+    // be deactivated — it will never resolve to a playable stream.
+    try {
+      const failedResult = await db.execute<{ id: string }>(sql`
+        UPDATE broadcast_queue
+        SET is_active = false,
+            validator_deactivated_reason = 'VALIDATION_FAILED'
+        WHERE is_active = true
+          AND video_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM managed_videos mv
+            WHERE mv.id = broadcast_queue.video_id
+              AND mv.validation_status = 'failed'
+          )
+        RETURNING id
+      `);
+      failedValidationDeactivated = failedResult.rows?.length ?? (Array.isArray(failedResult) ? failedResult.length : 0);
+      if (failedValidationDeactivated > 0) {
+        logger.info({ failedValidationDeactivated }, "[sync-library] Phase 3: failed-validation items deactivated");
+      }
+    } catch (err) {
+      logger.warn({ err }, "[sync-library] Phase 3 (failed-validation deactivation) failed (non-fatal)");
+    }
+
+    // ── Phase 4: Compact sort_order gaps ─────────────────────────────────
+    // After Phases 1–3 removed rows the sort_order sequence has holes. A
+    // gap-filled sort_order is still valid (order is relative, not absolute)
+    // but the large gaps look confusing in the admin UI drag-and-drop list.
+    // Renumber all active items sequentially (×10 spacing) so the list
+    // starts at 10, 20, 30 … — same convention as addToQueue().
+    try {
+      await db.execute(sql`
+        WITH active_ordered AS (
+          SELECT id,
+                 ROW_NUMBER() OVER (ORDER BY sort_order ASC, added_at ASC) * 10 AS new_sort
+          FROM broadcast_queue
+          WHERE is_active = true
+        )
+        UPDATE broadcast_queue
+        SET sort_order = ao.new_sort
+        FROM active_ordered ao
+        WHERE broadcast_queue.id = ao.id
+          AND broadcast_queue.sort_order != ao.new_sort
+      `);
+      sortOrderRebuilt = true;
+    } catch (err) {
+      logger.warn({ err }, "[sync-library] Phase 4 (sort-order compaction) failed (non-fatal)");
+    }
+
+    // ── Phase 5: Flush bad-URL cache ─────────────────────────────────────
+    // The in-memory bad-URL cache TTLs out URLs that failed reachability
+    // probes. After a repair/sync pass, freshly-fixed or re-uploaded videos
+    // may have previously been cached as bad. Clear the cache so the
+    // orchestrator's next tick probes them with fresh eyes.
+    try {
+      clearAllBadUrls();
+      badUrlCacheCleared = true;
+    } catch (err) {
+      logger.warn({ err }, "[sync-library] Phase 5 (bad-URL cache flush) failed (non-fatal)");
+    }
+
+    // ── Phase 6: Library scan — enqueue missing playable videos ──────────
+    // Finds every local video (non-YouTube) with a confirmed storage blob
+    // (s3MirroredAt IS NOT NULL) that is not already in the active queue,
+    // and inserts it. YouTube content is excluded — it is served via the
+    // ytShuffleFallback override, never direct queue insertion.
+    const scanResult = await scanLibraryAndEnqueue({ reason: "manual", maxToAdd: 500 }).catch((err) => {
+      logger.warn({ err }, "[sync-library] Phase 6 (library scan) failed (non-fatal)");
+      return { scanned: 0, enqueued: 0, skipped: 0 };
+    });
+
+    // ── Phase 7: Reload orchestrator + push SSE events ───────────────────
+    try {
+      await broadcastOrchestrator.reload();
+      orchestratorReloaded = true;
+    } catch (err) {
+      logger.warn({ err }, "[sync-library] Phase 7 (orchestrator reload) failed (non-fatal)");
+    }
+    adminEventBus.push("broadcast-queue-updated", { reason: "sync-library" });
+    adminEventBus.push("videos-library-updated", { reason: "sync-library" });
+
+    const snap = broadcastOrchestrator.snapshot();
+    const totalRemoved = phantomsRemoved + duplicatesRemoved + failedValidationDeactivated;
+    const durationMs = Date.now() - startMs;
+
+    const parts: string[] = [];
+    if (scanResult.enqueued > 0) parts.push(`added ${scanResult.enqueued} video${scanResult.enqueued !== 1 ? "s" : ""} to queue`);
+    if (totalRemoved > 0) parts.push(`removed ${totalRemoved} stale/phantom item${totalRemoved !== 1 ? "s" : ""}`);
+    if (s3StampsRepaired > 0) parts.push(`repaired ${s3StampsRepaired} blob stamp${s3StampsRepaired !== 1 ? "s" : ""}`);
+    if (parts.length === 0) parts.push(`queue fully in sync — ${scanResult.scanned} local video${scanResult.scanned !== 1 ? "s" : ""} checked`);
+    const message = parts.join(", ");
+
+    logger.info(
+      { durationMs, s3StampsRepaired, phantomsRemoved, duplicatesRemoved, failedValidationDeactivated, sortOrderRebuilt, ...scanResult },
+      "[sync-library] comprehensive queue sync complete",
+    );
+
+    return {
+      ok: true as const,
+      durationMs,
+      s3StampsRepaired,
+      phantomsRemoved,
+      duplicatesRemoved,
+      failedValidationDeactivated,
+      sortOrderRebuilt,
+      badUrlCacheCleared,
+      ...scanResult,
+      orchestratorReloaded,
+      currentItemCount: broadcastOrchestrator.getItemCount(),
+      currentMode: snap?.mode ?? "unknown",
+      message,
+    };
   });
 
   // ── Admin: queue sync status ──────────────────────────────────────────
@@ -2590,24 +2814,41 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         }>(sql`
           SELECT
             COUNT(*)::text AS library_total,
+            -- library_playable: every local video that is broadcast-eligible.
+            -- Raw MP4 without faststart IS eligible (MOOV_PLACEMENT is "warn",
+            -- not "fail"). The admission gates are:
+            --   • video_source <> 'youtube'      — YouTube is library-only
+            --   • category <> 'midnight-prayers' — restricted window channel
+            --   • validation_status <> 'failed'  — corrupt/truncated file
+            --   • (local_video_url + s3_mirrored_at) OR hls_master_url
+            --     confirms a real playable asset exists
             COUNT(*) FILTER (
               WHERE video_source <> 'youtube'
+                AND (category IS NULL OR category <> 'midnight-prayers')
+                AND (validation_status IS NULL OR validation_status <> 'failed')
                 AND (
                   (hls_master_url IS NOT NULL AND hls_master_url <> '')
                   OR (local_video_url IS NOT NULL AND local_video_url <> ''
-                      AND faststart_applied = true)
+                      AND s3_mirrored_at IS NOT NULL)
                 )
             )::text AS library_playable,
+            -- missing_playable: playable videos with NO active queue entry.
+            -- IMPORTANT: the NOT EXISTS must filter is_active = true so that
+            -- videos with only an INACTIVE queue row are correctly counted as
+            -- "missing" — the orchestrator never loads inactive rows.
             COUNT(*) FILTER (
               WHERE video_source <> 'youtube'
+                AND (category IS NULL OR category <> 'midnight-prayers')
+                AND (validation_status IS NULL OR validation_status <> 'failed')
                 AND (
                   (hls_master_url IS NOT NULL AND hls_master_url <> '')
                   OR (local_video_url IS NOT NULL AND local_video_url <> ''
-                      AND faststart_applied = true)
+                      AND s3_mirrored_at IS NOT NULL)
                 )
                 AND NOT EXISTS (
                   SELECT 1 FROM broadcast_queue bq
                   WHERE bq.video_id = managed_videos.id
+                    AND bq.is_active = true
                 )
             )::text AS missing_playable
           FROM managed_videos
