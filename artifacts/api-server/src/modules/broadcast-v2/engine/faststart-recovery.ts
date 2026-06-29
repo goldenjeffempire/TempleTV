@@ -43,7 +43,7 @@ import { invalidateVideosCatalogCache } from "../../videos/videos.routes.js";
 const SWEEP_INTERVAL_MS = 5 * 60_000; // 5 min
 
 /** Max videos processed per sweep cycle to bound CPU/memory usage. */
-const BATCH_SIZE = 10;
+const BATCH_SIZE = 20;
 
 /** Max faststart attempts before permanently marking a video as failed. */
 const MAX_ATTEMPTS = 3;
@@ -75,14 +75,19 @@ const videos = schema.videosTable;
 /**
  * Find all videos that need faststart and process them in batches.
  *
- * Two categories:
+ * Three categories:
  *   A. `transcodingStatus = 'processing'` for > PROCESSING_STALE_AFTER_MS
  *      (crash recovery — these were mid-faststart when the process died).
  *   B. `transcodingStatus = 'ready'` AND `faststartApplied = false` AND
  *      `localVideoUrl IS NOT NULL` (old uploads or those that somehow bypassed
  *      the upload-finalize faststart gate).
+ *   C. `transcodingStatus = 'none'` AND `faststartApplied = false` AND
+ *      `localVideoUrl IS NOT NULL` (finalized uploads where the inline
+ *      faststart trigger was never reached — e.g. server restart during
+ *      the background assembly task, or pre-feature uploads with a local URL
+ *      but no status progression).
  *
- * Both categories must have `faststart_attempts < MAX_ATTEMPTS`.
+ * All categories must have `faststart_attempts < MAX_ATTEMPTS`.
  */
 async function doSweep(): Promise<void> {
   if (sweeping) {
@@ -109,6 +114,7 @@ async function doSweep(): Promise<void> {
         and(
           ne(videos.videoSource, "youtube"),
           isNotNull(videos.localVideoUrl),
+          eq(videos.faststartApplied, false),
           lte(videos.faststartAttempts, MAX_ATTEMPTS - 1),
           or(
             // Category A: stale 'processing' jobs (crash recovery)
@@ -117,10 +123,11 @@ async function doSweep(): Promise<void> {
               lt(videos.updatedAt, staleThreshold),
             ),
             // Category B: 'ready' but not faststart'd (legacy or bypass)
-            and(
-              eq(videos.transcodingStatus, "ready"),
-              eq(videos.faststartApplied, false),
-            ),
+            eq(videos.transcodingStatus, "ready"),
+            // Category C: 'none' status with a local URL — finalize completed
+            // but the inline faststart trigger was never reached (server crash
+            // during background assembly or pre-feature upload).
+            eq(videos.transcodingStatus, "none"),
           ),
         ),
       )
@@ -326,9 +333,9 @@ export const faststartRecoveryWorker = {
    */
   start(intervalMs = SWEEP_INTERVAL_MS): void {
     if (sweepTimer) return;
-    // Delay the first sweep by 5 min so it doesn't compete with the
-    // orchestrator's own startup/hydration work.
-    const INITIAL_DELAY_MS = 5 * 60_000;
+    // Delay the first sweep by 1 min so it doesn't race with the orchestrator's
+    // startup/hydration work but still picks up newly uploaded videos quickly.
+    const INITIAL_DELAY_MS = 1 * 60_000;
     sweepTimer = setTimeout(() => {
       void doSweep().catch((err) =>
         logger.warn({ err }, "[faststart-recovery] initial sweep error"),

@@ -303,10 +303,9 @@ function formatDuration(secs: number | string | null | undefined): string {
 }
 
 // ── VideoPreviewPlayer ────────────────────────────────────────────────────────
-// HLS-first preview player for the video library. Uses hls.js when an
-// hlsMasterUrl is available (same path real viewers receive), falls back to
-// the raw MP4 upload with a non-blocking advisory when HLS isn't ready yet.
-// Never sends stall reports; never affects the broadcast queue.
+// Preview player for the video library. Uses hls.js when an hlsMasterUrl is
+// available, falls back to the local MP4 (faststart'd for instant browser
+// playback). Never sends stall reports; never affects the broadcast queue.
 
 function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -349,7 +348,7 @@ function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
     const onErr = () => setPlayerError(
       isHls
         ? "HLS stream failed to load in this browser. Try Chrome or Firefox."
-        : "This MP4 could not load. The moov atom may not yet be at the start of the file (faststart not yet applied). If HLS transcoding is not yet complete, the broadcast queue may serve viewers this same raw MP4.",
+        : "This MP4 could not load. The moov atom may not yet be at the start of the file — faststart may still be in progress. The broadcast queue only admits videos once faststart completes.",
     );
     el.src = previewUrl;
     el.addEventListener("loadedmetadata", onMeta);
@@ -379,8 +378,8 @@ function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
           <>
             <Loader2 size={28} className="animate-spin text-amber-500" />
             <div>
-              <p className="font-medium text-sm">HLS transcoding in progress</p>
-              <p className="text-xs text-muted-foreground mt-1">Preview will be available once transcoding completes.</p>
+              <p className="font-medium text-sm">Faststart in progress</p>
+              <p className="text-xs text-muted-foreground mt-1">Relocating moov atom for instant playback. Preview will be available shortly.</p>
             </div>
           </>
         ) : isCorrupt ? (
@@ -435,16 +434,11 @@ function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
           </>
         ) : (
           <>
-            <Info size={11} className="text-amber-500 shrink-0 mt-0.5" />
+            <Info size={11} className={video.faststartApplied ? "text-emerald-500 shrink-0 mt-0.5" : "text-amber-500 shrink-0 mt-0.5"} />
             <span>
-              Previewing raw MP4 upload.
-              {video.transcodingStatus === "hls_ready" || video.transcodingStatus === "ready"
-                ? " HLS is ready — reload the preview to use it."
-                : " HLS transcoding is not yet complete."}
-              {" "}Browser MP4 playback can fail if the moov atom hasn't been relocated via faststart.
-              {video.transcodingStatus !== "hls_ready" && video.transcodingStatus !== "ready"
-                ? " Until HLS is ready, the broadcast queue may serve viewers this raw MP4."
-                : " Real viewers receive the optimized HLS stream."}
+              {video.faststartApplied
+                ? "Previewing faststart-optimised MP4 — moov atom is at the front for instant browser playback. This is the same file broadcast viewers receive."
+                : "Previewing raw MP4. Faststart (moov relocation) is pending — browser playback may stall. The broadcast queue will admit this video once faststart completes."}
             </span>
           </>
         )}
@@ -577,21 +571,14 @@ export default function VideosPage() {
       );
     }
   });
-  // Transcoding status changes (queued → encoding → hls_ready) must refresh
-  // immediately so the badge in the video list reflects reality. refetchType
-  // defaults to "active" — only re-fetches the currently-mounted query (avoids
-  // skeleton flash on background pages while still updating the visible list).
+  // Faststart / processing status changes must refresh immediately so the badge
+  // in the video list reflects reality (none → processing → ready).
   useSSEEvent("transcoding-progress", () => {
     void qc.invalidateQueries({ queryKey: ["admin-videos"] });
   });
   useSSEEvent("transcoding-update", () => {
     void qc.invalidateQueries({ queryKey: ["admin-videos"] });
-    // When HLS transcoding completes the broadcast_queue row gains a
-    // hlsMasterUrl; the queue UI must also refresh to reflect the upgrade.
     void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
-    // Keep the Transcoding dashboard tab in sync with status changes observed
-    // via SSE — without these, a status badge update on the Videos page still
-    // shows stale data in the dedicated Transcoding tab until manual refresh.
     void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
     void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
