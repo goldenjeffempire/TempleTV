@@ -34,6 +34,8 @@ import { logger } from "../../../infrastructure/logger.js";
 import { runFaststart } from "../../transcoder/faststart.service.js";
 import { enqueueIfMissing } from "../../broadcast/auto-enqueue.service.js";
 import { scheduleVideoValidation } from "../../transcoder/video-validation.service.js";
+import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
+import { invalidateVideosCatalogCache } from "../../videos/videos.routes.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -204,6 +206,14 @@ async function doSweep(): Promise<void> {
             "[faststart-recovery] enqueueIfMissing failed (non-fatal — queue self-heal will retry)",
           );
         }
+
+        // Notify connected admin tabs and refresh the public catalog cache so
+        // TV/mobile clients see the updated transcodingStatus=ready immediately
+        // (not after the 30-min catalog TTL).  broadcast-source-upgraded clears
+        // the "Applying faststart…" spinner in the admin videos page in real-time.
+        void invalidateVideosCatalogCache();
+        adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "faststart-recovery-complete" });
+        adminEventBus.push("broadcast-source-upgraded", { videoId: row.id, quality: "mp4_faststart" });
 
         // Schedule comprehensive playback validation now that faststart is confirmed.
         // Fire-and-forget: sets validationStatus='pending' immediately, runs all

@@ -2957,6 +2957,9 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
           // stream quality after remux recovery.
           adminEventBus.push("videos-library-updated", { videoId, reason: "retry-repair-succeeded" });
           adminEventBus.push("broadcast-queue-updated", { reason: "retry-repair-succeeded", itemId: id, videoId });
+          // Clear the "Applying faststart…" spinner immediately in the admin
+          // videos page without waiting for the next polling cycle.
+          adminEventBus.push("broadcast-source-upgraded", { videoId, quality: "mp4_faststart" });
           void broadcastOrchestrator.reload().catch(() => {});
         } catch (err: unknown) {
           const errKind = (err as { kind?: string }).kind ?? null;

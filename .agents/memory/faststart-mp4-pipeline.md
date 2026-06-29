@@ -35,6 +35,16 @@ A local MP4 video MUST have `faststartApplied = true` before it can be admitted 
 - Finds: `transcodingStatus='processing'` stale >15 min, or `status='ready' && faststartApplied=false`
 - After `MAX_ATTEMPTS=3` marks video permanently failed and alerts.
 
+## Signal checklist — every faststart success path must emit all three
+
+After `runFaststart()` returns `{ ok: true }`, every call site must do:
+1. `void invalidateVideosCatalogCache()` — TV/mobile catalog TTL bypass
+2. `adminEventBus.push("videos-library-updated", { videoId, reason: "..." })` — admin query refetch
+3. `adminEventBus.push("broadcast-source-upgraded", { videoId, quality: "mp4_faststart" })` — clears "Applying faststart…" spinner immediately via SSE
+
+The bus bridge in broadcast-v2/index.ts consumes `broadcast-source-upgraded` with `{ videoId, quality }` (NOT `sourceQuality`).  
+All four call sites now emit all three (upload-finalize, admin manual, recovery sweep, retry-repair).
+
 ## How to apply
 
 - Any new video admission path (bulk import, YouTube local cache, etc.) must check `faststartApplied === true` before enqueuing.

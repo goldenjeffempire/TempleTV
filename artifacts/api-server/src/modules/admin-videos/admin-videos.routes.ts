@@ -966,6 +966,13 @@ export async function adminVideosRoutes(app: FastifyInstance) {
               req.log.warn({ err: enqErr, videoId: id }, "admin: enqueueIfMissing after faststart failed (non-fatal)");
             }
             adminEventBus.push("videos-library-updated", { videoId: id, reason: "faststart-complete" });
+            // Clear public catalog cache and notify the admin videos page
+            // so the "Applying faststart…" spinner is cleared immediately.
+            void invalidateVideosCatalogCache();
+            adminEventBus.push("broadcast-source-upgraded", { videoId: id, quality: "mp4_faststart" });
+            // Schedule comprehensive 9-check playback validation now that
+            // the moov atom is confirmed at the start of the file.
+            scheduleVideoValidation(id, row.objectPath!, { faststartApplied: true });
           } else {
             req.log.warn({ videoId: id, rootCause: fsResult.rootCause }, "admin: manual faststart failed");
           }

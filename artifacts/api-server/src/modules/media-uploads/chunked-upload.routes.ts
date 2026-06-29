@@ -2385,6 +2385,15 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 capturedLog.warn({ err: enqErr, videoId }, "[finalize:bg] enqueueIfMissing failed (non-fatal)");
               }
 
+              // Notify all connected admin tabs that faststart completed and
+              // the video source quality has been upgraded to mp4_faststart.
+              // broadcast-source-upgraded clears the "Applying faststart…"
+              // spinner immediately in the admin videos page without waiting
+              // for the next polling cycle.
+              void invalidateVideosCatalogCache();
+              adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-complete" });
+              adminEventBus.push("broadcast-source-upgraded", { videoId, quality: "mp4_faststart" });
+
               // ── Comprehensive playback validation ─────────────────────────
               // Fire-and-forget after successful faststart. Runs 9 checks
               // (codec compat, keyframe interval, A/V sync, first+last frame,
