@@ -591,38 +591,51 @@ export async function runUploadIntegrityScan(): Promise<void> {
   const passErrors: string[] = [];
 
   try {
-    // Run all three passes in parallel with individual error isolation.
-    // Promise.allSettled ensures one slow/failed pass cannot block the others.
-    const [corruptResult, missingResult, orphanResult] = await Promise.allSettled([
-      scanCorruptBlobs(overallDeadlineMs).catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        logger.warn({ err }, "[integrity] corrupt-blob pass threw unexpectedly");
-        passErrors.push(`corrupt-blobs: ${msg}`);
-        return 0;
-      }),
-      scanMissingBlobs(overallDeadlineMs).catch((err: unknown) => {
+    // Run passes SEQUENTIALLY, not in parallel.
+    //
+    // Race condition that parallel execution creates:
+    //   scanMissingBlobs detects a video with s3MirroredAt set but no blob,
+    //   finds upload parts still present, and resets the session from
+    //   'completed' → 'assembling' so spawnAssemblyRetry can rebuild the blob.
+    //   Meanwhile, scanOrphanedParts queries for parts whose session is
+    //   'completed' (it sees the status BEFORE the reset commits) and DELETEs
+    //   those exact parts. The recovery attempt then finds 0 parts and marks
+    //   the video ASSEMBLY_FAILED — permanently corrupting recoverable data.
+    //
+    // Sequential execution (corrupt → missing → orphans) guarantees that by
+    // the time the orphan pass runs, scanMissingBlobs has already committed
+    // any session resets, so newly-'assembling' sessions are excluded from
+    // the orphan query (which filters WHERE s.status = 'completed').
+    //
+    // The total time cost is minor: each pass is individually deadline-bounded
+    // (FAST_QUERY_TIMEOUT_MS / SLOW_QUERY_TIMEOUT_MS) and the overall
+    // 9-minute invocation window provides more than enough headroom for all
+    // three passes to complete on even a heavily-loaded DB.
+
+    corruptFixed = await scanCorruptBlobs(overallDeadlineMs).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.warn({ err }, "[integrity] corrupt-blob pass threw unexpectedly");
+      passErrors.push(`corrupt-blobs: ${msg}`);
+      return 0;
+    });
+
+    if (!isExpired(overallDeadlineMs, "main-loop-after-corrupt")) {
+      missingHandled = await scanMissingBlobs(overallDeadlineMs).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn({ err }, "[integrity] missing-blob pass threw unexpectedly");
         passErrors.push(`missing-blobs: ${msg}`);
         return 0;
-      }),
-      scanOrphanedParts(overallDeadlineMs).catch((err: unknown) => {
+      });
+    }
+
+    if (!isExpired(overallDeadlineMs, "main-loop-after-missing")) {
+      orphansDeleted = await scanOrphanedParts(overallDeadlineMs).catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
         logger.warn({ err }, "[integrity] orphaned-parts pass threw unexpectedly");
         passErrors.push(`orphaned-parts: ${msg}`);
         return 0;
-      }),
-    ]);
-
-    corruptFixed = corruptResult.status === "fulfilled" ? corruptResult.value : 0;
-    missingHandled = missingResult.status === "fulfilled" ? missingResult.value : 0;
-    orphansDeleted = orphanResult.status === "fulfilled" ? orphanResult.value : 0;
-
-    // Track rejected promises (these are already caught above but allSettled
-    // may have additional metadata for rejected cases).
-    if (corruptResult.status === "rejected") passErrors.push(`corrupt-blobs: ${String(corruptResult.reason)}`);
-    if (missingResult.status === "rejected") passErrors.push(`missing-blobs: ${String(missingResult.reason)}`);
-    if (orphanResult.status === "rejected") passErrors.push(`orphaned-parts: ${String(orphanResult.reason)}`);
+      });
+    }
 
   } finally {
     clearInterval(heartbeatTimer);

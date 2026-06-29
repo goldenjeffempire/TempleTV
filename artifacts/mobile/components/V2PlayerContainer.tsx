@@ -662,6 +662,33 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
     }
   }, []);
 
+  // Stable ref-only helper — same pattern as clearBufferingWatchdog.
+  //
+  // Must be a useCallback (not a plain function) so it is a stable reference
+  // that can appear in the dependency arrays of handleVideoError and handleError
+  // without causing those callbacks to be re-created on every render.
+  //
+  // Why this matters: when expo-av fires onError, BOTH the load timeout AND
+  // the error emission fire independently unless the timeout is cancelled in
+  // the same tick as the error handler. Without a stable clearLoadTimeout ref,
+  // we cannot safely include it in handleVideoError/handleError deps, leaving
+  // a ghost 8-second timer that emits a second spurious buffer-error after the
+  // FSM has already started recovering — potentially interrupting the recovery
+  // with another RECOVERING_PRIMARY cycle.
+  const clearLoadTimeout = useCallback(() => {
+    if (loadTimeoutRef.current) {
+      clearTimeout(loadTimeoutRef.current);
+      loadTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearQuickFinishRetry = useCallback(() => {
+    if (quickFinishRetryTimerRef.current) {
+      clearTimeout(quickFinishRetryTimerRef.current);
+      quickFinishRetryTimerRef.current = null;
+    }
+  }, []);
+
   // Stable onError handler for the expo-av <Video> element.
   //
   // BroadcastBuffer is wrapped in React.memo to prevent re-renders on every
@@ -671,32 +698,25 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   // create a new function reference on every BroadcastBuffer render, defeating
   // memo on the inner <Video> and causing unnecessary re-renders.
   //
-  // Both `emit` (useCallback in BroadcastBuffer) and `clearBufferingWatchdog`
-  // (useCallback above) are stable; `bufferId` never changes within a mounted
-  // BroadcastBuffer instance. So this callback is effectively permanent for
-  // the lifetime of the component instance — one per A/B buffer.
+  // Both `emit` (useCallback in BroadcastBuffer), `clearBufferingWatchdog`, and
+  // `clearLoadTimeout` (useCallbacks above) are stable; `bufferId` never changes
+  // within a mounted BroadcastBuffer instance. So this callback is effectively
+  // permanent for the lifetime of the component instance — one per A/B buffer.
+  //
+  // clearLoadTimeout is included because expo-av can fire onError on Android
+  // BEFORE onLoad completes. Without cancelling the load timeout here, both the
+  // error handler AND the 8-second load-timeout fire buffer-error to the FSM,
+  // producing a double RECOVERING_PRIMARY that can overlap with the first
+  // recovery's bind-revision update and leave the player stuck in a recovery loop.
   const handleVideoError = useCallback((error: unknown) => {
     clearBufferingWatchdog();
+    clearLoadTimeout();
     emit({
       type: "buffer-error",
       bufferId,
       error: typeof error === "string" ? error : "media-error",
     });
-  }, [clearBufferingWatchdog, emit, bufferId]);
-
-  function clearQuickFinishRetry() {
-    if (quickFinishRetryTimerRef.current) {
-      clearTimeout(quickFinishRetryTimerRef.current);
-      quickFinishRetryTimerRef.current = null;
-    }
-  }
-
-  function clearLoadTimeout() {
-    if (loadTimeoutRef.current) {
-      clearTimeout(loadTimeoutRef.current);
-      loadTimeoutRef.current = null;
-    }
-  }
+  }, [clearBufferingWatchdog, clearLoadTimeout, emit, bufferId]);
 
   // Reset all per-bind tracking when a new source is bound (new bindRevision).
   // eslint-disable-next-line react-hooks/exhaustive-deps -- url and reportBufferEvent
@@ -988,9 +1008,20 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
 
   // Stable error handler — placed here (before the early return below) so it
   // unconditionally follows the Rules of Hooks.  Captures only stable refs.
+  //
+  // clearLoadTimeout is included alongside clearBufferingWatchdog because
+  // ExoPlayer can fire onError BEFORE onLoad, leaving the 8-second load
+  // timeout still running. When the error propagates through the FSM (→
+  // RECOVERING_PRIMARY → new bindRevision), the bind-revision effect will arm
+  // a fresh load timeout for the recovery bind. The old ghost timeout would
+  // then fire ~8 s later against the new bind revision, emitting a second
+  // buffer-error and interrupting an otherwise healthy recovery with an
+  // extra RECOVERING_PRIMARY cycle. Cancel it in the same synchronous tick
+  // as the error emission so the ghost can never fire.
   const handleError = useCallback(
     (error: unknown) => {
       clearBufferingWatchdog();
+      clearLoadTimeout();
       // ── Pre-load guard ────────────────────────────────────────────────
       // When the FSM is already PLAYING (fsmIsWaiting=false) and this Video
       // element has not yet fired onLoad for the current bind revision
@@ -1013,7 +1044,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         error: typeof error === "string" ? error : "media-error",
       });
     },
-    [clearBufferingWatchdog, emit, bufferId],
+    [clearBufferingWatchdog, clearLoadTimeout, emit, bufferId],
   );
 
   if (!url) {
@@ -1133,6 +1164,14 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
               !fsmIsWaitingRef.current &&
               loadedRevisionRef.current !== bindRevisionRef.current;
             if (!isPreLoadError) {
+              // Cancel the load timeout in the same synchronous tick as the
+              // error emission to prevent a ghost double-fire: ExoPlayer can
+              // report an error here (isLoaded=false path) AND also via
+              // onError, both before onLoad has fired. If the load timeout
+              // were left running, it would emit a second buffer-error ~8 s
+              // later against the recovery bind that the FSM already set up,
+              // triggering an extra RECOVERING_PRIMARY cycle.
+              clearLoadTimeout();
               emit({ type: "buffer-error", bufferId, error: status.error });
             }
           }
