@@ -188,7 +188,7 @@ async function scanCorruptBlobs(deadlineMs: number): Promise<number> {
     // terminates the scan after SLOW_QUERY_TIMEOUT_MS, releasing any lock.
     const phaseBResult = await withTimeout(
       db.transaction(async (tx) => {
-        await tx.execute(sql`SET LOCAL statement_timeout = ${SLOW_QUERY_TIMEOUT_MS}`);
+        await tx.execute(sql.raw(`SET LOCAL statement_timeout = ${SLOW_QUERY_TIMEOUT_MS}`));
         return tx.execute<CorruptRow>(sql`
           SELECT
             key,

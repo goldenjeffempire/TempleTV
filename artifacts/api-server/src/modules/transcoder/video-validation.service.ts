@@ -187,10 +187,17 @@ async function checkFileIntegrity(tmpPath: string): Promise<VideoCheckResult> {
  */
 async function checkMoovPlacement(tmpPath: string, faststartApplied: boolean | null): Promise<VideoCheckResult> {
   if (faststartApplied === false) {
+    // On the MP4-only pipeline, raw MP4 (moov at EOF) is broadcast-eligible.
+    // HTTP byte-range streaming works regardless of moov position; the
+    // faststartRecoveryWorker relocates the moov atom in the background as a
+    // quality optimization but NOT as a prerequisite for playback or queueing.
+    // Returning "fail" here causes validationStatus="failed" which blocks the
+    // video from isPlayableForBroadcast() — the opposite of the intended behaviour.
+    // Use "warn" so operators are informed but the video is still admitted.
     return {
       check: "MOOV_PLACEMENT",
-      status: "fail",
-      message: "faststartApplied=false — moov atom is at end-of-file; players cannot seek or fast-start playback",
+      status: "warn",
+      message: "faststartApplied=false — moov atom is at end-of-file; byte-range streaming still works but seek performance may be degraded. The faststart worker will relocate the moov atom in the background.",
     };
   }
   if (faststartApplied === true) {

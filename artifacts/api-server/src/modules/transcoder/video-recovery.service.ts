@@ -107,6 +107,8 @@ interface SnapshotRow {
   transcoding_error_message: string | null;
   object_path: string | null;
   hls_master_url: string | null;
+  local_video_url: string | null;
+  s3_mirrored_at: Date | null;
   latest_job_id: string | null;
   latest_job_status: string | null;
   latest_job_started_at: Date | null;
@@ -139,6 +141,7 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
   // ── Phase 1: Snapshot every locally-uploaded video ────────────────────────
   // One query captures:
   //   • current transcoding_status / error_code
+  //   • local_video_url + s3_mirrored_at (MP4-pipeline: blob confirmed flag)
   //   • latest transcoding job state (status, started_at, last_progress_at)
   //   • whether the video is in the active broadcast queue
   //   • whether the source blob exists and has size > 0 (inline blob check)
@@ -151,6 +154,8 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
       mv.transcoding_error_message,
       mv.object_path,
       mv.hls_master_url,
+      mv.local_video_url,
+      mv.s3_mirrored_at,
       latest.job_id           AS latest_job_id,
       latest.job_status       AS latest_job_status,
       latest.job_started_at   AS latest_job_started_at,
@@ -210,7 +215,30 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
       : null;
     const lastActivity = jobLastProgress ?? jobStarted ?? 0;
 
-    // Already healthy
+    // ── MP4-pipeline healthy states ───────────────────────────────────────────
+    // On the MP4-only pipeline (TRANSCODER_DISABLE=1) videos are admitted
+    // directly to the broadcast queue after upload (no HLS transcoding).
+    // transcodingStatus stays "none" and localVideoUrl is set once the blob
+    // is assembled.  s3MirroredAt IS NOT NULL confirms the blob is in storage.
+    //
+    // "none" + localVideoUrl + s3MirroredAt + in broadcast queue → healthy.
+    // "none" + localVideoUrl + s3MirroredAt + NOT in queue       → missing_from_queue
+    //   → Phase 7 calls enqueueIfMissing() to add them.
+    //
+    // "none" + localVideoUrl + s3MirroredAt IS NULL → still assembling or
+    //   stamp silently failed; repairMissingS3MirroredAt() heals within 90 s.
+    //   Treat as healthy (in-progress) and let auto-refill re-check later.
+    const isMp4Ready = (st === "none" || st === "uploaded") &&
+      !!row.local_video_url &&
+      !!row.s3_mirrored_at;
+    if (isMp4Ready && row.in_broadcast_queue) {
+      return { ...row, issueKind: "healthy" };
+    }
+    if (isMp4Ready && !row.in_broadcast_queue) {
+      return { ...row, issueKind: "missing_from_queue" };
+    }
+
+    // Already healthy (HLS pipeline legacy)
     if (st === "hls_ready" && row.in_broadcast_queue) {
       return { ...row, issueKind: "healthy" };
     }
@@ -241,8 +269,11 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
     if (st === "queued" && lastActivity > 0 && (nowMs - lastActivity) > STUCK_QUEUE_MS) {
       return { ...row, issueKind: "stuck_queued" };
     }
-    // Never processed — objectPath present but no transcoding job was ever created
-    if ((st === "none" || st === "uploaded") && objectPath) {
+    // Never processed — objectPath present but no transcoding job and no local
+    // video URL.  This is a legacy state from before the MP4-only pipeline
+    // switch; enqueueTranscode is disabled so this is effectively a no-op,
+    // but we still log it for operator visibility.
+    if ((st === "none" || st === "uploaded") && objectPath && !row.local_video_url) {
       return { ...row, issueKind: "never_processed" };
     }
     // Fallback — consider healthy (in-progress, queued within threshold, etc.)
