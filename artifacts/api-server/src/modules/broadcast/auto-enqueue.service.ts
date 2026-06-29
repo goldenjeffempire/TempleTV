@@ -30,15 +30,13 @@ import { ConflictError } from "../../shared/errors.js";
  * What counts as "playable" for auto-enqueue:
  *  • YouTube  — excluded from broadcast. YouTube content is library-only and
  *    surfaces only through catalog/search endpoints, never the broadcast queue.
- *  • Local    — admitted ONLY after faststartApplied=true. This is the
- *    FastStart-first policy:
- *      – Raw MP4 (faststartApplied=false) is HELD from the queue until the
- *        faststartRecoveryWorker relocates the moov atom. Moov at EOF causes
- *        blank screens and buffering stalls on TV, mobile, and web players.
- *      – Faststart MP4 (faststartApplied=true) streams from byte-0 with
- *        instant-start on all surfaces — the ONLY format admitted to broadcast.
- *    Call sites: upload finalize (after faststart), faststart-recovery worker
- *    (after recovery), schedule-bridge, manual repair endpoints.
+ *  • Local    — admitted immediately after assembly (s3MirroredAt IS NOT NULL).
+ *    Raw MP4 (moov at EOF) is broadcast-eligible right away; HTTP byte-range
+ *    streaming works regardless of moov position. Faststart (moov relocation)
+ *    is a background quality upgrade that fires broadcast-source-upgraded when
+ *    complete — no re-enqueue is needed, and no queue admission is withheld.
+ *    Call sites: upload finalize (immediately after assembly), faststart-recovery
+ *    worker (idempotent re-enqueue on recovery), schedule-bridge, repair endpoints.
  */
 
 const queueTable = schema.broadcastQueueTable;
@@ -434,13 +432,13 @@ export async function scanLibraryAndEnqueue(opts: {
           // also guards per-row, but excluding at the query level is cheaper and prevents
           // any N-row scan from even considering these videos.
           ne(videosTable.category, "midnight-prayers"),
-          // FastStart gate: only admit local videos whose moov atom has been
-          // relocated to the start of the file. faststartApplied=false means
-          // the moov is still at EOF — raw MP4 stalls players. The
-          // faststartRecoveryWorker runs every 5 min and calls enqueueIfMissing
-          // after each successful relocation.
+          // Blob confirmed: repairMissingS3MirroredAt() runs immediately before
+          // this query and stamps s3MirroredAt for any video whose post-assembly
+          // DB update silently failed. s3MirroredAt IS NOT NULL guarantees the
+          // storage blob was committed — raw MP4 is broadcast-eligible immediately.
+          // Faststart (moov relocation) is a background quality upgrade only.
           isNotNull(videosTable.localVideoUrl),
-          eq(videosTable.faststartApplied, true),
+          isNotNull(videosTable.s3MirroredAt),
           // NOT EXISTS subquery — keeps the JOIN cheap and the candidate set
           // small; the dedupe inside enqueueIfMissing is the authoritative
           // backstop for the race where two concurrent scans run at once.
@@ -564,13 +562,14 @@ function isPlayableForBroadcast(row: {
   //            Block until the operator repairs and re-validates.
   if (row.validationStatus === "failed") return false;
 
-  // FastStart gate: the moov atom MUST be at the front of the file before
-  // the video enters the broadcast queue. Raw MP4 (moov at EOF) causes players
-  // to buffer the entire file before rendering — blank screens on TV/mobile/web.
-  // faststartRecoveryWorker relocates moov in the background and calls
-  // enqueueIfMissing once faststartApplied flips to true.
+  // Raw MP4 is admitted to broadcast immediately after assembly — faststart
+  // (moov-atom relocation) is a background quality upgrade, NOT a broadcast
+  // gate. HTTP byte-range streaming works regardless of moov position; the
+  // player fetches the moov from EOF on first play and caches it. The
+  // faststartRecoveryWorker upgrades quality in the background; the
+  // orchestrator emits broadcast-source-upgraded when faststartApplied flips
+  // to true, allowing the next play cycle to use the optimised source.
   if (row.localVideoUrl && row.localVideoUrl.trim() !== "") {
-    if (row.faststartApplied !== true) return false;
     return true;
   }
 
