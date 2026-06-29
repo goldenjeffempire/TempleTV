@@ -183,6 +183,11 @@ const KNOWN_EVENTS = [
   // scan summary so the admin panel can refresh the health query immediately
   // rather than waiting for the 60 s polling interval.
   "asset-health-updated",
+  // Auto-Heal Monitor events — emitted every 5 s by auto-heal-monitor.ts.
+  // autoheal-action: a single remediation action was taken (or attempted).
+  // autoheal-status-tick: lightweight health snapshot for live dashboard refresh.
+  // autoheal-alert-cleared: an active alert was resolved automatically.
+  "autoheal-action", "autoheal-status-tick", "autoheal-alert-cleared",
 ];
 
 function summarize(event: string, data: unknown): string | null {

@@ -9,7 +9,7 @@ import {
   Bell, BarChart2, Users, Heart, Settings, Shield,
   Zap, Cpu, Signal, Layers, Tv2, Wifi, WifiOff, Loader, ChevronRight, X, Youtube,
   Image, Gauge, Rss, ClipboardList, Settings2, RefreshCw, Trash2, Headphones, Lock,
-  SignalLow, Moon, ScanSearch, Smartphone, ShieldAlert, Rocket, Bot, HardDrive,
+  SignalLow, Moon, ScanSearch, Smartphone, ShieldAlert, Rocket, Bot, HardDrive, HeartPulse,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
@@ -278,6 +278,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
     {
       title: "System",
       items: [
+        { href: "/auto-monitor", label: "Auto-Heal Monitor", icon: <HeartPulse size={16} />, adminOnly: true },
         { href: "/system-health", label: "System Health", icon: <Activity size={16} />, adminOnly: true },
         { href: "/operations", label: "Operations", icon: <Cpu size={16} />, adminOnly: true },
         { href: "/diagnostics", label: "Diagnostics", icon: <ScanSearch size={16} />, adminOnly: true },

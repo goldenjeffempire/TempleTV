@@ -25,6 +25,8 @@ import { sendAdminAlert } from "../mail/mail.service.js";
 import { installDeadAirTracker, getDeadAirStats } from "./engine/dead-air-tracker.js";
 import { queueSelfHealingWorker } from "./engine/queue-self-healing-worker.js";
 import { faststartRecoveryWorker } from "./engine/faststart-recovery.js";
+import { autoHealMonitor } from "./engine/auto-heal-monitor.js";
+import { autohealRoutes } from "./io/autoheal.routes.js";
 
 export { getExhaustionStatus, getAutoRefillStatus, getStorageStats };
 export { getDeadAirStats };
@@ -45,6 +47,7 @@ export async function broadcastV2Routes(app: FastifyInstance) {
   await app.register(restRoutes);
   await app.register(sseRoutes);
   await app.register(wsRoutes);
+  await app.register(autohealRoutes);
 }
 
 let bootInFlight: Promise<void> | null = null;
@@ -450,6 +453,12 @@ function startSupervisedWorkers(): void {
   // every period the channel is off-air (no item, no override). Install after
   // all workers so the orchestrator is likely started on first frame.
   installDeadAirTracker();
+
+  // Auto-Heal Monitor: 5-second lightweight watchdog that detects and responds
+  // to acute failures (stuck sequence, dead air, empty queue, worker circuit opens,
+  // memory pressure) faster than the longer-interval supervised workers.
+  // Started after all workers so getWorkerStatuses() returns a full picture.
+  autoHealMonitor.start();
 
   logger.info("[broadcast-v2] supervised workers registered");
 }

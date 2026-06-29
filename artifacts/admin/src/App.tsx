@@ -82,6 +82,7 @@ const SelfHealing       = lazyPage(() => import("@/pages/self-healing"));
 const AppVersions       = lazyPage(() => import("@/pages/app-versions"));
 const OtaUpdates        = lazyPage(() => import("@/pages/ota-updates"));
 const StorageHealth     = lazyPage(() => import("@/pages/storage-health"));
+const AutoMonitor       = lazyPage(() => import("@/pages/auto-monitor"));
 
 // ── Error Boundary ────────────────────────────────────────────────────────────
 
@@ -522,6 +523,7 @@ function AuthenticatedApp() {
             <Route path="/midnight-prayers"  component={MidnightPrayers} />
             <Route path="/system-health">{() => <AdminRoute component={SystemHealth} />}</Route>
             <Route path="/self-healing">{() => <AdminRoute component={SelfHealing} />}</Route>
+            <Route path="/auto-monitor">{() => <AdminRoute component={AutoMonitor} />}</Route>
             <Route path="/diagnostics">{() => <AdminRoute component={Diagnostics} />}</Route>
             <Route path="/app-versions">{() => <AdminRoute component={AppVersions} />}</Route>
             <Route path="/ota-updates">{() => <AdminRoute component={OtaUpdates} />}</Route>
