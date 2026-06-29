@@ -73,3 +73,4 @@
 - [YouTube override mobile dead-air — load-timeout cascade](yt-override-mobile-dead-air.md) — BroadcastBuffer load timeout arms even when url=null; onSnapshot calls engageOverride on every keepalive. Two fixes: url!==null guard + onSnapshot same-ID guard.
 - [Faststart MP4 pipeline — moov gating](faststart-mp4-pipeline.md) — faststartApplied=true is the hard gate for broadcast admission; non-faststart MP4s are never exposed to viewers.
 - [Video validation service — e2e pipeline](video-validation-service.md) — 9-check ffprobe/ffmpeg validation; status null/pending/running/passed/warn = allow; failed = blocked; all isPlayableForBroadcast call sites must select validationStatus.
+- [Production probe URL normalization bugs](probe-url-normalization-bugs.md) — 5 probe bugs fixed: missing import, raw-URL cache key mismatches, loopback bypass gaps, and sourceHash≠URL confusion in approve endpoint.

@@ -36,7 +36,9 @@ import {
   clearBadUrl,
   getUrlConfidenceState,
   clearSourceApproval,
+  normalizeQueueUrl,
 } from "../repository/queue.repo.js";
+import { env } from "../../../config/env.js";
 
 const LOG_TAG = "[queue-self-healing]";
 
@@ -61,28 +63,112 @@ function buildSuggestedFix(errorCode: string | null): string {
 
 // ── Source reachability probe (lightweight HTTP HEAD + content-hash) ──────────
 
+/**
+ * Convert an own-origin upload URL to http://127.0.0.1:PORT/… for local
+ * probing, mirroring media-integrity-scanner.ts toLocalhostProbeUrl().
+ *
+ * Why: normalizeQueueUrl() absolutises relative /api/v1/uploads/… paths to
+ * https://<REPLIT_DEV_DOMAIN>/api/v1/uploads/… in production. Probing that
+ * external URL traverses Replit's proxy and can time out, falsely marking a
+ * healthy BYTEA blob as unreachable. Loopback probes are immune to proxy
+ * hiccups and are always routed directly to the API process.
+ */
+function toLocalhostProbeUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const ownHostnames = [
+      env.API_ORIGIN,
+      process.env["RENDER_EXTERNAL_URL"],
+      process.env["DEV_DOMAIN"],
+      process.env["REPLIT_DEV_DOMAIN"],
+    ]
+      .filter(Boolean)
+      .map((h) => {
+        try {
+          return new URL(/^https?:\/\//i.test(h!) ? h! : `https://${h!}`).hostname;
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean) as string[];
+
+    if (ownHostnames.includes(u.hostname) && /\/api(?:\/v1)?\/uploads?\//.test(u.pathname)) {
+      u.protocol = "http:";
+      u.hostname = "127.0.0.1";
+      u.port = String(env.PORT ?? 8080);
+      return u.toString();
+    }
+  } catch {
+    /* malformed URL — return as-is */
+  }
+  return url;
+}
+
 interface ProbeResult {
   reachable: boolean;
   contentHash: string | null;
   statusCode?: number;
 }
 
-async function probeSource(url: string): Promise<ProbeResult> {
+/**
+ * Probe a URL for HTTP reachability using HEAD first, falling back to a
+ * ranged GET on 405 Method Not Allowed (some CDNs and BYTEA upload handlers
+ * block HEAD while serving GET normally).
+ *
+ * Accepts 200, 206 (partial content OK), and 416 (Range Not Satisfiable —
+ * server rejected our Range header but the file exists) as reachable.
+ *
+ * Always rewrites own-origin upload URLs to loopback before probing so
+ * BYTEA blobs in PostgreSQL are never falsely condemned by proxy timeouts.
+ */
+async function probeSource(rawUrl: string): Promise<ProbeResult> {
+  const url = toLocalhostProbeUrl(rawUrl);
+  const headers: Record<string, string> = {
+    "User-Agent": "TempleTV-HealthProbe/1.0",
+    Range: "bytes=0-0",
+  };
+  if (env.INTERNAL_HLS_BYPASS_SECRET) {
+    headers["x-internal-token"] = env.INTERNAL_HLS_BYPASS_SECRET;
+  }
+
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 10_000);
-    const res = await fetch(url, {
-      method: "HEAD",
-      signal: ctrl.signal,
-      headers: { "User-Agent": "TempleTV-HealthProbe/1.0" },
-    });
-    clearTimeout(t);
+    let res: Response;
+    try {
+      res = await fetch(url, { method: "HEAD", signal: ctrl.signal, headers });
+    } finally {
+      clearTimeout(t);
+    }
 
     const etag = res.headers.get("etag") ?? null;
     const lastMod = res.headers.get("last-modified") ?? null;
     const contentHash = etag ?? lastMod ?? null;
 
-    return { reachable: res.ok, contentHash, statusCode: res.status };
+    // HEAD not supported — fall back to a small ranged GET so HEAD-hostile
+    // origins (including some BYTEA upload configurations) aren't falsely
+    // marked unreachable.
+    if (res.status === 405) {
+      const getCtrl = new AbortController();
+      const getT = setTimeout(() => getCtrl.abort(), 10_000);
+      try {
+        const getRes = await fetch(url, {
+          method: "GET",
+          signal: getCtrl.signal,
+          headers: { ...headers, Range: "bytes=0-1023" },
+        });
+        clearTimeout(getT);
+        await getRes.body?.cancel().catch(() => {});
+        const ok = getRes.status === 200 || getRes.status === 206 || getRes.status === 416;
+        return { reachable: ok, contentHash, statusCode: getRes.status };
+      } catch {
+        clearTimeout(getT);
+        return { reachable: false, contentHash: null, statusCode: 405 };
+      }
+    }
+
+    const ok = res.status === 200 || res.status === 206 || res.status === 416;
+    return { reachable: ok, contentHash, statusCode: res.status };
   } catch {
     return { reachable: false, contentHash: null };
   }
@@ -90,11 +176,21 @@ async function probeSource(url: string): Promise<ProbeResult> {
 
 // ── Resolve the best playable URL for a queue item ────────────────────────────
 
+/**
+ * Return the normalised absolute URL for a queue item's playable source.
+ *
+ * normalizeQueueUrl() converts relative /api/v1/uploads/… paths to absolute
+ * HTTPS URLs using the same origin-resolution order as the orchestrator so
+ * the returned key matches what the bad-URL cache stores. Without this
+ * normalization, cache lookups (getUrlConfidenceState / isKnownBadUrl) always
+ * return "healthy" for items whose localVideoUrl is still a relative path,
+ * and Node.js fetch() would throw on a non-absolute URL.
+ */
 function resolveItemUrl(item: {
   localVideoUrl: string | null;
   videoSource: string;
 }): string | null {
-  if (item.localVideoUrl) return item.localVideoUrl;
+  if (item.localVideoUrl) return normalizeQueueUrl(item.localVideoUrl);
   return null;
 }
 

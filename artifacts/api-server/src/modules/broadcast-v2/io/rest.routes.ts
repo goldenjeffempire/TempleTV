@@ -3055,9 +3055,16 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         .limit(1);
       if (!queueItem) return reply.code(404).send({ error: "Queue item not found" });
 
-      // Clear both possible URL slots from the bad-URL cache.
+      // Clear the URL from the bad-URL cache using the NORMALIZED key.
+      // normalizeQueueUrl() converts relative /api/v1/uploads/… paths to the
+      // same absolute HTTPS URL the orchestrator and scanner store as cache keys.
+      // Without normalization, clearBadUrl() would look up the wrong key and
+      // the item would remain blocked despite the operator's intent.
       const cleared: string[] = [];
-      if (queueItem.localVideoUrl) { clearBadUrl(queueItem.localVideoUrl); cleared.push(queueItem.localVideoUrl); }
+      if (queueItem.localVideoUrl) {
+        const normUrl = normalizeQueueUrl(queueItem.localVideoUrl);
+        if (normUrl) { clearBadUrl(normUrl); cleared.push(normUrl); }
+      }
 
       // Re-activate the DB row if it was deactivated (auto-suspend or
       // validator deactivation) so the next reload picks it up.
@@ -3467,7 +3474,19 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       }
 
       const updated = await assetHealthRepo.manualApprove(itemId, actor, reason);
-      clearBadUrl(updated.sourceHash ?? itemId);
+      // Clear the bad-URL cache for this item's actual source URL.
+      // sourceHash is an ETag/Last-Modified string from the last HTTP probe —
+      // NOT a URL. Clearing clearBadUrl(sourceHash) was a no-op (ETag strings
+      // never match URL cache keys). Look up the queue item to get its real URL.
+      const [queueItemForApprove] = await db
+        .select({ localVideoUrl: schema.broadcastQueueTable.localVideoUrl })
+        .from(schema.broadcastQueueTable)
+        .where(eq(schema.broadcastQueueTable.id, itemId))
+        .limit(1);
+      if (queueItemForApprove?.localVideoUrl) {
+        const normUrl = normalizeQueueUrl(queueItemForApprove.localVideoUrl);
+        if (normUrl) clearBadUrl(normUrl);
+      }
       adminEventBus.push("broadcast-queue-updated", { reason: "operator-approve", queueItemId: itemId });
 
       return reply.send({ ok: true as const, row: serializeHealthRow(updated) });
