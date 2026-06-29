@@ -4188,12 +4188,10 @@ class BroadcastOrchestrator extends EventEmitter {
    *  • Skips YouTube sources — HEAD probes return HTML, creating false positives.
    *  • Skips if the source was recently confirmed reachable (isSourceApproved).
    *  • Resets the per-item failure counter when the current item changes.
-   *  • Auto-skips after 5 consecutive definitive 4xx responses (`reachable === false`).
-   *    Threshold raised from 3 → 5: at 60 s interval this is 5 min of confirmed
-   *    4xx before giving up, preventing false-positive skips from brief CDN errors.
-   *  • Auto-skips after 8 consecutive ambiguous (5xx/timeout) results — raised
-   *    from 5: at 60 s interval this is 8 min, giving transient CDN restarts time
-   *    to recover before penalising an otherwise healthy item.
+   *  • After 5 consecutive definitive 4xx responses or 8 consecutive ambiguous
+   *    (5xx/timeout) results, logs a warning and resets counters — never skips.
+   *    24/7 autonomous broadcast mode: retry indefinitely; the player handles
+   *    dead-air recovery at the client level.
    *  • `null` (ambiguous / timeout / 5xx) never increments the 4xx counter — a
    *    single CDN blip must never drop healthy content from the rotation.
    */
@@ -4289,21 +4287,16 @@ class BroadcastOrchestrator extends EventEmitter {
           `[broadcast-v2] current-item probe: URL returned 4xx (failure ${this.currentItemProbeFailures}/5)`,
         );
         if (this.currentItemProbeFailures >= 5) {
-          logger.error(
+          logger.warn(
             { itemId: item.id, title: item.title, url },
-            "[broadcast-v2] current-item probe: 5 consecutive 4xx failures — marking bad and auto-skipping dead stream",
+            "[broadcast-v2] current-item probe: 5 consecutive 4xx failures — resetting counters and retrying (no auto-skip; 24/7 broadcast mode)",
           );
+          // Reset counters so the next probe window starts fresh.
+          // We never auto-skip on probe failures — the player handles dead-air
+          // recovery and the queue continues playing for 24/7 autonomous broadcast.
           this.currentItemProbeFailures = 0;
           this.currentItemProbeAmbiguousFailures = 0;
           this.currentItemProbeFirstFailureMs = null;
-          this.currentItemProbeId = null;
-          markBadUrl(url);
-          if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
-          const failCount = incrementBadUrlSkipCount(item.id);
-          if (failCount >= BAD_URL_SKIP_THRESHOLD) {
-            autoSuspendQueueItem(item.id, item.title ?? null, failCount, url);
-          }
-          await this.skip();
         }
       } else if (reachable === true) {
         // Confirmed reachable — stamp the approval so subsequent probe ticks
@@ -4340,27 +4333,21 @@ class BroadcastOrchestrator extends EventEmitter {
         // to self-recover before penalising a healthy item.
         this.currentItemProbeAmbiguousFailures += 1;
         if (this.currentItemProbeAmbiguousFailures >= 8) {
-          logger.error(
+          logger.warn(
             {
               itemId: item.id,
               title: item.title,
               url,
               ambiguousFailures: this.currentItemProbeAmbiguousFailures,
             },
-            "[broadcast-v2] current-item probe: 8 consecutive 5xx/timeout failures (≥ 8 min) — CDN likely dead, auto-skipping to next item",
+            "[broadcast-v2] current-item probe: 8 consecutive 5xx/timeout failures (≥ 8 min) — resetting counters and retrying (no auto-skip; 24/7 broadcast mode)",
           );
+          // Reset counters so the next probe window starts fresh.
+          // We never auto-skip on probe failures — the player handles dead-air
+          // recovery and the queue continues playing for 24/7 autonomous broadcast.
           this.currentItemProbeAmbiguousFailures = 0;
           this.currentItemProbeFailures = 0;
           this.currentItemProbeFirstFailureMs = null;
-          this.currentItemProbeId = null;
-          clearSourceApproval(item.id);
-          markBadUrl(url);
-          if (item.failoverSource?.url) markBadUrl(item.failoverSource.url);
-          const failCount = incrementBadUrlSkipCount(item.id);
-          if (failCount >= BAD_URL_SKIP_THRESHOLD) {
-            autoSuspendQueueItem(item.id, item.title ?? null, failCount, url);
-          }
-          await this.skip();
         }
       }
     })().catch((err) =>

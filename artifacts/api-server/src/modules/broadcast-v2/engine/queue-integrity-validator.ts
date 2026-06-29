@@ -392,7 +392,6 @@ class QueueIntegrityValidatorImpl {
             WHERE bq.is_active = false
               AND bq.validator_deactivated_reason = 'orphaned_video_ref'
               AND mv.local_video_url IS NOT NULL
-              AND mv.faststart_applied = true
           `);
           revivedRows = (result.rows as RevivedRow[]) ?? [];
         } catch (qErr) {
@@ -405,9 +404,8 @@ class QueueIntegrityValidatorImpl {
         if (revivedRows.length > 0) {
           const revivedIds = revivedRows.map((r) => r.id);
           try {
-            // Only re-activate when faststartApplied=true so we don't return
-            // items to rotation that would still be blocked by the source
-            // resolver's broadcast admission gate (faststartApplied=true required).
+            // Re-activate when local_video_url is present — raw MP4 is admitted
+            // directly; no faststart gate required.
             await db
               .update(schema.broadcastQueueTable)
               .set({ isActive: true, validatorDeactivatedReason: null })
@@ -415,7 +413,7 @@ class QueueIntegrityValidatorImpl {
             logger.warn(
               { count: revivedIds.length, itemIds: revivedIds },
               "[queue-validator] AUTO-FIX (reverse): re-activated ORPHANED_VIDEO_REF items " +
-              "whose video now has a local URL — items returned to broadcast rotation",
+              "whose video now has a local URL (raw MP4 admitted) — items returned to broadcast rotation",
             );
             adminEventBus.push("broadcast-queue-updated", {
               reason: "integrity-fix-revived-orphaned-video-ref",

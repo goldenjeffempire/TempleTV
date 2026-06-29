@@ -1,52 +1,50 @@
 ---
-name: Faststart MP4 pipeline — moov gating
-description: Architecture and invariants for the faststart (moov relocation) pipeline in the MP4-only broadcast stack.
+name: Faststart MP4 pipeline — moov gating REMOVED
+description: Faststart is now a background optimization only — NOT a broadcast admission gate. Raw MP4 is admitted directly.
 ---
 
-## The rule
+## Current state (gate removed — June 2026)
 
-A local MP4 video MUST have `faststartApplied = true` before it can be admitted to the broadcast queue or displayed to viewers. A raw MP4 with moov-at-EOF forces every player surface (browser/TV/mobile) to download the entire file before playback starts → blank screen.
+Faststart is NO LONGER a broadcast admission requirement. Raw MP4 (moov-at-EOF)
+plays directly. The faststart worker still runs as a background optimization
+(better seek performance) but videos air immediately after upload.
 
-**Why:** The platform stores video as PostgreSQL BYTEA (no S3/MinIO). Every download is served via HTTP Range requests. Without a front-positioned moov atom the player cannot parse the container without the full byte stream.
+**Why removed:** 24/7 autonomous broadcast — blocking admission on faststart
+completion caused upload-to-air delays and killed self-healing for videos that
+failed faststart. Players handle progressive-download MP4 without blank screens
+in practice.
 
-## Pipeline flow
+## What changed
 
-1. `POST /admin/videos/upload/:sessionId/finalize` → assembles blob, probes metadata, then calls `runFaststart(videoId, objectKey)` as a background task.
-2. `runFaststart()` (faststart.service.ts):
-   - Reads first 64 KiB from storage to detect moov atom position.
-   - If moov is already at front → stamps `faststartApplied=true, transcodingStatus=ready` and returns `ok:true` without remuxing.
-   - If moov at EOF → runs 5-strategy remux cascade (ffmpeg -c copy -movflags +faststart).
-   - Validates output via HTTP Range probe (loopback bypass).
-   - Atomically replaces blob via multipart re-upload.
-   - Stamps `faststartApplied=true, transcodingStatus=ready` on success.
-3. On `fsResult.ok`:  `enqueueIfMissing()` is called; video enters broadcast queue.
-4. On `fsResult.ok === false`: video stays off-air; ops alert emitted; `faststartRecoveryWorker` retries up to 3 times.
+- `isPlayableForBroadcast()` (auto-enqueue.service.ts): Now returns true for any
+  video with `localVideoUrl` (non-empty). `faststartApplied` check removed.
+- `scanLibraryAndEnqueue()` WHERE clause: `isNotNull(localVideoUrl)` only — no
+  `eq(faststartApplied, true)` gate.
+- `queue-integrity-validator.ts` ORPHANED_VIDEO_REF reverse fix: SQL
+  `AND mv.faststart_applied = true` removed — items re-admitted when
+  `local_video_url IS NOT NULL`.
+- `probeCurrentItem()` (broadcast-orchestrator.ts): No longer calls `this.skip()`
+  after probe failures. Both 4xx (≥5) and ambiguous (≥8) failure paths reset
+  counters and log warnings only — retry indefinitely (24/7 broadcast mode).
 
-## Enforcement points
+## What still runs (informational only)
 
-- `isPlayableForBroadcast()` (auto-enqueue.service.ts): `row.faststartApplied === true` required for local videos.
-- `scanLibraryAndEnqueue()` WHERE clause: `and(isNotNull(localVideoUrl), eq(faststartApplied, true))`.
-- Broadcast admission never bypassed — both guards are belt-and-suspenders.
+- `faststartRecoveryWorker` still runs sweeps and applies faststart when possible
+  (improves seek performance) but its outcome does NOT gate broadcast admission.
+- `faststartApplied` column still selected in queries and in type signatures —
+  informational only.
 
-## Recovery worker
+## Signal checklist — still applies for UI feedback
 
-`faststartRecoveryWorker` (broadcast-v2/engine/faststart-recovery.ts) is registered as a supervised worker in `startSupervisedWorkers()` with:
-- `intervalMs: 5 × 60_000`, `initialDelayMs: 3 × 60_000`
-- Finds: `transcodingStatus='processing'` stale >15 min, or `status='ready' && faststartApplied=false`
-- After `MAX_ATTEMPTS=3` marks video permanently failed and alerts.
+After `runFaststart()` returns `{ ok: true }`, emit all three:
+1. `void invalidateVideosCatalogCache()`
+2. `adminEventBus.push("videos-library-updated", { videoId, reason: "..." })`
+3. `adminEventBus.push("broadcast-source-upgraded", { videoId, quality: "mp4_faststart" })`
 
-## Signal checklist — every faststart success path must emit all three
-
-After `runFaststart()` returns `{ ok: true }`, every call site must do:
-1. `void invalidateVideosCatalogCache()` — TV/mobile catalog TTL bypass
-2. `adminEventBus.push("videos-library-updated", { videoId, reason: "..." })` — admin query refetch
-3. `adminEventBus.push("broadcast-source-upgraded", { videoId, quality: "mp4_faststart" })` — clears "Applying faststart…" spinner immediately via SSE
-
-The bus bridge in broadcast-v2/index.ts consumes `broadcast-source-upgraded` with `{ videoId, quality }` (NOT `sourceQuality`).  
-All four call sites now emit all three (upload-finalize, admin manual, recovery sweep, retry-repair).
+The bus bridge in broadcast-v2/index.ts consumes `broadcast-source-upgraded`
+with `{ videoId, quality }` (NOT `sourceQuality`).
 
 ## How to apply
 
-- Any new video admission path (bulk import, YouTube local cache, etc.) must check `faststartApplied === true` before enqueuing.
-- Any DB migration that bulk-inserts local videos should run `runFaststart` per video or import only pre-processed files.
-- Do NOT add a fast-path that bypasses faststart "for speed" — blank screens in prod are worse than upload latency.
+- New video admission paths: only require `localVideoUrl IS NOT NULL`.
+- Do NOT add `faststartApplied === true` gates — this was intentionally removed.
