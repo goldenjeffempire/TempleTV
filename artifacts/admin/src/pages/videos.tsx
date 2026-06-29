@@ -348,7 +348,7 @@ function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
     const onErr = () => setPlayerError(
       isHls
         ? "HLS stream failed to load in this browser. Try Chrome or Firefox."
-        : "This MP4 could not load. The moov atom may not yet be at the start of the file — faststart may still be in progress. The broadcast queue only admits videos once faststart completes.",
+        : "This MP4 could not load. The moov atom may not yet be at the start of the file — faststart may still be in progress. The video is already in the broadcast queue and will air as raw MP4 while faststart optimises it in the background.",
     );
     el.src = previewUrl;
     el.addEventListener("loadedmetadata", onMeta);
@@ -438,7 +438,7 @@ function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
             <span>
               {video.faststartApplied
                 ? "Previewing faststart-optimised MP4 — moov atom is at the front for instant browser playback. This is the same file broadcast viewers receive."
-                : "Previewing raw MP4. Faststart (moov relocation) is pending — browser playback may stall. The broadcast queue will admit this video once faststart completes."}
+                : "Previewing raw MP4. Faststart (moov relocation) is pending — browser playback may stall. The video is already in the broadcast queue and airing as raw MP4 while faststart optimises it in the background."}
             </span>
           </>
         )}

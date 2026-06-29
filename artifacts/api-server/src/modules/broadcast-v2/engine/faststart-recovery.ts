@@ -181,6 +181,26 @@ async function doSweep(): Promise<void> {
         "[faststart-recovery] running faststart on candidate",
       );
 
+      // Enroll in the broadcast queue as raw MP4 immediately so the video can
+      // air while faststart runs.  Idempotent — no-op if already queued.
+      try {
+        const earlyEnqRes = await enqueueIfMissing({
+          videoId: row.id,
+          reason: "faststart-recovery-complete",
+        });
+        if (earlyEnqRes.enqueued) {
+          logger.info(
+            { videoId: row.id, queueItemId: earlyEnqRes.queueItemId },
+            "[faststart-recovery] video enrolled in broadcast queue (raw MP4 — faststart pending)",
+          );
+        }
+      } catch (earlyEnqErr) {
+        logger.warn(
+          { err: earlyEnqErr, videoId: row.id },
+          "[faststart-recovery] early enqueueIfMissing failed (non-fatal)",
+        );
+      }
+
       const result = await runFaststart(row.id, objectKey, { skipStatusUpdate: false });
 
       if (result.ok) {
@@ -192,10 +212,10 @@ async function doSweep(): Promise<void> {
             durationMs: result.durationMs,
             remuxed: result.remuxed,
           },
-          "[faststart-recovery] faststart succeeded — enrolling in broadcast queue",
+          "[faststart-recovery] faststart succeeded — video upgraded to mp4_faststart",
         );
 
-        // Enroll in broadcast queue now that faststartApplied=true.
+        // Belt-and-suspenders: ensure the video is in the queue (idempotent).
         try {
           const enqRes = await enqueueIfMissing({
             videoId: row.id,
@@ -204,13 +224,13 @@ async function doSweep(): Promise<void> {
           if (enqRes.enqueued) {
             logger.info(
               { videoId: row.id, queueItemId: enqRes.queueItemId },
-              "[faststart-recovery] video enrolled in broadcast queue",
+              "[faststart-recovery] video enrolled in broadcast queue (faststart MP4)",
             );
           }
         } catch (enqErr) {
           logger.warn(
             { err: enqErr, videoId: row.id },
-            "[faststart-recovery] enqueueIfMissing failed (non-fatal — queue self-heal will retry)",
+            "[faststart-recovery] post-faststart enqueueIfMissing failed (non-fatal — queue self-heal will retry)",
           );
         }
 

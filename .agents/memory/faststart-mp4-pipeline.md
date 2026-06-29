@@ -27,12 +27,25 @@ in practice.
   after probe failures. Both 4xx (≥5) and ambiguous (≥8) failure paths reset
   counters and log warnings only — retry indefinitely (24/7 broadcast mode).
 
-## What still runs (informational only)
+## Upload/Recovery enqueue order (IMPORTANT)
+
+Both upload finalize and faststart-recovery now enqueue BEFORE running faststart:
+
+1. blob assembled → `enqueueIfMissing` (raw MP4 — video airs immediately)
+2. `runFaststart` runs in background (moov relocation, no re-encode)
+3. On success → `broadcast-source-upgraded` event upgrades sourceQuality in-place
+4. On failure → video continues airing as raw MP4; recovery worker retries
+5. Assembly-retry path follows same order
+
+**Why:** Ensures 24/7 continuity — new uploads are in rotation within seconds of
+assembly, not after ffmpeg remux completes (which can take minutes for large files).
+
+## What still runs (optimization only)
 
 - `faststartRecoveryWorker` still runs sweeps and applies faststart when possible
   (improves seek performance) but its outcome does NOT gate broadcast admission.
 - `faststartApplied` column still selected in queries and in type signatures —
-  informational only.
+  informational only, displayed in admin UI.
 
 ## Signal checklist — still applies for UI feedback
 
