@@ -1,4 +1,4 @@
-modules = ["bash", "web", "nodejs-22", "python-3.11"]
+modules = ["nodejs-20", "bash", "web"]
 
 [deployment]
 router = "application"
