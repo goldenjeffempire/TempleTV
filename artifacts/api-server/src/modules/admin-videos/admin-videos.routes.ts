@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { and, asc, count, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { cache } from "../../infrastructure/cache.js";
 import { requireAuth } from "../../middleware/auth.js";
@@ -995,6 +995,95 @@ export async function adminVideosRoutes(app: FastifyInstance) {
 
       req.log.info({ videoId: id, objectPath: row.objectPath }, "admin: manual faststart triggered");
       return reply.code(202).send({ ok: true as const, videoId: id });
+    },
+  );
+
+  // ── POST /videos/faststart-all ───────────────────────────────────────────────
+  // Bulk-apply MP4 faststart (moov-atom relocation) to every locally-uploaded
+  // video that has not yet been optimised (faststartApplied IS NULL or false)
+  // and is not currently running (transcodingStatus != 'processing').
+  // All jobs run sequentially in the background — the route returns 202 as soon
+  // as the candidate list is built, so large libraries never block the request.
+  r.post(
+    "/videos/faststart-all",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Apply MP4 faststart optimisation to all unoptimised locally-uploaded videos",
+        response: {
+          202: z.object({
+            ok: z.literal(true),
+            queued: z.number().int(),
+            alreadyRunning: z.number().int(),
+          }),
+          429: z.object({ error: z.string() }),
+        },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req, reply) => {
+      // Fetch all candidates: local uploads with an object path that are either
+      // unoptimised (faststartApplied IS NULL → never attempted, or false → failed)
+      // and not currently being processed.
+      const candidates = await db
+        .select({
+          id: videos.id,
+          objectPath: videos.objectPath,
+          transcodingStatus: videos.transcodingStatus,
+        })
+        .from(videos)
+        .where(
+          and(
+            ne(videos.videoSource, "youtube"),
+            isNotNull(videos.objectPath),
+            or(isNull(videos.faststartApplied), eq(videos.faststartApplied, false)),
+          ),
+        )
+        .orderBy(asc(videos.importedAt));
+
+      const active = candidates.filter((r) => r.transcodingStatus === "processing");
+      const queued = candidates.filter((r) => r.transcodingStatus !== "processing");
+
+      req.log.info(
+        { total: candidates.length, queued: queued.length, alreadyRunning: active.length },
+        "admin: bulk faststart-all triggered",
+      );
+
+      // Fire all jobs sequentially in the background so the memory profile stays
+      // flat (ffmpeg is spawned one-at-a-time, same as single-video faststart).
+      void (async () => {
+        for (const row of queued) {
+          if (!row.objectPath) continue;
+          try {
+            const fsResult = await runFaststart(row.id, row.objectPath, { skipStatusUpdate: false });
+            if (fsResult.ok) {
+              try {
+                const enqRes = await enqueueIfMissing({ videoId: row.id, reason: "faststart-all" });
+                if (enqRes.enqueued) {
+                  adminEventBus.push("broadcast-queue-updated", { reason: "faststart-all", videoId: row.id });
+                }
+              } catch { /* non-fatal */ }
+              void invalidateVideosCatalogCache();
+              adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "faststart-complete" });
+              adminEventBus.push("broadcast-source-upgraded", { videoId: row.id, quality: "mp4_faststart" });
+              scheduleVideoValidation(row.id, row.objectPath, { faststartApplied: true });
+              req.log.info({ videoId: row.id }, "admin: bulk faststart-all — video succeeded");
+            } else {
+              req.log.warn(
+                { videoId: row.id, rootCause: fsResult.rootCause },
+                "admin: bulk faststart-all — video failed (non-fatal, recovery worker will retry)",
+              );
+            }
+          } catch (err) {
+            req.log.warn({ err, videoId: row.id }, "admin: bulk faststart-all — video crashed (non-fatal)");
+          }
+        }
+        req.log.info({ processed: queued.length }, "admin: bulk faststart-all complete");
+      })().catch((err) => req.log.error({ err }, "admin: bulk faststart-all outer crash"));
+
+      return reply.code(202).send({ ok: true as const, queued: queued.length, alreadyRunning: active.length });
     },
   );
 

@@ -32,7 +32,7 @@ import {
   UploadCloud, X, FileVideo, Layers, Lock, LockOpen, Youtube, HardDrive,
   ArrowUpDown, SlidersHorizontal, Zap, Clapperboard, Globe, AlertTriangle,
   Wrench, CheckCircle2, Play, Loader2, Info, ClipboardList, TriangleAlert,
-  CircleCheck, CircleX, RefreshCcw, Inbox, CalendarClock, BookOpen, Plus,
+  CircleCheck, CircleX, RefreshCcw, Inbox, CalendarClock, BookOpen, Plus, Wand2,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { LiveStatusBadge } from "@/components/live-status-badge";
@@ -899,6 +899,24 @@ export default function VideosPage() {
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Transcoding request failed"),
   });
 
+  const bulkFaststartAllMutation = useMutation({
+    mutationFn: () =>
+      api.post<{ ok: boolean; queued: number; alreadyRunning: number }>("/admin/videos/faststart-all"),
+    onSuccess: (res) => {
+      if (res.queued === 0) {
+        toast.success("All local videos are already faststart-optimised — nothing to do.");
+      } else {
+        toast.success(
+          `FastStart started for ${res.queued} video${res.queued !== 1 ? "s" : ""} — cards update automatically as each one completes.`,
+        );
+      }
+      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+    },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Bulk faststart request failed"),
+  });
+
   const faststartMutation = useMutation({
     mutationFn: (id: string) =>
       api.post<{ ok: boolean; videoId: string }>(`/admin/videos/${id}/faststart`),
@@ -1391,6 +1409,18 @@ export default function VideosPage() {
                 Last Report
               </Button>
             )}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={bulkFaststartAllMutation.isPending}
+              onClick={() => bulkFaststartAllMutation.mutate()}
+              className="gap-1.5"
+              title="Apply MP4 faststart (moov-atom relocation) to every locally-uploaded video that hasn't been optimised yet. Jobs run sequentially in the background — each card updates automatically when its video completes."
+            >
+              {bulkFaststartAllMutation.isPending
+                ? <><Loader2 size={13} className="animate-spin" /> Optimising…</>
+                : <><Wand2 size={13} /> Optimise All</>}
+            </Button>
             <Button size="sm" onClick={() => setUploadOpen(true)} className="gap-1.5 relative">
               <UploadCloud size={14} />
               Upload Video
