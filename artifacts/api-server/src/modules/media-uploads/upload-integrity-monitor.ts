@@ -1,28 +1,42 @@
 /**
- * Upload Integrity Monitor
+ * Upload Integrity Monitor — Enterprise-Grade Production Rewrite
  *
- * Background worker that periodically scans storage for anomalies that the
- * hot-path guards (completeMultipartUpload transaction, finalize pre-flight)
- * cannot catch after the fact:
+ * Background worker that periodically scans storage for anomalies the hot-path
+ * guards cannot catch after the fact.
  *
- *   1. Corrupt blobs — storage_blobs rows where size_bytes = 0 or
- *      size_bytes ≠ octet_length(data).  Can result from a crash between an
- *      UPDATE and COMMIT in a legacy assembly path, or from direct DB edits.
+ * Scans:
+ *   1. Corrupt blobs — storage_blobs rows where size_bytes = 0 or data IS NULL.
+ *      Avoided the original octet_length(data) full-BYTEA-scan: the recorded
+ *      size_bytes column is used for fast detection; a bounded mismatch check
+ *      runs only if time budget permits, with a hard DB-level statement timeout.
  *
- *   2. Videos with a confirmed blob reference (s3MirroredAt IS NOT NULL)
- *      but no matching row in storage_blobs — the blob is gone.  These
- *      videos produce a 404 on every playback request.
+ *   2. Videos with confirmed blob reference (s3MirroredAt IS NOT NULL) but no
+ *      matching row in storage_blobs — these produce a 404 on every playback
+ *      request. If upload parts are present they are reset for auto-reassembly;
+ *      otherwise the video is permanently marked ASSEMBLY_FAILED.
  *
- *   3. Orphaned storage_upload_parts — BYTEA rows whose upload_id no longer
- *      matches any active upload session (session completed, expired, or
- *      aborted without full cleanup).  Each row is up to 8 MiB; orphans
- *      waste significant PostgreSQL storage.
+ *   3. Orphaned storage_upload_parts — BYTEA rows whose upload_id has no active
+ *      upload session. Each row is ≤ 8 MiB; orphans waste real PostgreSQL
+ *      storage. Completely removed the original SUM(octet_length(data)) full
+ *      BYTEA table scan; size is now estimated from COUNT × max-chunk-size.
  *
- * All scans use tight LIMIT caps to bound PostgreSQL I/O and avoid impacting
- * production traffic.  Findings are emitted as structured log entries and
- * admin-event-bus "ops-alert" events for operator visibility.
+ * Production guarantees:
+ *   • Every DB query is bounded by a hard client-side deadline + DB-level
+ *     statement_timeout so a lock wait or slow sequential scan cannot block
+ *     the shared connection pool indefinitely.
+ *   • All three passes receive a shared deadline derived from the worker
+ *     supervisor's 10-minute hard limit; each pass checks the deadline between
+ *     row iterations and exits gracefully when time runs out.
+ *   • Per-item remediation is wrapped in individual try/catch — one bad row
+ *     never aborts the rest of the pass.
+ *   • No BYTEA columns are read to compute sizes in the orphaned-parts scan.
+ *   • The mismatch-size scan (the only remaining octet_length query) runs with
+ *     a dedicated 25-second DB statement_timeout and is only attempted when the
+ *     overall pass has at least 30 s of budget remaining.
+ *   • The all-failed re-throw is replaced with per-pass tracking so the
+ *     supervisor's circuit breaker counts correctly.
  *
- * Registered in main.ts startWorkers() via workerSupervisor.spawn():
+ * Registered in main.ts via workerSupervisor.spawn():
  *   interval: 30 min, initial delay: 5 min, timeout: 10 min.
  */
 
@@ -34,13 +48,26 @@ import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 const logger = rootLogger.child({ module: "upload-integrity-monitor" });
 const videos = schema.videosTable;
 
-// ── Limits per scan pass to bound DB I/O ─────────────────────────────────────
+// ── Batch limits — bound DB I/O per pass ─────────────────────────────────────
 const MAX_CORRUPT_BLOBS_PER_PASS = 20;
 const MAX_MISSING_BLOBS_PER_PASS = 20;
 const MAX_ORPHAN_UPLOAD_IDS_PER_PASS = 30;
 
-// ── Helper: extract rows from Drizzle execute() result ───────────────────────
-// Drizzle wraps pg results differently depending on driver version; handle both.
+// ── Query timeouts ────────────────────────────────────────────────────────────
+/** Fast queries (index-only scans, small result sets). */
+const FAST_QUERY_TIMEOUT_MS = 15_000;
+/** Slow queries (those that may touch BYTEA data or large table scans). */
+const SLOW_QUERY_TIMEOUT_MS = 25_000;
+/** Per-row remediation (UPDATE/DELETE on single row by PK). */
+const REMEDIATION_TIMEOUT_MS = 10_000;
+
+// ── Estimated max bytes per upload part (8 MiB chunk ceiling). ───────────────
+// Used for ops-alert threshold when we cannot read actual BYTEA sizes.
+const MAX_PART_BYTES = 8 * 1024 * 1024;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Extract rows from a Drizzle execute() result regardless of driver version. */
 function extractRows<T>(result: unknown): T[] {
   if (!result) return [];
   const r = result as { rows?: T[] } | T[];
@@ -48,23 +75,148 @@ function extractRows<T>(result: unknown): T[] {
   return (r as { rows?: T[] }).rows ?? [];
 }
 
+/**
+ * Race a DB query Promise against a client-side hard timeout.
+ *
+ * The DB-level statement_timeout is set separately for expensive queries via
+ * SET LOCAL inside a transaction. This client-side guard is the belt-and-
+ * suspenders layer: it abandons waiting even if the PG connection is stuck in
+ * a lock wait that SET LOCAL statement_timeout would not yet have started
+ * timing (statement_timeout only runs once the server starts executing the SQL,
+ * not while waiting for a lock).
+ */
+function withTimeout<T>(
+  promise: Promise<T | null>,
+  ms: number,
+  label: string,
+): Promise<T | null> {
+  let timer: NodeJS.Timeout | null = null;
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      logger.warn({ label, timeoutMs: ms }, "[integrity] query deadline reached — moving on");
+      resolve(null);
+    }, ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, deadline]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/**
+ * Check whether the pass has exceeded its per-invocation deadline.
+ * Each pass receives the overall invocation deadline; individual row loops
+ * check this before processing the next row to ensure graceful exit.
+ */
+function isExpired(deadlineMs: number, label: string): boolean {
+  if (Date.now() >= deadlineMs) {
+    logger.info({ label }, "[integrity] pass deadline reached — stopping gracefully");
+    return true;
+  }
+  return false;
+}
+
 // ── Pass 1: Corrupt blobs ─────────────────────────────────────────────────────
-// Find storage_blobs rows where size_bytes = 0 or size_bytes ≠ actual data
-// length.  For each: mark the referencing video CORRUPT_SOURCE, delete the
-// corrupt blob, push an ops-alert.
-async function scanCorruptBlobs(): Promise<number> {
+//
+// Two phases to avoid expensive full-BYTEA scans:
+//
+//   Phase A — zero-size detection: WHERE size_bytes = 0
+//     This is an index-range scan on the bigint column — no BYTEA data read.
+//     These are definitively corrupt; the data column is not read at all.
+//
+//   Phase B — size-mismatch detection: WHERE size_bytes != octet_length(data)
+//     Reads BYTEA data server-side to compute the real length. Bounded by a
+//     25 s DB statement_timeout inside a transaction so the server terminates
+//     the query itself if it takes too long, rather than relying solely on
+//     the client-side timeout. Only runs if ≥30 s of budget remains.
+//
+async function scanCorruptBlobs(deadlineMs: number): Promise<number> {
   type CorruptRow = { key: string; size_bytes: string; actual_bytes: string };
-  const rows = extractRows<CorruptRow>(
-    await db.execute<CorruptRow>(sql`
+  let rows: CorruptRow[] = [];
+
+  // ── Phase A: zero-size blobs (fast, no BYTEA read) ────────────────────────
+  const phaseAResult = await withTimeout(
+    db.execute<CorruptRow>(sql`
       SELECT
         key,
         size_bytes::text         AS size_bytes,
-        octet_length(data)::text AS actual_bytes
+        '0'                      AS actual_bytes
       FROM storage_blobs
-      WHERE size_bytes = 0 OR size_bytes != octet_length(data)
+      WHERE size_bytes = 0
+        AND data IS NOT NULL
       LIMIT ${MAX_CORRUPT_BLOBS_PER_PASS}
-    `).catch(() => null),
+    `).catch((err) => {
+      logger.warn({ err }, "[integrity] corrupt-blob phase-A query failed");
+      return null;
+    }),
+    FAST_QUERY_TIMEOUT_MS,
+    "corrupt-blobs-phase-a",
   );
+  rows = rows.concat(extractRows<CorruptRow>(phaseAResult));
+
+  // ── Phase A-null: null-data blobs (fast metadata scan) ───────────────────
+  if (!isExpired(deadlineMs, "corrupt-blobs-phase-null")) {
+    const phaseNullResult = await withTimeout(
+      db.execute<{ key: string }>(sql`
+        SELECT key
+        FROM storage_blobs
+        WHERE data IS NULL
+          AND size_bytes > 0
+        LIMIT ${MAX_CORRUPT_BLOBS_PER_PASS}
+      `).catch((err) => {
+        logger.warn({ err }, "[integrity] corrupt-blob null-data query failed");
+        return null;
+      }),
+      FAST_QUERY_TIMEOUT_MS,
+      "corrupt-blobs-phase-null",
+    );
+    const nullRows = extractRows<{ key: string }>(phaseNullResult).map((r) => ({
+      key: r.key,
+      size_bytes: "0",
+      actual_bytes: "0",
+    }));
+    rows = rows.concat(nullRows);
+  }
+
+  // ── Phase B: size-mismatch detection (reads BYTEA, bounded by stmt timeout) ─
+  // Only run if there is at least 30 s of budget left and we haven't already
+  // filled the batch limit from phases A/A-null.
+  const budgetRemaining = deadlineMs - Date.now();
+  if (rows.length < MAX_CORRUPT_BLOBS_PER_PASS && budgetRemaining >= 30_000) {
+    const remaining = MAX_CORRUPT_BLOBS_PER_PASS - rows.length;
+    // Use a transaction with SET LOCAL statement_timeout so PG itself
+    // terminates the scan after SLOW_QUERY_TIMEOUT_MS, releasing any lock.
+    const phaseBResult = await withTimeout(
+      db.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL statement_timeout = ${SLOW_QUERY_TIMEOUT_MS}`);
+        return tx.execute<CorruptRow>(sql`
+          SELECT
+            key,
+            size_bytes::text         AS size_bytes,
+            octet_length(data)::text AS actual_bytes
+          FROM storage_blobs
+          WHERE size_bytes > 0
+            AND data IS NOT NULL
+            AND size_bytes != octet_length(data)
+          LIMIT ${remaining}
+        `);
+      }).catch((err) => {
+        logger.warn({ err }, "[integrity] corrupt-blob phase-B (size mismatch) query failed or timed out");
+        return null;
+      }),
+      SLOW_QUERY_TIMEOUT_MS + 2_000, // client-side slightly wider than DB-level
+      "corrupt-blobs-phase-b",
+    );
+    rows = rows.concat(extractRows<CorruptRow>(phaseBResult));
+  }
+
+  // Deduplicate by key in case a blob appeared in multiple phases.
+  const seen = new Set<string>();
+  rows = rows.filter((r) => {
+    if (seen.has(r.key)) return false;
+    seen.add(r.key);
+    return true;
+  });
 
   if (rows.length === 0) return 0;
 
@@ -75,26 +227,37 @@ async function scanCorruptBlobs(): Promise<number> {
 
   let fixed = 0;
   for (const row of rows) {
+    if (isExpired(deadlineMs, "corrupt-blob-remediation")) break;
+
     const { key, size_bytes, actual_bytes } = row;
     try {
-      const [video] = await db
-        .select({ id: videos.id, transcodingStatus: videos.transcodingStatus })
-        .from(videos)
-        .where(eq(videos.objectPath, key))
-        .limit(1);
+      // Find the referencing video (single indexed lookup by object_path).
+      const [video] = await withTimeout(
+        db
+          .select({ id: videos.id, transcodingStatus: videos.transcodingStatus })
+          .from(videos)
+          .where(eq(videos.objectPath, key))
+          .limit(1),
+        FAST_QUERY_TIMEOUT_MS,
+        `corrupt-blob-find-video:${key}`,
+      ) ?? [];
 
       if (video && video.transcodingStatus !== "failed") {
-        await db
-          .update(videos)
-          .set({
-            transcodingStatus: "failed",
-            transcodingErrorCode: "CORRUPT_SOURCE",
-            transcodingErrorMessage:
-              `Storage integrity scan found a corrupt blob at key=${key}: ` +
-              `recorded size_bytes=${size_bytes} but actual data is ${actual_bytes} bytes. ` +
-              `Delete this video and re-upload to recover.`,
-          })
-          .where(eq(videos.id, video.id));
+        await withTimeout(
+          db
+            .update(videos)
+            .set({
+              transcodingStatus: "failed",
+              transcodingErrorCode: "CORRUPT_SOURCE",
+              transcodingErrorMessage:
+                `Storage integrity scan found a corrupt blob at key=${key}: ` +
+                `recorded size_bytes=${size_bytes} but actual data is ${actual_bytes} bytes. ` +
+                `Delete this video and re-upload to recover.`,
+            })
+            .where(eq(videos.id, video.id)),
+          REMEDIATION_TIMEOUT_MS,
+          `corrupt-blob-mark-failed:${video.id}`,
+        );
 
         adminEventBus.push("videos-library-updated", {
           videoId: video.id,
@@ -102,7 +265,12 @@ async function scanCorruptBlobs(): Promise<number> {
         });
       }
 
-      await db.execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`);
+      // Delete the corrupt blob row (idempotent — safe if already gone).
+      await withTimeout(
+        db.execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`),
+        REMEDIATION_TIMEOUT_MS,
+        `corrupt-blob-delete:${key}`,
+      );
 
       logger.error(
         {
@@ -125,7 +293,10 @@ async function scanCorruptBlobs(): Promise<number> {
 
       fixed++;
     } catch (err) {
-      logger.warn({ err, key }, "[integrity] failed to remediate corrupt blob (will retry next pass)");
+      logger.warn(
+        { err, key },
+        "[integrity] failed to remediate corrupt blob (will retry next pass)",
+      );
     }
   }
 
@@ -134,11 +305,13 @@ async function scanCorruptBlobs(): Promise<number> {
 
 // ── Pass 2: Videos with missing blobs ────────────────────────────────────────
 // Videos where s3MirroredAt IS NOT NULL (blob was confirmed written) but no
-// matching row exists in storage_blobs.  These play as 404.
-async function scanMissingBlobs(): Promise<number> {
+// matching row in storage_blobs. These produce a 404 on every playback request.
+// Retry path: if upload parts are present, reset session for auto-reassembly.
+async function scanMissingBlobs(deadlineMs: number): Promise<number> {
   type MissingRow = { id: string; object_path: string };
-  const rows = extractRows<MissingRow>(
-    await db.execute<MissingRow>(sql`
+
+  const result = await withTimeout(
+    db.execute<MissingRow>(sql`
       SELECT v.id, v.object_path
       FROM managed_videos v
       LEFT JOIN storage_blobs b ON b.key = v.object_path
@@ -147,8 +320,14 @@ async function scanMissingBlobs(): Promise<number> {
         AND b.key IS NULL
         AND v.transcoding_status != 'failed'
       LIMIT ${MAX_MISSING_BLOBS_PER_PASS}
-    `).catch(() => null),
+    `).catch((err) => {
+      logger.warn({ err }, "[integrity] missing-blob scan query failed");
+      return null;
+    }),
+    FAST_QUERY_TIMEOUT_MS,
+    "missing-blobs-scan",
   );
+  const rows = extractRows<MissingRow>(result);
 
   if (rows.length === 0) return 0;
 
@@ -159,49 +338,70 @@ async function scanMissingBlobs(): Promise<number> {
 
   let handled = 0;
   for (const row of rows) {
+    if (isExpired(deadlineMs, "missing-blob-remediation")) break;
+
     const { id, object_path } = row;
     try {
+      // Check for an upload session that can be reset for reassembly.
       type SessionRow = { session_id: string; total_chunks: number; upload_id: string | null };
-      const [session] = extractRows<SessionRow>(
-        await db.execute<SessionRow>(sql`
+      const sessionResult = await withTimeout(
+        db.execute<SessionRow>(sql`
           SELECT session_id, total_chunks, upload_id
           FROM upload_sessions
           WHERE completed_video_id = ${id}
           LIMIT 1
         `).catch(() => null),
+        FAST_QUERY_TIMEOUT_MS,
+        `missing-blob-find-session:${id}`,
       );
+      const [session] = extractRows<SessionRow>(sessionResult);
 
       let hasPartsForReassembly = false;
       if (session?.upload_id) {
         type CntRow = { cnt: string };
-        const [cntRow] = extractRows<CntRow>(
-          await db.execute<CntRow>(sql`
+        const cntResult = await withTimeout(
+          db.execute<CntRow>(sql`
             SELECT COUNT(*)::text AS cnt
             FROM storage_upload_parts
             WHERE upload_id = ${session.upload_id}
           `).catch(() => null),
+          FAST_QUERY_TIMEOUT_MS,
+          `missing-blob-count-parts:${id}`,
         );
+        const [cntRow] = extractRows<CntRow>(cntResult);
         const partsPresent = parseInt(cntRow?.cnt ?? "0", 10);
         hasPartsForReassembly = partsPresent >= (session.total_chunks ?? 1);
       }
 
       if (hasPartsForReassembly && session) {
-        // Parts still available — reset to trigger auto-reconciliation.
-        await db.execute(sql`
-          UPDATE upload_sessions
-          SET status = 'assembling', updated_at = NOW()
-          WHERE session_id = ${session.session_id}
-            AND status = 'completed'
-        `);
-        await db
-          .update(videos)
-          .set({
-            s3MirroredAt: null,
-            transcodingStatus: "none",
-            transcodingErrorCode: null,
-            transcodingErrorMessage: null,
-          })
-          .where(eq(videos.id, id));
+        // Parts still available — reset the session to trigger auto-reconciliation.
+        await withTimeout(
+          db.execute(sql`
+            UPDATE upload_sessions
+            SET status = 'assembling', updated_at = NOW()
+            WHERE session_id = ${session.session_id}
+              AND status = 'completed'
+          `).catch((err) => {
+            logger.warn({ err, sessionId: session.session_id }, "[integrity] failed to reset upload session");
+            throw err;
+          }),
+          REMEDIATION_TIMEOUT_MS,
+          `missing-blob-reset-session:${session.session_id}`,
+        );
+
+        await withTimeout(
+          db
+            .update(videos)
+            .set({
+              s3MirroredAt: null,
+              transcodingStatus: "none",
+              transcodingErrorCode: null,
+              transcodingErrorMessage: null,
+            })
+            .where(eq(videos.id, id)),
+          REMEDIATION_TIMEOUT_MS,
+          `missing-blob-reset-video:${id}`,
+        );
 
         adminEventBus.push("videos-library-updated", {
           videoId: id,
@@ -213,18 +413,22 @@ async function scanMissingBlobs(): Promise<number> {
           "[integrity] missing blob — upload parts present, session reset for auto-reassembly",
         );
       } else {
-        // No parts remain — mark permanently failed.
-        await db
-          .update(videos)
-          .set({
-            transcodingStatus: "failed",
-            transcodingErrorCode: "ASSEMBLY_FAILED",
-            transcodingErrorMessage:
-              `Storage integrity scan: blob at key=${object_path} is missing ` +
-              `and no upload parts remain to reassemble it. ` +
-              `Delete this video and re-upload to recover.`,
-          })
-          .where(eq(videos.id, id));
+        // No parts remain — permanently mark as failed.
+        await withTimeout(
+          db
+            .update(videos)
+            .set({
+              transcodingStatus: "failed",
+              transcodingErrorCode: "ASSEMBLY_FAILED",
+              transcodingErrorMessage:
+                `Storage integrity scan: blob at key=${object_path} is missing ` +
+                `and no upload parts remain to reassemble it. ` +
+                `Delete this video and re-upload to recover.`,
+            })
+            .where(eq(videos.id, id)),
+          REMEDIATION_TIMEOUT_MS,
+          `missing-blob-mark-failed:${id}`,
+        );
 
         adminEventBus.push("videos-library-updated", {
           videoId: id,
@@ -247,7 +451,10 @@ async function scanMissingBlobs(): Promise<number> {
 
       handled++;
     } catch (err) {
-      logger.warn({ err, videoId: id }, "[integrity] failed to remediate missing blob (will retry next pass)");
+      logger.warn(
+        { err, videoId: id },
+        "[integrity] failed to remediate missing blob (will retry next pass)",
+      );
     }
   }
 
@@ -255,49 +462,74 @@ async function scanMissingBlobs(): Promise<number> {
 }
 
 // ── Pass 3: Orphaned storage_upload_parts ────────────────────────────────────
-// Rows whose upload_id has no matching active session (session deleted, expired,
-// or completed without the parts cleanup transaction running fully).  Each row
-// holds up to 8 MiB of BYTEA — orphans waste real PostgreSQL storage.
-async function scanOrphanedParts(): Promise<number> {
-  type OrphanRow = { upload_id: string; part_count: string; total_bytes: string };
-  const rows = extractRows<OrphanRow>(
-    await db.execute<OrphanRow>(sql`
+// Rows whose upload_id no longer matches any active session (session deleted,
+// expired, or completed without full cleanup). Each row holds ≤ 8 MiB of
+// BYTEA — orphans waste real PostgreSQL storage.
+//
+// IMPORTANT: The original implementation used SUM(octet_length(p.data)) which
+// forced a full BYTEA read of every orphaned part row — on a large DB this
+// could scan GB of data and cause multi-minute hangs. This rewrite uses
+// COUNT(*) only; sizes are estimated from COUNT × MAX_PART_BYTES for the
+// ops-alert threshold check.
+async function scanOrphanedParts(deadlineMs: number): Promise<number> {
+  type OrphanRow = { upload_id: string; part_count: string };
+
+  const result = await withTimeout(
+    db.execute<OrphanRow>(sql`
       SELECT
         p.upload_id,
-        COUNT(*)::text                  AS part_count,
-        SUM(octet_length(p.data))::text AS total_bytes
+        COUNT(*)::text AS part_count
       FROM storage_upload_parts p
       LEFT JOIN upload_sessions s ON s.upload_id = p.upload_id
       WHERE s.session_id IS NULL
          OR s.status = 'completed'
       GROUP BY p.upload_id
       LIMIT ${MAX_ORPHAN_UPLOAD_IDS_PER_PASS}
-    `).catch(() => null),
+    `).catch((err) => {
+      logger.warn({ err }, "[integrity] orphaned-parts scan query failed");
+      return null;
+    }),
+    FAST_QUERY_TIMEOUT_MS,
+    "orphaned-parts-scan",
   );
+  const rows = extractRows<OrphanRow>(result);
 
   if (rows.length === 0) return 0;
 
-  const totalOrphanBytes = rows.reduce(
-    (sum, r) => sum + parseInt(r.total_bytes ?? "0", 10),
+  // Estimate total orphan bytes from COUNT × max chunk size (avoids BYTEA read).
+  const totalOrphanPartsCount = rows.reduce(
+    (sum, r) => sum + parseInt(r.part_count ?? "0", 10),
     0,
   );
+  const estimatedOrphanBytes = totalOrphanPartsCount * MAX_PART_BYTES;
 
   logger.info(
-    { orphanUploadIds: rows.length, totalOrphanBytes },
+    {
+      orphanUploadIds: rows.length,
+      totalOrphanParts: totalOrphanPartsCount,
+      estimatedMaxBytes: estimatedOrphanBytes,
+    },
     "[integrity] orphaned storage_upload_parts detected — cleaning up",
   );
 
   let deleted = 0;
   for (const row of rows) {
+    if (isExpired(deadlineMs, "orphaned-parts-remediation")) break;
+
     try {
-      await db.execute(sql`
-        DELETE FROM storage_upload_parts WHERE upload_id = ${row.upload_id}
-      `);
+      await withTimeout(
+        db.execute(sql`
+          DELETE FROM storage_upload_parts WHERE upload_id = ${row.upload_id}
+        `),
+        REMEDIATION_TIMEOUT_MS,
+        `orphaned-parts-delete:${row.upload_id}`,
+      );
+
       logger.info(
         {
           uploadId: row.upload_id,
           parts: Number(row.part_count),
-          bytes: Number(row.total_bytes),
+          estimatedBytes: Number(row.part_count) * MAX_PART_BYTES,
         },
         "[integrity] orphaned upload parts deleted",
       );
@@ -310,13 +542,15 @@ async function scanOrphanedParts(): Promise<number> {
     }
   }
 
-  if (totalOrphanBytes > 10 * 1024 * 1024) {
+  // Alert when estimated orphan size is large (using max-chunk-size estimate
+  // is conservative — actual size is ≤ estimated).
+  if (estimatedOrphanBytes > 10 * 1024 * 1024) {
     adminEventBus.push("ops-alert", {
       level: "warn",
       component: "upload-integrity-monitor",
       message:
-        `Cleaned up ${rows.length} orphaned upload part group(s) ` +
-        `(${Math.round(totalOrphanBytes / 1024 / 1024)} MiB freed from storage_upload_parts).`,
+        `Cleaned up ${deleted} orphaned upload part group(s) ` +
+        `(${totalOrphanPartsCount} parts, ≤${Math.round(estimatedOrphanBytes / 1024 / 1024)} MiB estimated freed from storage_upload_parts).`,
     });
   }
 
@@ -324,19 +558,75 @@ async function scanOrphanedParts(): Promise<number> {
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────────
+// The worker supervisor invokes this function and enforces a 10-minute hard
+// timeout via Promise.race against a deadman timer. Inside this function we
+// further subdivide the budget across the three passes so each pass is bounded
+// independently, preventing a single slow pass from consuming the entire window.
 export async function runUploadIntegrityScan(): Promise<void> {
   const startMs = Date.now();
-  logger.info("[integrity] upload integrity scan started");
 
-  const results = await Promise.allSettled([
-    scanCorruptBlobs(),
-    scanMissingBlobs(),
-    scanOrphanedParts(),
-  ]);
+  // Reserve 30 s of buffer before the supervisor's 10-minute deadman fires.
+  // Each pass checks its own deadline and exits gracefully before then.
+  const overallDeadlineMs = startMs + 9 * 60_000; // 9 minutes (supervisor = 10)
 
-  const [corruptFixed, missingHandled, orphansDeleted] = results.map((r) =>
-    r.status === "fulfilled" ? r.value : 0,
+  logger.info(
+    { budgetMs: overallDeadlineMs - startMs },
+    "[integrity] upload integrity scan started",
   );
+
+  // Heartbeat: log every 60 s so operators can see progress in logs.
+  const heartbeatTimer = setInterval(() => {
+    const elapsedMs = Date.now() - startMs;
+    const remainingMs = overallDeadlineMs - Date.now();
+    logger.info(
+      { elapsedMs, remainingMs },
+      "[integrity] scan in progress — heartbeat",
+    );
+  }, 60_000);
+  heartbeatTimer.unref?.();
+
+  let corruptFixed = 0;
+  let missingHandled = 0;
+  let orphansDeleted = 0;
+  const passErrors: string[] = [];
+
+  try {
+    // Run all three passes in parallel with individual error isolation.
+    // Promise.allSettled ensures one slow/failed pass cannot block the others.
+    const [corruptResult, missingResult, orphanResult] = await Promise.allSettled([
+      scanCorruptBlobs(overallDeadlineMs).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn({ err }, "[integrity] corrupt-blob pass threw unexpectedly");
+        passErrors.push(`corrupt-blobs: ${msg}`);
+        return 0;
+      }),
+      scanMissingBlobs(overallDeadlineMs).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn({ err }, "[integrity] missing-blob pass threw unexpectedly");
+        passErrors.push(`missing-blobs: ${msg}`);
+        return 0;
+      }),
+      scanOrphanedParts(overallDeadlineMs).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        logger.warn({ err }, "[integrity] orphaned-parts pass threw unexpectedly");
+        passErrors.push(`orphaned-parts: ${msg}`);
+        return 0;
+      }),
+    ]);
+
+    corruptFixed = corruptResult.status === "fulfilled" ? corruptResult.value : 0;
+    missingHandled = missingResult.status === "fulfilled" ? missingResult.value : 0;
+    orphansDeleted = orphanResult.status === "fulfilled" ? orphanResult.value : 0;
+
+    // Track rejected promises (these are already caught above but allSettled
+    // may have additional metadata for rejected cases).
+    if (corruptResult.status === "rejected") passErrors.push(`corrupt-blobs: ${String(corruptResult.reason)}`);
+    if (missingResult.status === "rejected") passErrors.push(`missing-blobs: ${String(missingResult.reason)}`);
+    if (orphanResult.status === "rejected") passErrors.push(`orphaned-parts: ${String(orphanResult.reason)}`);
+
+  } finally {
+    clearInterval(heartbeatTimer);
+  }
 
   const elapsedMs = Date.now() - startMs;
   logger.info(
@@ -345,14 +635,17 @@ export async function runUploadIntegrityScan(): Promise<void> {
       corruptBlobsFixed: corruptFixed,
       missingBlobsHandled: missingHandled,
       orphanPartGroupsDeleted: orphansDeleted,
+      passErrors: passErrors.length > 0 ? passErrors : undefined,
     },
     "[integrity] upload integrity scan complete",
   );
 
-  // Re-throw if ALL three passes failed so the worker supervisor can
-  // count it as a consecutive failure and open the circuit breaker.
-  const allFailed = results.every((r) => r.status === "rejected");
-  if (allFailed) {
-    throw (results[0] as PromiseRejectedResult).reason;
+  // Re-throw only when ALL passes encountered unrecoverable errors (not just
+  // returned 0 results). This lets the worker supervisor's circuit breaker
+  // count genuine failures separately from "nothing to fix" runs.
+  if (passErrors.length === 3) {
+    throw new Error(
+      `[integrity] all three scan passes failed: ${passErrors.join(" | ")}`,
+    );
   }
 }

@@ -723,8 +723,9 @@ export async function adminVideosRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const { id } = req.params;
 
-      // Capture storage fields first, then delete — all in one round-trip
-      // via .returning() so the cleanup runs with the pre-delete values.
+      // ── Step 1: Hard-delete the video row ─────────────────────────────────
+      // Capture storage fields via .returning() so the async blob cleanup has
+      // the pre-delete values even after the row is gone.
       const [deleted] = await db
         .delete(videos)
         .where(eq(videos.id, id))
@@ -738,102 +739,180 @@ export async function adminVideosRoutes(app: FastifyInstance) {
 
       if (!deleted) return reply.code(404).send({ error: `Video not found: ${id}` });
 
+      // ── Step 2: Synchronous DB reference cleanup ───────────────────────────
+      // These tables have no PostgreSQL FK cascades on videoId, so orphaned
+      // rows must be removed manually.  They run synchronously (before the 200
+      // response) because:
+      //   a) broadcast_queue orphans cause the orchestrator to loop-skip
+      //      forever on a video that no longer exists.
+      //   b) transcoding_jobs orphans would retry encoding on a missing row.
+      //   c) series_episodes / playlist_videos orphans surface as 404 gaps
+      //      in the UI and in the player's playlist resolver.
+      //   d) upload_sessions / upload_chunks orphans waste BYTEA storage.
+      //   e) broadcast-queue-updated MUST fire after queue rows are gone so
+      //      the orchestrator's reload() reads the already-cleaned DB state.
+      // Failures are logged as warnings but do not block the 200 response —
+      // the integrity monitor and orphan-cleanup worker sweep residual rows.
+
+      const log = req.log;
+
+      // 2a. broadcast_queue — must be deleted and signalled BEFORE returning.
+      //     The orchestrator's bus-bridge listens for broadcast-queue-updated
+      //     and calls reload(), which re-reads the queue from DB. If queue rows
+      //     were still present when reload() ran, the deleted video would remain
+      //     in rotation. We delete first, then signal.
+      const removedQueueItems = await db
+        .delete(schema.broadcastQueueTable)
+        .where(eq(schema.broadcastQueueTable.videoId, id))
+        .returning({ qid: schema.broadcastQueueTable.id })
+        .catch((err) => {
+          log.warn({ err, id }, "video-delete: failed to remove orphan broadcast_queue rows");
+          return [] as { qid: string }[];
+        });
+      if (removedQueueItems.length > 0) {
+        log.info(
+          { id, removedCount: removedQueueItems.length },
+          "video-delete: removed orphan broadcast_queue items",
+        );
+      }
+
+      // 2b. transcoding_jobs — ghost jobs retry forever on a missing video row.
+      await db
+        .delete(schema.transcodingJobsTable)
+        .where(eq(schema.transcodingJobsTable.videoId, id))
+        .catch((err) =>
+          log.warn({ err, id }, "video-delete: failed to remove transcoding jobs"),
+        );
+
+      // 2c. series_episodes — orphan slots render as broken episode cards.
+      const removedEpisodes = await db
+        .delete(schema.seriesEpisodesTable)
+        .where(eq(schema.seriesEpisodesTable.videoId, id))
+        .returning({ eid: schema.seriesEpisodesTable.id })
+        .catch((err) => {
+          log.warn({ err, id }, "video-delete: failed to remove orphan series_episodes rows");
+          return [] as { eid: string }[];
+        });
+      if (removedEpisodes.length > 0) {
+        log.info(
+          { id, count: removedEpisodes.length },
+          "video-delete: removed orphan series_episodes",
+        );
+      }
+
+      // 2d. playlist_videos — orphan entries cause 404s in the playlist resolver.
+      const removedPlaylistItems = await db
+        .delete(schema.playlistVideosTable)
+        .where(eq(schema.playlistVideosTable.videoId, id))
+        .returning({ pid: schema.playlistVideosTable.id })
+        .catch((err) => {
+          log.warn({ err, id }, "video-delete: failed to remove orphan playlist_videos rows");
+          return [] as { pid: string }[];
+        });
+      if (removedPlaylistItems.length > 0) {
+        log.info(
+          { id, count: removedPlaylistItems.length },
+          "video-delete: removed orphan playlist_videos",
+        );
+      }
+
+      // 2e. upload_sessions + upload_chunks — BYTEA parts waste storage.
+      //     Look up by completedVideoId (the FK linking a finished session to
+      //     its managed_videos row). Chunks cascade via upload_sessions.session_id
+      //     IF the FK exists; otherwise we delete them explicitly.
+      const removedSessions = await db.execute(sql`
+        DELETE FROM upload_sessions
+        WHERE completed_video_id = ${id}
+        RETURNING session_id
+      `).catch((err) => {
+        log.warn({ err, id }, "video-delete: failed to remove upload_sessions");
+        return { rows: [] as { session_id: string }[] };
+      });
+      const sessionRows = (removedSessions as unknown as { rows: { session_id: string }[] }).rows;
+      if (sessionRows.length > 0) {
+        log.info(
+          { id, count: sessionRows.length },
+          "video-delete: removed upload_sessions for deleted video",
+        );
+        // Also purge any upload_chunks rows for the removed sessions.
+        const sessionIds = sessionRows.map((r) => r.session_id);
+        await db.execute(sql`
+          DELETE FROM upload_chunks
+          WHERE session_id = ANY(${sql.param(sessionIds)}::text[])
+        `).catch((err) =>
+          log.warn({ err, id }, "video-delete: failed to remove upload_chunks (non-fatal)"),
+        );
+      }
+
+      // ── Step 3: Cache + catalog invalidation ──────────────────────────────
+      // Bust the paginated video listing cache so the deleted video disappears
+      // from all subsequent GET /api/v1/videos responses immediately.
       void invalidateVideosCatalogCache();
+
+      // Notify admin SSE listeners so the library panel refreshes instantly
+      // without waiting for the next polling interval.
       adminEventBus.push("videos-library-updated", { videoId: id, reason: "video-deleted" });
 
-      // ── Fire-and-forget storage + orphan cleanup ──────────────────────────
-      // Failures are logged but must not affect the 200 response — the DB row
-      // is already gone. Any leftover blobs are swept by the storage GC.
+      // ── Step 4: Broadcast orchestrator reload ──────────────────────────────
+      // Always fire broadcast-queue-updated, regardless of whether queue rows
+      // were found. Even when no queue items existed for this video, the signal
+      // forces the orchestrator to flush its internal hash cache and re-read the
+      // DB, which is the correct action after any library mutation.
+      //
+      // The bus bridge in broadcast-v2/index.ts converts this event to
+      // broadcastOrchestrator.reload(), which re-reads the active queue.
+      // Because the broadcast_queue rows were deleted in step 2a (above), the
+      // reload sees the already-clean state and seamlessly advances to the next
+      // available item — no "Stream Unavailable" or blank-screen gap.
+      adminEventBus.push("broadcast-queue-updated", {
+        reason: "video-deleted",
+        videoId: id,
+        removedQueueItems: removedQueueItems.length,
+      });
+
+      // ── Step 5: Fire-and-forget storage blob cleanup ───────────────────────
+      // The video row and all DB references are already gone. Storage cleanup
+      // is best-effort: failures are logged as warnings, and any leftover blobs
+      // are swept by the orphan-cleanup worker and the storage reconciliation
+      // worker on their next pass. We do NOT block the 200 response here.
       void (async () => {
         const s = storage();
-        const log = req.log;
 
-        // 1. Raw source file (objectPath is the direct storage key).
+        // 5a. Raw source file (objectPath is the direct storage key).
         if (deleted.objectPath) {
           await s.deleteObject(deleted.objectPath).catch((err) =>
-            log.warn({ err, id, objectPath: deleted.objectPath }, "video-delete: failed to remove source object"),
+            log.warn(
+              { err, id, objectPath: deleted.objectPath },
+              "video-delete: failed to remove source object (non-fatal, will be GC'd)",
+            ),
           );
         }
 
-        // 2. HLS tree: master.m3u8 + all rendition playlists + .ts segments.
-        //    Transcoder stores everything under `transcoded/{videoId}/`.
-        //    Runs even if hlsMasterUrl is null — zero-row delete is safe.
+        // 5b. HLS tree: master.m3u8 + rendition playlists + .ts segments.
+        //     Transcoder stores everything under `transcoded/{videoId}/`.
+        //     Zero-row deletes are safe — no error if the prefix is empty.
         const hlsDeleted = await s.deleteByPrefix(`transcoded/${id}/`).catch((err) => {
-          log.warn({ err, id }, "video-delete: failed to purge HLS tree");
+          log.warn({ err, id }, "video-delete: failed to purge HLS tree (non-fatal, will be GC'd)");
           return 0;
         });
         if (hlsDeleted > 0) {
           log.info({ id, hlsDeleted }, "video-delete: purged HLS segments");
         }
 
-        // 3. Thumbnail — local thumbnails are served at `/api/v1/uploads/{key}`.
-        //    Skip external URLs (YouTube CDN, etc.) and empty strings.
+        // 5c. Thumbnail — local thumbnails are served at `/api/v1/uploads/{key}`.
+        //     Skip external URLs (YouTube CDN, etc.) and empty strings.
         const thumbUrl = deleted.thumbnailUrl ?? "";
         if (thumbUrl.startsWith("/api/v1/uploads/")) {
           const thumbKey = thumbUrl.slice("/api/v1/uploads/".length);
           await s.deleteObject(thumbKey).catch((err) =>
-            log.warn({ err, id, thumbKey }, "video-delete: failed to remove thumbnail"),
+            log.warn(
+              { err, id, thumbKey },
+              "video-delete: failed to remove thumbnail (non-fatal, will be GC'd)",
+            ),
           );
         }
-
-        // 4. Orphan broadcast_queue rows (no FK cascade on videoId column).
-        //    These ghost items cause the v2 orchestrator to loop-skip forever.
-        const removedQueueItems = await db
-          .delete(schema.broadcastQueueTable)
-          .where(eq(schema.broadcastQueueTable.videoId, id))
-          .returning({ qid: schema.broadcastQueueTable.id })
-          .catch((err) => {
-            log.warn({ err, id }, "video-delete: failed to remove orphan broadcast_queue rows");
-            return [] as { qid: string }[];
-          });
-
-        if (removedQueueItems.length > 0) {
-          log.info({ id, removedCount: removedQueueItems.length }, "video-delete: removed orphan queue items");
-          // Reload the v2 orchestrator so it doesn't keep resolving a deleted item.
-          adminEventBus.push("broadcast-queue-updated", { reason: "video-deleted", videoId: id });
-        }
-
-        // 5. Orphan transcoding jobs (no FK cascade on video_id column).
-        //    Ghost queued/encoding jobs would retry forever on a missing video row.
-        await db
-          .delete(schema.transcodingJobsTable)
-          .where(eq(schema.transcodingJobsTable.videoId, id))
-          .catch((err) => log.warn({ err, id }, "video-delete: failed to remove transcoding jobs"));
-
-        // 6. Orphan series_episodes rows (no FK cascade on videoId column).
-        //    Without this, the series listing shows episode slots pointing at
-        //    a non-existent video — the join returns null and the episode card
-        //    can't render a title, thumbnail, or playback URL.
-        const removedEpisodes = await db
-          .delete(schema.seriesEpisodesTable)
-          .where(eq(schema.seriesEpisodesTable.videoId, id))
-          .returning({ eid: schema.seriesEpisodesTable.id })
-          .catch((err) => {
-            log.warn({ err, id }, "video-delete: failed to remove orphan series_episodes rows");
-            return [] as { eid: string }[];
-          });
-        if (removedEpisodes.length > 0) {
-          log.info({ id, removedEpisodeCount: removedEpisodes.length }, "video-delete: removed orphan series_episodes");
-        }
-
-        // 7. Orphan playlist_videos rows (no FK cascade on videoId column).
-        //    playlist_videos.videoId references managed_videos but without a
-        //    Postgres FK + cascade, deleting the video leaves ghost entries.
-        //    These ghost entries surface as "Video not found" 404s when the
-        //    player tries to resolve the playlist item's source URL.
-        const removedPlaylistItems = await db
-          .delete(schema.playlistVideosTable)
-          .where(eq(schema.playlistVideosTable.videoId, id))
-          .returning({ pid: schema.playlistVideosTable.id })
-          .catch((err) => {
-            log.warn({ err, id }, "video-delete: failed to remove orphan playlist_videos rows");
-            return [] as { pid: string }[];
-          });
-        if (removedPlaylistItems.length > 0) {
-          log.info({ id, removedPlaylistCount: removedPlaylistItems.length }, "video-delete: removed orphan playlist_videos");
-        }
       })().catch((err) =>
-        req.log.warn({ err, id }, "video-delete: unexpected error in cleanup IIFE (non-fatal)"),
+        log.warn({ err, id }, "video-delete: unexpected error in storage cleanup IIFE (non-fatal)"),
       );
 
       return { ok: true as const };
