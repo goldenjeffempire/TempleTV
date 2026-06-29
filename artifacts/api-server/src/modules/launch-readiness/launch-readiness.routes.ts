@@ -5,6 +5,7 @@ import { and, count, eq, inArray, ne, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { env } from "../../config/env.js";
+import { ytShuffleFallback } from "../broadcast-v2/engine/youtube-shuffle-fallback.js";
 
 /**
  * Launch-readiness checklist for the admin SPA's go/no-go dashboard.
@@ -246,15 +247,27 @@ export async function launchReadinessRoutes(app: FastifyInstance) {
           : []),
       ];
 
+      // YouTube shuffle fallback provides 24/7 continuity from the catalog when
+      // the local broadcast queue is empty.  It is the permanent driver on
+      // YouTube-only deployments, so an empty local queue is NOT a blocker in
+      // that case — the broadcast is already running.
+      const ytShuffleActive = ytShuffleFallback.isActive;
       const broadcastChecks: Check[] = [
         activeBroadcastItems === 0
-          ? {
-              key: "broadcast-queue-empty",
-              label: "Broadcast queue has active items",
-              status: "blocked",
-              detail: "No active items in the broadcast queue",
-              action: "Add videos to /admin/broadcast",
-            }
+          ? ytShuffleActive
+            ? {
+                key: "broadcast-queue-empty",
+                label: "Broadcast queue — YouTube shuffle active",
+                status: "ready" as const,
+                detail: "Local queue is empty but YouTube shuffle fallback is active — broadcast is running continuously from the 961-video YouTube catalog",
+              }
+            : {
+                key: "broadcast-queue-empty",
+                label: "Broadcast queue has active items",
+                status: "blocked" as const,
+                detail: "No active items in the broadcast queue and YouTube shuffle is not active",
+                action: "Add videos to /broadcast-v2 or wait for YouTube shuffle to activate",
+              }
           : activeBroadcastItems < 3
             ? {
                 key: "broadcast-queue-empty",

@@ -113,6 +113,12 @@ const VideoRowSchema = z.object({
    */
   faststartApplied: z.boolean().nullable(),
   /**
+   * Number of faststart processing attempts made so far.
+   * 0 = never attempted; 1–2 = in-progress retries; 3 = max attempts reached (failed).
+   * The recovery worker caps retries at 3 and marks the video permanently failed.
+   */
+  faststartAttempts: z.number().int().nonnegative(),
+  /**
    * Result of the comprehensive 9-check broadcast validation pipeline.
    * null      — never validated (pre-feature rows or YouTube videos).
    * 'pending' — validation scheduled, not yet started.
@@ -274,6 +280,7 @@ function toDto(row: typeof videos.$inferSelect, progress: number | null = null):
       return filtered.length > 0 ? filtered : null;
     })(),
     faststartApplied: row.faststartApplied ?? null,
+    faststartAttempts: (row as { faststartAttempts?: number | null }).faststartAttempts ?? 0,
     validationStatus: (() => {
       const vs = (row as { validationStatus?: string | null }).validationStatus;
       if (vs === "pending" || vs === "running" || vs === "passed" || vs === "warn" || vs === "failed") return vs;
