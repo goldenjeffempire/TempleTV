@@ -287,6 +287,10 @@ async function spawnAssemblyRetry(
           partNumber: c.chunkIndex + 1,
           etag: c.s3Etag as string,
         })),
+        // Re-verify the assembled blob's SHA-256 against the hash the client
+        // computed before the upload began.  Any mismatch causes the transaction
+        // to roll back so no corrupt blob is ever committed.
+        expectedSha256: session.expectedFileSha256 ?? undefined,
       });
 
       // ── Step 3: Verify assembled blob integrity ───────────────────────────
@@ -2102,7 +2106,17 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   .where(eq(videos.id, videoId)),
                 db
                   .update(sessions)
-                  .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
+                  .set({
+                    status: "uploading",
+                    // CRITICAL: preserve completedVideoId — clearing it here
+                    // permanently orphans this video from the reconciliation timer
+                    // and auto-retry logic.  The timer queries for sessions WHERE
+                    // completedVideoId IS NOT NULL to find retryable uploads; a null
+                    // here means the video is never retried automatically.
+                    // completedVideoId: null   ← intentionally removed
+                    assemblyAttempts: sql`assembly_attempts + 1`,
+                    updatedAt: new Date(),
+                  })
                   .where(eq(sessions.sessionId, sessionId)),
               ]);
               adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-watchdog-timeout" });
@@ -2136,62 +2150,27 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               key: objectKey,
               uploadId,
               parts: partsForAssembly,
+              // Pass the client-declared whole-file SHA-256 so completeMultipartUpload
+              // can verify the assembled blob inside the transaction before committing.
+              // sha256(data) runs server-side in PostgreSQL — only the 32-byte hash
+              // crosses the wire, so this is O(1) Node.js memory regardless of file size.
+              // Any mismatch causes the transaction to roll back: no corrupt blob is
+              // ever committed to storage_blobs.
+              expectedSha256: session.expectedFileSha256 ?? undefined,
             });
             // Blob is now committed in storage_blobs.  Any exception thrown
             // after this point must NOT delete the object.
             assemblyCommitted = true;
 
-            // ── Post-assembly blob integrity check ───────────────────────────
-            // Verify that the assembled blob in storage_blobs actually has the
-            // expected number of bytes before we let faststart or the transcoder
-            // touch it.  A size mismatch means the assembly loop dropped a part
-            // (e.g. a concurrent abortMultipartUpload orphaned a part row, or a
-            // mid-loop Postgres connection failure silently aborted a part-append
-            // UPDATE). Proceeding to transcode a truncated blob wastes the full
-            // ffmpeg retry budget and produces a corrupt output.
-            {
-              const assembledHead = await storage().headObject(objectKey).catch(() => null);
-              const expectedBytes = session.sizeBytes;
-              const actualBytes = assembledHead?.contentLength ?? 0;
-              if (!assembledHead?.exists || actualBytes !== expectedBytes) {
-                capturedLog.error(
-                  { sessionId, videoId, expectedBytes, actualBytes, blobExists: assembledHead?.exists ?? false },
-                  "[finalize:bg] assembled blob size mismatch — marking video failed, resetting session for retry",
-                );
-                await Promise.allSettled([
-                  db
-                    .update(videos)
-                    .set({
-                      transcodingStatus: "failed",
-                      transcodingErrorCode: "CORRUPT_SOURCE",
-                      transcodingErrorMessage:
-                        `Assembly integrity check failed: declared ${expectedBytes} bytes but assembled blob ` +
-                        `is ${actualBytes} bytes. The upload may be incomplete — please retry finalization.`,
-                    })
-                    .where(eq(videos.id, videoId)),
-                  db
-                    .update(sessions)
-                    .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
-                    .where(eq(sessions.sessionId, sessionId)),
-                ]);
-                adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-size-mismatch" });
-                uploadTelemetry.serverFail(
-                  sessionId,
-                  actualBytes,
-                  "assembly_size_mismatch",
-                  `Assembly integrity check failed: declared ${expectedBytes} bytes but assembled blob is ${actualBytes} bytes.`,
-                );
-                clearTimeout(assemblyWatchdog);
-                return;
-              }
-            }
-
-            // NOTE: File-level SHA-256 verification via storage_blobs.data was
-            // removed when the BYTEA storage backend was dropped (MinIO-only).
-            // Per-chunk SHA-256 is verified at upload time; the assembled-blob
-            // size check above catches truncation/corruption at assembly time.
-            // A streaming SHA-256 from MinIO would require downloading the full
-            // file through Node — prohibitively expensive for large uploads.
+            // NOTE: Post-assembly blob size and SHA-256 integrity are now validated
+            // INSIDE the completeMultipartUpload transaction:
+            //   1. Part sequence validation (no gaps in part_number 1..N)
+            //   2. Per-part non-empty check (octet_length > 0 for every part)
+            //   3. Assembly size check (octet_length(data) == sum of part sizes)
+            //   4. End-to-end SHA-256 (computed server-side, zero Node.js memory)
+            // Any failure rolls back the transaction — no partial blob is committed.
+            // The external headObject size check that previously ran here has been
+            // removed: it was checking a size mismatch that can no longer occur.
 
             const assemblyMs = Date.now() - assemblyStartMs;
             capturedLog.info(
@@ -2476,13 +2455,32 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                       "the blob is intact but the video may need operator review. " +
                       "Check logs for the specific error."
                     : `Assembly failed after ${Date.now() - assemblyStartMs} ms — ` +
-                      "the blob was not committed. Reset the session from the " +
+                      "the blob was not committed (transaction rolled back). Reset the session from the " +
                       "upload panel and retry the upload to recover.",
                 })
                 .where(eq(videos.id, videoId)),
               db
                 .update(sessions)
-                .set({ status: "uploading", completedVideoId: null, updatedAt: new Date() })
+                .set({
+                  status: "uploading",
+                  // CRITICAL: preserve completedVideoId in BOTH the committed and
+                  // uncommitted failure paths.
+                  //
+                  // assemblyCommitted=false (transaction rolled back):
+                  //   The video row exists (pre-committed before assembly started).
+                  //   Preserving completedVideoId lets the reconciliation timer find
+                  //   this session and schedule spawnAssemblyRetry with backoff.
+                  //   Clearing it here permanently orphans the video from auto-recovery.
+                  //
+                  // assemblyCommitted=true (post-assembly step threw):
+                  //   The blob IS committed and the video is valid.  Setting
+                  //   completedVideoId=null would make the reconciliation timer unable
+                  //   to re-link the session to the video for post-processing retry.
+                  //
+                  // completedVideoId: null   ← intentionally preserved
+                  assemblyAttempts: sql`assembly_attempts + 1`,
+                  updatedAt: new Date(),
+                })
                 .where(eq(sessions.sessionId, sessionId)),
             ]);
             // Invalidate the server-side public catalog cache so TV/mobile

@@ -95,7 +95,13 @@ export interface ObjectStorage {
   createMultipartUpload(args: { key: string; contentType?: string }): Promise<{ uploadId: string }>;
   signUploadPart(args: { key: string; uploadId: string; partNumber: number; ttlSeconds?: number }): Promise<string>;
   uploadPart(args: { key: string; uploadId: string; partNumber: number; body: Buffer }): Promise<{ etag: string }>;
-  completeMultipartUpload(args: { key: string; uploadId: string; parts: MultipartPart[] }): Promise<{ key: string; etag: string | null; location: string | null }>;
+  /**
+   * @param expectedSha256 Optional 64-char lowercase hex SHA-256 of the complete file.
+   *   When provided, the assembled blob's SHA-256 is computed server-side inside
+   *   PostgreSQL and compared.  Any mismatch causes the transaction to roll back
+   *   so no corrupt blob is ever committed to storage_blobs.
+   */
+  completeMultipartUpload(args: { key: string; uploadId: string; parts: MultipartPart[]; expectedSha256?: string }): Promise<{ key: string; etag: string | null; location: string | null }>;
   abortMultipartUpload(args: { key: string; uploadId: string }): Promise<void>;
 }
 
@@ -477,176 +483,268 @@ class PostgresObjectStorage implements ObjectStorage {
     return { etag };
   }
 
-  async completeMultipartUpload({ key, uploadId }: { key: string; uploadId: string; parts: MultipartPart[] }): Promise<{ key: string; etag: string | null; location: string | null }> {
+  async completeMultipartUpload({ key, uploadId, expectedSha256 }: { key: string; uploadId: string; parts: MultipartPart[]; expectedSha256?: string }): Promise<{ key: string; etag: string | null; location: string | null }> {
     if (_shuttingDown) {
       throw Object.assign(new Error("Storage is shutting down — multipart assembly rejected"), { code: "STORAGE_SHUTDOWN" });
     }
     const contentType = this._pendingContentTypes.get(uploadId) ?? "video/mp4";
     this._pendingContentTypes.delete(uploadId);
 
-    // Pre-flight: verify parts exist and measure total size.
-    // This single COUNT+SUM query is much cheaper than fetching all parts.
-    type StatsRow = { part_count: string; total_bytes: string };
-    const statsResult = await db.execute<StatsRow>(sql`
-      SELECT COUNT(*)::text AS part_count, COALESCE(SUM(octet_length(data)), 0)::text AS total_bytes
-      FROM storage_upload_parts
-      WHERE upload_id = ${uploadId}
-    `);
-    const statsRow = firstRow<StatsRow>(statsResult);
-    const partCount = parseInt(statsRow?.part_count ?? "0", 10);
-    const totalBytes = parseInt(statsRow?.total_bytes ?? "0", 10);
-
-    if (partCount === 0) {
-      throw new Error(
-        `completeMultipartUpload: no parts found in storage_upload_parts for uploadId=${uploadId} key=${key}. ` +
-        "Parts may have been cleaned up already (idempotent re-call) or were never uploaded.",
-      );
-    }
-
-    logger.info(
-      { key, uploadId, partCount, totalBytes },
-      "[storage] completeMultipartUpload: assembling via PostgreSQL bytea_agg — zero bytes transferred to Node.js",
-    );
-
-    // Assemble entirely within PostgreSQL — Node.js never receives the blob.
+    // ── Transactional assembly with advisory lock ──────────────────────────
     //
-    // bytea_agg(data ORDER BY part_number) is a custom aggregate (SFUNC=byteacat,
-    // STYPE=bytea) created at startup in ensureRuntimeIndexes().  It concatenates
-    // all parts server-side in a single aggregate pass, then the INSERT writes the
-    // final blob directly into storage_blobs.  Peak Node.js RSS contribution: ~0.
+    // All validation, assembly, post-check, SHA-256 verification, and parts
+    // cleanup run inside a single PostgreSQL transaction.  This eliminates:
     //
-    // If bytea_agg is not yet available (first boot before ensureRuntimeIndexes
-    // ran, or a DB that pre-dates the aggregate), we fall back to iterative
-    // per-part appending which is still O(1) Node.js memory.
-    try {
-      await db.execute(sql`
-        INSERT INTO storage_blobs (key, content_type, size_bytes, data, updated_at)
-        SELECT
-          ${key}                                        AS key,
-          ${contentType}                                AS content_type,
-          SUM(octet_length(data))                       AS size_bytes,
-          bytea_agg(data ORDER BY part_number)          AS data,
-          NOW()                                         AS updated_at
+    //   1. Race: concurrent abortMultipartUpload deletes parts mid-assembly.
+    //   2. Race: two concurrent completeMultipartUpload calls for the same
+    //      uploadId double-assemble, producing a corrupt double-write.
+    //   3. Partial state: if any step fails the transaction rolls back,
+    //      leaving storage_blobs untouched (old partial blob deleted at the
+    //      START of the transaction so a re-attempt starts clean).
+    //   4. Zombie blob: a failed bytea_agg leaving a 0-byte row in
+    //      storage_blobs that masquerades as a valid object.
+    //
+    // Advisory lock: pg_advisory_xact_lock(bigint) acquired at the start of
+    // the transaction, auto-released at COMMIT/ROLLBACK.  The lock key is
+    // derived from the uploadId so two concurrent assemblies of DIFFERENT
+    // uploads never block each other.
+
+    type PartRow = { part_number: number; size_bytes: number };
+
+    let finalPartCount = 0;
+    let finalTotalBytes = 0;
+
+    const result = await db.transaction(async (tx) => {
+      // ── 1. Advisory lock — one assembly at a time per uploadId ────────────
+      // ('x' || right(md5(uploadId), 16))::bit(64)::bigint converts the last
+      // 8 bytes of the MD5 into a bigint lock key.  This avoids hashtext()
+      // IMMUTABLE issues and guarantees a unique key per uploadId.
+      await tx.execute(sql`
+        SELECT pg_advisory_xact_lock(('x' || right(md5(${uploadId}), 16))::bit(64)::bigint)
+      `);
+
+      // ── 2. Load all parts and validate sequence/integrity ─────────────────
+      // Select part_number + octet_length (not data!) — O(1) Node.js memory.
+      const partRows = allRows<PartRow>(await tx.execute<PartRow>(sql`
+        SELECT part_number, octet_length(data)::int AS size_bytes
         FROM storage_upload_parts
         WHERE upload_id = ${uploadId}
-        ON CONFLICT (key) DO UPDATE SET
-          content_type = EXCLUDED.content_type,
-          size_bytes   = EXCLUDED.size_bytes,
-          data         = EXCLUDED.data,
-          updated_at   = NOW()
-      `);
-    } catch (err) {
-      const msg = String((err as Error).message ?? "");
-      const isMissingAggregate = msg.includes("bytea_agg") || (msg.includes("does not exist") && msg.includes("function"));
-      if (isMissingAggregate) {
-        // bytea_agg not yet installed (rare: first boot race) — fall back to
-        // iterative part-by-part append, still O(1) Node.js memory per part.
+        ORDER BY part_number ASC
+      `));
+
+      const partCount = partRows.length;
+      if (partCount === 0) {
+        throw Object.assign(
+          new Error(
+            `completeMultipartUpload: no parts found in storage_upload_parts for ` +
+            `uploadId=${uploadId} key=${key}. Parts may have been cleaned up already ` +
+            `(idempotent re-call), never uploaded, or aborted concurrently.`,
+          ),
+          { code: "ASSEMBLY_NO_PARTS" },
+        );
+      }
+
+      // Validate part_number sequence: must be 1, 2, 3 … N with no gaps.
+      // A gap means a chunk was uploaded without a corresponding part row —
+      // bytea_agg would silently skip it, producing a truncated blob.
+      const gapParts: number[] = [];
+      for (let i = 0; i < partRows.length; i++) {
+        const expected = i + 1;
+        const actual = partRows[i]!.part_number;
+        if (actual !== expected) gapParts.push(expected);
+      }
+      if (gapParts.length > 0) {
+        throw Object.assign(
+          new Error(
+            `Part sequence gap for uploadId=${uploadId} key=${key}: ` +
+            `missing part_number(s) ${gapParts.slice(0, 10).join(", ")}` +
+            (gapParts.length > 10 ? ` … and ${gapParts.length - 10} more` : "") +
+            `. Parts must be contiguous starting from 1. Re-upload missing chunks to recover.`,
+          ),
+          { code: "ASSEMBLY_SEQUENCE_GAP" },
+        );
+      }
+
+      // Validate all parts are non-empty. A zero-byte part means uploadPart()
+      // wrote an empty Buffer to the DB — bytea_agg would produce a truncated blob.
+      const emptyParts = partRows.filter((p) => p.size_bytes === 0);
+      if (emptyParts.length > 0) {
+        throw Object.assign(
+          new Error(
+            `${emptyParts.length} zero-byte part(s) detected: part_numbers=` +
+            `${emptyParts.map((p) => p.part_number).join(",")} for uploadId=${uploadId}. ` +
+            `Cannot assemble corrupt empty parts. Re-upload these chunks to recover.`,
+          ),
+          { code: "ASSEMBLY_EMPTY_PARTS" },
+        );
+      }
+
+      const totalBytes = partRows.reduce((s, p) => s + p.size_bytes, 0);
+      finalPartCount = partCount;
+      finalTotalBytes = totalBytes;
+
+      logger.info(
+        { key, uploadId, partCount, totalBytes },
+        "[storage] completeMultipartUpload: all parts validated — starting transactional assembly",
+      );
+
+      // ── 3. Delete any stale destination blob ──────────────────────────────
+      // A previous failed assembly attempt may have left a partial or
+      // zero-byte blob at this key.  Delete it unconditionally so the new
+      // INSERT starts from a clean slate instead of overwriting via
+      // ON CONFLICT (which could corrupt the row if bytea_agg returns NULL).
+      await tx.execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`);
+
+      // ── 4. Assemble entirely inside PostgreSQL — zero bytes to Node.js ────
+      // bytea_agg(data ORDER BY part_number) concatenates all parts in a
+      // single server-side aggregate pass; the INSERT writes the result
+      // directly into storage_blobs.  Peak Node.js RSS contribution: ~0.
+      let usedFallback = false;
+      try {
+        await tx.execute(sql`
+          INSERT INTO storage_blobs (key, content_type, size_bytes, data, updated_at)
+          SELECT
+            ${key}                                     AS key,
+            ${contentType}                             AS content_type,
+            SUM(octet_length(data))                    AS size_bytes,
+            bytea_agg(data ORDER BY part_number)       AS data,
+            NOW()                                      AS updated_at
+          FROM storage_upload_parts
+          WHERE upload_id = ${uploadId}
+        `);
+      } catch (aggErr) {
+        const msg = String((aggErr as Error).message ?? "");
+        const isMissingAggregate =
+          msg.includes("bytea_agg") ||
+          (msg.includes("does not exist") && msg.includes("function"));
+        if (!isMissingAggregate) throw aggErr;
+        // bytea_agg not yet installed (rare first-boot race) — fall back to
+        // server-side iterative append (O(1) Node.js memory per part).
         logger.warn(
           { key, uploadId, partCount, totalBytes },
-          "[storage] completeMultipartUpload: bytea_agg unavailable — falling back to iterative PostgreSQL append (O(1) Node.js memory per part)",
+          "[storage] completeMultipartUpload: bytea_agg unavailable — using server-side iterative append fallback",
         );
-        await this._assemblePartsIterative(key, uploadId, contentType);
-      } else {
-        throw err;
+        usedFallback = true;
       }
-    }
 
-    // ── Post-assembly zero-byte guard ─────────────────────────────────────
-    // Verify the assembled blob is non-empty before declaring success.
-    // A zero-byte blob here means bytea_agg received empty or NULL parts —
-    // it would look valid in storage_blobs but serve corrupt content.
-    // Delete immediately and throw so the caller marks the session failed.
-    type SizeRow = { size_bytes: string };
-    const sizeCheck = firstRow<SizeRow>(
-      await db.execute<SizeRow>(sql`
-        SELECT size_bytes::text AS size_bytes FROM storage_blobs WHERE key = ${key} LIMIT 1
-      `),
-    );
-    const assembledSize = parseInt(sizeCheck?.size_bytes ?? "0", 10);
-    if (assembledSize === 0) {
-      // Delete the invalid zero-byte row so it does not masquerade as a valid blob.
-      await db.execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`)
-        .catch((delErr) => logger.warn({ delErr, key, uploadId }, "[storage] zero-byte blob cleanup failed (non-fatal)"));
-      throw new Error(
-        `completeMultipartUpload: assembled blob is zero bytes despite ${partCount} part(s) ` +
-        `(expected ≥${totalBytes} B) for key="${key}" uploadId=${uploadId}. ` +
-        "The zero-byte blob has been deleted. " +
-        "Possible cause: all parts were empty, bytea_agg received NULL inputs, or the INSERT succeeded on 0 matching parts.",
-      );
-    }
-
-    // Clean up staging parts — no longer needed after successful assembly.
-    await db.execute(sql`DELETE FROM storage_upload_parts WHERE upload_id = ${uploadId}`)
-      .catch((err) => logger.warn({ err, uploadId }, "[storage] upload-parts cleanup failed (non-fatal)"));
-
-    // Etag: deterministic from uploadId+size.  A full md5(data) would require
-    // reading back the assembled blob — defeating the memory savings — so we
-    // use a compact surrogate that's unique per assembly and stable on retry.
-    const etag = `"${uploadId.slice(0, 8)}-${totalBytes}"`;
-    logger.info(
-      { key, uploadId, parts: partCount, bytes: totalBytes },
-      "[storage] completeMultipartUpload done",
-    );
-    return { key, etag, location: this.publicUrl(key) };
-  }
-
-  /**
-   * Fallback assembly: fetches each part individually and appends it to
-   * storage_blobs via PostgreSQL's `||` bytea concatenation operator.
-   * Peak Node.js RSS: one part (~8 MiB) at a time — O(1) regardless of file size.
-   * PostgreSQL I/O is O(n²) in parts (grows the TOAST value n times), but this
-   * path is only reached when the bytea_agg aggregate is unavailable.
-   */
-  private async _assemblePartsIterative(key: string, uploadId: string, contentType: string): Promise<void> {
-    type NumRow = { part_number: number };
-    const nums = allRows<NumRow>(await db.execute<NumRow>(sql`
-      SELECT part_number
-      FROM storage_upload_parts
-      WHERE upload_id = ${uploadId}
-      ORDER BY part_number ASC
-    `));
-
-    let isFirst = true;
-    for (const { part_number: partNum } of nums) {
-      type DataRow = { data: Buffer };
-      const pResult = await db.execute<DataRow>(sql`
-        SELECT data FROM storage_upload_parts
-        WHERE upload_id = ${uploadId} AND part_number = ${partNum}
-        LIMIT 1
-      `);
-      const pRow = firstRow<DataRow>(pResult);
-      if (!pRow?.data) throw new Error(`[storage] _assemblePartsIterative: part ${partNum} missing for uploadId=${uploadId}`);
-      const partBuf = toBuffer(pRow.data);
-
-      if (isFirst) {
-        await db.execute(sql`
+      if (usedFallback) {
+        // Iterative server-side concatenation.  Each UPDATE reads one part
+        // from storage_upload_parts and appends it to the growing blob —
+        // no data crosses the Node.js/PostgreSQL boundary.
+        // First part: INSERT the row.
+        await tx.execute(sql`
           INSERT INTO storage_blobs (key, content_type, size_bytes, data, updated_at)
-          VALUES (${key}, ${contentType}, 0, ${partBuf}, NOW())
-          ON CONFLICT (key) DO UPDATE SET
-            content_type = EXCLUDED.content_type,
-            size_bytes   = 0,
-            data         = EXCLUDED.data,
-            updated_at   = NOW()
+          SELECT ${key}, ${contentType}, 0, data, NOW()
+          FROM storage_upload_parts
+          WHERE upload_id = ${uploadId} AND part_number = 1
         `);
-        isFirst = false;
-      } else {
-        // Append part to the growing blob server-side.
-        // data = data || $partBuf transfers one part (~8 MiB) to PostgreSQL,
-        // which concatenates and stores it without returning anything to Node.js.
-        await db.execute(sql`
+        // Subsequent parts: server-side append.
+        for (let n = 2; n <= partCount; n++) {
+          await tx.execute(sql`
+            UPDATE storage_blobs
+            SET data = data || (
+              SELECT data FROM storage_upload_parts
+              WHERE upload_id = ${uploadId} AND part_number = ${n}
+            )
+            WHERE key = ${key}
+          `);
+        }
+        // Sync size_bytes once all parts are appended.
+        await tx.execute(sql`
           UPDATE storage_blobs
-          SET data = data || ${partBuf}
+          SET size_bytes = octet_length(data), updated_at = NOW()
           WHERE key = ${key}
         `);
       }
-    }
 
-    // Sync size_bytes after all parts are appended.
-    await db.execute(sql`
-      UPDATE storage_blobs
-      SET size_bytes = octet_length(data), updated_at = NOW()
-      WHERE key = ${key}
-    `);
+      // ── 5. Post-assembly integrity validation ─────────────────────────────
+      // Verify both size_bytes (header field) and octet_length(data) (actual
+      // stored bytes) are non-zero and equal.  A discrepancy means the
+      // aggregate produced NULL or empty output and the INSERT/UPDATE succeeded
+      // on zero matching rows.
+      type SizeRow = { size_bytes: string; actual_length: string };
+      const sizeRow = firstRow<SizeRow>(await tx.execute<SizeRow>(sql`
+        SELECT size_bytes::text, octet_length(data)::text AS actual_length
+        FROM storage_blobs
+        WHERE key = ${key}
+        LIMIT 1
+      `));
+
+      const recordedSize = parseInt(sizeRow?.size_bytes ?? "0", 10);
+      const actualLength = parseInt(sizeRow?.actual_length ?? "0", 10);
+
+      if (recordedSize === 0 || actualLength === 0) {
+        throw Object.assign(
+          new Error(
+            `completeMultipartUpload: assembled blob is zero bytes ` +
+            `(recorded=${recordedSize}, actual=${actualLength}) for key="${key}" ` +
+            `uploadId=${uploadId} despite ${partCount} part(s) totaling ${totalBytes} B. ` +
+            `Transaction rolled back — no partial blob committed. ` +
+            `Possible cause: bytea_agg received NULL inputs or aggregate aggregate failed silently.`,
+          ),
+          { code: "ASSEMBLY_ZERO_BYTES" },
+        );
+      }
+
+      if (actualLength !== totalBytes) {
+        throw Object.assign(
+          new Error(
+            `Assembly size mismatch for key="${key}" uploadId=${uploadId}: ` +
+            `expected ${totalBytes} B from ${partCount} parts, ` +
+            `actual blob is ${actualLength} B. ` +
+            `Transaction rolled back — the partial blob was not committed.`,
+          ),
+          { code: "ASSEMBLY_SIZE_MISMATCH" },
+        );
+      }
+
+      // ── 6. End-to-end SHA-256 verification ───────────────────────────────
+      // sha256(data) runs entirely inside PostgreSQL — only the 32-byte hash
+      // is returned to Node.js (O(1) memory regardless of blob size).
+      // This provides a cryptographic proof that the assembled file is a
+      // byte-for-byte copy of the original, beyond per-chunk SHA-256 checks.
+      if (expectedSha256) {
+        type HashRow = { file_sha256: string };
+        const hashRow = firstRow<HashRow>(await tx.execute<HashRow>(sql`
+          SELECT encode(sha256(data), 'hex') AS file_sha256
+          FROM storage_blobs
+          WHERE key = ${key}
+          LIMIT 1
+        `));
+        const actualSha256 = hashRow?.file_sha256 ?? "";
+        if (actualSha256 !== expectedSha256.toLowerCase()) {
+          throw Object.assign(
+            new Error(
+              `End-to-end SHA-256 mismatch for key="${key}" uploadId=${uploadId}: ` +
+              `expected ${expectedSha256}, computed ${actualSha256}. ` +
+              `The assembled file does not match the original source — possible data corruption ` +
+              `in transit or reassembly. Transaction rolled back — no corrupt blob committed. ` +
+              `Re-upload the file to recover.`,
+            ),
+            { code: "ASSEMBLY_CORRUPT_SOURCE" },
+          );
+        }
+        logger.info(
+          { key, uploadId, sha256: actualSha256 },
+          "[storage] completeMultipartUpload: end-to-end SHA-256 verified ✓",
+        );
+      }
+
+      // ── 7. Delete staging parts — inside the same transaction ────────────
+      // Deleting inside the transaction is safe: if any subsequent step
+      // fails the entire transaction rolls back, restoring the parts rows
+      // so the next assembly attempt can re-read them.
+      await tx.execute(sql`DELETE FROM storage_upload_parts WHERE upload_id = ${uploadId}`);
+
+      const etag = `"${uploadId.slice(0, 8)}-${actualLength}"`;
+      return { key, etag, location: this.publicUrl(key) };
+    }); // ← transaction COMMIT; advisory lock auto-released
+
+    logger.info(
+      { key, uploadId, parts: finalPartCount, bytes: finalTotalBytes, sha256Verified: !!expectedSha256 },
+      "[storage] completeMultipartUpload done (transactional) ✓",
+    );
+    return result;
   }
 
   async abortMultipartUpload({ uploadId }: { key: string; uploadId: string }): Promise<void> {
