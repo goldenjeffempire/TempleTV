@@ -4,6 +4,7 @@ import { env } from "../../config/env.js";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { ConflictError } from "../../shared/errors.js";
+import { youtubeApiCircuit, withCircuitBreaker } from "../../infrastructure/circuit-breaker.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { isUndefinedColumnError, extractPgError, isTransientPgError } from "../../infrastructure/db-schema-guard.js";
@@ -1113,8 +1114,16 @@ export async function syncYouTubeChannel(triggeredBy: "scheduler" | "manual" = "
         "youtube-sync: local quota exhausted — using RSS instead of Data API for this run",
       );
     }
+    // Wrap the YouTube Data API path with a circuit breaker.
+    // When the circuit is OPEN (3 consecutive API failures) we skip
+    // fetchAllChannelVideos entirely and fall through to the RSS fallback
+    // immediately instead of waiting for the 12–15 s timeout on every call.
     const { videos: rawVideos, source, skipped } = useApi
-      ? await fetchAllChannelVideos(apiKey!, cutoff)
+      ? await withCircuitBreaker(
+          youtubeApiCircuit,
+          () => fetchAllChannelVideos(apiKey!, cutoff),
+          { fallback: () => fetchWithRssOnly(cutoff) },
+        )
       : await fetchWithRssOnly(cutoff);
 
     // ── Deduplicate by videoId ───────────────────────────────────────────────

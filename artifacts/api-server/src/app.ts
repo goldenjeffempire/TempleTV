@@ -595,6 +595,32 @@ export async function buildApp(): Promise<FastifyInstance> {
       durationSec,
     );
     httpRequestTotal.inc({ method, route, status_code: statusCode, ...SERVICE_LABELS });
+
+    // Structured warning log for every 5xx response so post-mortems can
+    // locate the exact route + request ID without scrubbing Prometheus metrics.
+    // Skips health probes and metrics scrapes to avoid log noise on
+    // expected degraded-startup 503s.
+    if (reply.statusCode >= 500) {
+      const isHealthProbe =
+        route === "/healthz" || route === "/health" || route === "/readyz" ||
+        route === "/api/healthz" || route === "/api/health" || route === "/api/readyz" ||
+        route === "/api/v1/metrics";
+      if (!isHealthProbe) {
+        req.log.warn(
+          {
+            requestId: req.id,
+            statusCode: reply.statusCode,
+            method,
+            route,
+            durationMs: Math.round(reply.elapsedTime),
+            userId: req.principal?.id,
+            userRole: req.principal?.role,
+          },
+          "[5xx] server error response",
+        );
+      }
+    }
+
     done();
   });
 

@@ -16,6 +16,7 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { requireAuth } from "../../middleware/auth.js";
 import { env } from "../../config/env.js";
 import { logger as rootLogger } from "../../infrastructure/logger.js";
+import { easApiCircuit, githubApiCircuit, withCircuitBreaker } from "../../infrastructure/circuit-breaker.js";
 
 const logger = rootLogger.child({ module: "ota" });
 
@@ -244,10 +245,12 @@ export async function otaRoutes(app: FastifyInstance): Promise<void> {
       let workflowRuns: WorkflowRun[] = [];
       let error: string | null     = null;
 
-      // Fetch EAS update history
+      // Fetch EAS update history — protected by a circuit breaker.
+      // After 3 consecutive EAS API failures the circuit opens for 2 min so
+      // subsequent requests fail immediately instead of waiting 10 s each.
       if (expoToken) {
         try {
-          const raw = await fetchEasUpdates(expoToken);
+          const raw = await withCircuitBreaker(easApiCircuit, () => fetchEasUpdates(expoToken));
           // Only return branches that match our known channels
           const channelSet = new Set<string>(KNOWN_CHANNELS);
           branches = raw
@@ -266,10 +269,12 @@ export async function otaRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
-      // Fetch recent GitHub Actions runs
+      // Fetch recent GitHub Actions runs — protected by a circuit breaker.
       if (ghToken && ghRepo) {
         try {
-          const runs = await fetchWorkflowRuns({ repo: ghRepo, token: ghToken });
+          const runs = await withCircuitBreaker(githubApiCircuit, () =>
+            fetchWorkflowRuns({ repo: ghRepo!, token: ghToken }),
+          );
           workflowRuns = runs.map((r) => ({
             id:         r.id,
             name:       r.name,
@@ -329,7 +334,11 @@ export async function otaRoutes(app: FastifyInstance): Promise<void> {
       }
 
       try {
-        await dispatchWorkflow({ repo: ghRepo, token: ghToken, channel, message });
+        // Wrap with circuit breaker — after 3 consecutive GitHub API failures
+        // the circuit opens for 2 min so retries fail fast instead of timing out.
+        await withCircuitBreaker(githubApiCircuit, () =>
+          dispatchWorkflow({ repo: ghRepo, token: ghToken, channel, message }),
+        );
 
         logger.info(
           { channel, message, triggeredBy: (req as { user?: { email?: string } }).user?.email ?? "admin" },

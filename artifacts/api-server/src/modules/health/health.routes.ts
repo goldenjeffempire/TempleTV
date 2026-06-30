@@ -11,6 +11,7 @@ import { streamHealthAggregator } from "../broadcast/stream-health.js";
 import { liveOverridesService } from "../live-overrides/live-overrides.service.js";
 import { env } from "../../config/env.js";
 import { isShuttingDown } from "../../infrastructure/shutdown-flag.js";
+import { getAllCircuitStatuses } from "../../infrastructure/circuit-breaker.js";
 
 const HealthSchema = z.object({
   status: z.enum(["ok", "degraded", "down"]),
@@ -51,6 +52,16 @@ const HealthSchema = z.object({
     deletedOrphanBlobCount: z.number().int(),
     consecutiveErrors: z.number().int(),
   }).optional(),
+  // External service circuit breaker statuses — "OPEN" means the breaker
+  // tripped (too many consecutive failures) and calls are being blocked to
+  // prevent cascading timeouts. Resolves automatically after the cooldown.
+  circuits: z.array(z.object({
+    name: z.string(),
+    state: z.enum(["CLOSED", "OPEN", "HALF_OPEN"]),
+    consecutiveFailures: z.number().int(),
+    openedAt: z.number().nullable(),
+    timeUntilHalfOpenMs: z.number().nullable(),
+  })).optional(),
 });
 
 const startedAt = Date.now();
@@ -270,6 +281,7 @@ export async function healthRoutes(app: FastifyInstance) {
         ...(storageReconciliationStats !== undefined
           ? { storageReconciliation: storageReconciliationStats }
           : {}),
+        circuits: getAllCircuitStatuses(),
       };
     },
   );

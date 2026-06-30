@@ -117,13 +117,24 @@ export function registerErrorHandler(app: FastifyInstance) {
     // ── 4. Fastify built-in errors (rate-limit 429, auth 401, etc.) ───────────
     const status = (err as FastifyError).statusCode ?? 500;
     if (status >= 500) {
-      req.log.error({ err }, "unhandled error");
+      req.log.error(
+        {
+          err,
+          requestId,
+          method: req.method,
+          route: (req.routeOptions as { url?: string } | undefined)?.url ?? req.url,
+          userId: req.principal?.id,
+          userRole: req.principal?.role,
+          durationMs: Math.round(reply.elapsedTime ?? 0),
+        },
+        "unhandled 500 error",
+      );
       void captureException(err, {
         requestId,
         userId: req.principal?.id,
         userRole: req.principal?.role,
         method: req.method,
-        path: req.routeOptions?.url ?? req.url,
+        path: (req.routeOptions as { url?: string } | undefined)?.url ?? req.url,
       });
     } else {
       req.log.warn({ err: { message: err.message, name: err.name, code: (err as FastifyError).code } }, "client error");
