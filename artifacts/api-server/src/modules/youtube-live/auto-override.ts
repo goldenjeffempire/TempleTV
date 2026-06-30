@@ -89,6 +89,17 @@ async function evaluate(state: YtLiveState): Promise<void> {
   // Skip evaluation while the orchestrator is mid-boot or stopped.
   if (!broadcastOrchestrator.isStarted()) return;
 
+  // Log upcoming streams for operator observability. The auto-override does
+  // not pre-arm based on upcoming state — no reliable scheduled start time
+  // is available from the RSS feed alone (requires YouTube Data API v3 OAuth).
+  // The override will arm automatically when isLive transitions to true.
+  if (!state.isLive && state.isUpcoming && state.upcomingVideoId) {
+    logger.info(
+      { upcomingVideoId: state.upcomingVideoId, title: state.upcomingTitle },
+      "[yt-auto-override] upcoming broadcast detected — will auto-override when live",
+    );
+  }
+
   const snap = broadcastOrchestrator.snapshot();
   const currentOverride = snap.override ?? null;
 

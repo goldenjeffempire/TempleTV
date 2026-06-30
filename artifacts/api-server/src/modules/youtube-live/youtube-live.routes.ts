@@ -50,6 +50,9 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
       viewerCount: s.viewerCount,
       checkedAt: s.checkedAt,
       detectionMethod: s.detectionMethod,
+      isUpcoming: s.isUpcoming,
+      upcomingVideoId: s.upcomingVideoId,
+      upcomingTitle: s.upcomingTitle,
     };
   });
 
@@ -74,6 +77,9 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
       viewerCount: s.viewerCount,
       checkedAt: s.checkedAt,
       detectionMethod: s.detectionMethod,
+      isUpcoming: s.isUpcoming,
+      upcomingVideoId: s.upcomingVideoId,
+      upcomingTitle: s.upcomingTitle,
     };
   });
 
@@ -86,9 +92,10 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
     config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
   }, async () => {
     const s = ytPoller.getState();
-    // When live, surface the current broadcast as the only entry so the
-    // admin can toggle it off. When offline, return an empty list — the
-    // admin will need to use the YouTube Studio to create broadcasts.
+    // When live, surface the current broadcast as the only entry.
+    // When offline but an upcoming stream is detected, surface it so
+    // operators can see it in the admin panel.
+    // When neither, return an empty list.
     if (s.isLive && s.videoId) {
       return {
         broadcasts: [
@@ -96,7 +103,19 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
             id: s.videoId,
             title: s.title ?? "Live Broadcast",
             status: "live" as const,
-            scheduledStartTime: s.checkedAt ?? new Date().toISOString(),
+            scheduledStartTime: null as string | null,
+          },
+        ],
+      };
+    }
+    if (s.isUpcoming && s.upcomingVideoId) {
+      return {
+        broadcasts: [
+          {
+            id: s.upcomingVideoId,
+            title: s.upcomingTitle ?? "Upcoming Broadcast",
+            status: "upcoming" as const,
+            scheduledStartTime: null as string | null,
           },
         ],
       };
@@ -170,6 +189,9 @@ export async function youtubeLiveRoutes(app: FastifyInstance) {
           viewerCount: s.viewerCount,
           checkedAt: s.checkedAt,
           detectionMethod: s.detectionMethod,
+          isUpcoming: s.isUpcoming,
+          upcomingVideoId: s.upcomingVideoId,
+          upcomingTitle: s.upcomingTitle,
         })}\n\n`);
         if (ok) lastYtLiveSseWriteOkMs = Date.now();
       } catch {

@@ -40,6 +40,12 @@ export interface YtLiveState {
     | "youtube-live-poller-disabled-in-build"
     | "api-error"
     | "rss-error";
+  /** True when the channel has an upcoming (scheduled but not yet started) broadcast. */
+  isUpcoming: boolean;
+  /** YouTube video ID of the first upcoming broadcast, or null. */
+  upcomingVideoId: string | null;
+  /** Title of the upcoming broadcast, or null. */
+  upcomingTitle: string | null;
 }
 
 type Listener = (state: YtLiveState) => void;
@@ -70,6 +76,8 @@ function httpsGet(url: string, timeoutMs = 10_000): Promise<string> {
   });
 }
 
+const _UPCOMING_DEFAULTS = { isUpcoming: false, upcomingVideoId: null, upcomingTitle: null } as const;
+
 /** Parse the YouTube Data API v3 search response. */
 function parseApiResponse(json: string): Omit<YtLiveState, "checkedAt"> {
   try {
@@ -84,7 +92,7 @@ function parseApiResponse(json: string): Omit<YtLiveState, "checkedAt"> {
       (i) => i.snippet?.liveBroadcastContent === "live",
     );
     if (liveItems.length === 0) {
-      return { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "youtube-api-v3" };
+      return { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "youtube-api-v3", ..._UPCOMING_DEFAULTS };
     }
     const first = liveItems[0];
     return {
@@ -93,9 +101,10 @@ function parseApiResponse(json: string): Omit<YtLiveState, "checkedAt"> {
       title: first?.snippet?.title ?? null,
       viewerCount: null,
       detectionMethod: "youtube-api-v3",
+      ..._UPCOMING_DEFAULTS,
     };
   } catch {
-    return { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "api-error" };
+    return { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "api-error", ..._UPCOMING_DEFAULTS };
   }
 }
 
@@ -117,35 +126,68 @@ export function parseRssResponse(xml: string): Omit<YtLiveState, "checkedAt"> {
     const doc = _xmlParser.parseFromString(xml, "text/xml");
 
     const entries = doc.getElementsByTagName("entry");
+
+    let liveVideoId: string | null = null;
+    let liveTitle: string | null = null;
+    let upcomingVideoId: string | null = null;
+    let upcomingTitle: string | null = null;
+
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
       if (!entry) continue;
 
-      // yt:liveBroadcastContent must equal "live" (case-insensitive, trim whitespace)
+      // yt:liveBroadcastContent — "live" or "upcoming" (case-insensitive, trim)
       const lbcEls = entry.getElementsByTagName("yt:liveBroadcastContent");
       const lbc = lbcEls.length > 0 ? (lbcEls[0]?.textContent ?? "").trim().toLowerCase() : "";
-      if (lbc !== "live") continue;
+      if (lbc !== "live" && lbc !== "upcoming") continue;
 
       // yt:videoId — required; skip entry if absent or empty
       const vidEls = entry.getElementsByTagName("yt:videoId");
       const videoId = vidEls.length > 0 ? (vidEls[0]?.textContent ?? "").trim() : "";
       if (!videoId) continue;
 
-      // <title> — take the first one inside this entry (not the feed-level title)
+      // <title> — scoped to this entry (not the feed-level title)
       const titleEls = entry.getElementsByTagName("title");
       const rawTitle = titleEls.length > 0 ? (titleEls[0]?.textContent ?? "").trim() : "";
       // textContent already unwraps CDATA; decodeHtmlEntities handles &amp; etc
       const title = rawTitle ? decodeHtmlEntities(rawTitle) : null;
 
-      return { isLive: true, videoId, title, viewerCount: null, detectionMethod: "youtube-rss" };
+      if (lbc === "live" && !liveVideoId) {
+        liveVideoId = videoId;
+        liveTitle = title;
+      } else if (lbc === "upcoming" && !upcomingVideoId) {
+        upcomingVideoId = videoId;
+        upcomingTitle = title;
+      }
+
+      // Short-circuit once we have both
+      if (liveVideoId && upcomingVideoId) break;
     }
 
-    return { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "youtube-rss" };
+    const isLive = liveVideoId !== null;
+    // isUpcoming is only surfaced when there is no active live stream —
+    // the live banner should dominate when the channel IS live.
+    const isUpcoming = !isLive && upcomingVideoId !== null;
+
+    return {
+      isLive,
+      videoId: liveVideoId,
+      title: liveTitle,
+      viewerCount: null,
+      detectionMethod: "youtube-rss",
+      isUpcoming,
+      upcomingVideoId,
+      upcomingTitle,
+    };
   } catch {
     // ParseError (fatal malformed XML) or any unexpected runtime error.
     // Always degrade gracefully: treat as "no live stream found" so the
     // orchestrator keeps the last-known state rather than crashing.
-    return { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "rss-error" };
+    return {
+      isLive: false, videoId: null, title: null, viewerCount: null,
+      detectionMethod: "rss-error",
+      ..._UPCOMING_DEFAULTS,
+    };
   }
 }
 
@@ -167,6 +209,9 @@ class YtLivePoller extends EventEmitter {
     viewerCount: null,
     checkedAt: Date.now(),
     detectionMethod: "youtube-live-poller-disabled-in-build",
+    isUpcoming: false,
+    upcomingVideoId: null,
+    upcomingTitle: null,
   };
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -206,6 +251,7 @@ class YtLivePoller extends EventEmitter {
         viewerCount: null,
         checkedAt: Date.now(),
         detectionMethod: "no-channel-configured",
+        ..._UPCOMING_DEFAULTS,
       });
       return;
     }
@@ -234,6 +280,7 @@ class YtLivePoller extends EventEmitter {
         this.setState({
           isLive: false, videoId: null, title: null, viewerCount: null,
           checkedAt: Date.now(), detectionMethod: "no-channel-configured",
+          ..._UPCOMING_DEFAULTS,
         });
         return;
       }
@@ -270,8 +317,15 @@ class YtLivePoller extends EventEmitter {
           this._lastSafetyNetMs = now;
           const searchResult = await this.pollApi();
           if (searchResult.isLive) {
-            // RSS has not yet indexed this stream — trust the search result.
-            result = searchResult;
+            // RSS has not yet indexed this stream — trust the API for live
+            // state, but preserve the upcoming state the RSS already returned
+            // (the API safety-net only searches for "live" events, not "upcoming").
+            result = {
+              ...searchResult,
+              isUpcoming: result.isUpcoming,
+              upcomingVideoId: result.upcomingVideoId,
+              upcomingTitle: result.upcomingTitle,
+            };
           }
           if (searchResult.detectionMethod === "api-error") {
             // Transient API error: suppress safety-net for 1 hour.
@@ -335,7 +389,7 @@ class YtLivePoller extends EventEmitter {
       trackQuota("search", 100);
       return parseApiResponse(body);
     } catch {
-      return { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "api-error" };
+      return { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "api-error", ..._UPCOMING_DEFAULTS };
     }
   }
 
@@ -345,7 +399,7 @@ class YtLivePoller extends EventEmitter {
       const body = await httpsGet(url, 12_000);
       return parseRssResponse(body);
     } catch {
-      return { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "rss-error" };
+      return { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "rss-error", ..._UPCOMING_DEFAULTS };
     }
   }
 
@@ -356,7 +410,9 @@ class YtLivePoller extends EventEmitter {
     if (
       prev.isLive !== next.isLive ||
       prev.videoId !== next.videoId ||
-      prev.viewerCount !== next.viewerCount
+      prev.viewerCount !== next.viewerCount ||
+      prev.isUpcoming !== next.isUpcoming ||
+      prev.upcomingVideoId !== next.upcomingVideoId
     ) {
       this.emit("change", next);
       for (const fn of this._subs) {

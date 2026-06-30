@@ -19,13 +19,17 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
-import { Tv2, RefreshCw, Play, Square, Users, Loader2 } from "lucide-react";
+import { Tv2, RefreshCw, Play, Square, Users, Loader2, Clock } from "lucide-react";
 
 interface YoutubeLiveStatus {
   isLive: boolean;
+  isUpcoming?: boolean;
+  upcomingVideoId?: string | null;
+  upcomingTitle?: string | null;
   broadcastId?: string;
-  title?: string;
-  viewerCount?: number;
+  videoId?: string | null;
+  title?: string | null;
+  viewerCount?: number | null;
   scheduledStartTime?: string;
   actualStartTime?: string;
   streamKey?: string;
@@ -121,19 +125,31 @@ export default function LiveYoutubePage() {
         <ErrorAlert message="Could not load scheduled broadcasts — YouTube API may not be configured." />
       )}
 
-      <Card className={status?.isLive ? "border-red-500/40 bg-red-500/5" : ""}>
+      <Card className={
+        status?.isLive
+          ? "border-red-500/40 bg-red-500/5"
+          : status?.isUpcoming
+            ? "border-yellow-500/40 bg-yellow-500/5"
+            : ""
+      }>
         <CardHeader className="pb-3">
           <CardTitle className="text-sm flex items-center justify-between">
             <span className="flex items-center gap-2">
-              <Tv2 size={15} className={status?.isLive ? "text-red-500" : "text-muted-foreground"} />
+              <Tv2 size={15} className={
+                status?.isLive
+                  ? "text-red-500"
+                  : status?.isUpcoming
+                    ? "text-yellow-500"
+                    : "text-muted-foreground"
+              } />
               YouTube Broadcast Status
             </span>
-            {status?.isLive && status.broadcastId && (
+            {status?.isLive && (status.broadcastId ?? status.videoId) && (
               <Button
                 size="sm"
                 variant="destructive"
                 className="h-7 gap-1 text-xs"
-                onClick={() => handleStopClick(status.broadcastId!)}
+                onClick={() => handleStopClick((status.broadcastId ?? status.videoId)!)}
                 disabled={stopMutation.isPending}
               >
                 {stopMutation.isPending
@@ -147,8 +163,16 @@ export default function LiveYoutubePage() {
           {isLoading ? <Skeleton className="h-16 w-full" /> : (
             <div className="space-y-2">
               <div className="flex items-center gap-2">
-                <div className={`w-2.5 h-2.5 rounded-full ${status?.isLive ? "bg-red-500 animate-pulse" : "bg-muted-foreground/30"}`} />
-                <span className="font-bold">{status?.isLive ? "LIVE ON YOUTUBE" : "Not Live"}</span>
+                <div className={`w-2.5 h-2.5 rounded-full ${
+                  status?.isLive
+                    ? "bg-red-500 animate-pulse"
+                    : status?.isUpcoming
+                      ? "bg-yellow-500 animate-pulse"
+                      : "bg-muted-foreground/30"
+                }`} />
+                <span className="font-bold">
+                  {status?.isLive ? "LIVE ON YOUTUBE" : status?.isUpcoming ? "UPCOMING BROADCAST" : "Not Live"}
+                </span>
               </div>
               {status?.isLive && (
                 <>
@@ -160,7 +184,17 @@ export default function LiveYoutubePage() {
                   )}
                 </>
               )}
-              {!status?.isLive && <p className="text-sm text-muted-foreground">No active YouTube broadcast.</p>}
+              {!status?.isLive && status?.isUpcoming && (
+                <div className="space-y-1">
+                  {status.upcomingTitle && <p className="text-sm">{status.upcomingTitle}</p>}
+                  <p className="text-sm text-muted-foreground flex items-center gap-1">
+                    <Clock size={13} /> Scheduled — broadcast will go live automatically when it starts
+                  </p>
+                </div>
+              )}
+              {!status?.isLive && !status?.isUpcoming && (
+                <p className="text-sm text-muted-foreground">No active YouTube broadcast.</p>
+              )}
             </div>
           )}
         </CardContent>
@@ -177,9 +211,19 @@ export default function LiveYoutubePage() {
                 <Tv2 size={14} className="text-muted-foreground flex-shrink-0" />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium truncate">{b.title}</p>
-                  <p className="text-xs text-muted-foreground">{new Date(b.scheduledStartTime).toLocaleString()}</p>
+                  {b.scheduledStartTime && (
+                    <p className="text-xs text-muted-foreground">{new Date(b.scheduledStartTime).toLocaleString()}</p>
+                  )}
                 </div>
-                <Badge variant="outline" className="capitalize text-[11px] flex-shrink-0">{b.status}</Badge>
+                <Badge
+                  variant="outline"
+                  className={`capitalize text-[11px] flex-shrink-0 ${
+                    b.status === "live" ? "border-red-500/50 text-red-600 bg-red-500/5" :
+                    b.status === "upcoming" ? "border-yellow-500/50 text-yellow-600 bg-yellow-500/5" : ""
+                  }`}
+                >
+                  {b.status}
+                </Badge>
                 {b.status === "ready" && (
                   <Button
                     size="sm"
