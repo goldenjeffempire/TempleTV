@@ -27,6 +27,7 @@ import { queueSelfHealingWorker } from "./engine/queue-self-healing-worker.js";
 import { faststartRecoveryWorker } from "./engine/faststart-recovery.js";
 import { autoHealMonitor } from "./engine/auto-heal-monitor.js";
 import { autohealRoutes } from "./io/autoheal.routes.js";
+import { uploadQueueReconciler } from "../broadcast/upload-queue-reconciler.js";
 
 export { getExhaustionStatus, getAutoRefillStatus, getStorageStats };
 export { getDeadAirStats };
@@ -441,6 +442,21 @@ function startSupervisedWorkers(): void {
     initialDelayMs: 3 * 60_000,
     backoffMs: [30_000, 60_000, 2 * 60_000],
     onCircuitOpen: makeCircuitOpenCallback("faststart-recovery"),
+  });
+
+  // Upload Queue Reconciler: final safety-net for the upload→queue pipeline.
+  // Catches any upload whose primary enqueue call was silently dropped due to
+  // a transient DB blip, process crash between blob commit and enqueue, or a
+  // failed s3MirroredAt stamp. Scans local videos uploaded in the last 24 h
+  // that have a confirmed blob (s3MirroredAt IS NOT NULL) but no active queue
+  // row, and enqueues them immediately. Runs every 60 s with a 30 s initial
+  // delay so the DB is warm and the first integrity-validator pass has run.
+  workerSupervisor.spawn({
+    name: "upload-queue-reconciler",
+    fn: () => uploadQueueReconciler.scan(),
+    intervalMs: 60_000,
+    initialDelayMs: 30_000,
+    backoffMs: [15_000, 30_000, 60_000],
   });
 
   // Queue exhaustion monitor + auto-refill run as lightweight interval-based

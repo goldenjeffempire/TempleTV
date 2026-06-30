@@ -16,6 +16,7 @@ import { uploadTelemetry } from "./upload-telemetry.service.js";
 import { chunkedUploadRoutes } from "./chunked-upload.routes.js";
 import { logger } from "../../infrastructure/logger.js";
 import { ServiceUnavailableError } from "../../shared/errors.js";
+import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 
 const dbSessions = schema.uploadSessionsTable;
 
@@ -525,6 +526,32 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
       // on their next poll interval, not in real time.
       adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "upload-finalize" });
       adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId: row.id });
+
+      // Immediately enqueue the video into the broadcast queue.
+      // s3MirroredAt is already stamped in the insert above, so
+      // isPlayableForBroadcast's blob-existence gate will pass.
+      // Fire-and-forget: the upload-queue-reconciler worker is the backstop
+      // if this transient call fails.
+      void (async () => {
+        try {
+          const enqRes = await enqueueIfMissing({ videoId: row.id, reason: "upload-finalize" });
+          if (enqRes.enqueued) {
+            req.log.info(
+              { videoId: row.id, queueItemId: enqRes.queueItemId },
+              "[s3-multipart-complete] video enrolled in broadcast queue",
+            );
+            adminEventBus.push("broadcast-queue-updated", { reason: "s3-multipart-complete-enqueued", videoId: row.id });
+          } else {
+            req.log.info(
+              { videoId: row.id, skipReason: enqRes.skipReason },
+              "[s3-multipart-complete] enqueueIfMissing: skipped",
+            );
+          }
+        } catch (enqErr) {
+          req.log.warn({ err: enqErr, videoId: row.id }, "[s3-multipart-complete] enqueueIfMissing failed (non-fatal — upload-queue-reconciler will recover within 60 s)");
+        }
+      })();
+
       uploadTelemetry.success(body.sessionId, row.id, body.sizeBytes, 0);
 
       // Fire quick thumbnail extraction and duration probing in parallel —
@@ -754,6 +781,31 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
       // on their next poll interval, not in real time.
       adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "upload-finalize" });
       adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize", videoId: row.id });
+
+      // Immediately enqueue the video into the broadcast queue.
+      // s3MirroredAt is already stamped in the insert above, so
+      // isPlayableForBroadcast's blob-existence gate will pass.
+      // Fire-and-forget: the upload-queue-reconciler worker is the backstop
+      // if this transient call fails.
+      void (async () => {
+        try {
+          const enqRes = await enqueueIfMissing({ videoId: row.id, reason: "upload-finalize" });
+          if (enqRes.enqueued) {
+            req.log.info(
+              { videoId: row.id, queueItemId: enqRes.queueItemId },
+              "[s3-finalize] video enrolled in broadcast queue",
+            );
+            adminEventBus.push("broadcast-queue-updated", { reason: "s3-finalize-enqueued", videoId: row.id });
+          } else {
+            req.log.info(
+              { videoId: row.id, skipReason: enqRes.skipReason },
+              "[s3-finalize] enqueueIfMissing: skipped",
+            );
+          }
+        } catch (enqErr) {
+          req.log.warn({ err: enqErr, videoId: row.id }, "[s3-finalize] enqueueIfMissing failed (non-fatal — upload-queue-reconciler will recover within 60 s)");
+        }
+      })();
 
       const transcodingWarning: string | null = null;
 

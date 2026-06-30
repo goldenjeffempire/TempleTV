@@ -2478,14 +2478,57 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             //
             // s3MirroredAt was stamped after completeMultipartUpload committed the
             // blob, so isPlayableForBroadcast's blob-existence gate passes here.
-            try {
+            //
+            // Retry policy: up to 3 attempts with 5 s delays. Each attempt is
+            // independent; if all fail the upload-queue-reconciler worker picks
+            // the video up within 60 s as the final backstop.
+            {
               const enqReason = fsResult.ok ? "faststart-complete" : "upload-finalize";
-              const enqRes = await enqueueIfMissing({ videoId, reason: enqReason });
-              if (enqRes.enqueued) {
+              const MAX_ENQ_ATTEMPTS = 3;
+              const ENQ_RETRY_DELAY_MS = 5_000;
+              let enqueued = false;
+              let queueItemId: string | undefined;
+              let lastSkipReason: string | undefined;
+
+              for (let attempt = 1; attempt <= MAX_ENQ_ATTEMPTS; attempt++) {
+                try {
+                  const enqRes = await enqueueIfMissing({ videoId, reason: enqReason });
+                  if (enqRes.enqueued) {
+                    enqueued = true;
+                    queueItemId = enqRes.queueItemId;
+                    break;
+                  }
+                  lastSkipReason = enqRes.skipReason;
+                  if (enqRes.skipReason !== "error") break;
+                  if (attempt < MAX_ENQ_ATTEMPTS) {
+                    capturedLog.warn(
+                      { videoId, attempt, skipReason: enqRes.skipReason },
+                      "[finalize:bg] enqueueIfMissing returned error — retrying",
+                    );
+                    await new Promise<void>((resolve) => setTimeout(resolve, ENQ_RETRY_DELAY_MS).unref());
+                  }
+                } catch (enqErr) {
+                  lastSkipReason = "error";
+                  if (attempt < MAX_ENQ_ATTEMPTS) {
+                    capturedLog.warn(
+                      { err: enqErr, videoId, attempt },
+                      "[finalize:bg] enqueueIfMissing threw — retrying",
+                    );
+                    await new Promise<void>((resolve) => setTimeout(resolve, ENQ_RETRY_DELAY_MS).unref());
+                  } else {
+                    capturedLog.warn(
+                      { err: enqErr, videoId },
+                      "[finalize:bg] enqueueIfMissing failed after all retries (non-fatal — upload-queue-reconciler will recover within 60 s)",
+                    );
+                  }
+                }
+              }
+
+              if (enqueued) {
                 capturedLog.info(
                   {
                     videoId,
-                    queueItemId: enqRes.queueItemId,
+                    queueItemId,
                     faststartApplied: fsResult.ok,
                     reason: enqReason,
                   },
@@ -2502,14 +2545,38 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                     );
                 }
                 adminEventBus.push("broadcast-queue-updated", { reason: enqReason, videoId });
+
+                // Post-enqueue verification: confirm the active row is visible
+                // in the DB so we can alert immediately if the insert silently
+                // failed (rather than discovering it during the next broadcast cycle).
+                const verified = await db
+                  .select({ id: schema.broadcastQueueTable.id })
+                  .from(schema.broadcastQueueTable)
+                  .where(
+                    and(
+                      eq(schema.broadcastQueueTable.videoId, videoId),
+                      eq(schema.broadcastQueueTable.isActive, true),
+                    ),
+                  )
+                  .limit(1)
+                  .catch(() => []);
+                if (verified.length === 0) {
+                  capturedLog.warn(
+                    { videoId },
+                    "[finalize:bg] post-enqueue verification FAILED — queue row not found; upload-queue-reconciler will re-enqueue within 60 s",
+                  );
+                } else {
+                  capturedLog.info(
+                    { videoId, queueRowId: verified[0]!.id },
+                    "[finalize:bg] post-enqueue verification OK — queue row confirmed active",
+                  );
+                }
               } else {
                 capturedLog.info(
-                  { videoId, skipReason: enqRes.skipReason },
-                  "[finalize:bg] video already in broadcast queue — skipping enqueue",
+                  { videoId, skipReason: lastSkipReason },
+                  "[finalize:bg] video already in broadcast queue or not yet eligible — skipping enqueue",
                 );
               }
-            } catch (enqErr) {
-              capturedLog.warn({ err: enqErr, videoId }, "[finalize:bg] enqueueIfMissing failed (non-fatal)");
             }
 
             capturedLog.info(
