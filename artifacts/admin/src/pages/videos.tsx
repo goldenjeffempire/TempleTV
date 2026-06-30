@@ -1967,51 +1967,52 @@ export default function VideosPage() {
                         ? "MP4 Ready"
                         : v.transcodingStatus || "—"}
                     </Badge>
-                    {/* Queue sync status badge — local videos only.
-                        Shows the real broadcast queue state confirmed by the
-                        /broadcast-v2/queue-status batch check. Renders as soon
-                        as the status data arrives; falls back to the legacy
-                        "In queue" label while the query is still loading. */}
+                    {/* Queue sync status — local videos only.
+                        Confirmed by the /broadcast-v2/queue-status batch check.
+                        • queued  → green badge (informational)
+                        • missing → amber "Sync to Queue" button (actionable)
+                        • loading → spinner while the query resolves */}
                     {v.videoSource === "local" && (() => {
                       const qs = queueStatus[v.id];
+                      const isPending = forceEnqueueMutation.isPending && forceEnqueueMutation.variables === v.id;
                       if (qs === "queued") {
                         return (
-                          <span
-                            className="text-[9px] text-emerald-600 dark:text-emerald-400 flex items-center gap-0.5"
-                            title="Video is in the broadcast queue and will air during rotation"
+                          <Badge
+                            variant="outline"
+                            className="h-5 px-1.5 text-[10px] border-emerald-400 text-emerald-700 dark:text-emerald-400 flex items-center gap-1 cursor-default select-none"
+                            title="Video is active in the broadcast queue and will air during rotation"
                           >
-                            <ListChecks size={8} className="flex-shrink-0" />
+                            <ListChecks size={10} className="flex-shrink-0" />
                             {v.transcodingStatus === "encoding" || v.transcodingStatus === "processing" || v.transcodingStatus === "queued"
-                              ? "In queue • HLS upgrading"
+                              ? "In queue · upgrading"
                               : "In queue"}
-                          </span>
+                          </Badge>
                         );
                       }
                       if (qs === "missing") {
                         return (
-                          <button
-                            type="button"
-                            className="text-[9px] text-amber-600 dark:text-amber-400 flex items-center gap-0.5 hover:underline disabled:opacity-50"
-                            title="Video is not in the broadcast queue — click to add it now"
-                            disabled={forceEnqueueMutation.isPending && forceEnqueueMutation.variables === v.id}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-5 text-[10px] px-1.5 border-amber-400 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 flex items-center gap-1"
+                            title="This video is not in the broadcast queue — click to add it now"
+                            disabled={isPending}
                             onClick={(e) => { e.stopPropagation(); forceEnqueueMutation.mutate(v.id); }}
                           >
-                            {forceEnqueueMutation.isPending && forceEnqueueMutation.variables === v.id
-                              ? <Loader2 size={8} className="animate-spin flex-shrink-0" />
-                              : <AlertTriangle size={8} className="flex-shrink-0" />}
-                            {forceEnqueueMutation.isPending && forceEnqueueMutation.variables === v.id
-                              ? "Adding…"
-                              : "Not in queue — add"}
-                          </button>
+                            {isPending
+                              ? <Loader2 size={9} className="animate-spin flex-shrink-0" />
+                              : <AlertTriangle size={9} className="flex-shrink-0" />}
+                            {isPending ? "Adding…" : "Sync to Queue"}
+                          </Button>
                         );
                       }
-                      // Status query still loading — fall back to original label for
-                      // broadcast-ready local videos so there's no layout shift.
-                      if (!v.hlsMasterUrl && v.transcodingStatus !== "failed") {
+                      // Status query still loading — show subtle spinner for
+                      // broadcast-ready local videos to avoid layout shift.
+                      if (v.transcodingStatus !== "failed") {
                         return (
-                          <span className="text-[9px] text-emerald-600/50 dark:text-emerald-400/50 flex items-center gap-0.5">
+                          <span className="text-[9px] text-muted-foreground/60 flex items-center gap-0.5">
                             <Loader2 size={8} className="animate-spin" />
-                            Checking queue…
+                            Checking…
                           </span>
                         );
                       }
