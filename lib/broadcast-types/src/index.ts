@@ -61,6 +61,12 @@ export interface LiveStatus {
   title: string | null;
   checkedAt: number;
   detectionMethod?: string;
+  /** True when a YouTube broadcast is scheduled but not yet live. Mutually exclusive with isLive. */
+  isUpcoming?: boolean;
+  /** YouTube video ID of the upcoming (not yet live) broadcast. */
+  upcomingVideoId?: string | null;
+  /** Title of the upcoming broadcast, if available. */
+  upcomingTitle?: string | null;
 }
 
 // ── Broadcast item ────────────────────────────────────────────────────────────

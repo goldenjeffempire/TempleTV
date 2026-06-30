@@ -1279,7 +1279,17 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             ),
           );
         }
-        throw insertErr;
+        // Sanitize raw DB errors so the client receives a structured 503 instead of
+        // a 500 that leaks internal pg error codes, constraint names, or stack traces.
+        // A session INSERT failure is always transient (pool exhaustion, connection
+        // blip) — the client can safely retry with the same sessionId.
+        throw Object.assign(
+          new Error(
+            "Failed to initialize upload session — database temporarily unavailable. " +
+            "The upload queue will retry automatically.",
+          ),
+          { statusCode: 503, cause: insertErr },
+        );
       }
 
       req.log.info(
@@ -1356,12 +1366,25 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "Missing X-Chunk-Checksum header" });
       }
 
-      const session = await db
-        .select()
-        .from(sessions)
-        .where(eq(sessions.sessionId, sessionId))
-        .limit(1)
-        .then((r) => r[0]);
+      // Fetch the upload session. Wrap in try/catch so a DB connection pool
+      // exhaustion or transient connection error returns 503 instead of 500.
+      let session: typeof sessions.$inferSelect | undefined;
+      try {
+        session = await db
+          .select()
+          .from(sessions)
+          .where(eq(sessions.sessionId, sessionId))
+          .limit(1)
+          .then((r) => r[0]);
+      } catch (dbErr) {
+        req.log.warn(
+          { err: dbErr, sessionId, chunkIndex },
+          "[chunk] DB error fetching session — returning 503",
+        );
+        return reply.code(503).send({
+          error: "Database temporarily unavailable — the chunk will be retried automatically.",
+        });
+      }
 
       if (!session) {
         return reply.code(404).send({ error: `Upload session not found: ${sessionId}` });
@@ -1391,13 +1414,25 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         });
       }
 
-      // Idempotency: chunk already received
-      const existingChunk = await db
-        .select({ id: chunks.id, storageBackend: chunks.storageBackend })
-        .from(chunks)
-        .where(and(eq(chunks.sessionId, sessionId), eq(chunks.chunkIndex, chunkIndex)))
-        .limit(1)
-        .then((r) => r[0]);
+      // Idempotency: chunk already received. Wrap in try/catch for the same
+      // reason as the session fetch above — pool exhaustion must return 503.
+      let existingChunk: { id: string; storageBackend: string | null } | undefined;
+      try {
+        existingChunk = await db
+          .select({ id: chunks.id, storageBackend: chunks.storageBackend })
+          .from(chunks)
+          .where(and(eq(chunks.sessionId, sessionId), eq(chunks.chunkIndex, chunkIndex)))
+          .limit(1)
+          .then((r) => r[0]);
+      } catch (dbErr) {
+        req.log.warn(
+          { err: dbErr, sessionId, chunkIndex },
+          "[chunk] DB error checking idempotency — returning 503",
+        );
+        return reply.code(503).send({
+          error: "Database temporarily unavailable — the chunk will be retried automatically.",
+        });
+      }
 
       if (existingChunk) {
         return reply.code(409).send({ ok: true, chunkIndex, storageBackend: existingChunk.storageBackend });
@@ -1721,12 +1756,24 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         );
       }
 
-      let session = await db
-        .select()
-        .from(sessions)
-        .where(eq(sessions.sessionId, sessionId))
-        .limit(1)
-        .then((r) => r[0]);
+      // Wrap session SELECT in try/catch so a DB pool exhaustion or transient
+      // connection error returns 503 instead of an unhandled 500. The upload
+      // queue will automatically retry finalization.
+      let session: typeof sessions.$inferSelect | undefined;
+      try {
+        session = await db
+          .select()
+          .from(sessions)
+          .where(eq(sessions.sessionId, sessionId))
+          .limit(1)
+          .then((r) => r[0]);
+      } catch (dbErr) {
+        req.log.warn({ err: dbErr, sessionId }, "[finalize] DB error fetching session — returning 503");
+        throw Object.assign(
+          new Error("Database temporarily unavailable — please retry finalization in a moment."),
+          { statusCode: 503, cause: dbErr },
+        );
+      }
 
       if (!session) {
         throw Object.assign(
@@ -1808,11 +1855,23 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       // If zero rows come back the session was already claimed (status='assembling')
       // or completed by the concurrent request; we re-read the live state and either
       // return the idempotent result or tell the client to poll finalize-status.
-      const lockResult = await db
-        .update(sessions)
-        .set({ status: "assembling", updatedAt: new Date() })
-        .where(and(eq(sessions.sessionId, sessionId), eq(sessions.status, "uploading")))
-        .returning({ sessionId: sessions.sessionId });
+      // Wrap the CAS lock UPDATE in try/catch so a DB pool exhaustion returns
+      // 503 instead of an unhandled 500. On failure the session stays 'uploading'
+      // — the client can retry finalize immediately.
+      let lockResult: Array<{ sessionId: string }>;
+      try {
+        lockResult = await db
+          .update(sessions)
+          .set({ status: "assembling", updatedAt: new Date() })
+          .where(and(eq(sessions.sessionId, sessionId), eq(sessions.status, "uploading")))
+          .returning({ sessionId: sessions.sessionId });
+      } catch (dbErr) {
+        req.log.warn({ err: dbErr, sessionId }, "[finalize] DB error acquiring assembly lock — returning 503");
+        throw Object.assign(
+          new Error("Database temporarily unavailable — please retry finalization in a moment."),
+          { statusCode: 503, cause: dbErr },
+        );
+      }
 
       if (lockResult.length === 0) {
         // Failed to acquire lock — re-read the actual current state.
@@ -1921,21 +1980,43 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       };
 
       // Load all received chunks, ordered by index (ETag metadata only).
-      const allChunks = await db
-        .select({
-          id: chunks.id,
-          sessionId: chunks.sessionId,
-          chunkIndex: chunks.chunkIndex,
-          checksum: chunks.checksum,
-          sizeBytes: chunks.sizeBytes,
-          byteOffset: chunks.byteOffset,
-          s3Etag: chunks.s3Etag,
-          storageBackend: chunks.storageBackend,
-          receivedAt: chunks.receivedAt,
-        })
-        .from(chunks)
-        .where(eq(chunks.sessionId, sessionId))
-        .orderBy(asc(chunks.chunkIndex));
+      // Wrap in try/catch — a DB error here must reset the lock and return 503
+      // (not 500) so the client can retry finalization.
+      let allChunks: Array<{
+        id: string;
+        sessionId: string;
+        chunkIndex: number;
+        checksum: string;
+        sizeBytes: number;
+        byteOffset: number | null;
+        s3Etag: string | null;
+        storageBackend: string | null;
+        receivedAt: Date | null;
+      }>;
+      try {
+        allChunks = await db
+          .select({
+            id: chunks.id,
+            sessionId: chunks.sessionId,
+            chunkIndex: chunks.chunkIndex,
+            checksum: chunks.checksum,
+            sizeBytes: chunks.sizeBytes,
+            byteOffset: chunks.byteOffset,
+            s3Etag: chunks.s3Etag,
+            storageBackend: chunks.storageBackend,
+            receivedAt: chunks.receivedAt,
+          })
+          .from(chunks)
+          .where(eq(chunks.sessionId, sessionId))
+          .orderBy(asc(chunks.chunkIndex));
+      } catch (dbErr) {
+        await resetLock();
+        req.log.warn({ err: dbErr, sessionId }, "[finalize] DB error loading chunks — lock released, returning 503");
+        throw Object.assign(
+          new Error("Database temporarily unavailable loading chunk list — please retry finalization."),
+          { statusCode: 503, cause: dbErr },
+        );
+      }
 
       // Fast-path: if the client already disconnected while we were acquiring
       // the assembly lock, release it immediately rather than running 5 heavy
@@ -2199,9 +2280,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           req.log.error({ err: insertErr, sessionId, videoId }, "[finalize] video INSERT failed — lock released");
           throw Object.assign(
             new Error(
-              "Failed to create video record. The upload is safe — please retry finalization.",
+              "Failed to create video record — database temporarily unavailable. " +
+              "The upload is safe; please retry finalization.",
             ),
-            { statusCode: 500, cause: insertErr },
+            { statusCode: 503, cause: insertErr },
           );
         }
 

@@ -49,6 +49,10 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
   const enableAmbientBlur = !isFireTV && !isAndroidTV;
 
   const isLive = liveStatus?.isLive ?? false;
+  // True when a YouTube broadcast is scheduled but not yet streaming.
+  // Mutually exclusive with isLive (ytPoller guarantees this).
+  const isUpcoming = !isLive && !!(liveStatus?.isUpcoming);
+  const upcomingTitle = liveStatus?.upcomingTitle ?? null;
   const ytVideoId = liveStatus?.videoId;
   // One-shot banner: flashes for ~5 s when the live YouTube embed for this
   // device just dropped, so viewers understand why the cinematic preview
@@ -63,8 +67,10 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
   // hero copy so viewers know what's coming. The unified live SSE flips
   // `isLive` true the moment the stream goes hot, at which point this
   // branch evaluates false and the live "Now" copy takes over instantly.
+  // Suppressed when isUpcoming is already true (YouTube signal is
+  // more specific; both amber states would render identically).
   const showScheduledLive =
-    !isLive && broadcastCurrent?.activeSchedule?.contentType === "live";
+    !isLive && !isUpcoming && broadcastCurrent?.activeSchedule?.contentType === "live";
   // Real-time countdown to the scheduled start, server-time-aligned so a
   // misconfigured TV clock doesn't show a wrong number. Hidden when the
   // schedule is missing a startTime, in the past, or >24h away.
@@ -518,7 +524,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
               <div
                 className="flex items-center gap-2 rounded-full"
                 style={{
-                  background: showScheduledLive
+                  background: isUpcoming || showScheduledLive
                     ? "rgba(255,138,0,0.18)"
                     : broadcastCurrent?.item
                     ? "rgba(106,13,173,0.85)"
@@ -526,32 +532,32 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
                   width: "fit-content",
                   padding: "6px 16px",
                   backdropFilter: "blur(6px)",
-                  border: showScheduledLive
+                  border: isUpcoming || showScheduledLive
                     ? "1px solid rgba(255,138,0,0.45)"
                     : broadcastCurrent?.item
                     ? "1px solid rgba(168,85,247,0.4)"
                     : "1px solid rgba(255,255,255,0.12)",
                   boxShadow:
-                    broadcastCurrent?.item && !showScheduledLive
+                    broadcastCurrent?.item && !showScheduledLive && !isUpcoming
                       ? "0 6px 24px rgba(106,13,173,0.45)"
                       : undefined,
                 }}
               >
                 <div
                   className={
-                    broadcastCurrent?.item || showScheduledLive
+                    broadcastCurrent?.item || showScheduledLive || isUpcoming
                       ? "live-pulse rounded-full"
                       : "rounded-full"
                   }
                   style={{
                     width: 8,
                     height: 8,
-                    background: showScheduledLive
+                    background: isUpcoming || showScheduledLive
                       ? "#FF8A00"
                       : broadcastCurrent?.item
                       ? "#a855f7"
                       : "rgba(255,255,255,0.5)",
-                    boxShadow: showScheduledLive
+                    boxShadow: isUpcoming || showScheduledLive
                       ? "0 0 10px rgba(255,138,0,0.7)"
                       : undefined,
                     animation: countdown?.imminent
@@ -563,11 +569,13 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
                   style={{
                     fontSize: 12,
                     fontWeight: 800,
-                    color: showScheduledLive ? "#FFD79A" : "#fff",
+                    color: isUpcoming || showScheduledLive ? "#FFD79A" : "#fff",
                     letterSpacing: "0.14em",
                   }}
                 >
-                  {showScheduledLive
+                  {isUpcoming
+                    ? "UPCOMING BROADCAST"
+                    : showScheduledLive
                     ? countdown
                       ? countdown.label.toUpperCase()
                       : "STARTING SOON"
@@ -576,7 +584,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
                     : "OFF AIR · 24/7 ON DEMAND"}
                 </span>
               </div>
-              {(broadcastCurrent?.item || showScheduledLive) && (
+              {(broadcastCurrent?.item || showScheduledLive || isUpcoming) && (
                 <ViewerCountBadge count={viewerCount ?? null} />
               )}
             </div>
@@ -595,7 +603,11 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
                   margin: 0,
                 }}
               >
-                {showScheduledLive
+                {isUpcoming
+                  ? upcomingTitle
+                    ? `Coming up: ${upcomingTitle}`
+                    : "A live broadcast is starting soon — watch for the stream to begin."
+                  : showScheduledLive
                   ? "Scheduled live service — tap to join when ready."
                   : "Spirit-filled teachings and worship — broadcasting live around the clock."}
               </p>
@@ -611,8 +623,8 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
                 className="flex items-center rounded-xl"
                 style={{
                   background: focused
-                    ? showScheduledLive ? "rgba(255,138,0,0.95)" : "hsl(270 75% 50%)"
-                    : showScheduledLive ? "rgba(255,138,0,0.75)" : "rgba(106,13,173,0.9)",
+                    ? isUpcoming || showScheduledLive ? "rgba(255,138,0,0.95)" : "hsl(270 75% 50%)"
+                    : isUpcoming || showScheduledLive ? "rgba(255,138,0,0.75)" : "rgba(106,13,173,0.9)",
                   color: "#fff",
                   padding: "clamp(12px, 1.8vw, 16px) clamp(20px, 3.2vw, 32px)",
                   gap: "clamp(6px, 1vw, 10px)",
@@ -625,7 +637,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
                   transition: "all 0.18s ease",
                   minHeight: 44,
                   border: `1px solid ${
-                    showScheduledLive
+                    isUpcoming || showScheduledLive
                       ? "rgba(255,138,0,0.5)"
                       : "rgba(168,85,247,0.35)"
                   }`,
@@ -645,7 +657,7 @@ export function LiveHero({ liveStatus, broadcastCurrent, focused, onSelect, view
                     letterSpacing: "-0.01em",
                   }}
                 >
-                  {showScheduledLive ? "Tune In" : "Browse Archive"}
+                  {showScheduledLive ? "Tune In" : isUpcoming ? "Browse Archive" : "Browse Archive"}
                 </span>
               </div>
             )}

@@ -1,6 +1,6 @@
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ZodError } from "zod";
-import { AppError, BadGatewayError, GatewayTimeoutError, InternalError } from "../shared/errors.js";
+import { AppError, BadGatewayError, GatewayTimeoutError, InternalError, ServiceUnavailableError } from "../shared/errors.js";
 import { captureException } from "../infrastructure/sentry.js";
 
 interface ProblemDetails {
@@ -49,13 +49,31 @@ function classifyRawError(err: unknown): AppError | null {
   ) {
     return new BadGatewayError("Upstream service is unreachable");
   }
-  // PostgreSQL connection errors surfaced by the `pg` driver
+  // PostgreSQL connection errors surfaced by the `pg` driver.
+  // These are transient infrastructure events — classifying them as 503
+  // (not 500) keeps monitoring dashboards clean and tells clients to retry.
   if (code === "ECONNRESET" || code === "CONNECTION_RESET") {
-    return new InternalError("Database connection reset — retry momentarily");
+    return new ServiceUnavailableError("Database connection reset — retry momentarily");
   }
-  // Postgres driver terminates with "Connection terminated unexpectedly"
+  // pg driver "Connection terminated unexpectedly" or "due to connection timeout"
   if (e?.message?.includes("Connection terminated")) {
-    return new InternalError("Database connection lost — retry momentarily");
+    return new ServiceUnavailableError("Database connection lost — retry momentarily");
+  }
+  // pg-pool exhaustion: "timeout exceeded" or "acquire Client timeout"
+  if (
+    e?.message?.includes("timeout exceeded") ||
+    e?.message?.includes("acquire Client timeout") ||
+    e?.message?.includes("PoolError")
+  ) {
+    return new ServiceUnavailableError("Database connection pool exhausted — retry momentarily");
+  }
+  // PostgreSQL server-side: "sorry, too many clients already"
+  if (e?.message?.includes("too many clients")) {
+    return new ServiceUnavailableError("Database is at connection limit — retry momentarily");
+  }
+  // pg driver closes idle client: "Client was closed and is not queryable"
+  if (e?.message?.includes("not queryable") || e?.message?.includes("Client was closed")) {
+    return new ServiceUnavailableError("Database client unavailable — retry momentarily");
   }
 
   return null;

@@ -54,6 +54,12 @@ export interface LiveStatusApiResponse {
   videoId: string | null;
   title:   string | null;
   checkedAt?: number;
+  /** True when a YouTube broadcast is scheduled but not yet live. Mutually exclusive with isLive. */
+  isUpcoming?: boolean;
+  /** YouTube video ID of the upcoming (not yet live) broadcast. */
+  upcomingVideoId?: string | null;
+  /** Title of the upcoming broadcast, if available. */
+  upcomingTitle?: string | null;
 }
 
 export interface LiveControllerCallbacks {
