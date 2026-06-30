@@ -415,6 +415,17 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const body = await res.json().catch(() => ({})) as Record<string, unknown>;
     const errMsg = (body.detail as string) ?? (body.message as string) ?? (body.error as string) ?? res.statusText;
 
+    // A genuine application error returns a Fastify ProblemDetails JSON body
+    // carrying at least one of these fields. An infrastructure 5xx (the Vite
+    // dev proxy or a production reverse proxy returning HTML/empty when the
+    // upstream API is momentarily restarting) parses to {} above, so it has
+    // none of them. Downstream toast logic uses this to avoid flashing a hard
+    // "Server error" for what is really a transient restart blip.
+    const structured =
+      typeof body === "object" &&
+      body !== null &&
+      ("detail" in body || "message" in body || "error" in body || "code" in body);
+
     // Parse Retry-After for 429 responses so callers (query retryDelay) can
     // honour the server's requested back-off instead of using a fixed delay.
     // Supports both delta-seconds ("120") and HTTP-date formats.
@@ -435,7 +446,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
 
     if (res.status >= 500 || res.status === 408 || res.status === 429) {
-      apiErrorBus.emit({ path, status: res.status, message: errMsg, ts: Date.now() });
+      apiErrorBus.emit({ path, status: res.status, message: errMsg, ts: Date.now(), structured });
     }
     throw new HttpError(res.status, errMsg, body.code as string | undefined, retryAfterMs);
   }
