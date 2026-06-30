@@ -2,6 +2,8 @@ import { env } from "../../config/env.js";
 import { logger } from "../../infrastructure/logger.js";
 import { syncYouTubeChannel, setNextSyncAt, restoreQuota, isSyncInProgress } from "./youtube-sync.service.js";
 import { ConflictError } from "../../shared/errors.js";
+import { workerSupervisor } from "../broadcast-v2/engine/worker-supervisor.js";
+import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 
 /**
  * Background YouTube channel sync dispatcher.
@@ -19,61 +21,32 @@ import { ConflictError } from "../../shared/errors.js";
  * new videos appear within seconds of the YouTube notification.
  */
 class YouTubeSyncDispatcher {
-  private timer: NodeJS.Timeout | null = null;
-  private stopped = false;
-
   get intervalMs(): number {
     return env.YOUTUBE_SYNC_INTERVAL_MINS * 60_000;
   }
 
-  start(): void {
-    if (this.timer) return;
-    this.stopped = false;
-
-    const apiKey = env.YOUTUBE_API_KEY;
-    const source = apiKey ? "YouTube Data API v3" : "RSS feed (no YOUTUBE_API_KEY set)";
-    logger.info({ intervalMins: this.intervalMs / 60_000, source }, "youtube-sync dispatcher started");
-
-    restoreQuota().catch((err) => {
-      logger.warn({ err }, "youtube-sync: quota restore on startup failed (non-fatal)");
-    });
-
-    // Kick off first sync 30 s after boot so the server is fully ready.
-    this.scheduleNext(30_000);
-  }
-
-  stop(): void {
-    this.stopped = true;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
-  }
-
-  private scheduleNext(delayMs: number): void {
-    if (this.stopped) return;
-    const nextAt = new Date(Date.now() + delayMs);
-    setNextSyncAt(nextAt);
-    this.timer = setTimeout(() => void this.runOnce(), delayMs);
-    this.timer.unref?.();
-  }
-
-  private async runOnce(): Promise<void> {
-    if (this.stopped) return;
-    // Use the service-level semaphore rather than a local `running` flag so the
-    // manual-trigger path (`triggerNow`) and this scheduled path share the same
-    // guard and can never run concurrently.
+  /**
+   * Single sync pass — called by the supervisor on each interval tick.
+   *
+   * Uses the service-level semaphore (`isSyncInProgress`) so the scheduled
+   * path and the manual `triggerNow` path share the same concurrency guard
+   * and can never run simultaneously. Errors are re-thrown so the supervisor
+   * can count consecutive failures for circuit-breaking; the warn log here
+   * provides structured context before the supervisor adds its own entry.
+   */
+  async runOnce(): Promise<void> {
     if (isSyncInProgress()) {
       logger.warn("youtube-sync dispatcher: sync already in progress, skipping scheduled run");
-      this.scheduleNext(this.intervalMs);
       return;
     }
     try {
       await syncYouTubeChannel("scheduler");
     } catch (err) {
       logger.warn({ err }, "youtube-sync dispatcher: sync failed (will retry next interval)");
+      throw err;
     } finally {
-      this.scheduleNext(this.intervalMs);
+      // Keep the admin UI "Next sync at" indicator accurate regardless of outcome.
+      setNextSyncAt(new Date(Date.now() + this.intervalMs));
     }
   }
 
@@ -96,3 +69,49 @@ class YouTubeSyncDispatcher {
 }
 
 export const youtubeSyncDispatcher = new YouTubeSyncDispatcher();
+
+/**
+ * Register the YouTube sync dispatcher with WorkerSupervisor.
+ *
+ * Called from startSupervisedWorkers() in broadcast-v2/index.ts when
+ * YOUTUBE_SYNC_DISABLE is not set. The supervisor provides circuit breaking
+ * (5 consecutive failures → 10-min open), deadman timeouts, and health
+ * metrics — replacing the old manual setTimeout approach.
+ */
+export function startYoutubeSyncDispatcher(): void {
+  const intervalMs = env.YOUTUBE_SYNC_INTERVAL_MINS * 60_000;
+  const source = env.YOUTUBE_API_KEY ? "YouTube Data API v3" : "RSS feed (no YOUTUBE_API_KEY set)";
+
+  // Restore quota tracking state from DB so the daily-quota guard survives
+  // process restarts — without this, a freshly-booted server would burn quota
+  // on API calls even if the quota was already exhausted before the restart.
+  restoreQuota().catch((err) => {
+    logger.warn({ err }, "youtube-sync: quota restore on startup failed (non-fatal)");
+  });
+
+  workerSupervisor.spawn({
+    name: "youtube-sync-dispatcher",
+    fn: () => youtubeSyncDispatcher.runOnce(),
+    intervalMs,
+    initialDelayMs: 30_000,
+    backoffMs: [30_000, 60_000, 5 * 60_000],
+    onCircuitOpen: (name, consecutiveFailures) => {
+      try {
+        adminEventBus.push("ops-alert", {
+          level: "warn",
+          title: "YouTube Sync Suspended",
+          message: `YouTube sync dispatcher circuit opened after ${consecutiveFailures} consecutive failures — automatic channel sync is paused. Auto-reset in 10 min.`,
+          detail: "Check Diagnostics → Workers for recent error details.",
+          timestamp: new Date().toISOString(),
+          source: "youtube-sync-dispatcher",
+          workerName: name,
+        });
+      } catch { /* non-fatal */ }
+    },
+  });
+
+  logger.info(
+    { intervalMins: intervalMs / 60_000, source },
+    "youtube-sync dispatcher registered with supervisor",
+  );
+}

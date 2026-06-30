@@ -491,13 +491,14 @@ class MediaIntegrityScannerImpl {
     );
 
     // Persist failure counts to DB after every scan so they survive process
-    // restarts. Fire-and-forget — a failed write is logged but does not affect
-    // scan results or the next scan cycle.
+    // restarts. Awaited so lost counts surface as a structured warn instead of
+    // silently dropping — items that were approaching the auto-suspension
+    // threshold won't reset to zero on the next restart.
     const countsSnapshot = Object.fromEntries(this.failureCounts.entries());
-    void runtimeRepo
+    await runtimeRepo
       .saveFailureCounts(CHANNEL_ID, countsSnapshot)
       .catch((err) => {
-        logger.warn({ err }, "[media-scanner] failed to persist failure counts (non-fatal)");
+        logger.warn({ err }, "[media-scanner] failed to persist failure counts — will retry next scan");
       });
 
     this.scanning = false;

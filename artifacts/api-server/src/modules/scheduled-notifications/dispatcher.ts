@@ -3,6 +3,8 @@ import { db, schema, withDbRetry } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
 import { notificationsService } from "../notifications/notifications.service.js";
+import { workerSupervisor } from "../broadcast-v2/engine/worker-supervisor.js";
+import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 
 /**
  * F43: emit an ops-alert SSE event via the broadcast engine so the admin
@@ -54,10 +56,7 @@ const scheduled = schema.scheduledNotificationsTable;
  * exactly one instance (or use the out-of-process push-worker).
  */
 class ScheduledNotificationDispatcher {
-  private timer: NodeJS.Timeout | null = null;
-  private stuckInterval: NodeJS.Timeout | null = null;
   private running = false;
-  private stopped = false;
 
   /**
    * Reset rows that were claimed into `sending` status but never completed
@@ -66,7 +65,7 @@ class ScheduledNotificationDispatcher {
    * idempotency key on the audit row (`scheduled:{id}`) ensures the actual
    * push is a no-op even if sendPush is called a second time.
    */
-  private async resetStuckSending(): Promise<void> {
+  async resetStuckSending(): Promise<void> {
     const cutoff = new Date(Date.now() - 5 * 60_000);
     try {
       const result = await db
@@ -90,51 +89,6 @@ class ScheduledNotificationDispatcher {
       // until manual intervention but won't block normal dispatch.
       logger.warn({ err }, "scheduled-notification dispatcher: resetStuckSending failed (non-fatal)");
     }
-  }
-
-  start(): void {
-    if (this.timer) return;
-    this.stopped = false;
-    // Run stuck-sending recovery once at startup before the first tick.
-    void this.resetStuckSending();
-    // Also run it periodically so rows that get stuck during a long-lived
-    // process (e.g., an unhandled rejection that bypassed the finally block)
-    // are reclaimed without waiting for a process restart.
-    this.stuckInterval = setInterval(() => {
-      void this.resetStuckSending();
-    }, 10 * 60_000); // every 10 minutes
-    this.stuckInterval.unref?.();
-
-    const tick = () => {
-      if (this.stopped) return;
-      void this.runOnce().finally(() => {
-        if (this.stopped) return;
-        this.timer = setTimeout(tick, env.SCHEDULED_NOTIF_POLL_MS);
-        this.timer.unref?.();
-      });
-    };
-    // First tick fires after one interval, not immediately on boot —
-    // gives the rest of the process (DB pool, broadcast engine, etc.)
-    // a chance to warm up before we start hitting the DB.
-    this.timer = setTimeout(tick, env.SCHEDULED_NOTIF_POLL_MS);
-    this.timer.unref?.();
-    logger.info(
-      { pollMs: env.SCHEDULED_NOTIF_POLL_MS },
-      "scheduled-notification dispatcher started",
-    );
-  }
-
-  stop(): void {
-    this.stopped = true;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
-    if (this.stuckInterval) {
-      clearInterval(this.stuckInterval);
-      this.stuckInterval = null;
-    }
-    logger.info("scheduled-notification dispatcher stopped");
   }
 
   /**
@@ -244,3 +198,59 @@ class ScheduledNotificationDispatcher {
 }
 
 export const scheduledNotificationDispatcher = new ScheduledNotificationDispatcher();
+
+/**
+ * Register the notification dispatcher with WorkerSupervisor.
+ *
+ * Called from startSupervisedWorkers() in broadcast-v2/index.ts. The
+ * supervisor provides circuit breaking (5 consecutive failures → 10-min
+ * open), deadman timeouts, and health metrics — replacing the old manual
+ * setInterval/setTimeout approach.
+ *
+ * Two workers are spawned:
+ *  1. "notification-dispatcher"        — the main polling loop (runOnce)
+ *  2. "notification-stuck-sending"     — periodic reset of stuck 'sending' rows
+ */
+export function startNotificationDispatcher(): void {
+  // Run stuck-sending recovery immediately on boot before the first poll tick.
+  void scheduledNotificationDispatcher.resetStuckSending();
+
+  // Periodic stuck-sending reset: reclaims rows that entered 'sending' status
+  // but never completed (process crash, SIGKILL, etc.). Separate worker so
+  // transient poll failures don't delay this safety-net.
+  workerSupervisor.spawn({
+    name: "notification-stuck-sending",
+    fn: () => scheduledNotificationDispatcher.resetStuckSending(),
+    intervalMs: 10 * 60_000,
+    initialDelayMs: 10 * 60_000,
+    backoffMs: [30_000, 60_000, 5 * 60_000],
+  });
+
+  // Main poll loop — supervisor provides concurrency guard (fn awaited before
+  // next tick), circuit breaking, and deadman timeout.
+  workerSupervisor.spawn({
+    name: "notification-dispatcher",
+    fn: () => scheduledNotificationDispatcher.runOnce().then(() => undefined),
+    intervalMs: env.SCHEDULED_NOTIF_POLL_MS,
+    initialDelayMs: env.SCHEDULED_NOTIF_POLL_MS,
+    backoffMs: [5_000, 15_000, 30_000, 60_000],
+    onCircuitOpen: (name, consecutiveFailures) => {
+      try {
+        adminEventBus.push("ops-alert", {
+          level: "critical",
+          title: "Notification Dispatcher Suspended",
+          message: `Notification dispatcher circuit opened after ${consecutiveFailures} consecutive failures — scheduled notifications are paused. Auto-reset in 10 min.`,
+          detail: "Check Diagnostics → Workers for recent error details.",
+          timestamp: new Date().toISOString(),
+          source: "notification-dispatcher",
+          workerName: name,
+        });
+      } catch { /* non-fatal */ }
+    },
+  });
+
+  logger.info(
+    { pollMs: env.SCHEDULED_NOTIF_POLL_MS },
+    "notification-dispatcher registered with supervisor",
+  );
+}

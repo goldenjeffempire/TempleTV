@@ -10,9 +10,7 @@ import { overrideBus } from "./modules/live-overrides/override-bus.js";
 import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, ensureMidnightPrayersTable, ensureMemoryHourlySnapshotsTable, deactivateUnresolvableQueueRows, resetStuckProcessingVideos, resetStuckEncodingVideos, ensureUserSchemaColumns, scheduleStaleDataCleanup, recoverStaleSyncLogs } from "./infrastructure/db.js";
 import { closeRedis } from "./infrastructure/redis.js";
 import { sseCounter } from "./infrastructure/sse-counter.js";
-import { scheduledNotificationDispatcher } from "./modules/scheduled-notifications/dispatcher.js";
 import { transcoderDispatcher } from "./modules/transcoder/transcoder.dispatcher.js";
-import { youtubeSyncDispatcher } from "./modules/youtube-sync/youtube-sync.dispatcher.js";
 import { cleanupWorker } from "./modules/transcoder/cleanup.service.js";
 import { pruneAllExpiredRefreshTokens } from "./modules/auth/auth.service.js";
 import { recoverStuckPendingNotifications } from "./modules/notifications/notifications.service.js";
@@ -192,7 +190,6 @@ async function seedPrimaryChannelIfAbsent(): Promise<void> {
 }
 
 async function startWorkers() {
-  scheduledNotificationDispatcher.start();
   if (env.TRANSCODER_DISABLE) {
     logger.info(
       "transcoder dispatcher disabled by TRANSCODER_DISABLE — skipping ffmpeg check and job polling",
@@ -201,11 +198,6 @@ async function startWorkers() {
     transcoderDispatcher.start();
   }
   cleanupWorker.start();
-  if (!env.YOUTUBE_SYNC_DISABLE) {
-    youtubeSyncDispatcher.start();
-  } else {
-    logger.info("youtube-sync dispatcher disabled by YOUTUBE_SYNC_DISABLE");
-  }
   // Refresh-token pruner: sweeps ALL users' expired/revoked tokens from the
   // refresh_tokens table every 5 minutes. Moved from the per-login hot path
   // (where it fired a DB DELETE on every login/refresh call) to a dedicated
@@ -317,10 +309,8 @@ async function startWorkers() {
 }
 
 async function stopWorkers() {
-  scheduledNotificationDispatcher.stop();
   transcoderDispatcher.stop();
   cleanupWorker.stop();
-  youtubeSyncDispatcher.stop();
   try {
     const { storageHealthMonitor } = await import("./infrastructure/storage-health-monitor.js");
     storageHealthMonitor.stop();
