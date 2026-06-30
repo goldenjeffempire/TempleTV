@@ -26,7 +26,7 @@ const _429 = z.object({ error: z.string() });
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const EAS_GRAPHQL_URL = "https://api.expo.dev/graphql";
-const EXPO_APP_ID     = "61120cd7-966a-4e50-a4c1-2d9f8674bcea";
+const EXPO_APP_ID     = "ca2c7c50-8f15-4832-9a89-99a4f43e421e";
 const GITHUB_API_BASE = "https://api.github.com";
 const OTA_WORKFLOW    = "ota-update.yml";
 
