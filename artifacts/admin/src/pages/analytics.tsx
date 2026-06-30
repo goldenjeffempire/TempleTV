@@ -145,53 +145,28 @@ function fmtBucketTs(ts: string, gran: "hour" | "4h" | "day"): string {
 
 // ── Live viewer count — polls /broadcast/viewers every 30 s ─────────────────
 function useLiveViewerCount() {
-  const [count, setCount] = useState<number | null>(null);
-  const [prev, setPrev] = useState<number | null>(null);
-  const [error, setError] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Guards against overlapping async polls: if the previous request hasn't
-  // resolved yet by the time the next interval fires, skip that tick rather
-  // than issuing a second concurrent request to the same endpoint.
-  const inFlightRef = useRef(false);
+  const prevRef = useRef<number | null>(null);
+  const [trend, setTrend] = useState<"up" | "down" | "flat">("flat");
+
+  const { data, isError } = useQuery({
+    queryKey: ["live-viewers"],
+    queryFn: () => api.get<{ channelId: string; count: number }>("/broadcast/viewers"),
+    refetchInterval: 30_000,
+    staleTime: 25_000,
+  });
+
+  const count = data?.count ?? null;
 
   useEffect(() => {
-    let mounted = true;
-    // AbortController cancels the in-flight fetch when this hook unmounts.
-    // Without it, an un-cancelled request from a previous mount would set
-    // state on an unmounted component after navigating away from analytics.
-    const ac = new AbortController();
-    async function poll() {
-      if (inFlightRef.current) return;
-      inFlightRef.current = true;
-      try {
-        const res = await api.get<{ channelId: string; count: number }>("/broadcast/viewers", { signal: ac.signal });
-        if (!mounted) return;
-        setError(false);
-        setCount((c) => { setPrev(c); return res.count; });
-      } catch (err) {
-        // Ignore abort errors — they are expected on unmount.
-        if (err instanceof Error && err.name === "AbortError") return;
-        // Non-fatal — viewer count is best-effort. Surface the error state
-        // so the card shows a visual indicator rather than a stale number.
-        if (mounted) setError(true);
-      } finally {
-        inFlightRef.current = false;
-      }
+    if (count === null) return;
+    const prev = prevRef.current;
+    if (prev !== null) {
+      setTrend(count > prev ? "up" : count < prev ? "down" : "flat");
     }
-    void poll();
-    intervalRef.current = setInterval(() => void poll(), 30_000);
-    return () => {
-      mounted = false;
-      ac.abort();
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, []);
+    prevRef.current = count;
+  }, [count]);
 
-  const trend: "up" | "down" | "flat" =
-    prev === null || count === null || count === prev ? "flat"
-    : count > prev ? "up" : "down";
-
-  return { count, trend, error };
+  return { count, trend, error: isError };
 }
 
 interface RetentionBucket {

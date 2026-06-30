@@ -1109,7 +1109,7 @@ function VideoCard({ video: initialVideo }: { video: VideoRow }) {
             <Button
               className="bg-red-600 hover:bg-red-700 text-white"
               disabled={deleteMutation.isPending}
-              onClick={() => { if (!deleteMutation.isPending) deleteMutation.mutate(); }}
+              onClick={() => deleteMutation.mutate()}
             >
               {deleteMutation.isPending ? "Deleting…" : "Delete"}
             </Button>

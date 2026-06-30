@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 
 interface Props {
   children: ReactNode;
+  fallback?: ReactNode;
 }
 
 interface State {
@@ -33,6 +34,10 @@ export class ErrorBoundary extends Component<Props, State> {
 
   render() {
     if (this.state.error) {
+      if (this.props.fallback !== undefined) {
+        return this.props.fallback;
+      }
+
       const sentryConfigured = !!import.meta.env.VITE_SENTRY_DSN;
 
       return (

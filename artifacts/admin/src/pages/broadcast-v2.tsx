@@ -6324,13 +6324,14 @@ function BroadcastV2PageInner() {
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
+            disabled={playNowMutation.isPending}
             onClick={() => {
               setShowPlayNowConfirm(false);
               if (pendingPlayNowId) playNowMutation.mutate(pendingPlayNowId);
               setPendingPlayNowId(null);
             }}
           >
-            Play now
+            {playNowMutation.isPending ? "Starting…" : "Play now"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -7056,6 +7057,7 @@ function StreamHealthHistoryChart({ history }: { history: HealthSampleRow[] }) {
             </span>
           </div>
 
+          <ErrorBoundary fallback={<div className="flex items-center justify-center h-[180px] text-xs text-muted-foreground">Chart unavailable</div>}>
           <ResponsiveContainer width="100%" height={180}>
             <ComposedChart
               data={history}
@@ -7124,6 +7126,7 @@ function StreamHealthHistoryChart({ history }: { history: HealthSampleRow[] }) {
               />
             </ComposedChart>
           </ResponsiveContainer>
+          </ErrorBoundary>
 
           {/* Consecutive skips mini-strip */}
           {history.some((s) => s.consecutiveSkips > 0) && (

@@ -5,6 +5,7 @@ import { api, HttpError } from "@/lib/api";
 import { useSSEEvent } from "@/contexts/sse-context";
 import { PageHeader } from "@/components/shared/page-header";
 import { ErrorAlert } from "@/components/shared/error-alert";
+import { ErrorBoundary } from "@/components/shared/error-boundary";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -2380,7 +2381,11 @@ export default function VideosPage() {
               Admin preview — does not affect broadcast health or viewer sessions.
             </DialogDescription>
           </DialogHeader>
-          {previewVideo && <VideoPreviewPlayer video={previewVideo} />}
+          {previewVideo && (
+            <ErrorBoundary fallback={<div className="p-6 text-center text-xs text-muted-foreground">Preview unavailable</div>}>
+              <VideoPreviewPlayer video={previewVideo} />
+            </ErrorBoundary>
+          )}
         </DialogContent>
       </Dialog>
 

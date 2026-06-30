@@ -90,8 +90,8 @@ export default function Dashboard() {
   const { data: readyz } = useQuery({
     queryKey: ["readyz"],
     queryFn: () => api.get<ReadyzResponse>("/readyz"),
-    refetchInterval: 60_000,
-    staleTime: 30_000,
+    refetchInterval: 15_000,
+    staleTime: 7_500,
   });
 
   const { data: transcodingQueue, isLoading: transcodingLoading, isError: transcodingError } = useQuery({
