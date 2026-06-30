@@ -33,6 +33,7 @@ import {
   ArrowUpDown, SlidersHorizontal, Zap, Clapperboard, Globe, AlertTriangle,
   Wrench, CheckCircle2, Play, Loader2, Info, ClipboardList, TriangleAlert,
   CircleCheck, CircleX, RefreshCcw, Inbox, CalendarClock, BookOpen, Plus, Wand2,
+  ListChecks,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { LiveStatusBadge } from "@/components/live-status-badge";
@@ -553,6 +554,26 @@ export default function VideosPage() {
     refetchInterval: (query) => query.state.status === "error" ? 15_000 : false,
   });
 
+  // ── Queue status for local videos on this page ──────────────────────────
+  // Fires a lightweight batch check after the main video list loads so each
+  // local video row can display "Queued ✓" or "Not in Queue ⚠" without
+  // requiring a full library scan. Only runs when there are local videos to check.
+  const localVideoIds = data?.videos
+    .filter((v) => v.videoSource === "local")
+    .map((v) => v.id) ?? [];
+
+  const { data: queueStatusData } = useQuery({
+    queryKey: ["broadcast-v2-queue-status", localVideoIds.slice().sort().join(",")],
+    queryFn: () =>
+      api.get<{ status: Record<string, "queued" | "missing"> }>(
+        `/broadcast-v2/queue-status?videoIds=${localVideoIds.join(",")}`,
+      ),
+    enabled: localVideoIds.length > 0,
+    staleTime: 30_000,
+    placeholderData: (prev) => prev,
+  });
+  const queueStatus: Record<string, "queued" | "missing"> = queueStatusData?.status ?? {};
+
   useSSEEvent("youtube-live-status-changed", () => {
     void qc.invalidateQueries({ queryKey: ["admin-videos"] });
   });
@@ -583,6 +604,13 @@ export default function VideosPage() {
     void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+  });
+  // Re-check queue status whenever the broadcast queue changes (force-enqueue,
+  // sync-library, or any queue mutation from the broadcast panel). This keeps
+  // the per-video "Queued / Not in Queue" badges consistent without polling.
+  useSSEEvent("broadcast-queue-updated", () => {
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-status"] });
+    void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
   });
 
   // broadcast-source-upgraded is emitted by faststart.service (via the caller)
@@ -978,6 +1006,28 @@ export default function VideosPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Retry request failed"),
+  });
+
+  const forceEnqueueMutation = useMutation({
+    mutationFn: (videoId: string) =>
+      api.post<{ ok: boolean; enqueued: boolean; skipReason?: string; message: string }>(
+        `/broadcast-v2/force-enqueue/${videoId}`,
+      ),
+    onSuccess: (res, videoId) => {
+      if (res.enqueued) {
+        toast.success("Video added to the broadcast queue");
+      } else if (res.skipReason === "already-queued") {
+        toast.info("Already in queue — no change needed");
+      } else {
+        toast.warning(res.message);
+      }
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-status"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void (videoId);
+    },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Force enqueue failed"),
   });
 
   const batchRetryMutation = useMutation({
@@ -1917,12 +1967,56 @@ export default function VideosPage() {
                         ? "MP4 Ready"
                         : v.transcodingStatus || "—"}
                     </Badge>
-                    {v.videoSource === "local" && !v.hlsMasterUrl && v.transcodingStatus !== "failed" && (
-                      <span className="text-[9px] text-emerald-600 dark:text-emerald-400 flex items-center gap-0.5" title="Video is live in the broadcast queue via MP4. HLS upgrade in progress for adaptive quality.">
-                        <Loader2 size={8} className={v.transcodingStatus === "encoding" || v.transcodingStatus === "processing" || v.transcodingStatus === "queued" ? "animate-spin" : ""} />
-                        {v.transcodingStatus === "encoding" || v.transcodingStatus === "processing" || v.transcodingStatus === "queued" ? "In queue • HLS upgrading" : "In queue (MP4)"}
-                      </span>
-                    )}
+                    {/* Queue sync status badge — local videos only.
+                        Shows the real broadcast queue state confirmed by the
+                        /broadcast-v2/queue-status batch check. Renders as soon
+                        as the status data arrives; falls back to the legacy
+                        "In queue" label while the query is still loading. */}
+                    {v.videoSource === "local" && (() => {
+                      const qs = queueStatus[v.id];
+                      if (qs === "queued") {
+                        return (
+                          <span
+                            className="text-[9px] text-emerald-600 dark:text-emerald-400 flex items-center gap-0.5"
+                            title="Video is in the broadcast queue and will air during rotation"
+                          >
+                            <ListChecks size={8} className="flex-shrink-0" />
+                            {v.transcodingStatus === "encoding" || v.transcodingStatus === "processing" || v.transcodingStatus === "queued"
+                              ? "In queue • HLS upgrading"
+                              : "In queue"}
+                          </span>
+                        );
+                      }
+                      if (qs === "missing") {
+                        return (
+                          <button
+                            type="button"
+                            className="text-[9px] text-amber-600 dark:text-amber-400 flex items-center gap-0.5 hover:underline disabled:opacity-50"
+                            title="Video is not in the broadcast queue — click to add it now"
+                            disabled={forceEnqueueMutation.isPending && forceEnqueueMutation.variables === v.id}
+                            onClick={(e) => { e.stopPropagation(); forceEnqueueMutation.mutate(v.id); }}
+                          >
+                            {forceEnqueueMutation.isPending && forceEnqueueMutation.variables === v.id
+                              ? <Loader2 size={8} className="animate-spin flex-shrink-0" />
+                              : <AlertTriangle size={8} className="flex-shrink-0" />}
+                            {forceEnqueueMutation.isPending && forceEnqueueMutation.variables === v.id
+                              ? "Adding…"
+                              : "Not in queue — add"}
+                          </button>
+                        );
+                      }
+                      // Status query still loading — fall back to original label for
+                      // broadcast-ready local videos so there's no layout shift.
+                      if (!v.hlsMasterUrl && v.transcodingStatus !== "failed") {
+                        return (
+                          <span className="text-[9px] text-emerald-600/50 dark:text-emerald-400/50 flex items-center gap-0.5">
+                            <Loader2 size={8} className="animate-spin" />
+                            Checking queue…
+                          </span>
+                        );
+                      }
+                      return null;
+                    })()}
                     {(v.transcodingStatus === "encoding" || v.transcodingStatus === "processing") && v.transcodingProgress !== null && (
                       <div className="w-24 flex flex-col items-end gap-0.5">
                         <div className="w-full h-1 bg-muted rounded-full overflow-hidden">
@@ -2043,6 +2137,22 @@ export default function VideosPage() {
                           {v.metadataLocked
                             ? <><LockOpen size={13} className="mr-2" /> Unlock metadata</>
                             : <><Lock size={13} className="mr-2" /> Lock metadata</>}
+                        </DropdownMenuItem>
+                      )}
+                      {v.videoSource === "local" && (
+                        <DropdownMenuItem
+                          onClick={() => forceEnqueueMutation.mutate(v.id)}
+                          disabled={forceEnqueueMutation.isPending && forceEnqueueMutation.variables === v.id}
+                          title={
+                            queueStatus[v.id] === "queued"
+                              ? "Video is already in the broadcast queue — click to confirm or re-add if it was deactivated"
+                              : "Add this video to the broadcast queue immediately"
+                          }
+                        >
+                          {forceEnqueueMutation.isPending && forceEnqueueMutation.variables === v.id
+                            ? <Loader2 size={13} className="mr-2 animate-spin text-emerald-500" />
+                            : <ListChecks size={13} className={`mr-2 ${queueStatus[v.id] === "queued" ? "text-emerald-500" : "text-amber-500"}`} />}
+                          {queueStatus[v.id] === "queued" ? "Re-add to queue" : "Add to broadcast queue"}
                         </DropdownMenuItem>
                       )}
                       {v.videoSource === "local" && v.transcodingStatus !== "hls_ready" && (

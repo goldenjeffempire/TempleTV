@@ -2780,6 +2780,100 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     };
   });
 
+  // ── POST /broadcast-v2/force-enqueue/:videoId ────────────────────────
+  // Operator-triggered enqueue for a single local video. Idempotent — safe to
+  // call even if the video is already queued (returns skipReason "already-queued").
+  // On success fires broadcast-queue-updated so the broadcast panel refreshes.
+  app.post("/force-enqueue/:videoId", {
+    ...adminGuard,
+    schema: {
+      params: z.object({ videoId: z.string().min(1) }),
+      response: {
+        200: z.object({
+          ok: z.literal(true),
+          enqueued: z.boolean(),
+          queueItemId: z.string().optional(),
+          skipReason: z.string().optional(),
+          message: z.string(),
+        }),
+        404: z.object({ error: z.string() }),
+        429: _429err,
+      },
+    },
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    reply.header("Cache-Control", "no-store, max-age=0");
+    const { videoId } = req.params;
+
+    const result = await enqueueIfMissing({ videoId, reason: "enqueue-missing" });
+
+    if (result.skipReason === "video-not-found") {
+      return reply.status(404).send({ error: "Video not found" });
+    }
+
+    if (result.enqueued) {
+      adminEventBus.push("broadcast-queue-updated", { reason: "force-enqueue", videoId });
+      void broadcastOrchestrator.reload("force-enqueue").catch(() => {});
+    }
+
+    const message = result.enqueued
+      ? "Video added to broadcast queue"
+      : result.skipReason === "already-queued"
+      ? "Video is already in the broadcast queue"
+      : result.skipReason === "not-yet-playable"
+      ? "Video is not yet broadcast-ready — upload may still be assembling or blob stamp is missing"
+      : `Skipped: ${result.skipReason ?? "unknown"}`;
+
+    logger.info({ videoId, ...result }, "[force-enqueue] single-video enqueue result");
+    return { ok: true as const, ...result, message };
+  });
+
+  // ── GET /broadcast-v2/queue-status ───────────────────────────────────
+  // Batch check: given up to 100 comma-separated videoIds, returns whether each
+  // has an active broadcast queue row. Used by the admin video library to show
+  // per-video "Queued ✓ / Not in Queue ⚠" badges without a full library scan.
+  app.get("/queue-status", {
+    ...adminGuard,
+    schema: {
+      querystring: z.object({ videoIds: z.string().min(1) }),
+      response: {
+        200: z.object({
+          status: z.record(z.string(), z.enum(["queued", "missing"])),
+        }),
+        429: _429err,
+      },
+    },
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+  }, async (req, reply) => {
+    reply.header("Cache-Control", "no-store, max-age=0");
+    const ids = req.query.videoIds
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 100);
+
+    if (ids.length === 0) return { status: {} };
+
+    const rows = await db
+      .select({ videoId: schema.broadcastQueue.videoId })
+      .from(schema.broadcastQueue)
+      .where(
+        and(
+          eq(schema.broadcastQueue.isActive, true),
+          inArray(schema.broadcastQueue.videoId, ids),
+        ),
+      );
+
+    const queuedSet = new Set(
+      rows.map((r) => r.videoId).filter((id): id is string => id != null),
+    );
+    const status: Record<string, "queued" | "missing"> = {};
+    for (const id of ids) {
+      status[id] = queuedSet.has(id) ? "queued" : "missing";
+    }
+    return { status };
+  });
+
   // ── Admin: queue sync status ──────────────────────────────────────────
   // Returns how many library videos are currently missing from the broadcast
   // queue and a sample list of them. Used by the admin console to surface a
