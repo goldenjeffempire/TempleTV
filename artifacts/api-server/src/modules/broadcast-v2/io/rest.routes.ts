@@ -21,6 +21,7 @@ import {
 import { requireAuth } from "../../../middleware/auth.js";
 import { broadcastService } from "../../broadcast/broadcast.service.js";
 import { scanLibraryAndEnqueue, listMissingFromQueue, repairMissingS3MirroredAt } from "../../broadcast/auto-enqueue.service.js";
+import { reactivateSystemDeactivated } from "../engine/queue-health-guard.js";
 import { markBadUrl, clearAllBadUrls, clearBadUrl, getItemsHealth, getBadUrlStats, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl, getUrlBadSourceSetsSize, persistBadUrlCache, clearSourceApproval, clearAllSourceApprovals } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
@@ -2572,6 +2573,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
           ok: z.literal(true),
           durationMs: z.number().int(),
           s3StampsRepaired: z.number().int(),
+          reactivated: z.number().int(),
           phantomsRemoved: z.number().int(),
           duplicatesRemoved: z.number().int(),
           failedValidationDeactivated: z.number().int(),
@@ -2580,6 +2582,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
           scanned: z.number().int(),
           enqueued: z.number().int(),
           skipped: z.number().int(),
+          assembling: z.number().int(),
           orchestratorReloaded: z.boolean(),
           currentItemCount: z.number().int(),
           currentMode: z.string(),
@@ -2594,12 +2597,14 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     const startMs = Date.now();
 
     let s3StampsRepaired = 0;
+    let reactivated = 0;
     let phantomsRemoved = 0;
     let duplicatesRemoved = 0;
     let failedValidationDeactivated = 0;
     let sortOrderRebuilt = false;
     let badUrlCacheCleared = false;
     let orchestratorReloaded = false;
+    let assembling = 0;
 
     // ── Phase 0: Repair silently-failed s3MirroredAt stamps ──────────────
     try {
@@ -2607,6 +2612,19 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       s3StampsRepaired = repairResult.repaired;
     } catch (err) {
       logger.warn({ err }, "[sync-library] Phase 0 (s3MirroredAt repair) failed (non-fatal)");
+    }
+
+    // ── Phase 0b: Re-admit system-deactivated queue items ─────────────────
+    // Runs immediately so that uploads which were previously validator-
+    // deactivated re-enter broadcast rotation without waiting the full
+    // 10-minute workerSupervisor interval.
+    try {
+      reactivated = await reactivateSystemDeactivated();
+      if (reactivated > 0) {
+        logger.info({ reactivated }, "[sync-library] Phase 0b: re-activated system-deactivated queue items");
+      }
+    } catch (err) {
+      logger.warn({ err }, "[sync-library] Phase 0b (reactivate system-deactivated) failed (non-fatal)");
     }
 
     // ── Phase 1: Deactivate phantom queue items ───────────────────────────
@@ -2747,19 +2765,45 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     adminEventBus.push("broadcast-queue-updated", { reason: "sync-library" });
     adminEventBus.push("videos-library-updated", { reason: "sync-library" });
 
+    // ── Phase 8: Count assembling videos (blob not yet committed) ─────────
+    // Videos with localVideoUrl but s3MirroredAt IS NULL are still being
+    // assembled (or had a stamp failure that repair couldn't fix because
+    // the blob isn't in storage yet). Surface this count so operators
+    // understand why "queue fully in sync" may show 0 additions even though
+    // uploads are in progress.
+    try {
+      const assemblingResult = await db.execute<{ n: string }>(sql`
+        SELECT COUNT(*)::text AS n
+        FROM managed_videos
+        WHERE video_source != 'youtube'
+          AND local_video_url IS NOT NULL
+          AND s3_mirrored_at IS NULL
+          AND (transcoding_error_code IS NULL
+               OR transcoding_error_code NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING', 'ASSEMBLY_FAILED'))
+      `);
+      assembling = Number(assemblingResult.rows[0]?.n ?? 0) || 0;
+    } catch (err) {
+      logger.warn({ err }, "[sync-library] Phase 8 (assembling count) failed (non-fatal)");
+    }
+
     const snap = broadcastOrchestrator.snapshot();
     const totalRemoved = phantomsRemoved + duplicatesRemoved + failedValidationDeactivated;
     const durationMs = Date.now() - startMs;
 
     const parts: string[] = [];
     if (scanResult.enqueued > 0) parts.push(`added ${scanResult.enqueued} video${scanResult.enqueued !== 1 ? "s" : ""} to queue`);
+    if (reactivated > 0) parts.push(`re-enabled ${reactivated} previously-deactivated item${reactivated !== 1 ? "s" : ""}`);
     if (totalRemoved > 0) parts.push(`removed ${totalRemoved} stale/phantom item${totalRemoved !== 1 ? "s" : ""}`);
     if (s3StampsRepaired > 0) parts.push(`repaired ${s3StampsRepaired} blob stamp${s3StampsRepaired !== 1 ? "s" : ""}`);
-    if (parts.length === 0) parts.push(`queue fully in sync — ${scanResult.scanned} local video${scanResult.scanned !== 1 ? "s" : ""} checked`);
-    const message = parts.join(", ");
+    if (parts.length === 0) {
+      const inQueueCount = broadcastOrchestrator.getItemCount();
+      parts.push(`queue fully in sync — ${inQueueCount} item${inQueueCount !== 1 ? "s" : ""} active`);
+    }
+    if (assembling > 0) parts.push(`${assembling} upload${assembling !== 1 ? "s" : ""} still assembling`);
+    const message = parts.join("; ");
 
     logger.info(
-      { durationMs, s3StampsRepaired, phantomsRemoved, duplicatesRemoved, failedValidationDeactivated, sortOrderRebuilt, ...scanResult },
+      { durationMs, s3StampsRepaired, reactivated, phantomsRemoved, duplicatesRemoved, failedValidationDeactivated, sortOrderRebuilt, assembling, ...scanResult },
       "[sync-library] comprehensive queue sync complete",
     );
 
@@ -2767,12 +2811,14 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       ok: true as const,
       durationMs,
       s3StampsRepaired,
+      reactivated,
       phantomsRemoved,
       duplicatesRemoved,
       failedValidationDeactivated,
       sortOrderRebuilt,
       badUrlCacheCleared,
       ...scanResult,
+      assembling,
       orchestratorReloaded,
       currentItemCount: broadcastOrchestrator.getItemCount(),
       currentMode: snap?.mode ?? "unknown",

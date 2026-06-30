@@ -78,6 +78,9 @@ async function repairZeroDurations(): Promise<number> {
  *
  * Uses a JOIN to managed_videos so we only re-enable items that:
  *   • have at least one playable URL (on the queue row OR the video row)
+ *   • have a confirmed blob (s3_mirrored_at IS NOT NULL) — raw MP4 is
+ *     broadcast-eligible immediately once the blob is committed; faststart
+ *     status is NOT an admission gate in the MP4-only pipeline.
  *   • are NOT CORRUPT_SOURCE / SOURCE_MISSING / ASSEMBLY_FAILED
  *     (those are the only codes that warrant DB-level deactivation; they
  *     are re-deactivated by the validator on the next cycle and re-enabling
@@ -87,15 +90,11 @@ async function repairZeroDurations(): Promise<number> {
  * intentionally left alone — this function only touches rows that the
  * validator or a prior automated process disabled.
  *
- * The validator's own per-reason reverse passes (corrupt_upload,
- * orphaned_video_ref, missing_video_join, hls_storage_missing,
- * faststart_pending) run every 2 minutes and handle the fine-grained
- * re-activation logic for each deactivation class. This function is a
- * belt-and-suspenders backstop that catches any residual items those passes
- * miss — for example, items deactivated by an older version of the code
- * whose deactivation policy has since been narrowed.
+ * This function is exported so the sync-library endpoint can run an
+ * immediate re-activation pass without waiting for the 10-minute
+ * workerSupervisor interval.
  */
-async function reactivateSystemDeactivated(): Promise<number> {
+export async function reactivateSystemDeactivated(): Promise<number> {
   try {
     const result = await db.execute<{ id: string }>(sql`
       UPDATE broadcast_queue bq
@@ -111,12 +110,11 @@ async function reactivateSystemDeactivated(): Promise<number> {
           bq.local_video_url IS NOT NULL
           OR mv.local_video_url IS NOT NULL
         )
-        AND mv.faststart_applied = true
+        AND mv.s3_mirrored_at IS NOT NULL
         AND (
           mv.transcoding_error_code IS NULL
           OR mv.transcoding_error_code NOT IN ('CORRUPT_SOURCE', 'SOURCE_MISSING', 'ASSEMBLY_FAILED')
         )
-        AND bq.validator_deactivated_reason != 'faststart_pending'
       RETURNING bq.id
     `);
     const count = (result.rows as unknown[]).length;

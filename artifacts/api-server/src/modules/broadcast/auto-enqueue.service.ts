@@ -629,6 +629,9 @@ export async function listMissingFromQueue(limit = 50): Promise<
         videoSource: videosTable.videoSource,
         youtubeId: videosTable.youtubeId,
         localVideoUrl: videosTable.localVideoUrl,
+        hlsMasterUrl: videosTable.hlsMasterUrl,
+        category: videosTable.category,
+        validationStatus: videosTable.validationStatus,
       })
       .from(videosTable)
       .where(
