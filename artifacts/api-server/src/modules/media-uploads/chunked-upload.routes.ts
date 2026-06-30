@@ -1327,6 +1327,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       config: { rateLimit: { max: 600, timeWindow: "1 minute" } },
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
+      // Abort early if the client disconnected before we start any DB work.
+      // This prevents a full BYTEA write for a connection that's already gone.
+      if (req.signal?.aborted) {
+        return reply.code(499).send({ error: "Client disconnected before chunk was received" });
+      }
+
       // Disable proxy buffering so Nginx/Replit proxy streams bytes through
       // immediately rather than buffering the entire chunk before passing it on.
       reply.raw.setHeader("X-Accel-Buffering", "no");
@@ -1703,6 +1709,17 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     },
     async (req) => {
       const { sessionId } = req.params;
+
+      // Abort early if the client disconnected before we begin. The background
+      // assembly task that finalize spawns is self-contained and must NOT be
+      // gated on the request signal — only the synchronous pre-commit work is
+      // aborted here.
+      if (req.signal?.aborted) {
+        throw Object.assign(
+          new Error("Client disconnected before finalize could start"),
+          { statusCode: 499 },
+        );
+      }
 
       let session = await db
         .select()

@@ -4,10 +4,33 @@ import { db, schema } from "../../infrastructure/db.js";
 import { broadcastEngine } from "./queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { BadRequestError, ConflictError, InternalError, NotFoundError } from "../../shared/errors.js";
+import { logger } from "../../infrastructure/logger.js";
 import type { z } from "zod";
 import type { AddQueueItemSchema } from "./broadcast.schemas.js";
 
 const queueTable = schema.broadcastQueueTable;
+
+/**
+ * Fire the v1 broadcast engine reload (in-memory snapshot refresh) and log any
+ * failure as a warning instead of throwing.
+ *
+ * The v1 engine is a legacy in-memory snapshot layer; its reload failure does
+ * NOT affect the v2 orchestrator because the adminEventBus.push("broadcast-queue-updated")
+ * call that follows EVERY mutation drives a separate v2 orchestrator reload via
+ * the bus bridge. Swallowing reload errors here prevents a healthy DB write from
+ * being surfaced to the caller as an HTTP 500 due to an unrelated in-memory
+ * refresh issue.
+ */
+async function reloadV1Engine(context: string): Promise<void> {
+  try {
+    await broadcastEngine.reload();
+  } catch (err) {
+    logger.warn(
+      { err, context },
+      "[broadcast-service] v1 engine reload failed (non-fatal — v2 bus bridge drives orchestrator reload)",
+    );
+  }
+}
 
 export const broadcastService = {
   snapshot() {
@@ -90,7 +113,7 @@ export const broadcastService = {
         })
         .returning();
     });
-    await broadcastEngine.reload();
+    await reloadV1Engine("addToQueue");
     adminEventBus.push("broadcast-queue-updated", { reason: "item-added", id: inserted[0]!.id });
     return inserted[0]!;
   },
@@ -98,7 +121,7 @@ export const broadcastService = {
   async removeFromQueue(id: string) {
     const deleted = await db.delete(queueTable).where(eq(queueTable.id, id)).returning();
     if (deleted.length === 0) throw new NotFoundError("Queue item not found");
-    await broadcastEngine.reload();
+    await reloadV1Engine("removeFromQueue");
     adminEventBus.push("broadcast-queue-updated", { reason: "item-removed", id });
     return deleted[0]!;
   },
@@ -125,7 +148,7 @@ export const broadcastService = {
       .update(queueTable)
       .set({ sortOrder: caseExpr })
       .where(inArray(queueTable.id, itemIds));
-    await broadcastEngine.reload();
+    await reloadV1Engine("reorder");
     adminEventBus.push("broadcast-queue-updated", { reason: "reorder" });
     return broadcastEngine.snapshot();
   },
@@ -137,9 +160,8 @@ export const broadcastService = {
       .where(eq(queueTable.id, id))
       .returning();
     if (updated.length === 0) throw new NotFoundError("Queue item not found");
-    await broadcastEngine.reload();
+    await reloadV1Engine("toggleActive");
     adminEventBus.push("broadcast-queue-updated", { reason: "toggle-active", id, isActive });
     return updated[0]!;
   },
 };
-

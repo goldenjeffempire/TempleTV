@@ -4,7 +4,7 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
 import { asc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { ConflictError } from "../../shared/errors.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../shared/errors.js";
 import {
   AddQueueItemSchema,
   BroadcastCurrentResultSchema,
@@ -343,6 +343,13 @@ export async function broadcastRoutes(app: FastifyInstance) {
         if (err instanceof ConflictError) {
           return reply.code(409).send({ error: err.message });
         }
+        if (err instanceof BadRequestError) {
+          return reply.code(422).send({ error: err.message });
+        }
+        // DB unique-constraint violation slipped past in-transaction guard
+        if ((err as { code?: string })?.code === "23505") {
+          return reply.code(409).send({ error: "Video is already active in the broadcast queue" });
+        }
         throw err;
       }
       reply.code(201);
@@ -359,10 +366,21 @@ export async function broadcastRoutes(app: FastifyInstance) {
         summary: "Admin: remove a program from the queue",
         params: z.object({ id: z.string().min(1).max(128) }),
         security: [{ bearerAuth: [] }],
-        response: { 200: z.unknown(), 429: z.object({ error: z.string() }) },
+        response: {
+          200: z.unknown(),
+          404: z.object({ error: z.string() }),
+          429: z.object({ error: z.string() }),
+        },
       },
     },
-    async (req) => broadcastService.removeFromQueue(req.params.id),
+    async (req, reply) => {
+      try {
+        return await broadcastService.removeFromQueue(req.params.id);
+      } catch (err) {
+        if (err instanceof NotFoundError) return reply.code(404).send({ error: err.message });
+        throw err;
+      }
+    },
   );
 
   r.post(
@@ -404,7 +422,11 @@ export async function broadcastRoutes(app: FastifyInstance) {
         .limit(1);
       if (current) {
         await broadcastService.toggleActive(current.id, false);
-        await broadcastEngine.reload();
+        // broadcastService.toggleActive already fires broadcastEngine.reload()
+        // and adminEventBus.push("broadcast-queue-updated") internally.
+        // This second reload is a belt-and-suspenders for the in-memory v1
+        // snapshot — wrap it so a reload failure doesn't 500 the skip call.
+        try { await broadcastEngine.reload(); } catch { /* non-fatal */ }
       }
       return { ok: true as const };
     },

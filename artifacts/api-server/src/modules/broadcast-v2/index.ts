@@ -29,6 +29,7 @@ import { autoHealMonitor } from "./engine/auto-heal-monitor.js";
 import { autohealRoutes } from "./io/autoheal.routes.js";
 import { uploadQueueReconciler } from "../broadcast/upload-queue-reconciler.js";
 import { runDeepRecovery } from "../transcoder/video-recovery.service.js";
+import { scanLibraryAndEnqueue, repairMissingS3MirroredAt } from "../broadcast/auto-enqueue.service.js";
 
 export { getExhaustionStatus, getAutoRefillStatus, getStorageStats };
 export { getDeadAirStats };
@@ -567,6 +568,32 @@ export function ensureBroadcastV2Started(): Promise<void> {
         void queueIntegrityValidator.validate().catch((err) =>
           logger.warn({ err }, "[broadcast-v2] post-boot queue validation failed (non-fatal)"),
         );
+        // Startup scan: repair any missing s3MirroredAt stamps and enqueue
+        // library videos that are absent from the broadcast queue.
+        //
+        // Covers cases the 60-second reconciler misses:
+        //   • Videos uploaded > 24 h ago whose queue entry was deleted
+        //   • Queue rows lost during a DB restore or manual intervention
+        //   • Videos whose s3MirroredAt stamp silently failed on a prior run
+        //
+        // Runs fire-and-forget so a slow scan never delays boot completion.
+        // The 24-h-window reconciler and 6-h deep-recovery worker continue
+        // running as usual — this scan is an additional safety net, not a
+        // replacement.
+        void (async () => {
+          try {
+            await repairMissingS3MirroredAt();
+            const result = await scanLibraryAndEnqueue({ reason: "startup", maxToAdd: 500 });
+            if (result.enqueued > 0) {
+              logger.info(
+                { enqueued: result.enqueued, skipped: result.skipped },
+                "[broadcast-v2] startup scan: enrolled library videos missing from queue",
+              );
+            }
+          } catch (err) {
+            logger.warn({ err }, "[broadcast-v2] startup: library scan failed (non-fatal)");
+          }
+        })();
         // Install the YouTube live auto-override bridge once the orchestrator
         // is started. Idempotent + safe to call multiple times. Gated by the
         // YOUTUBE_AUTO_OVERRIDE_DISABLE env var and the presence of
