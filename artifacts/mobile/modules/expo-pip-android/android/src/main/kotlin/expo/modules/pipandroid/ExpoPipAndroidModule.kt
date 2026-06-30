@@ -51,6 +51,12 @@ class ExpoPipAndroidModule : Module() {
                         buildRestoreAction(act)?.let { builder.setActions(listOf(it)) }
                     }
 
+                    // Smooth crossfade when the system resizes the PiP window
+                    // for video content (API 31+). No-op below 31.
+                    if (Build.VERSION.SDK_INT >= 31) {
+                        builder.setSeamlessResizeEnabled(true)
+                    }
+
                     result = act.enterPictureInPictureMode(builder.build())
 
                     if (withRestore) {
@@ -87,7 +93,7 @@ class ExpoPipAndroidModule : Module() {
         // Pre-registers PiP params so Android uses the correct aspect ratio and
         // actions immediately when the user gesture-triggers PiP (API 31+).
 
-        AsyncFunction("updatePipParams") { aspectWidth: Int, aspectHeight: Int, withRestore: Boolean ->
+        AsyncFunction("updatePipParams") { aspectWidth: Int, aspectHeight: Int, withRestore: Boolean, autoEnter: Boolean ->
             if (Build.VERSION.SDK_INT < 26) return@AsyncFunction null
             val act = currentActivity ?: return@AsyncFunction null
 
@@ -99,6 +105,18 @@ class ExpoPipAndroidModule : Module() {
 
                     if (Build.VERSION.SDK_INT >= 31 && withRestore) {
                         buildRestoreAction(act)?.let { builder.setActions(listOf(it)) }
+                    }
+
+                    // Modern system-driven automatic PiP (API 31+): the OS enters
+                    // PiP itself the instant the activity is backgrounded while a
+                    // video plays — far more reliable than the AppState-driven
+                    // manual entry, which often races the background transition and
+                    // is rejected. setSeamlessResizeEnabled gives a smooth video
+                    // crossfade on resize. Both no-op below API 31, where the JS
+                    // hook's AppState fallback handles auto-enter instead.
+                    if (Build.VERSION.SDK_INT >= 31) {
+                        builder.setAutoEnterEnabled(autoEnter)
+                        builder.setSeamlessResizeEnabled(true)
                     }
 
                     act.setPictureInPictureParams(builder.build())

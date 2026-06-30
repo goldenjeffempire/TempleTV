@@ -40,6 +40,7 @@ import {
   isPictureInPictureSupported,
   isInPictureInPictureMode,
   cancelPipRestoreNotification,
+  updatePipParams,
 } from "../modules/expo-pip-android/src";
 
 export interface UsePictureInPictureOptions {
@@ -184,6 +185,44 @@ export function usePictureInPicture(
     const sub = AppState.addEventListener("change", handleAppState);
     return () => sub.remove();
   }, [isSupported]);
+
+  // Arm modern system-driven automatic PiP (Android 12 / API 31+).
+  //
+  // setPictureInPictureParams(setAutoEnterEnabled(true)) lets the OS itself
+  // enter PiP the instant the activity is backgrounded while a video plays —
+  // the same mechanism YouTube uses. It is far more reliable than the
+  // AppState-driven manual entry above, which races the background transition
+  // and is frequently rejected by the system on modern Android. Below API 31
+  // this is a native no-op and the AppState fallback handles auto-enter.
+  //
+  // We re-arm whenever the aspect ratio or restore-button preference changes so
+  // the system uses the correct window shape, and we DISARM on cleanup so PiP
+  // never triggers from an unrelated screen after this player unmounts. The
+  // AppState fallback remains active and is mutually safe with native auto-enter
+  // because its `!inPip` guard skips manual entry once the system has entered.
+  useEffect(() => {
+    if (!isSupported || !autoEnterOnBackground) return;
+    void updatePipParams(
+      aspectRatioWidth,
+      aspectRatioHeight,
+      showRestoreButton,
+      true,
+    );
+    return () => {
+      void updatePipParams(
+        aspectRatioWidth,
+        aspectRatioHeight,
+        showRestoreButton,
+        false,
+      );
+    };
+  }, [
+    isSupported,
+    autoEnterOnBackground,
+    aspectRatioWidth,
+    aspectRatioHeight,
+    showRestoreButton,
+  ]);
 
   return { isSupported, isInPip, enterPip };
 }

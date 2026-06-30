@@ -410,12 +410,15 @@ export default function PlayerScreen() {
   // Android-only. The manifest already declares android:supportsPictureInPicture
   // (via with-android-activity-flags.js). The hook wraps the expo-pip-android
   // native module which calls Activity.enterPictureInPictureMode().
-  // autoEnterOnBackground is handled explicitly in the AppState handler below
-  // so we can keep the fullscreen Modal open while the video fills the PiP window.
+  // autoEnterOnBackground=true arms system-driven auto-PiP on Android 12+
+  // (setAutoEnterEnabled) and the AppState fallback on older devices, so the
+  // video keeps playing in a mini window the moment the user presses Home —
+  // the same behaviour as YouTube. The fullscreen Modal is reconciled on PiP
+  // exit by the ghost-state guard below.
   const { isInPip, isSupported: isPipSupported, enterPip } = usePictureInPicture({
     aspectRatioWidth: Math.max(1, Math.round(videoAspectRatio * 9)),
     aspectRatioHeight: 9,
-    autoEnterOnBackground: false,
+    autoEnterOnBackground: true,
     // Show a restore button inside the PiP overlay window AND a persistent
     // notification so the user can return to the full player from anywhere
     // without hunting for the app. Both are auto-dismissed when the player

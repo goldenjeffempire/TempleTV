@@ -25,6 +25,7 @@ let NativeModule: {
     aspectWidth: number,
     aspectHeight: number,
     withRestore: boolean,
+    autoEnter: boolean,
   ): Promise<void>;
   cancelPipRestoreNotification(): Promise<void>;
 } | null = null;
@@ -97,6 +98,7 @@ export async function updatePipParams(
   aspectWidth = 16,
   aspectHeight = 9,
   withRestore = false,
+  autoEnter = false,
 ): Promise<void> {
   if (!NativeModule) return;
   try {
@@ -104,6 +106,7 @@ export async function updatePipParams(
       Math.max(1, Math.round(aspectWidth)),
       Math.max(1, Math.round(aspectHeight)),
       withRestore,
+      autoEnter,
     );
   } catch {
     // non-fatal
