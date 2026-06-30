@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { eq, and, gt, isNull } from "drizzle-orm";
 import { logger } from "../../infrastructure/logger.js";
+import { InternalError } from "../../shared/errors.js";
 import { nanoid } from "nanoid";
 import { db, schema, pgPool } from "../../infrastructure/db.js";
 import { hashPassword, verifyPassword } from "./password.js";
@@ -147,7 +148,7 @@ export const authService = {
       throw err;
     }
     const user = inserted[0];
-    if (!user) throw new Error("user insert returned no row");
+    if (!user) throw new InternalError("user insert returned no row — please retry registration");
 
     // Fire-and-forget welcome email — never blocks registration.
     // sendWelcomeEmail uses sendMailSilent internally; errors are swallowed and

@@ -1,6 +1,7 @@
 import { env } from "../../config/env.js";
 import { logger } from "../../infrastructure/logger.js";
 import { syncYouTubeChannel, setNextSyncAt, restoreQuota, isSyncInProgress } from "./youtube-sync.service.js";
+import { ConflictError } from "../../shared/errors.js";
 
 /**
  * Background YouTube channel sync dispatcher.
@@ -88,7 +89,7 @@ class YouTubeSyncDispatcher {
     // Two concurrent syncs would race on the same batch, producing duplicate-key
     // errors and corrupted inserted/updated statistics.
     if (isSyncInProgress()) {
-      throw new Error("A YouTube sync is already in progress");
+      throw new ConflictError("A YouTube sync is already in progress — try again once the current sync completes");
     }
     return syncYouTubeChannel("manual");
   }

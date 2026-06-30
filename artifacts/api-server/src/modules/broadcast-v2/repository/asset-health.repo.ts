@@ -8,6 +8,7 @@ import { eq, inArray, lte, sql, and, ne } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
+import { InternalError } from "../../../shared/errors.js";
 import type { QueueAssetHealthState, RepairLogEntry } from "@workspace/db";
 
 const MAX_LOG_ENTRIES = 50;
@@ -113,7 +114,7 @@ export const assetHealthRepo = {
       .where(eq(schema.queueAssetHealthTable.queueItemId, queueItemId))
       .limit(1);
     if (race[0]) return rowToDto(race[0]);
-    throw new Error(`[asset-health] getOrCreate failed for queueItemId=${queueItemId}`);
+    throw new InternalError(`[asset-health] getOrCreate failed for queueItemId=${queueItemId} — DB insert may have been rolled back`);
   },
 
   /** Fetch by queue item ID. Returns null if not tracked yet. */

@@ -17,6 +17,7 @@ import { z } from "zod";
 import { eq, asc } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
+import { InternalError } from "../../shared/errors.js";
 
 const ConfigEntrySchema = z.object({
   key: z.string(),
@@ -105,7 +106,7 @@ export async function settingsRoutes(app: FastifyInstance) {
         // Log the real error server-side but do NOT leak internal DB error
         // messages (table names, constraint names, etc.) to the client.
         req.log.error({ err }, "settings: failed to save system setting");
-        throw new Error("Failed to save system setting — please try again");
+        throw new InternalError("Failed to save system setting — please try again");
       }
     },
   );

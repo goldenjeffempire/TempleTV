@@ -19,6 +19,7 @@
 
 import { EventEmitter } from "node:events";
 import { logger } from "../../infrastructure/logger.js";
+import { ServiceUnavailableError } from "../../shared/errors.js";
 import type {
   ChatMessage,
   ChatRole,
@@ -100,7 +101,7 @@ class ChatHub extends EventEmitter {
     let room = this.rooms.get(channelId);
     if (!room) {
       if (this.rooms.size >= MAX_ROOMS) {
-        throw new Error(`ChatHub at capacity (${MAX_ROOMS} rooms)`);
+        throw new ServiceUnavailableError(`Chat service at capacity (${MAX_ROOMS} active channels) — try again shortly`);
       }
       room = new Set();
       this.rooms.set(channelId, room);

@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 import { db, schema } from "../../infrastructure/db.js";
 import { broadcastEngine } from "./queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
-import { ConflictError, NotFoundError } from "../../shared/errors.js";
+import { BadRequestError, ConflictError, InternalError, NotFoundError } from "../../shared/errors.js";
 import type { z } from "zod";
 import type { AddQueueItemSchema } from "./broadcast.schemas.js";
 
@@ -28,8 +28,8 @@ export const broadcastService = {
         (!!item.localVideoUrl && item.localVideoUrl.trim() !== "") ||
         (!!item.videoId && item.videoId.trim() !== "");
       if (!hasSource) {
-        throw new Error(
-          `[broadcast] Cannot enqueue "${item.title}" — platform video item has no localVideoUrl or videoId. ` +
+        throw new BadRequestError(
+          `Cannot enqueue "${item.title}" — platform video item has no localVideoUrl or videoId. ` +
             "Provide at least one playable source before adding to the queue.",
         );
       }

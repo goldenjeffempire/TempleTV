@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import type { z } from "zod";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
+import { InternalError } from "../../shared/errors.js";
 import { deliverPushNotification } from "../push/push-delivery.js";
 import type {
   ListNotificationsQuerySchema,
@@ -181,7 +182,7 @@ export const notificationsService = {
     }
 
     if (!row) {
-      throw new Error("notifications.sendPush: insert returned no row");
+      throw new InternalError("notifications.sendPush: insert returned no row");
     }
 
     logger.info(

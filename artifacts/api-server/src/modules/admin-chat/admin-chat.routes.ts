@@ -158,7 +158,7 @@ export async function adminChatRoutes(app: FastifyInstance) {
           subscriberOnly: rows[0].subscriberOnly,
           pinnedMessageId: rows[0].pinnedMessageId,
           bannedKeywords: (rows[0].bannedKeywords as string[]) ?? [],
-          updatedAt: rows[0].updatedAt.toISOString(),
+          updatedAt: rows[0].updatedAt?.toISOString() ?? new Date().toISOString(),
         };
       }
       return {

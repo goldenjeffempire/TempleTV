@@ -20,6 +20,7 @@ import { eq, desc, and, or } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { logger } from "../../infrastructure/logger.js";
+import { InternalError, NotFoundError } from "../../shared/errors.js";
 
 const _429 = z.object({ error: z.string() });
 
@@ -306,7 +307,7 @@ export async function appVersionRoutes(app: FastifyInstance) {
         .where(eq(schema.appVersionsTable.id, id))
         .limit(1);
 
-      if (!row) throw new Error("Failed to fetch created record after insert");
+      if (!row) throw new InternalError("Failed to fetch created version record after insert");
 
       logger.info({ id, versionString: body.versionString }, "[app-version] created");
       return reply.code(201).send(toDto(row));

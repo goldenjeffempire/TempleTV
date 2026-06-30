@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { env } from "../../config/env.js";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
+import { ConflictError } from "../../shared/errors.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { isUndefinedColumnError, extractPgError, isTransientPgError } from "../../infrastructure/db-schema-guard.js";
@@ -1087,7 +1088,7 @@ export async function syncYouTubeChannel(triggeredBy: "scheduler" | "manual" = "
   // ── Concurrency guard ──────────────────────────────────────────────────────
   if (_syncInProgress) {
     logger.warn({ triggeredBy }, "youtube-sync: sync already in progress — skipping duplicate trigger");
-    throw new Error("A YouTube sync is already in progress");
+    throw new ConflictError("A YouTube sync is already in progress — try again once the current sync completes");
   }
   _syncInProgress = true;
 
@@ -1427,7 +1428,7 @@ export function isRecategorizeInProgress(): boolean { return _recategorizeInProg
 const RECATEGORIZE_BATCH_SIZE = 100;
 
 export async function recategorizeAllVideos(): Promise<RecategorizeResult> {
-  if (_recategorizeInProgress) throw new Error("Recategorization already in progress");
+  if (_recategorizeInProgress) throw new ConflictError("Recategorization already in progress — try again once the current operation completes");
   _recategorizeInProgress = true;
   const t0 = Date.now();
 
