@@ -57,26 +57,53 @@ const POLL_ONLINE_MS  = 30_000;
 const POLL_OFFLINE_MS =  8_000;
 const RECOVERY_FLASH_MS = 2_500;
 
-async function checkConnectivity(): Promise<boolean> {
-  for (const url of PING_ENDPOINTS) {
-    try {
-      const res = await fetchWithRetry(
-        url,
-        {
-          method: "HEAD",
-          signal: AbortSignal.timeout(4_000),
-          cache: "no-store",
-        },
-        // Single attempt only — we don't want the ping itself to retry;
-        // the next poll cycle will retry naturally.
-        { maxRetries: 0 },
-      );
-      if (res.ok || res.status < 500) return true;
-    } catch {
-      // Try next endpoint
+interface ConnectivityResult {
+  online: boolean;
+  /** True when internet is up but only the app API probe failed. */
+  apiUnreachable: boolean;
+}
+
+async function probeEndpoint(url: string): Promise<boolean> {
+  try {
+    const res = await fetchWithRetry(
+      url,
+      {
+        method: "HEAD",
+        signal: AbortSignal.timeout(4_000),
+        cache: "no-store",
+      },
+      { maxRetries: 0 },
+    );
+    return res.ok || res.status < 500;
+  } catch {
+    return false;
+  }
+}
+
+async function checkConnectivity(): Promise<ConnectivityResult> {
+  const base = getApiBase();
+  const appHealthzUrl = base ? `${base}/api/healthz` : null;
+
+  // Check internet via fallback endpoints (Cloudflare + Ubuntu).
+  // Run in parallel for speed since fallbacks are independent.
+  const fallbackResults = await Promise.all(PING_FALLBACKS.map(probeEndpoint));
+  const internetUp = fallbackResults.some(Boolean);
+
+  if (!internetUp) {
+    // All probes failed — no internet.
+    return { online: false, apiUnreachable: false };
+  }
+
+  // Internet is up. Now check the app API specifically.
+  if (appHealthzUrl) {
+    const apiOk = await probeEndpoint(appHealthzUrl);
+    if (!apiOk) {
+      // Internet works but app API is unreachable.
+      return { online: false, apiUnreachable: true };
     }
   }
-  return false;
+
+  return { online: true, apiUnreachable: false };
 }
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -84,11 +111,19 @@ async function checkConnectivity(): Promise<boolean> {
 interface NetworkState {
   isOnline: boolean;
   justRecovered: boolean;
+  /**
+   * When isOnline is false:
+   *   null  — haven't determined whether the API is the culprit yet
+   *   true  — internet is up but the app's API is unreachable specifically
+   *   false — no internet (all endpoints unreachable)
+   */
+  apiUnreachable: boolean | null;
 }
 
 const NetworkContext = createContext<NetworkState>({
   isOnline: true,
   justRecovered: false,
+  apiUnreachable: null,
 });
 
 export function useNetworkContext(): NetworkState {
@@ -100,6 +135,7 @@ export function useNetworkContext(): NetworkState {
 export function NetworkProvider({ children }: { children: React.ReactNode }) {
   const [isOnline, setIsOnline] = useState(true);
   const [justRecovered, setJustRecovered] = useState(false);
+  const [apiUnreachable, setApiUnreachable] = useState<boolean | null>(null);
 
   const prevOnlineRef       = useRef(true);
   const isOnlineRef         = useRef(true);
@@ -113,11 +149,12 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
   // for the shared HeartbeatScheduler. Null while the device is offline.
   const heartbeatUnsubRef   = useRef<(() => void) | null>(null);
 
-  function applyStatus(online: boolean): void {
+  function applyStatus({ online, apiUnreachable: apiUnreachableFlag }: ConnectivityResult): void {
     const wasOffline = !prevOnlineRef.current;
     prevOnlineRef.current = online;
     isOnlineRef.current = online;
     setIsOnline(online);
+    setApiUnreachable(online ? null : apiUnreachableFlag);
 
     if (online && wasOffline) {
       // Connection just came back — trigger the recovery flash.
@@ -164,11 +201,11 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // ── Web: use native online/offline events ────────────────────────────
     if (Platform.OS === "web") {
-      const handleOnline  = () => applyStatus(true);
-      const handleOffline = () => applyStatus(false);
+      const handleOnline  = () => applyStatus({ online: true,  apiUnreachable: false });
+      const handleOffline = () => applyStatus({ online: false, apiUnreachable: false });
       window.addEventListener("online",  handleOnline);
       window.addEventListener("offline", handleOffline);
-      applyStatus(navigator.onLine);
+      applyStatus({ online: navigator.onLine, apiUnreachable: false });
       return () => {
         window.removeEventListener("online",  handleOnline);
         window.removeEventListener("offline", handleOffline);
@@ -213,7 +250,7 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <NetworkContext.Provider value={{ isOnline, justRecovered }}>
+    <NetworkContext.Provider value={{ isOnline, justRecovered, apiUnreachable }}>
       {children}
     </NetworkContext.Provider>
   );

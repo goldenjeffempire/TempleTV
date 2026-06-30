@@ -77,8 +77,17 @@ import { DownloadProvider } from "@/context/DownloadContext";
  * Reads from the singleton NetworkContext (one poll interval for the whole app).
  */
 function GlobalNetworkBanner() {
-  const { isOnline, justRecovered } = useNetworkStatus();
-  return <NetworkBanner visible={!isOnline} recovered={justRecovered} />;
+  const { isOnline, justRecovered, apiUnreachable } = useNetworkStatus();
+  const offlineMessage = apiUnreachable
+    ? "Server unreachable — retrying…"
+    : "No connection — retrying…";
+  return (
+    <NetworkBanner
+      visible={!isOnline}
+      recovered={justRecovered}
+      message={offlineMessage}
+    />
+  );
 }
 
 /**

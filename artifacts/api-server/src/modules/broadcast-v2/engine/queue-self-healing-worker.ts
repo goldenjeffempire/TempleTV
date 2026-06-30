@@ -227,24 +227,48 @@ export const queueSelfHealingWorker = {
       const STUCK_REPAIRING_THRESHOLD_MS = 5 * 60_000;
       const stuckItems = await assetHealthRepo.listStuckRepairing(STUCK_REPAIRING_THRESHOLD_MS);
       for (const stuck of stuckItems) {
+        // Increment repairAttempts even on stuck-repairing reset so repeated
+        // process crashes mid-repair count toward MAX_REPAIR_ATTEMPTS and the
+        // item eventually transitions to "blocked" instead of spinning forever.
+        const newAttempts = stuck.repairAttempts + 1;
+        const maxAttempts = 5;
+        const shouldBlock = newAttempts >= maxAttempts;
         await db
           .update(schema.queueAssetHealthTable)
           .set({
-            state: "quarantined",
-            nextRetryAt: new Date(),
+            state: shouldBlock ? "blocked" : "quarantined",
+            repairAttempts: newAttempts,
+            nextRetryAt: shouldBlock ? null : new Date(),
             repairLog: sql`(
               repair_log || jsonb_build_object(
                 'ts', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
                 'actor', 'system',
                 'action', 'stuck_repairing_recovered',
-                'detail', 'Item was stuck in repairing state after process restart — resetting to quarantined',
-                'outcome', 'pending'
+                'detail', ${shouldBlock
+                  ? `Item stuck in repairing state ${newAttempts} times — permanently blocked`
+                  : `Item was stuck in repairing state after process restart — resetting to quarantined (attempt ${newAttempts}/${maxAttempts})`},
+                'outcome', ${shouldBlock ? "blocked" : "pending"}
               )
             )`,
             updatedAt: new Date(),
           })
           .where(eq(schema.queueAssetHealthTable.queueItemId, stuck.queueItemId));
-        logger.info({ itemId: stuck.queueItemId }, `${LOG_TAG} recovered stuck-repairing item`);
+        if (shouldBlock) {
+          logger.warn(
+            { itemId: stuck.queueItemId, attempts: newAttempts },
+            `${LOG_TAG} stuck-repairing item permanently blocked after ${newAttempts} crash-recovery cycles`,
+          );
+          adminEventBus.push("ops-alert", {
+            level: "warn",
+            title: "Queue Item Permanently Blocked",
+            message: `Queue item ${stuck.queueItemId} was stuck in repairing state ${newAttempts} times and has been permanently blocked. Manual review required.`,
+            timestamp: new Date().toISOString(),
+            source: "queue-self-healing",
+            queueItemId: stuck.queueItemId,
+          });
+        } else {
+          logger.info({ itemId: stuck.queueItemId, attempts: newAttempts }, `${LOG_TAG} recovered stuck-repairing item`);
+        }
       }
 
       // ── 0b. Auto-clear blocked items past 4h TTL ─────────────────────────

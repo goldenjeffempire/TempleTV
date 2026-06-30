@@ -192,7 +192,7 @@ export default function LibraryPage() {
     staleTime: 10_000,
   });
 
-  const { data: history, isLoading: historyLoading } = useQuery({
+  const { data: history, isLoading: historyLoading, isError: historyError } = useQuery({
     queryKey: ["youtube-sync-history"],
     queryFn: () => api.get<{ items: SyncHistoryItem[] }>("/admin/youtube/sync/history"),
     enabled: showHistory,
@@ -437,7 +437,9 @@ export default function LibraryPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
-            {historyLoading ? (
+            {historyError ? (
+              <p className="text-sm text-red-500 px-4 py-6 text-center">Failed to load sync history</p>
+            ) : historyLoading ? (
               <div className="divide-y">
                 {Array.from({ length: 3 }).map((_, i) => (
                   <div key={i} className="flex items-center gap-4 px-4 py-3">

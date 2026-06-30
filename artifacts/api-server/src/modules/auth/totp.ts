@@ -92,6 +92,43 @@ export function verifyTotpCode(code: string, secret: string): boolean {
 }
 
 /**
+ * Verify a 6-digit TOTP code with replay protection.
+ *
+ * Returns the matched time-step counter on success so the caller can
+ * atomically persist it and reject any future code at or below that counter,
+ * preventing replay attacks within the ±WINDOW clock-skew window.
+ *
+ * @param code          6-digit string from the authenticator app.
+ * @param secret        Base32-encoded TOTP secret from the user record.
+ * @param lastCounter   The previously persisted counter (from `last_totp_counter`
+ *                      in the DB). Pass null / undefined for the first TOTP use.
+ * @returns `{ valid: true, matchedCounter }` on success, `{ valid: false, matchedCounter: null }` on failure.
+ */
+export function verifyTotpCodeWithCounter(
+  code: string,
+  secret: string,
+  lastCounter: bigint | null | undefined,
+): { valid: true; matchedCounter: bigint } | { valid: false; matchedCounter: null } {
+  if (!/^\d{6}$/.test(code)) return { valid: false, matchedCounter: null };
+  const t = BigInt(Math.floor(Date.now() / 1000 / STEP_SECS));
+  const secretBuf = base32Decode(secret);
+  for (let i = -WINDOW; i <= WINDOW; i++) {
+    const counter = t + BigInt(i);
+    // Replay protection: reject codes at or before the last used counter.
+    // This prevents an attacker from reusing a captured OTP within the same
+    // 30-second window (or adjacent windows due to clock-skew tolerance).
+    if (lastCounter !== null && lastCounter !== undefined && counter <= lastCounter) continue;
+    const expected = hotp(secretBuf, counter);
+    const a = Buffer.from(expected.padEnd(6, "0"));
+    const b = Buffer.from(code.padEnd(6, "0"));
+    if (a.length === b.length && timingSafeEqual(a, b)) {
+      return { valid: true, matchedCounter: counter };
+    }
+  }
+  return { valid: false, matchedCounter: null };
+}
+
+/**
  * Build the `otpauth://` URI recognised by Google Authenticator, Authy, etc.
  * The URI encodes the issuer, account email, secret, algorithm, digits, and period
  * so scanning the resulting QR code fully configures the authenticator.

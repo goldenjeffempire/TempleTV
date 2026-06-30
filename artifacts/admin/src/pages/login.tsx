@@ -1,4 +1,4 @@
-import { useState, useRef, type FormEvent } from "react";
+import { useState, useRef, useEffect, type FormEvent } from "react";
 import { useAuth } from "@/contexts/use-auth";
 import { HttpError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -50,9 +50,21 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   // Transient "connecting…" message shown while retrying after a network error
   const [connectingMsg, setConnectingMsg] = useState<string | null>(null);
+  // Shown when the user was redirected here because their session expired
+  const [sessionExpired, setSessionExpired] = useState(false);
 
   // Lets the user cancel an in-progress retry sequence by pressing Sign in again
   const abortRef = useRef<AbortController | null>(null);
+
+  // Check for session-expired flag set by the SSE context on auth failure
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem("ttv_session_expired") === "1") {
+        sessionStorage.removeItem("ttv_session_expired");
+        setSessionExpired(true);
+      }
+    } catch { /* ignore */ }
+  }, []);
 
   // ── Step 1: Credentials ────────────────────────────────────────────────────
 
@@ -177,6 +189,16 @@ export default function LoginPage() {
             <p className="text-xs text-muted-foreground uppercase tracking-widest">Admin Panel</p>
           </div>
         </div>
+
+        {/* ── Session-expired banner ── */}
+        {sessionExpired && (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>
+              Your session has expired. Please sign in again.
+            </AlertDescription>
+          </Alert>
+        )}
 
         {/* ── MFA step ── */}
         {mfaPendingToken ? (

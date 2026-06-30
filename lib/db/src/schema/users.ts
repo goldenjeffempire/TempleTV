@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, index, check } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, bigint, index, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 /**
@@ -37,6 +37,11 @@ export const usersTable = pgTable(
     totpSecret: text("totp_secret"),
     totpEnabled: boolean("totp_enabled").notNull().default(false),
     totpBackupCodes: text("totp_backup_codes"),
+    // TOTP replay protection: tracks the time-step counter of the last
+    // successfully used TOTP code. Any code at or before this counter is
+    // rejected even within the ±1 clock-skew window, preventing replay attacks
+    // where a MITM captures a valid OTP and reuses it within the same window.
+    lastTotpCounter: bigint("last_totp_counter", { mode: "bigint" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },

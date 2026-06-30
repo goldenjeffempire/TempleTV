@@ -38,6 +38,7 @@ import {
   generateTotpSecret,
   buildOtpauthUri,
   verifyTotpCode,
+  verifyTotpCodeWithCounter,
   generateBackupCodes,
   hashBackupCode,
   consumeBackupCode,
@@ -346,10 +347,26 @@ export async function mfaRoutes(app: FastifyInstance) {
       const { code, backupCode } = req.body;
 
       if (code) {
-        if (!verifyTotpCode(code, user.totpSecret)) {
+        // Use counter-aware verification to prevent replay attacks within
+        // the ±1 clock-skew window. The matched counter is written back to
+        // the DB atomically with token issuance below.
+        const rows2 = await db
+          .select({ lastTotpCounter: usersTable.lastTotpCounter })
+          .from(usersTable)
+          .where(eq(usersTable.id, userId))
+          .limit(1);
+        const lastCounter = rows2[0]?.lastTotpCounter ?? null;
+        const result = verifyTotpCodeWithCounter(code, user.totpSecret, lastCounter);
+        if (!result.valid) {
           recordFailedAttempt(req.ip, user.email);
-          throw new UnauthorizedError("TOTP code is incorrect or expired");
+          throw new UnauthorizedError("TOTP code is incorrect, expired, or has already been used");
         }
+        // Persist the matched counter before issuing tokens so that even if
+        // token insertion fails, the used counter is already recorded.
+        await db
+          .update(usersTable)
+          .set({ lastTotpCounter: result.matchedCounter, updatedAt: new Date() })
+          .where(eq(usersTable.id, userId));
       } else if (backupCode) {
         const hashed = user.totpBackupCodes ? (JSON.parse(user.totpBackupCodes) as string[]) : [];
         const { valid, remaining } = consumeBackupCode(backupCode, hashed);

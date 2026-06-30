@@ -1426,6 +1426,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
 
       const chunkId = randomUUID();
 
+      // Bail early if the client disconnected while we were validating — no
+      // point burning a DB-write slot or touching storage for a dropped upload.
+      if (req.raw.destroyed) {
+        return reply.code(499).send({ error: "Client disconnected" });
+      }
+
       // Acquire a DB-write slot before touching storage. The semaphore caps
       // concurrent 8 MiB body buffers in flight so peak RSS stays bounded even
       // under a 3-file simultaneous upload with 4 parallel chunks each.
@@ -1448,6 +1454,11 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         let lastUploadErr: unknown;
         let uploaded = false;
         for (let attempt = 1; attempt <= UPLOAD_PART_MAX_ATTEMPTS; attempt++) {
+          // Abort retry loop if the client dropped the connection.
+          if (req.raw.destroyed) {
+            req.log.debug({ sessionId, chunkIndex, attempt }, "[chunk] client disconnected — aborting retry loop");
+            return reply.code(499).send({ error: "Client disconnected" });
+          }
           try {
             const result = await storage().uploadPart({
               key: session.objectKey,
@@ -1467,7 +1478,13 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 { err, sessionId, chunkIndex, partNumber, attempt, retryInMs: delay },
                 "[chunk] uploadPart transient failure — retrying",
               );
-              await new Promise<void>((r) => setTimeout(r, delay).unref());
+              // Use a cancellable timer so we don't hold the slot open for a
+              // disconnected client during the backoff delay.
+              await new Promise<void>((resolve) => {
+                const t = setTimeout(resolve, delay);
+                t.unref();
+                req.raw.once("close", () => { clearTimeout(t); resolve(); });
+              });
             }
           }
         }

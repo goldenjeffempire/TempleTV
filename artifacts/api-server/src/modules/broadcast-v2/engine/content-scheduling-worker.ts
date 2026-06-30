@@ -64,7 +64,9 @@ async function runSchedulingSweep(): Promise<void> {
         action: "scheduled_publish",
         reason: `Auto-published at scheduled time`,
         triggeredBy: WORKER_NAME,
-      }).catch(() => {});
+      }).catch((auditErr: unknown) => {
+        logger.warn({ videoId: v.id, err: auditErr }, "[content-scheduling] audit log insert failed (non-fatal)");
+      });
 
       logger.info({ videoId: v.id, title: v.title }, "[content-scheduling] auto-published video");
       adminEventBus.push("videos-library-updated", { videoId: v.id, reason: "scheduled-publish" });
@@ -104,7 +106,9 @@ async function runSchedulingSweep(): Promise<void> {
         action: "scheduled_unpublish",
         reason: `Auto-unpublished at scheduled time`,
         triggeredBy: WORKER_NAME,
-      }).catch(() => {});
+      }).catch((auditErr: unknown) => {
+        logger.warn({ videoId: v.id, err: auditErr }, "[content-scheduling] audit log insert failed (non-fatal)");
+      });
 
       logger.info({ videoId: v.id, title: v.title }, "[content-scheduling] auto-unpublished video");
       adminEventBus.push("videos-library-updated", { videoId: v.id, reason: "scheduled-unpublish" });

@@ -624,9 +624,10 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
           consecutiveAuthFailures.current++;
           if (consecutiveAuthFailures.current >= AUTH_FAIL_LIMIT) {
             // All token-refresh attempts failed — the session is truly dead.
-            // Clear stored tokens and redirect to login so the user is
-            // prompted to authenticate rather than looping indefinitely.
+            // Set a flag so the login page can surface a "session expired"
+            // banner explaining why the user was redirected.
             tokenStore.clear();
+            try { sessionStorage.setItem("ttv_session_expired", "1"); } catch { /* ignore */ }
             window.location.assign("/login");
           }
         }
