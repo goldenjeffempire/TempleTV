@@ -3029,7 +3029,17 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     {
       preHandler: requireAuth("admin"),
       bodyLimit: 1048576,
-      schema: { response: { 429: _429err } },
+      schema: {
+        response: {
+          202: z.object({ ok: z.literal(true), videoId: z.string(), message: z.string() }),
+          400: z.object({ error: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string() }),
+          429: _429err,
+          507: z.object({ error: z.string() }),
+          500: z.object({ error: z.string() }),
+        },
+      },
       config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
     },
     async (req, reply) => {

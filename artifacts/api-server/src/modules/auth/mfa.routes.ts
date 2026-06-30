@@ -208,13 +208,22 @@ export async function mfaRoutes(app: FastifyInstance) {
       if (!user?.totpSecret) throw new BadRequestError("Run POST /auth/mfa/setup first");
       if (user.totpEnabled) throw new BadRequestError("MFA is already enabled");
 
-      if (!verifyTotpCode(req.body.code, user.totpSecret)) {
+      // Fetch the last-used counter for replay protection — prevents an attacker
+      // from capturing the first TOTP code during setup and replaying it later.
+      const counterRows = await db
+        .select({ lastTotpCounter: usersTable.lastTotpCounter })
+        .from(usersTable)
+        .where(eq(usersTable.id, userId))
+        .limit(1);
+      const lastCounter = counterRows[0]?.lastTotpCounter ?? null;
+      const totpResult = verifyTotpCodeWithCounter(req.body.code, user.totpSecret, lastCounter);
+      if (!totpResult.valid) {
         throw new UnauthorizedError("TOTP code is incorrect or expired");
       }
 
       await db
         .update(usersTable)
-        .set({ totpEnabled: true, updatedAt: new Date() })
+        .set({ totpEnabled: true, lastTotpCounter: totpResult.matchedCounter, updatedAt: new Date() })
         .where(eq(usersTable.id, userId));
 
       return { ok: true, message: "MFA enabled successfully" };
@@ -446,7 +455,18 @@ export async function mfaRoutes(app: FastifyInstance) {
       if (!user?.totpEnabled || !user.totpSecret) {
         throw new BadRequestError("MFA is not enabled");
       }
-      if (!verifyTotpCode(req.body.code, user.totpSecret)) {
+      // Apply counter-based replay protection on backup-code regeneration too.
+      // Accepting a previously-used TOTP code here would let an attacker with
+      // a captured code silently regenerate backup codes, locking out the
+      // legitimate owner.
+      const bcCounterRows = await db
+        .select({ lastTotpCounter: usersTable.lastTotpCounter })
+        .from(usersTable)
+        .where(eq(usersTable.id, userId))
+        .limit(1);
+      const bcLastCounter = bcCounterRows[0]?.lastTotpCounter ?? null;
+      const bcTotpResult = verifyTotpCodeWithCounter(req.body.code, user.totpSecret, bcLastCounter);
+      if (!bcTotpResult.valid) {
         throw new UnauthorizedError("TOTP code is incorrect or expired");
       }
 
@@ -455,7 +475,11 @@ export async function mfaRoutes(app: FastifyInstance) {
 
       await db
         .update(usersTable)
-        .set({ totpBackupCodes: JSON.stringify(hashedBackupCodes), updatedAt: new Date() })
+        .set({
+          totpBackupCodes: JSON.stringify(hashedBackupCodes),
+          lastTotpCounter: bcTotpResult.matchedCounter,
+          updatedAt: new Date(),
+        })
         .where(eq(usersTable.id, userId));
 
       return { backupCodes };

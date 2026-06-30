@@ -28,6 +28,7 @@ import { faststartRecoveryWorker } from "./engine/faststart-recovery.js";
 import { autoHealMonitor } from "./engine/auto-heal-monitor.js";
 import { autohealRoutes } from "./io/autoheal.routes.js";
 import { uploadQueueReconciler } from "../broadcast/upload-queue-reconciler.js";
+import { runDeepRecovery } from "../transcoder/video-recovery.service.js";
 
 export { getExhaustionStatus, getAutoRefillStatus, getStorageStats };
 export { getDeadAirStats };
@@ -457,6 +458,20 @@ function startSupervisedWorkers(): void {
     intervalMs: 60_000,
     initialDelayMs: 30_000,
     backoffMs: [15_000, 30_000, 60_000],
+  });
+
+  // Video deep-recovery worker: scans for managed_videos stuck in broken states
+  // (never processed, missing from queue, failed transcoding) and re-enqueues
+  // or initiates repair. Runs every 6 hours with a 10-min initial delay so the
+  // integrity validator, media scanner, and queue self-healer have all completed
+  // their first passes before deep-recovery acts on their findings.
+  workerSupervisor.spawn({
+    name: "video-deep-recovery",
+    fn: () => runDeepRecovery(),
+    intervalMs: 6 * 60 * 60_000,
+    initialDelayMs: 10 * 60_000,
+    backoffMs: [5 * 60_000, 15 * 60_000, 30 * 60_000],
+    onCircuitOpen: makeCircuitOpenCallback("video-deep-recovery"),
   });
 
   // Queue exhaustion monitor + auto-refill run as lightweight interval-based

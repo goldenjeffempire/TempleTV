@@ -6,6 +6,7 @@ import { logger } from "../../infrastructure/logger.js";
 import { trackQuota } from "../youtube-sync/youtube-sync.service.js";
 import { db, schema } from "../../infrastructure/db.js";
 import { ytPoller } from "../youtube-live/youtube-live.poller.js";
+import { BadGatewayError } from "../../shared/errors.js";
 
 /**
  * YouTube channel content proxy for @TEMPLETVJCTM.
@@ -57,12 +58,12 @@ async function getUploadsPlaylistId(apiKey: string): Promise<string> {
   const url = `${YT_API_BASE}/channels?part=contentDetails&id=${CHANNEL_ID}&key=${apiKey}`;
   const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
   trackQuota("channels.list", 1);
-  if (!res.ok) throw new Error(`channels API responded ${res.status}`);
+  if (!res.ok) throw new BadGatewayError(`YouTube channels API error ${res.status}`);
   const data = await res.json() as {
     items?: { contentDetails: { relatedPlaylists: { uploads: string } } }[]
   };
   const playlistId = data.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
-  if (!playlistId) throw new Error("Could not retrieve uploads playlist ID");
+  if (!playlistId) throw new BadGatewayError("YouTube API did not return an uploads playlist ID");
   return playlistId;
 }
 
@@ -93,7 +94,7 @@ async function getAllPlaylistItems(
       signal: AbortSignal.timeout(12_000),
     });
     trackQuota("playlistItems.list", 1);
-    if (!res.ok) throw new Error(`playlistItems API responded ${res.status}`);
+    if (!res.ok) throw new BadGatewayError(`YouTube playlistItems API error ${res.status}`);
     const data = await res.json() as {
       nextPageToken?: string;
       items?: {
@@ -258,9 +259,9 @@ async function fetchRss(): Promise<string> {
     signal: AbortSignal.timeout(12_000),
     headers: { Accept: "application/xml, text/xml, */*", "User-Agent": "TempleTV-API/1.0" },
   });
-  if (!res.ok) throw new Error(`YouTube RSS responded ${res.status}`);
+  if (!res.ok) throw new BadGatewayError(`YouTube RSS feed error ${res.status}`);
   const xml = await res.text();
-  if (!xml.includes("<entry>")) throw new Error("RSS feed returned no entries");
+  if (!xml.includes("<entry>")) throw new BadGatewayError("YouTube RSS feed returned no video entries");
   cachedXml = xml;
   xmlCacheExpiresAt = now + CACHE_TTL_MS;
   return xml;

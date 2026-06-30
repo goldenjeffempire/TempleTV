@@ -15,7 +15,7 @@ import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { uploadTelemetry } from "./upload-telemetry.service.js";
 import { chunkedUploadRoutes } from "./chunked-upload.routes.js";
 import { logger } from "../../infrastructure/logger.js";
-import { ServiceUnavailableError } from "../../shared/errors.js";
+import { ServiceUnavailableError, InternalError } from "../../shared/errors.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 
 const dbSessions = schema.uploadSessionsTable;
@@ -491,7 +491,7 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
           );
         });
       const row = inserted[0];
-      if (!row) throw new Error("videos insert returned no rows");
+      if (!row) throw new InternalError("videos insert returned no rows — database may be under load, retry finalization");
 
       uploadSessions.markCompleted(body.sessionId, row.id);
       // F02: update the persisted DB row so recovery after restart returns
@@ -763,7 +763,7 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
           );
         });
       const row = inserted[0];
-      if (!row) throw new Error("videos insert returned no rows");
+      if (!row) throw new InternalError("videos insert returned no rows — database may be under load, retry finalization");
 
       uploadSessions.markCompleted(body.sessionId, row.id);
       // F02: update the persisted DB row so idempotency works across restarts.

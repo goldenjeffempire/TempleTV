@@ -148,6 +148,8 @@ const queryClient = new QueryClient({
   },
 });
 
+import { setAudioSessionPromise } from "@/lib/audio-session";
+
 async function setupAudioSession() {
   if (Platform.OS === "web") return;
   try {
@@ -640,7 +642,7 @@ function RootLayout() {
     if (fontReady) {
       clearTimeout(_splashSafetyTimer);
       SplashScreen.hideAsync().catch(() => {});
-      setupAudioSession();
+      setAudioSessionPromise(setupAudioSession());
       if (Platform.OS !== "web") {
         setupTrackPlayer().catch(() => {});
         // Android notification channels need to exist before any notification

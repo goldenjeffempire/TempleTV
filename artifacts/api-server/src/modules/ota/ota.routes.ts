@@ -17,6 +17,7 @@ import { requireAuth } from "../../middleware/auth.js";
 import { env } from "../../config/env.js";
 import { logger as rootLogger } from "../../infrastructure/logger.js";
 import { easApiCircuit, githubApiCircuit, withCircuitBreaker } from "../../infrastructure/circuit-breaker.js";
+import { BadGatewayError, ServiceUnavailableError } from "../../shared/errors.js";
 
 const logger = rootLogger.child({ module: "ota" });
 
@@ -100,7 +101,7 @@ async function fetchEasUpdates(token: string): Promise<EasBranch[]> {
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`EAS API ${res.status}: ${text.slice(0, 200)}`);
+    throw new BadGatewayError(`EAS API error ${res.status}: ${text.slice(0, 200)}`);
   }
 
   const json = (await res.json()) as {
@@ -109,7 +110,7 @@ async function fetchEasUpdates(token: string): Promise<EasBranch[]> {
   };
 
   if (json.errors?.length) {
-    throw new Error(json.errors.map((e) => e.message).join("; "));
+    throw new ServiceUnavailableError(`EAS GraphQL error: ${json.errors.map((e) => e.message).join("; ")}`);
   }
 
   return json.data?.app?.byId?.updateBranches ?? [];
@@ -145,7 +146,7 @@ async function dispatchWorkflow(opts: {
 
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`GitHub API ${res.status}: ${text.slice(0, 300)}`);
+    throw new BadGatewayError(`GitHub API error ${res.status}: ${text.slice(0, 300)}`);
   }
 }
 

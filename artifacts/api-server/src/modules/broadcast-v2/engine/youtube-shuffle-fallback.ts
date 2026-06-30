@@ -319,6 +319,33 @@ class YtShuffleFallback {
       }
 
       const pick = this._shuffledPlaylist[this._playlistIndex]!;
+
+      // Guard: verify the picked video is still embeddable before committing
+      // to it. YouTube can flip is_embeddable=false between catalog refreshes;
+      // without this check a non-embeddable video starts as dead-air until the
+      // client reports yt-playback-error and the orchestrator advances again.
+      {
+        const videosTable = schema.videosTable;
+        const embRow = await db
+          .select({ isEmbeddable: videosTable.isEmbeddable })
+          .from(videosTable)
+          .where(eq(videosTable.youtubeId, pick.youtubeId))
+          .limit(1);
+        if (embRow[0]?.isEmbeddable === false) {
+          // Prune from in-memory playlist and trigger a fresh catalog query
+          // via activate() so we immediately pick a different video.
+          this._shuffledPlaylist.splice(this._playlistIndex, 1);
+          logger.warn(
+            { videoId: pick.youtubeId, title: pick.title, remainingCatalog: this._shuffledPlaylist.length },
+            "[yt-shuffle] advance(): picked video is non-embeddable — pruned and re-activating with fresh catalog",
+          );
+          this._activating = false;
+          this._active = false;
+          await this.activate(startOverride);
+          return;
+        }
+      }
+
       const slotMs = computeSlotMs(pick.duration);
 
       const override = await startOverride({

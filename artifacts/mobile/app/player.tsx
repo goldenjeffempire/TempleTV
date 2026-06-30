@@ -150,47 +150,62 @@ export default function PlayerScreen() {
   // last-known interruption state. Errors are swallowed — a failure here
   // is non-fatal (audio still plays, just with default routing).
   useEffect(() => {
-    Audio.setAudioModeAsync({
-      playsInSilentModeIOS: true,
-      staysActiveInBackground: true,
-      // DoNotMix (not DuckOthers): Temple TV audio takes exclusive focus.
-      // DuckOthers would let phone calls, Spotify, etc. lower our volume
-      // and eventually reclaim focus — unacceptable during a live service.
-      // This re-asserts the same policy set in _layout.tsx's setupAudioSession
-      // which iOS/Android may have revoked while another app held focus.
-      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-      interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-      shouldDuckAndroid: false,
-      playThroughEarpieceAndroid: false,
-    }).catch((err: unknown) => {
-      // Log to Sentry so we can track OS-level audio-session revocation patterns.
+    let mounted = true;
+    void (async () => {
       try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const S = require("@sentry/react-native") as {
-          addBreadcrumb: (b: { category: string; message: string; level: string }) => void;
-        };
-        S.addBreadcrumb({
-          category: "audio",
-          message: `setAudioModeAsync failed on player mount: ${err instanceof Error ? err.message : String(err)}`,
-          level: "warning",
-        });
-      } catch {
-        // Sentry not available
-      }
-      // Single 500 ms retry — the OS may need a brief moment to release a
-      // competing audio session (e.g. after a phone call or Siri dismissal)
-      // before it will accept our reconfiguration.
-      setTimeout(() => {
-        Audio.setAudioModeAsync({
+        // Wait for the root layout's setupAudioSession() to finish before
+        // re-asserting exclusive mode. On cold-start deep-links React runs
+        // child effects before parent effects, so both can call
+        // Audio.setAudioModeAsync() concurrently — which fails on iOS with
+        // "Audio session already active". Sequencing them eliminates the race.
+        const { waitForAudioSession } = await import("@/lib/audio-session");
+        await waitForAudioSession();
+        if (!mounted) return;
+        await Audio.setAudioModeAsync({
           playsInSilentModeIOS: true,
           staysActiveInBackground: true,
+          // DoNotMix (not DuckOthers): Temple TV audio takes exclusive focus.
+          // DuckOthers would let phone calls, Spotify, etc. lower our volume
+          // and eventually reclaim focus — unacceptable during a live service.
+          // This re-asserts the same policy set in _layout.tsx's setupAudioSession
+          // which iOS/Android may have revoked while another app held focus.
           interruptionModeIOS: InterruptionModeIOS.DoNotMix,
           interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
           shouldDuckAndroid: false,
           playThroughEarpieceAndroid: false,
-        }).catch(() => {});
-      }, 500);
-    });
+        });
+      } catch (err: unknown) {
+        if (!mounted) return;
+        // Log to Sentry so we can track OS-level audio-session revocation patterns.
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const S = require("@sentry/react-native") as {
+            addBreadcrumb: (b: { category: string; message: string; level: string }) => void;
+          };
+          S.addBreadcrumb({
+            category: "audio",
+            message: `setAudioModeAsync failed on player mount: ${err instanceof Error ? err.message : String(err)}`,
+            level: "warning",
+          });
+        } catch {
+          // Sentry not available
+        }
+        // Single 500 ms retry — the OS may need a brief moment to release a
+        // competing audio session (e.g. after a phone call or Siri dismissal)
+        // before it will accept our reconfiguration.
+        setTimeout(() => {
+          if (!mounted) return;
+          Audio.setAudioModeAsync({
+            playsInSilentModeIOS: true,
+            staysActiveInBackground: true,
+            interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+            interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+            shouldDuckAndroid: false,
+            playThroughEarpieceAndroid: false,
+          }).catch(() => {});
+        }, 500);
+      }
+    })();
     // Restore the global audio policy when this screen unmounts. The root
     // layout (setupAudioSession) establishes shouldDuckAndroid: true so OS
     // sounds (navigation prompts, notifications) and in-app radio can duck
@@ -199,6 +214,7 @@ export default function PlayerScreen() {
     // remains in exclusive mode after the user leaves — radio and other
     // in-app audio lose the ability to duck correctly on Android.
     return () => {
+      mounted = false;
       Audio.setAudioModeAsync({
         playsInSilentModeIOS: true,
         staysActiveInBackground: true,

@@ -19,7 +19,7 @@ import { authService } from "./auth.service.js";
 import { mfaRoutes } from "./mfa.routes.js";
 import { signAccessToken, signRefreshToken } from "./jwt.js";
 import { hashPassword } from "./password.js";
-import { UnauthorizedError } from "../../shared/errors.js";
+import { ConflictError, UnauthorizedError, UnprocessableEntityError } from "../../shared/errors.js";
 import { requireAuth, invalidateSessionsValidAfterCache } from "../../middleware/auth.js";
 import type { Role } from "../../shared/types.js";
 import { env } from "../../config/env.js";
@@ -80,14 +80,28 @@ export async function authRoutes(app: FastifyInstance) {
         body: RegisterBodySchema,
         response: { 
           201: AuthTokensSchema,
+          422: z.object({ error: z.string() }),
           429: z.object({ error: z.string() }),
         },
       },
     },
     async (req, reply) => {
-      const tokens = await authService.register(req.body);
-      reply.code(201);
-      return tokens;
+      try {
+        const tokens = await authService.register(req.body);
+        reply.code(201);
+        return tokens;
+      } catch (err) {
+        if (err instanceof ConflictError) {
+          // Re-throw as 422 to prevent email enumeration.
+          // A 409 Conflict reveals that the email is already registered;
+          // returning 422 with a generic message makes the response
+          // indistinguishable from any other validation failure.
+          throw new UnprocessableEntityError(
+            "Registration could not be completed — please check your details and try again.",
+          );
+        }
+        throw err;
+      }
     },
   );
 

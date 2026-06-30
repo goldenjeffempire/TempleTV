@@ -37,7 +37,7 @@ import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { uploadTelemetry } from "./upload-telemetry.service.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
-import { ServiceUnavailableError } from "../../shared/errors.js";
+import { ServiceUnavailableError, InternalError } from "../../shared/errors.js";
 import { quarantineVideo } from "../broadcast/quarantine.service.js";
 
 const sessions = schema.uploadSessionsTable;
@@ -296,7 +296,7 @@ async function spawnAssemblyRetry(
 
       if (!blobAlreadyPresent) {
         if (!session.uploadId) {
-          throw new Error("session.uploadId is null — cannot re-assemble (re-upload required)");
+          throw new InternalError("session.uploadId is null — cannot re-assemble (re-upload required)");
         }
         const allChunks = await db
           .select({ chunkIndex: chunks.chunkIndex, s3Etag: chunks.s3Etag })
@@ -305,14 +305,14 @@ async function spawnAssemblyRetry(
           .orderBy(asc(chunks.chunkIndex));
 
         if (allChunks.length !== session.totalChunks) {
-          throw new Error(
+          throw new InternalError(
             `Chunk count mismatch: expected ${session.totalChunks}, found ${allChunks.length} in upload_chunks — ` +
             "chunks may have been cleaned up after a successful assembly; re-upload to recover if this persists",
           );
         }
         const missingEtags = allChunks.filter((c) => !c.s3Etag);
         if (missingEtags.length > 0) {
-          throw new Error(
+          throw new InternalError(
             `${missingEtags.length} chunk(s) are missing ETags in upload_chunks — ` +
             "parts may have been cleaned up; re-upload to recover",
           );
@@ -343,7 +343,7 @@ async function spawnAssemblyRetry(
       // ── Step 3: Verify assembled blob integrity ───────────────────────────
       const head = await storage().headObject(objectKey);
       if (!head.exists || (session.sizeBytes > 0 && head.contentLength !== session.sizeBytes)) {
-        throw new Error(
+        throw new InternalError(
           `Assembled blob size mismatch: expected ${session.sizeBytes} bytes, got ${head.contentLength ?? 0}`,
         );
       }
@@ -2151,7 +2151,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         const row = inserted[0];
         if (!row) {
           await resetLock();
-          throw new Error("videos insert returned no rows");
+          throw new InternalError("videos insert returned no rows — database may be under load, retry finalization");
         }
 
         // Store the pre-committed videoId on the session so that:

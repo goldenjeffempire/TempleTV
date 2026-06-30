@@ -156,15 +156,21 @@ function useLiveViewerCount() {
 
   useEffect(() => {
     let mounted = true;
+    // AbortController cancels the in-flight fetch when this hook unmounts.
+    // Without it, an un-cancelled request from a previous mount would set
+    // state on an unmounted component after navigating away from analytics.
+    const ac = new AbortController();
     async function poll() {
       if (inFlightRef.current) return;
       inFlightRef.current = true;
       try {
-        const res = await api.get<{ channelId: string; count: number }>("/broadcast/viewers");
+        const res = await api.get<{ channelId: string; count: number }>("/broadcast/viewers", { signal: ac.signal });
         if (!mounted) return;
         setError(false);
         setCount((c) => { setPrev(c); return res.count; });
-      } catch {
+      } catch (err) {
+        // Ignore abort errors — they are expected on unmount.
+        if (err instanceof Error && err.name === "AbortError") return;
         // Non-fatal — viewer count is best-effort. Surface the error state
         // so the card shows a visual indicator rather than a stale number.
         if (mounted) setError(true);
@@ -176,6 +182,7 @@ function useLiveViewerCount() {
     intervalRef.current = setInterval(() => void poll(), 30_000);
     return () => {
       mounted = false;
+      ac.abort();
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, []);
