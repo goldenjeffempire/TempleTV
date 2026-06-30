@@ -357,6 +357,9 @@ importers:
       '@workspace/db':
         specifier: workspace:*
         version: link:../../lib/db
+      '@xmldom/xmldom':
+        specifier: '>=0.8.13'
+        version: 0.9.10
       bcryptjs:
         specifier: ^3.0.3
         version: 3.0.3
