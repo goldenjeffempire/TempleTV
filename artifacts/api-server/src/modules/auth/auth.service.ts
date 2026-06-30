@@ -124,7 +124,7 @@ export const authService = {
       .from(usersTable)
       .where(eq(usersTable.email, email))
       .limit(1);
-    if (existing.length > 0) throw new ConflictError("Email already registered");
+    if (existing.length > 0) throw new ConflictError("Unable to complete registration — please try different details");
 
     const id = nanoid();
     const passwordHash = await hashPassword(body.password);
@@ -143,7 +143,7 @@ export const authService = {
         .returning();
     } catch (err) {
       if ((err as { code?: string }).code === "23505") {
-        throw new ConflictError("Email already registered");
+        throw new ConflictError("Unable to complete registration — please try different details");
       }
       throw err;
     }
@@ -448,14 +448,23 @@ export const authService = {
     // before accepting the new password. Without this check, a hijacked session
     // can change the password and lock the legitimate owner out without ever
     // needing the second factor — a complete MFA bypass.
+    // Capture the matched TOTP counter so we can persist it in the transaction
+    // below and prevent replay attacks on subsequent password changes.
+    let totpCounterToSave: bigint | null = null;
     if (user.totpEnabled) {
       if (!body.totpCode) {
         throw new UnauthorizedError("TOTP code is required to change password on MFA-enabled accounts");
       }
-      const { verifyTotpCode } = await import("./totp.js");
-      if (!verifyTotpCode(body.totpCode, user.totpSecret!)) {
-        throw new UnauthorizedError("Invalid TOTP code");
-      }
+      const { verifyTotpCodeWithCounter } = await import("./totp.js");
+      const counterRows = await db
+        .select({ lastTotpCounter: usersTable.lastTotpCounter })
+        .from(usersTable)
+        .where(eq(usersTable.id, userId))
+        .limit(1);
+      const lastCounter = counterRows[0]?.lastTotpCounter ?? null;
+      const totpResult = verifyTotpCodeWithCounter(body.totpCode, user.totpSecret!, lastCounter);
+      if (!totpResult.valid) throw new UnauthorizedError("Invalid TOTP code");
+      totpCounterToSave = totpResult.matchedCounter;
     }
     const newHash = await hashPassword(body.newPassword);
     const now = new Date();
@@ -464,7 +473,12 @@ export const authService = {
     // still-valid old sessions (or vice versa).
     await db.transaction(async (tx) => {
       await tx.update(usersTable)
-        .set({ passwordHash: newHash, updatedAt: now, sessionsValidAfter: now })
+        .set({
+          passwordHash: newHash,
+          updatedAt: now,
+          sessionsValidAfter: now,
+          ...(totpCounterToSave != null ? { lastTotpCounter: totpCounterToSave } : {}),
+        })
         .where(eq(usersTable.id, userId));
       await tx.update(refreshTokensTable)
         .set({ revokedAt: now })

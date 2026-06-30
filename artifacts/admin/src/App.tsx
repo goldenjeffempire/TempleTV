@@ -347,6 +347,43 @@ function OpsAlertMonitor() {
   return null;
 }
 
+// ── SessionExpiredBanner ──────────────────────────────────────────────────────
+// Must render inside SSEProvider. Shows an in-app overlay when the SSE
+// provider has exhausted its token-refresh budget (session truly dead),
+// instead of silently redirecting. The user sees a clear "Session expired"
+// message and an explicit "Sign in again" button.
+function SessionExpiredBanner() {
+  const { sessionExpired } = useSSE();
+  if (!sessionExpired) return null;
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-background/80 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="session-expired-title">
+      <div className="w-full max-w-sm mx-4 flex flex-col items-center gap-5 text-center bg-card border rounded-xl p-8 shadow-xl">
+        <div className="w-12 h-12 rounded-full bg-amber-500/15 border border-amber-500/30 flex items-center justify-center">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-500" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+        </div>
+        <div className="space-y-1.5">
+          <h2 id="session-expired-title" className="text-base font-semibold tracking-tight">Session expired</h2>
+          <p className="text-sm text-muted-foreground leading-relaxed">Your session has ended. Please sign in again to continue.</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            try { sessionStorage.setItem("ttv_session_expired", "1"); } catch { /* ignore */ }
+            window.location.assign("/login");
+          }}
+          className="w-full h-9 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
+        >
+          Sign in again
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── StreamHealthMonitor ───────────────────────────────────────────────────────
 // Surfaces stream-health-degraded / stream-health-recovered SSE events as
 // toasts. Using the same toast id for degraded and recovered means the
@@ -471,6 +508,7 @@ function AuthenticatedApp() {
 
   return (
     <SSEProvider>
+      <SessionExpiredBanner />
       <SSEReconnectSync />
       <YouTubeQuotaMonitor />
       <OpsAlertMonitor />

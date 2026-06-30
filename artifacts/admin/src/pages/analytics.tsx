@@ -150,7 +150,7 @@ function useLiveViewerCount() {
 
   const { data, isError } = useQuery({
     queryKey: ["live-viewers"],
-    queryFn: () => api.get<{ channelId: string; count: number }>("/broadcast/viewers"),
+    queryFn: ({ signal }) => api.get<{ channelId: string; count: number }>("/broadcast/viewers", { signal }),
     refetchInterval: 30_000,
     staleTime: 25_000,
   });
@@ -187,7 +187,7 @@ export default function AnalyticsPage() {
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ["analytics-overview", range],
-    queryFn: () => api.get<AnalyticsOverview>(`/admin/analytics/overview?range=${range}`),
+    queryFn: ({ signal }) => api.get<AnalyticsOverview>(`/admin/analytics/overview?range=${range}`, { signal }),
     staleTime: 120_000,
     placeholderData: keepPreviousData,
   });
@@ -195,14 +195,14 @@ export default function AnalyticsPage() {
   const concurrentRange: RangeKey = range === "90d" ? "90d" : range === "30d" ? "30d" : "7d";
   const { data: concData, isLoading: concLoading, isError: concError, refetch: refetchConc } = useQuery({
     queryKey: ["analytics-concurrent", concurrentRange],
-    queryFn: () => api.get<ConcurrentViewers>(`/admin/analytics/concurrent?range=${concurrentRange}`),
+    queryFn: ({ signal }) => api.get<ConcurrentViewers>(`/admin/analytics/concurrent?range=${concurrentRange}`, { signal }),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   });
 
   const { data: platData, isLoading: platLoading, isError: platError, refetch: refetchPlat } = useQuery({
     queryKey: ["analytics-platform-trends", range],
-    queryFn: () => api.get<DailyPlatformTrends>(`/admin/analytics/platform-trends?range=${range}`),
+    queryFn: ({ signal }) => api.get<DailyPlatformTrends>(`/admin/analytics/platform-trends?range=${range}`, { signal }),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   });
@@ -266,7 +266,7 @@ export default function AnalyticsPage() {
 
   const { data: retentionData, isLoading: retentionLoading } = useQuery({
     queryKey: ["analytics-retention", retentionVideoId],
-    queryFn: () => api.get<RetentionData>(`/analytics/video/${retentionVideoId}/retention`),
+    queryFn: ({ signal }) => api.get<RetentionData>(`/analytics/video/${retentionVideoId}/retention`, { signal }),
     enabled: retentionVideoId.length > 0,
     staleTime: 120_000,
   });

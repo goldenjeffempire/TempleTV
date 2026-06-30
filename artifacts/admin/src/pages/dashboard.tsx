@@ -129,7 +129,7 @@ export default function Dashboard() {
   });
 
   const isLive = lastStatusPayload?.isLive ?? false;
-  const viewerCount = lastStatusPayload?.deviceCount ?? readyz?.broadcast?.viewerCount ?? 0;
+  const viewerCount = lastStatusPayload?.deviceCount ?? 0;
   const dbOk = readyz?.dependencies?.database === "ok";
   const pendingJobs = transcodingQueue?.jobs?.filter(j => ["queued", "encoding", "processing"].includes(j.status)) ?? [];
 

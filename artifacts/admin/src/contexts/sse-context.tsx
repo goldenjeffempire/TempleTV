@@ -61,6 +61,12 @@ interface SSEContextValue {
    * No-ops when already connected or while a connect() is in flight.
    */
   forceReconnect: () => void;
+  /**
+   * True when consecutive auth failures have exhausted the retry budget
+   * (session truly dead). The UI should surface an in-app "Session expired"
+   * banner rather than silently redirecting to /login.
+   */
+  sessionExpired: boolean;
 }
 
 const SSEContext = createContext<SSEContextValue | null>(null);
@@ -367,6 +373,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<SSEConnectionState>("connecting");
   const [lastStatusPayload, setLastStatusPayload] = useState<AdminLiveStatus | null>(null);
   const [recentActivity, setRecentActivity] = useState<SSEActivityEntry[]>([]);
+  const [sessionExpired, setSessionExpired] = useState(false);
 
   const esRef = useRef<EventSource | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -624,11 +631,12 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
           consecutiveAuthFailures.current++;
           if (consecutiveAuthFailures.current >= AUTH_FAIL_LIMIT) {
             // All token-refresh attempts failed — the session is truly dead.
-            // Set a flag so the login page can surface a "session expired"
-            // banner explaining why the user was redirected.
+            // Surface the in-app session-expired banner rather than
+            // silently redirecting — the user sees a clear explanation and
+            // a "Sign in again" button. The login page also checks the
+            // sessionStorage flag for banner continuity after the redirect.
             tokenStore.clear();
-            try { sessionStorage.setItem("ttv_session_expired", "1"); } catch { /* ignore */ }
-            window.location.assign("/login");
+            setSessionExpired(true);
           }
         }
       })
@@ -775,8 +783,8 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
   }, [connect]);
 
   const value = useMemo(
-    () => ({ state, subscribe, lastStatusPayload, recentActivity, forceReconnect }),
-    [state, subscribe, lastStatusPayload, recentActivity, forceReconnect],
+    () => ({ state, subscribe, lastStatusPayload, recentActivity, forceReconnect, sessionExpired }),
+    [state, subscribe, lastStatusPayload, recentActivity, forceReconnect, sessionExpired],
   );
 
   return <SSEContext.Provider value={value}>{children}</SSEContext.Provider>;

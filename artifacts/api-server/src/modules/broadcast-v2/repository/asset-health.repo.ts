@@ -4,7 +4,7 @@
  * CRUD for the queue_asset_health table — the persistent state machine
  * that tracks automated repair attempts for broadcast queue items.
  */
-import { eq, inArray, lte, sql, and, ne } from "drizzle-orm";
+import { eq, inArray, lt, lte, sql, and, ne } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
@@ -13,6 +13,13 @@ import type { QueueAssetHealthState, RepairLogEntry } from "@workspace/db";
 
 const MAX_LOG_ENTRIES = 50;
 const MAX_REPAIR_ATTEMPTS = 3;
+/**
+ * Maximum number of times a queue item may be auto-unblocked and re-enter
+ * the repair cycle. Once an item has been blocked this many times in its
+ * lifetime it is considered permanently broken and clearExpiredBlocked()
+ * will skip it — it requires explicit operator intervention.
+ */
+const MAX_LIFETIME_BLOCKS = 3;
 
 /** Back-off schedule for repair retries (ms). */
 const REPAIR_BACKOFF_MS = [
@@ -276,6 +283,11 @@ export const assetHealthRepo = {
         nextRetryAt: nextRetry,
         repairLog: newLog,
         updatedAt: now,
+        // Increment lifetime block counter when transitioning to blocked so
+        // clearExpiredBlocked() can skip items that have cycled too many times.
+        ...(newState === "blocked"
+          ? { lifecycleBlockCount: sql`${schema.queueAssetHealthTable.lifecycleBlockCount} + 1` }
+          : {}),
       })
       .where(eq(schema.queueAssetHealthTable.queueItemId, queueItemId))
       .returning();
@@ -544,6 +556,9 @@ export const assetHealthRepo = {
           and(
             eq(schema.queueAssetHealthTable.state, "blocked"),
             lte(schema.queueAssetHealthTable.updatedAt, cutoff),
+            // Skip items that have been blocked too many times — they are
+            // considered permanently broken and require operator intervention.
+            lt(schema.queueAssetHealthTable.lifecycleBlockCount, MAX_LIFETIME_BLOCKS),
           ),
         )
         .returning({ id: schema.queueAssetHealthTable.id });
@@ -685,5 +700,6 @@ export const assetHealthRepo = {
   },
 
   MAX_REPAIR_ATTEMPTS,
+  MAX_LIFETIME_BLOCKS,
   REPAIR_BACKOFF_MS,
 };

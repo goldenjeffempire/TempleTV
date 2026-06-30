@@ -89,7 +89,10 @@ let totalDeadAirMs = 0;
 let longestIncidentMs = 0;
 let trackerStartedAtMs = 0;
 let lastFrameReceivedAtMs = 0;
+/** True when the most recently received frame showed an off-air state. */
+let lastSnapOffAir = false;
 let livenessAlertActive = false;
+let secondaryWatchdogTimer: ReturnType<typeof setInterval> | null = null;
 let lastIncidentAlertMs = 0;
 let installed = false;
 let livenessTimer: ReturnType<typeof setInterval> | null = null;
@@ -194,12 +197,42 @@ export function installDeadAirTracker(): void {
   }, LIVENESS_CHECK_INTERVAL_MS);
   livenessTimer.unref?.();
 
+  // Secondary watchdog: independently re-checks the last-known snap state
+  // every 10 s. Catches the blind spot where the orchestrator sends a frame
+  // showing dead-air but the incident-open logic inside the frame handler
+  // misses it (e.g. a rapid burst of frames during state transition). Also
+  // catches the case where the orchestrator enters dead-air and then freezes,
+  // meaning no more frames arrive to drive the normal incident-close path.
+  const SECONDARY_WATCHDOG_INTERVAL_MS = 10_000;
+  secondaryWatchdogTimer = setInterval(() => {
+    if (!installed || lastFrameReceivedAtMs === 0) return;
+    if (lastSnapOffAir && !currentIncident) {
+      currentIncident = {
+        id:           randomUUID(),
+        startedAtMs:  lastFrameReceivedAtMs, // best estimate: last frame showed dead-air
+        endedAtMs:    null,
+        durationMs:   null,
+        reason:       "unknown",
+        recoveryMode: null,
+      };
+      lastIncidentAlertMs = 0;
+      logger.info(
+        "[dead-air-tracker] secondary watchdog opened dead-air incident (missed by frame handler)",
+      );
+    }
+  }, SECONDARY_WATCHDOG_INTERVAL_MS);
+  secondaryWatchdogTimer.unref?.();
+
   void import("./broadcast-orchestrator.js").then(({ broadcastOrchestrator }) => {
     broadcastOrchestrator.on("frame", (frame: V2ServerFrame) => {
       if (frame.type !== "snapshot") return;
       lastFrameReceivedAtMs = Date.now();
 
       const snap = frame.state;
+      lastSnapOffAir =
+        snap.mode === "queue" &&
+        snap.current === null &&
+        snap.override === null;
       const isOffAir =
         snap.mode === "queue" &&
         snap.current === null &&
@@ -251,6 +284,10 @@ export function uninstallDeadAirTracker(): void {
   if (livenessTimer) {
     clearInterval(livenessTimer);
     livenessTimer = null;
+  }
+  if (secondaryWatchdogTimer) {
+    clearInterval(secondaryWatchdogTimer);
+    secondaryWatchdogTimer = null;
   }
   installed = false;
 }

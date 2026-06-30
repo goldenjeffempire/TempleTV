@@ -65,6 +65,16 @@ export const queueAssetHealthTable = pgTable("queue_asset_health", {
   autoRepairPaused: boolean("auto_repair_paused").notNull().default(false),
 
   /**
+   * Cumulative count of how many times this item has been transitioned to
+   * `blocked` state across all repair cycles. Unlike `repairAttempts` (which
+   * resets to 0 on each auto-unblock), this counter is monotonically
+   * increasing. Once it reaches the repo's MAX_LIFETIME_BLOCKS threshold the
+   * item will no longer be auto-unblocked after TTL expiry — it requires
+   * explicit operator intervention to re-enter the repair cycle.
+   */
+  lifecycleBlockCount: integer("lifecycle_block_count").notNull().default(0),
+
+  /**
    * Structured audit log of all repair actions (automated + manual).
    * Array of { ts, actor, action, detail, outcome } entries.
    * Capped at 50 entries (oldest pruned).

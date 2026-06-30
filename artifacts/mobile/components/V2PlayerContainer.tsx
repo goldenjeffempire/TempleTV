@@ -114,6 +114,7 @@ import type { MobileBufferState } from "@workspace/player-core/adapters/mobile";
 import { useNetworkContext } from "@/context/NetworkContext";
 import { enqueueTelemetry, flushTelemetryBuffer } from "@/lib/telemetryBuffer";
 import { hydrationReady, isHydrationDone } from "@/lib/mobileBroadcastStorage";
+import { waitForAudioSession } from "@/lib/audio-session";
 import {
   isInPictureInPictureMode,
   updatePipParams,
@@ -1619,8 +1620,22 @@ export function V2PlayerContainer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Audio session gate: ensure the root layout's Audio.setAudioModeAsync has
+  // completed before the player session starts. On cold-start deep-links the
+  // player screen can mount before the layout's useEffect fires; starting
+  // playback before the audio session is configured causes silent failures
+  // or "audio session already active" errors on iOS.
+  const [audioSessionReady, setAudioSessionReady] = useState(false);
+  useEffect(() => {
+    let mounted = true;
+    waitForAudioSession()
+      .then(() => { if (mounted) setAudioSessionReady(true); })
+      .catch(() => { if (mounted) setAudioSessionReady(true); });
+    return () => { mounted = false; };
+  }, []);
+
   const { snapshot, connected, buffers, reportBufferEvent, forceReconnect, forceRebind, notifyOnline } =
-    useV2BroadcastNative({ baseUrl: effectiveBaseUrl, enabled: storageReady });
+    useV2BroadcastNative({ baseUrl: effectiveBaseUrl, enabled: storageReady && audioSessionReady });
 
   // Network context — drives network-aware banner text and immediate
   // reconnect on signal recovery (complements the AppState-based nudge).
