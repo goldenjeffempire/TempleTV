@@ -190,6 +190,7 @@ class ScheduledNotificationDispatcher {
       }
     } catch (err) {
       logger.error({ err }, "dispatcher tick failed (will retry next interval)");
+      throw err; // propagate so supervisor counts consecutive failures and opens circuit
     } finally {
       this.running = false;
     }
