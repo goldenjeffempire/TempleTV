@@ -29,8 +29,6 @@ import { autoHealMonitor } from "./engine/auto-heal-monitor.js";
 import { autohealRoutes } from "./io/autoheal.routes.js";
 import { uploadQueueReconciler } from "../broadcast/upload-queue-reconciler.js";
 import { runDeepRecovery } from "../transcoder/video-recovery.service.js";
-import { startNotificationDispatcher } from "../scheduled-notifications/dispatcher.js";
-import { startYoutubeSyncDispatcher } from "../youtube-sync/youtube-sync.dispatcher.js";
 
 export { getExhaustionStatus, getAutoRefillStatus, getStorageStats };
 export { getDeadAirStats };
@@ -475,19 +473,6 @@ function startSupervisedWorkers(): void {
     backoffMs: [5 * 60_000, 15 * 60_000, 30 * 60_000],
     onCircuitOpen: makeCircuitOpenCallback("video-deep-recovery"),
   });
-
-  // Notification dispatcher: monitors scheduled_notifications for due rows and
-  // dispatches them via push/email. Supervisor provides circuit breaking so a
-  // flapping email/push service doesn't permanently silence the polling loop.
-  startNotificationDispatcher();
-
-  // YouTube sync dispatcher: syncs managed_videos from the YouTube channel on
-  // YOUTUBE_SYNC_INTERVAL_MINS cadence (default 15 min). Gated by YOUTUBE_SYNC_DISABLE.
-  if (!env.YOUTUBE_SYNC_DISABLE) {
-    startYoutubeSyncDispatcher();
-  } else {
-    logger.info("[broadcast-v2] youtube-sync dispatcher disabled by YOUTUBE_SYNC_DISABLE");
-  }
 
   // Queue exhaustion monitor + auto-refill run as lightweight interval-based
   // processes (not supervised workers) since they are computation-light and

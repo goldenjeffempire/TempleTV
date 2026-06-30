@@ -11,6 +11,8 @@ import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, ensureMidni
 import { closeRedis } from "./infrastructure/redis.js";
 import { sseCounter } from "./infrastructure/sse-counter.js";
 import { transcoderDispatcher } from "./modules/transcoder/transcoder.dispatcher.js";
+import { startNotificationDispatcher } from "./modules/scheduled-notifications/dispatcher.js";
+import { startYoutubeSyncDispatcher } from "./modules/youtube-sync/youtube-sync.dispatcher.js";
 import { cleanupWorker } from "./modules/transcoder/cleanup.service.js";
 import { pruneAllExpiredRefreshTokens } from "./modules/auth/auth.service.js";
 import { recoverStuckPendingNotifications } from "./modules/notifications/notifications.service.js";
@@ -190,6 +192,19 @@ async function seedPrimaryChannelIfAbsent(): Promise<void> {
 }
 
 async function startWorkers() {
+  // Notification dispatcher — supervised poll loop for scheduled_notifications.
+  // Registered here (not in startSupervisedWorkers) so it runs in both
+  // RUN_MODE=worker and RUN_MODE=all, not just when the broadcast engine starts.
+  startNotificationDispatcher();
+
+  // YouTube sync dispatcher — supervised channel sync loop.
+  // Same reasoning: must run in RUN_MODE=worker too.
+  if (!env.YOUTUBE_SYNC_DISABLE) {
+    startYoutubeSyncDispatcher();
+  } else {
+    logger.info("youtube-sync dispatcher disabled by YOUTUBE_SYNC_DISABLE");
+  }
+
   if (env.TRANSCODER_DISABLE) {
     logger.info(
       "transcoder dispatcher disabled by TRANSCODER_DISABLE — skipping ffmpeg check and job polling",
@@ -309,6 +324,11 @@ async function startWorkers() {
 }
 
 async function stopWorkers() {
+  // Stop all supervisor-managed workers spawned in startWorkers().
+  // In RUN_MODE=all, stopBroadcastV2() already called workerSupervisor.stopAll()
+  // so this is a no-op there. In RUN_MODE=worker (no broadcast-v2 lifecycle),
+  // this provides the necessary graceful cleanup.
+  workerSupervisor.stopAll();
   transcoderDispatcher.stop();
   cleanupWorker.stop();
   try {
