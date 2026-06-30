@@ -4,11 +4,20 @@
  * Background worker that periodically scans storage for anomalies the hot-path
  * guards cannot catch after the fact.
  *
+ * Philosophy: VERIFY-AND-SELF-HEAL FIRST, destroy only as a last resort.
+ * Every anomaly is first checked for lossless recoverability (are the upload
+ * parts still staged?) and rebuilt via the normal reassembly path when
+ * possible. A video is permanently failed only when no parts remain to
+ * recover from — the monitor's primary job is to keep healthy uploads
+ * healthy, not to clean up corruption.
+ *
  * Scans:
  *   1. Corrupt blobs — storage_blobs rows where size_bytes = 0 or data IS NULL.
  *      Avoided the original octet_length(data) full-BYTEA-scan: the recorded
  *      size_bytes column is used for fast detection; a bounded mismatch check
  *      runs only if time budget permits, with a hard DB-level statement timeout.
+ *      Recoverable blobs (upload parts still staged) are rebuilt via session
+ *      reset; only truly unrecoverable blobs are deleted + marked CORRUPT_SOURCE.
  *
  *   2. Videos with confirmed blob reference (s3MirroredAt IS NOT NULL) but no
  *      matching row in storage_blobs — these produce a 404 on every playback
@@ -114,6 +123,62 @@ function isExpired(deadlineMs: number, label: string): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * Reassembly availability check — shared self-healing primitive.
+ *
+ * Given a video id, locate its upload session and count how many BYTEA parts
+ * remain in storage_upload_parts. A video is *recoverable* when at least
+ * `total_chunks` parts are still staged: the existing reassembly path can
+ * rebuild a fully-verified blob from them with zero data loss.
+ *
+ * Returns null when no session/upload_id exists (nothing to recover from).
+ * The per-part non-empty / sequence / SHA-256 validation is re-run inside
+ * completeMultipartUpload during the actual reassembly, so a count ≥ total
+ * is a sufficient (and cheap, BYTEA-free) pre-check here.
+ */
+async function findReassemblyContext(videoId: string): Promise<{
+  sessionId: string;
+  uploadId: string;
+  totalChunks: number;
+  partsPresent: number;
+  recoverable: boolean;
+} | null> {
+  type SessionRow = { session_id: string; total_chunks: number; upload_id: string | null };
+  const sessionResult = await withTimeout(
+    db.execute<SessionRow>(sql`
+      SELECT session_id, total_chunks, upload_id
+      FROM upload_sessions
+      WHERE completed_video_id = ${videoId}
+      LIMIT 1
+    `).catch(() => null),
+    FAST_QUERY_TIMEOUT_MS,
+    `reassembly-find-session:${videoId}`,
+  );
+  const [session] = extractRows<SessionRow>(sessionResult);
+  if (!session?.upload_id) return null;
+
+  type CntRow = { cnt: string };
+  const cntResult = await withTimeout(
+    db.execute<CntRow>(sql`
+      SELECT COUNT(*)::text AS cnt
+      FROM storage_upload_parts
+      WHERE upload_id = ${session.upload_id}
+    `).catch(() => null),
+    FAST_QUERY_TIMEOUT_MS,
+    `reassembly-count-parts:${videoId}`,
+  );
+  const [cntRow] = extractRows<CntRow>(cntResult);
+  const partsPresent = parseInt(cntRow?.cnt ?? "0", 10);
+  const totalChunks = session.total_chunks ?? 1;
+  return {
+    sessionId: session.session_id,
+    uploadId: session.upload_id,
+    totalChunks,
+    partsPresent,
+    recoverable: partsPresent >= totalChunks,
+  };
 }
 
 // ── Pass 1: Corrupt blobs ─────────────────────────────────────────────────────
@@ -242,6 +307,120 @@ async function scanCorruptBlobs(deadlineMs: number): Promise<number> {
         `corrupt-blob-find-video:${key}`,
       ) ?? [];
 
+      // ── Verify-first: attempt lossless self-healing before destruction ──
+      // A corrupt blob whose upload parts are still staged can be rebuilt
+      // byte-for-byte. Rather than permanently failing the video, delete only
+      // the corrupt blob (so reassembly starts from a clean slate) and reset
+      // the session + video so the existing reassembly path produces a fresh,
+      // fully-validated blob. Permanent failure is reserved for the case where
+      // no parts remain to recover from — destruction is the last resort, not
+      // the first response.
+      const recovery = video ? await findReassemblyContext(video.id) : null;
+
+      if (video && recovery?.recoverable) {
+        // Re-enroll the session into the periodic assembly-reconciliation path
+        // so the blob is *actually* rebuilt, not merely state-mutated.
+        //
+        // runAssemblyReconciliation() (chunked-upload.routes.ts) claims
+        // sessions WHERE status='uploading' AND completed_video_id IS NOT NULL
+        // AND assembly_attempts IN (0, MAX) once their backoff window elapses,
+        // then calls spawnAssemblyRetry() → completeMultipartUpload() which
+        // rebuilds and fully re-validates the blob from the staged parts.
+        // We therefore set:
+        //   • status='uploading'                — makes it a reconciliation candidate
+        //   • assembly_attempts = 1             — a fresh recovery budget always in
+        //                                         (0, MAX); a prior value of MAX would
+        //                                         fail lt(attempts, MAX) and strand it
+        //   • updated_at aged 1h                — exceeds every backoff window → next tick picks it up
+        //
+        // No infinite-loop risk: once re-enrolled the session is 'uploading', so the
+        // monitor's status='completed' guard cannot re-claim it; reassembly success
+        // heals it, and MAX failures move it to ASSEMBLY_FAILED.
+        //
+        // The guard `AND status='completed'` + RETURNING makes this race-safe:
+        // if another worker already moved the session (uploading/assembling),
+        // zero rows return and we skip WITHOUT deleting the blob or touching
+        // the video, leaving the row untouched for re-evaluation next pass.
+        const resetResult = await withTimeout(
+          db.execute<{ session_id: string }>(sql`
+            UPDATE upload_sessions
+            SET status = 'uploading',
+                assembly_attempts = 1,
+                updated_at = NOW() - INTERVAL '1 hour'
+            WHERE session_id = ${recovery.sessionId}
+              AND status = 'completed'
+            RETURNING session_id
+          `),
+          REMEDIATION_TIMEOUT_MS,
+          `corrupt-blob-reset-session:${recovery.sessionId}`,
+        );
+        const claimed = extractRows<{ session_id: string }>(resetResult).length > 0;
+
+        if (!claimed) {
+          logger.info(
+            { key, videoId: video.id, sessionId: recovery.sessionId },
+            "[integrity] corrupt blob recovery skipped — session no longer 'completed' " +
+            "(claimed by another worker); will re-evaluate next pass",
+          );
+          continue;
+        }
+
+        // Session enrolled for reassembly. Remove the corrupt blob so the
+        // rebuilt blob is written cleanly (completeMultipartUpload also deletes
+        // the destination key first, but removing it now eliminates the corrupt
+        // 404/partial blob immediately), and reset the video to pending.
+        await withTimeout(
+          db.execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`),
+          REMEDIATION_TIMEOUT_MS,
+          `corrupt-blob-delete-for-recovery:${key}`,
+        );
+
+        await withTimeout(
+          db
+            .update(videos)
+            .set({
+              s3MirroredAt: null,
+              transcodingStatus: "none",
+              transcodingErrorCode: null,
+              transcodingErrorMessage: null,
+            })
+            .where(eq(videos.id, video.id)),
+          REMEDIATION_TIMEOUT_MS,
+          `corrupt-blob-reset-video:${video.id}`,
+        );
+
+        adminEventBus.push("videos-library-updated", {
+          videoId: video.id,
+          reason: "integrity-scan-corrupt-blob-recovery",
+        });
+
+        logger.warn(
+          {
+            key,
+            videoId: video.id,
+            sessionId: recovery.sessionId,
+            partsPresent: recovery.partsPresent,
+            totalChunks: recovery.totalChunks,
+            size_bytes: Number(size_bytes),
+            actual_bytes: Number(actual_bytes),
+          },
+          "[integrity] corrupt blob — upload parts present, session re-enrolled for self-healing reassembly (no data loss)",
+        );
+
+        adminEventBus.push("ops-alert", {
+          level: "warn",
+          component: "upload-integrity-monitor",
+          message:
+            `Corrupt storage blob at key=${key} is recoverable: ` +
+            `${recovery.partsPresent}/${recovery.totalChunks} upload parts still staged. ` +
+            `Session re-enrolled for automatic reassembly — no data loss, video not failed.`,
+        });
+
+        fixed++;
+        continue;
+      }
+
+      // ── No recovery possible — mark failed and remove the corrupt blob ──
       if (video && video.transcodingStatus !== "failed") {
         await withTimeout(
           db
@@ -251,7 +430,8 @@ async function scanCorruptBlobs(deadlineMs: number): Promise<number> {
               transcodingErrorCode: "CORRUPT_SOURCE",
               transcodingErrorMessage:
                 `Storage integrity scan found a corrupt blob at key=${key}: ` +
-                `recorded size_bytes=${size_bytes} but actual data is ${actual_bytes} bytes. ` +
+                `recorded size_bytes=${size_bytes} but actual data is ${actual_bytes} bytes, ` +
+                `and no upload parts remain to rebuild it. ` +
                 `Delete this video and re-upload to recover.`,
             })
             .where(eq(videos.id, video.id)),
@@ -279,15 +459,15 @@ async function scanCorruptBlobs(deadlineMs: number): Promise<number> {
           actual_bytes: Number(actual_bytes),
           videoId: video?.id ?? null,
         },
-        "[integrity] corrupt blob deleted — video marked CORRUPT_SOURCE",
+        "[integrity] corrupt blob unrecoverable (no parts) — deleted, video marked CORRUPT_SOURCE",
       );
 
       adminEventBus.push("ops-alert", {
         level: "error",
         component: "upload-integrity-monitor",
         message:
-          `Corrupt storage blob detected and removed: key=${key} ` +
-          `(recorded ${size_bytes} bytes, actual ${actual_bytes} bytes). ` +
+          `Unrecoverable corrupt storage blob removed: key=${key} ` +
+          `(recorded ${size_bytes} bytes, actual ${actual_bytes} bytes, no upload parts remain). ` +
           (video ? `Video ${video.id} marked CORRUPT_SOURCE.` : "No referencing video found."),
       });
 
@@ -374,13 +554,23 @@ async function scanMissingBlobs(deadlineMs: number): Promise<number> {
       }
 
       if (hasPartsForReassembly && session) {
-        // Parts still available — reset the session to trigger auto-reconciliation.
-        await withTimeout(
-          db.execute(sql`
+        // Parts still available — re-enroll the session into the periodic
+        // assembly-reconciliation path (status='uploading' + assembly_attempts ≥ 1
+        // + aged updated_at) so runAssemblyReconciliation() actually rebuilds the
+        // blob on its next tick. (A bare status='assembling' reset would only be
+        // re-spawned on the next server restart via the onReady hook, leaving a
+        // 24/7 server's row stuck until then.) Race-safe via the status='completed'
+        // guard + RETURNING: if another worker already moved the session, we skip
+        // without touching the video row.
+        const reEnroll = await withTimeout(
+          db.execute<{ session_id: string }>(sql`
             UPDATE upload_sessions
-            SET status = 'assembling', updated_at = NOW()
+            SET status = 'uploading',
+                assembly_attempts = 1,
+                updated_at = NOW() - INTERVAL '1 hour'
             WHERE session_id = ${session.session_id}
               AND status = 'completed'
+            RETURNING session_id
           `).catch((err) => {
             logger.warn({ err, sessionId: session.session_id }, "[integrity] failed to reset upload session");
             throw err;
@@ -388,6 +578,15 @@ async function scanMissingBlobs(deadlineMs: number): Promise<number> {
           REMEDIATION_TIMEOUT_MS,
           `missing-blob-reset-session:${session.session_id}`,
         );
+
+        if (extractRows<{ session_id: string }>(reEnroll).length === 0) {
+          logger.info(
+            { videoId: id, objectPath: object_path, sessionId: session.session_id },
+            "[integrity] missing blob recovery skipped — session no longer 'completed' " +
+            "(claimed by another worker); will re-evaluate next pass",
+          );
+          continue;
+        }
 
         await withTimeout(
           db
@@ -410,7 +609,7 @@ async function scanMissingBlobs(deadlineMs: number): Promise<number> {
 
         logger.warn(
           { videoId: id, objectPath: object_path, sessionId: session.session_id },
-          "[integrity] missing blob — upload parts present, session reset for auto-reassembly",
+          "[integrity] missing blob — upload parts present, session re-enrolled for auto-reassembly",
         );
       } else {
         // No parts remain — permanently mark as failed.
