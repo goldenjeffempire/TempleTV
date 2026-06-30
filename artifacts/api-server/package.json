@@ -16,6 +16,7 @@
     "openapi": "node --enable-source-maps --import ./dist/instrument.mjs ./dist/openapi.mjs"
   },
   "dependencies": {
+    "@xmldom/xmldom": "^0.9.10",
     "@fastify/compress": "^8.3.1",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.0.1",

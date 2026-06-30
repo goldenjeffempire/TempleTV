@@ -17,8 +17,15 @@
 
 import EventEmitter from "node:events";
 import https from "node:https";
+import { DOMParser } from "@xmldom/xmldom";
 import { trackQuota, isQuotaExhausted } from "../youtube-sync/youtube-sync.service.js";
 import { logger } from "../../infrastructure/logger.js";
+
+// Shared parser instance — DOMParser is stateless and safe to reuse.
+// onError: () => {} suppresses non-fatal XML warnings (e.g. unknown namespace
+// prefixes like yt:).  Fatal parse errors still throw ParseError so the outer
+// try/catch in parseRssResponse() can degrade gracefully.
+const _xmlParser = new DOMParser({ onError: () => {} });
 
 export interface YtLiveState {
   isLive: boolean;
@@ -92,28 +99,52 @@ function parseApiResponse(json: string): Omit<YtLiveState, "checkedAt"> {
   }
 }
 
-/** Parse the YouTube RSS feed XML for live broadcasts. */
-function parseRssResponse(xml: string): Omit<YtLiveState, "checkedAt"> {
+/**
+ * Parse the YouTube RSS feed XML for live broadcasts.
+ *
+ * Uses @xmldom/xmldom's DOMParser instead of string splitting + regex so that:
+ *   • CDATA-wrapped titles/content are handled natively via textContent
+ *   • Whitespace variations around element values are normalised via .trim()
+ *   • Completely malformed XML throws ParseError which is caught below and
+ *     returned as detectionMethod:"rss-error" (graceful degradation)
+ *   • Namespace-prefixed tags (yt:videoId, yt:liveBroadcastContent) are
+ *     matched by local name regardless of the xmlns declaration order
+ *
+ * Exported for unit testing.
+ */
+export function parseRssResponse(xml: string): Omit<YtLiveState, "checkedAt"> {
   try {
-    // Match entries with <yt:videoId>…</yt:videoId> and <yt:liveBroadcastContent>live</yt:liveBroadcastContent>
-    const entries = xml.split("<entry>").slice(1);
-    for (const entry of entries) {
-      const liveMatch = /<yt:liveBroadcastContent>\s*live\s*<\/yt:liveBroadcastContent>/i.test(entry);
-      if (!liveMatch) continue;
-      const vidMatch = /<yt:videoId>([^<]+)<\/yt:videoId>/.exec(entry);
-      const titleMatch = /<title>([^<]+)<\/title>/.exec(entry);
-      if (vidMatch) {
-        return {
-          isLive: true,
-          videoId: vidMatch[1]?.trim() ?? null,
-          title: titleMatch ? decodeHtmlEntities(titleMatch[1]?.trim() ?? "") : null,
-          viewerCount: null,
-          detectionMethod: "youtube-rss",
-        };
-      }
+    const doc = _xmlParser.parseFromString(xml, "text/xml");
+
+    const entries = doc.getElementsByTagName("entry");
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (!entry) continue;
+
+      // yt:liveBroadcastContent must equal "live" (case-insensitive, trim whitespace)
+      const lbcEls = entry.getElementsByTagName("yt:liveBroadcastContent");
+      const lbc = lbcEls.length > 0 ? (lbcEls[0]?.textContent ?? "").trim().toLowerCase() : "";
+      if (lbc !== "live") continue;
+
+      // yt:videoId — required; skip entry if absent or empty
+      const vidEls = entry.getElementsByTagName("yt:videoId");
+      const videoId = vidEls.length > 0 ? (vidEls[0]?.textContent ?? "").trim() : "";
+      if (!videoId) continue;
+
+      // <title> — take the first one inside this entry (not the feed-level title)
+      const titleEls = entry.getElementsByTagName("title");
+      const rawTitle = titleEls.length > 0 ? (titleEls[0]?.textContent ?? "").trim() : "";
+      // textContent already unwraps CDATA; decodeHtmlEntities handles &amp; etc
+      const title = rawTitle ? decodeHtmlEntities(rawTitle) : null;
+
+      return { isLive: true, videoId, title, viewerCount: null, detectionMethod: "youtube-rss" };
     }
+
     return { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "youtube-rss" };
   } catch {
+    // ParseError (fatal malformed XML) or any unexpected runtime error.
+    // Always degrade gracefully: treat as "no live stream found" so the
+    // orchestrator keeps the last-known state rather than crashing.
     return { isLive: false, videoId: null, title: null, viewerCount: null, detectionMethod: "rss-error" };
   }
 }
