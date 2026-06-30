@@ -17,6 +17,28 @@ const { withAndroidManifest } = require("@expo/config-plugins");
 module.exports = function withAndroidActivityFlags(config) {
   return withAndroidManifest(config, (mod) => {
     const manifest = mod.modResults;
+
+    // Advertise Picture-in-Picture capability at the manifest level with
+    // required="false" so the Play Console understands the app uses PiP WITHOUT
+    // excluding the (rare) devices that lack it from installing. The activity
+    // attribute below is what actually enables PiP; this declaration is the
+    // documented best-practice companion. We dedupe so re-runs are idempotent.
+    if (!manifest.manifest["uses-feature"]) {
+      manifest.manifest["uses-feature"] = [];
+    }
+    const usesFeature = manifest.manifest["uses-feature"];
+    const hasPipFeature = usesFeature.some(
+      (f) => f.$?.["android:name"] === "android.software.picture_in_picture",
+    );
+    if (!hasPipFeature) {
+      usesFeature.push({
+        $: {
+          "android:name": "android.software.picture_in_picture",
+          "android:required": "false",
+        },
+      });
+    }
+
     const application = manifest.manifest.application?.[0];
     if (!application) return mod;
 

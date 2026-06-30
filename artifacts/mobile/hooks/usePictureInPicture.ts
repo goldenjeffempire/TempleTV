@@ -162,8 +162,19 @@ export function usePictureInPicture(
       }
 
       // Auto-enter PiP when the app is backgrounded (user pressed Home / switched apps).
+      //
+      // This JS-driven manual entry is the fallback for Android 8–11 (API 26–30),
+      // which lack setAutoEnterEnabled. On Android 12+ (API 31+) the native
+      // module arms system-driven auto-enter (see the arming effect below), so we
+      // skip the manual attempt there entirely — the OS handles it more reliably
+      // and a manual call would only ever be a benign redundant request.
+      const apiLevel =
+        typeof Platform.Version === "number"
+          ? Platform.Version
+          : parseInt(String(Platform.Version), 10) || 0;
       if (
         autoEnterRef.current &&
+        apiLevel < 31 &&
         (nextState === "background" || nextState === "inactive") &&
         !inPip
       ) {
