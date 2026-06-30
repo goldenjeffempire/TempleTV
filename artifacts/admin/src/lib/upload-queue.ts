@@ -166,6 +166,24 @@ interface WorkerState {
 const MAX_CONCURRENT_FILES = 3;
 const MAX_CHUNK_RETRIES = 6;
 
+/**
+ * Transient-failure auto-resume policy.
+ *
+ * When a worker fails with a *transient* error (network drop, server restart,
+ * 5xx, server-side 499 "client disconnected", stall, timeout) it is NOT marked
+ * permanently failed. Instead it is parked in the "paused" state (with
+ * wasUserPaused=false) and a backoff timer automatically resumes it — reusing
+ * the same sessionId so the server-side resume check skips already-uploaded
+ * chunks. This lets multi-GB uploads ride out an API restart that drops the
+ * connection mid-chunk, instead of dying with "Client disconnected".
+ *
+ * The attempt counter resets to zero whenever the worker makes forward progress
+ * (a successful resume that uploads at least one more chunk), so only *sustained*
+ * unreachability (server genuinely down for ~30 min) eventually gives up.
+ */
+const MAX_TRANSIENT_RESUMES = 60;
+const TRANSIENT_RESUME_BACKOFF_MS = [5_000, 10_000, 15_000, 30_000];
+
 function getAdaptiveParams(): {
   chunkSize: number;
   maxConcurrent: number;
@@ -289,6 +307,15 @@ class UploadQueueEngine {
   /** IDs of items that were auto-paused because the network went offline. */
   private networkPausedIds = new Set<string>();
   private _beforeUnloadInstalled = false;
+
+  /**
+   * Pending backoff timers keyed by item id for the transient auto-resume
+   * cycle. Cleared whenever the item is paused/cancelled/dismissed/completed so
+   * a parked item never resumes after the user takes manual control.
+   */
+  private transientResumeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Consecutive transient resume attempts per item (reset on forward progress). */
+  private transientResumeAttempts = new Map<string, number>();
 
   /**
    * Set to true once the IDB restore Promise settles (success or empty).
@@ -465,6 +492,93 @@ class UploadQueueEngine {
     } else {
       this._storageReadyCallbacks.push(resume);
     }
+  }
+
+  /**
+   * Classify a worker failure as transient (recoverable by retrying later) vs.
+   * permanent. Transient = network drop, API restart, 5xx, server-side 499
+   * ("client disconnected"), stall, or timeout — anything that resolves on its
+   * own once the server is reachable again. Permanent = fatal (auth) or hard
+   * 4xx (validation / not-found), which retrying cannot fix.
+   */
+  private _isTransientError(err: Error & { transient?: boolean; fatal?: boolean; code?: string }): boolean {
+    if (!err) return false;
+    if (err.fatal) return false;
+    if (err.code === FINALIZE_ONLY_ERROR) return false; // handled by finalizeOnly retry path
+    if (err.transient) return true;
+    // Message fallback for errors that crossed an async boundary without the tag
+    // (e.g. the server's 499 body "Client disconnected …").
+    return /client disconnect|network error|stalled|timed out|connection (reset|lost|refused)|failed to fetch|load failed/i
+      .test(err.message ?? "");
+  }
+
+  /**
+   * Cancel any pending transient auto-resume for an item and forget its attempt
+   * counter. Called when the user takes manual control (pause/cancel/dismiss/
+   * retry) or when the item completes.
+   */
+  private _clearTransientResume(id: string): void {
+    const t = this.transientResumeTimers.get(id);
+    if (t !== undefined) {
+      clearTimeout(t);
+      this.transientResumeTimers.delete(id);
+    }
+    this.transientResumeAttempts.delete(id);
+  }
+
+  /**
+   * Park a worker that failed transiently and schedule an automatic resume with
+   * exponential backoff. Keeps the same sessionId so the server-side resume
+   * check skips already-uploaded chunks. Returns true when a resume was
+   * scheduled, false when the retry budget is exhausted (caller should then mark
+   * the item permanently failed).
+   */
+  private _scheduleTransientResume(id: string): boolean {
+    const item = this.items.get(id);
+    if (!item) return false;
+
+    const attempts = (this.transientResumeAttempts.get(id) ?? 0) + 1;
+    if (attempts > MAX_TRANSIENT_RESUMES) {
+      this._clearTransientResume(id);
+      return false;
+    }
+    this.transientResumeAttempts.set(id, attempts);
+
+    // Park the item in a paused state but with wasUserPaused=false so the panel
+    // shows it as auto-recovering, not user-paused, and a page reload's
+    // autoResumeInterrupted() pass will still pick it up.
+    this.update(id, {
+      status: "paused",
+      wasUserPaused: false,
+      speed: 0,
+      eta: 0,
+      error: `Connection lost — reconnecting automatically (attempt ${attempts})…`,
+    });
+
+    const backoff =
+      TRANSIENT_RESUME_BACKOFF_MS[
+        Math.min(attempts - 1, TRANSIENT_RESUME_BACKOFF_MS.length - 1)
+      ];
+
+    const prior = this.transientResumeTimers.get(id);
+    if (prior !== undefined) clearTimeout(prior);
+
+    const timer = setTimeout(() => {
+      this.transientResumeTimers.delete(id);
+      const cur = this.items.get(id);
+      // The user may have cancelled/dismissed/paused in the meantime.
+      if (!cur || cur.status !== "paused" || cur.wasUserPaused) return;
+      // Still offline — defer to the network-online handler instead of spinning.
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        this.networkPausedIds.add(id);
+        return;
+      }
+      this.resume(id);
+    }, backoff);
+
+    this.transientResumeTimers.set(id, timer);
+    this.notify();
+    return true;
   }
 
   // ── Subscription ───────────────────────────────────────────────────────────
@@ -644,7 +758,22 @@ class UploadQueueEngine {
   pause(id: string): void {
     const ws = this.workerStates.get(id);
     const item = this.items.get(id);
-    if (!item || !ws) return;
+    if (!item) return;
+    // If the item is parked awaiting a transient auto-resume (either a pending
+    // backoff timer, or deferred into networkPausedIds because it went offline
+    // mid-backoff), a user "pause" takes manual control: cancel the pending
+    // auto-resume and convert it to a genuine user pause so it stays paused —
+    // even across a later "online" event — until the user resumes.
+    if (
+      item.status === "paused" &&
+      (this.transientResumeTimers.has(id) || this.networkPausedIds.has(id))
+    ) {
+      this._clearTransientResume(id);
+      this.networkPausedIds.delete(id);
+      this.update(id, { wasUserPaused: true, error: null });
+      return;
+    }
+    if (!ws) return;
     if (item.status !== "uploading" && item.status !== "finalizing") return;
     // Mark as user-paused BEFORE aborting so the runUpload catch block's
     // update({ status: "paused" }) picks up wasUserPaused=true and persists
@@ -670,6 +799,10 @@ class UploadQueueEngine {
     const ws = this.workerStates.get(id);
     const item = this.items.get(id);
     if (!item) return;
+    // Stop any pending transient auto-resume so a cancelled upload never
+    // springs back to life.
+    this._clearTransientResume(id);
+    this.networkPausedIds.delete(id);
     if (ws && !ws.paused) {
       ws.cancelCtrl.abort();
       // runUpload catch handles the status update
@@ -683,6 +816,8 @@ class UploadQueueEngine {
     const item = this.items.get(id);
     if (!item) return;
     if (item.status !== "failed" && item.status !== "cancelled") return;
+    // A manual retry resets the transient auto-resume budget.
+    this._clearTransientResume(id);
 
     if (item.finalizeOnly) {
       // All chunks are already on the server — skip re-upload, just re-call /finalize
@@ -730,6 +865,8 @@ class UploadQueueEngine {
     const item = this.items.get(id);
     if (!item) return;
     if (item.status === "uploading" || item.status === "finalizing") return; // use cancel instead
+    this._clearTransientResume(id);
+    this.networkPausedIds.delete(id);
     this.items.delete(id);
     this.workerStates.delete(id);
     removePersistedSession(id).catch(() => {});
@@ -900,6 +1037,9 @@ class UploadQueueEngine {
     const confirmChunk = (chunkIndex: number, chunkBytes: number) => {
       confirmedBytes += chunkBytes;
       inFlightMap.delete(chunkIndex);
+      // Forward progress — reset the transient auto-resume budget so a single
+      // long upload that survives several brief outages never exhausts it.
+      this.transientResumeAttempts.delete(id);
       scheduleUpdate();
     };
 
@@ -980,7 +1120,7 @@ class UploadQueueEngine {
               clearInFlight(chunkIndex);
               scheduleUpdate();
               xhr.abort();
-              reject(new Error(`Chunk ${chunkIndex} upload stalled — no progress for ${STALL_MS / 1000} s`));
+              reject(Object.assign(new Error(`Chunk ${chunkIndex} upload stalled — no progress for ${STALL_MS / 1000} s`), { transient: true }));
             }, STALL_MS);
             const resetStall = () => {
               if (stallTimer !== null) clearTimeout(stallTimer);
@@ -989,7 +1129,7 @@ class UploadQueueEngine {
                 clearInFlight(chunkIndex);
                 scheduleUpdate();
                 xhr.abort();
-                reject(new Error(`Chunk ${chunkIndex} upload stalled — no progress for ${STALL_MS / 1000} s`));
+                reject(Object.assign(new Error(`Chunk ${chunkIndex} upload stalled — no progress for ${STALL_MS / 1000} s`), { transient: true }));
               }, STALL_MS);
             };
             const clearStall = () => {
@@ -1034,7 +1174,10 @@ class UploadQueueEngine {
               clearStall();
               clearInFlight(chunkIndex);
               scheduleUpdate();
-              reject(new Error("Network error during chunk upload"));
+              // A network-level XHR error (connection dropped, server restarting,
+              // reverse-proxy reset) is transient — tag it so the worker auto-
+              // resumes instead of failing the whole item permanently.
+              reject(Object.assign(new Error("Network error during chunk upload"), { transient: true }));
             });
 
             xhr.addEventListener("abort", () => {
@@ -1053,7 +1196,7 @@ class UploadQueueEngine {
               clearStall();
               clearInFlight(chunkIndex);
               scheduleUpdate();
-              reject(new Error(`Chunk ${chunkIndex} upload timed out (${xhr.timeout / 1000} s)`));
+              reject(Object.assign(new Error(`Chunk ${chunkIndex} upload timed out (${xhr.timeout / 1000} s)`), { transient: true }));
             });
 
             // Register the cancel handler then immediately check whether the
@@ -1098,7 +1241,14 @@ class UploadQueueEngine {
             const errBody = JSON.parse(responseText) as Record<string, unknown>;
             errMsg = (errBody.message as string) || (errBody.error as string) || errMsg;
           } catch { /* responseText isn't JSON */ }
-          lastErr = new Error(errMsg);
+          // 5xx and 499 (client-disconnect detected server-side, typically a
+          // mid-chunk connection reset during an API restart) are transient —
+          // tag them so an exhausted retry budget routes the item into the
+          // auto-resume path instead of a permanent failure.
+          lastErr = Object.assign(
+            new Error(errMsg),
+            status >= 500 || status === 499 ? { transient: true } : {},
+          );
 
           if (status === 401) {
             // The access token expired mid-upload. Force-refresh and retry
@@ -1130,7 +1280,10 @@ class UploadQueueEngine {
         }
       }
 
-      throw lastErr ?? new Error(`Chunk ${chunkIndex} failed after ${MAX_CHUNK_RETRIES} attempts`);
+      throw lastErr ?? Object.assign(
+        new Error(`Chunk ${chunkIndex} failed after ${MAX_CHUNK_RETRIES} attempts`),
+        { transient: true },
+      );
     };
 
     try {
@@ -1608,7 +1761,15 @@ class UploadQueueEngine {
           eta: 0,
           finalizeOnly: true,
         });
+      } else if (this._isTransientError(err) && this._scheduleTransientResume(id)) {
+        // Transient interruption (server restart, network drop, 5xx, 499,
+        // stall, timeout). The item has been parked and a backoff timer will
+        // resume it automatically — do NOT mark it failed. This is what keeps
+        // multi-GB uploads alive across an API memory-watchdog restart instead
+        // of dying with "Client disconnected".
       } else {
+        // Permanent failure, or the transient retry budget is exhausted.
+        this._clearTransientResume(id);
         this.update(id, {
           status: "failed",
           error: err.message || "Upload failed",
@@ -1634,6 +1795,7 @@ class UploadQueueEngine {
   }
 
   private _onComplete(id: string): void {
+    this._clearTransientResume(id);
     for (const cb of this.completionListeners) cb(id);
   }
 }
