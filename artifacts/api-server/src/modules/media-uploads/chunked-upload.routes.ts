@@ -783,9 +783,18 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             .update(videos)
             .set({ s3MirroredAt: new Date() })
             .where(inArray(videos.id, recoveredVideoIds))
-            .catch((err: unknown) =>
-              app.log.warn({ err }, "[upload] recovery: s3MirroredAt stamp failed (non-fatal)"),
-            );
+            .catch((err: unknown) => {
+              app.log.warn({ err, count: recoveredVideoIds.length }, "[upload] recovery: s3MirroredAt stamp failed — scheduling 30 s retry");
+              void (async () => {
+                try {
+                  await new Promise<void>((r) => { const t = setTimeout(r, 30_000); t.unref(); });
+                  await db.update(videos).set({ s3MirroredAt: new Date() }).where(inArray(videos.id, recoveredVideoIds));
+                  app.log.info({ count: recoveredVideoIds.length }, "[upload] recovery: s3MirroredAt stamp retry succeeded");
+                } catch (retryErr: unknown) {
+                  app.log.warn({ err: retryErr }, "[upload] recovery: s3MirroredAt stamp retry failed — startup repair will recover on next boot");
+                }
+              })();
+            });
           // Notify the admin panel so recovered videos appear immediately without
           // requiring a manual page refresh.
           for (const videoId of recoveredVideoIds) {
@@ -1508,6 +1517,20 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           body = Buffer.alloc(0);
           (req as any).body = null;
 
+          // Disconnect check after uploadPart(): the BYTEA row is already in
+          // storage_upload_parts (idempotent and durable). Skip the metadata
+          // INSERT if the socket is gone — it wastes a write slot and the
+          // upload-integrity monitor will reconcile any part-without-metadata
+          // rows on its next cycle (or the client will re-send the chunk on
+          // resume, triggering the idempotency 409 path via the existing check).
+          if (req.raw.destroyed) {
+            req.log.debug(
+              { sessionId, chunkIndex, partNumber },
+              "[chunk] client disconnected after uploadPart — skipping metadata insert (part is safe in storage)",
+            );
+            return reply.code(499).send({ error: "Client disconnected" });
+          }
+
           await db.insert(chunks).values({
             id: chunkId,
             sessionId,
@@ -1897,6 +1920,14 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         .where(eq(chunks.sessionId, sessionId))
         .orderBy(asc(chunks.chunkIndex));
 
+      // Fast-path: if the client already disconnected while we were acquiring
+      // the assembly lock, release it immediately rather than running 5 heavy
+      // pre-flight DB queries against a dead connection.
+      if (req.raw.destroyed) {
+        await resetLock();
+        return reply.code(499).send({ error: "Client disconnected before finalize pre-flight" });
+      }
+
       if (allChunks.length === 0) {
         await resetLock();
         throw Object.assign(
@@ -2049,6 +2080,15 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           { sessionId, uploadId: session.uploadId, partsCount: actualPartsCount },
           "[finalize] storage_upload_parts count verified ✓",
         );
+      }
+
+      // Disconnect check after storage pre-flight: if the client dropped the
+      // connection during the parts-count query, abort before pre-committing
+      // the video row. The session stays in 'assembling' — the client's next
+      // retry will re-acquire the lock and complete the pre-flight cleanly.
+      if (req.raw.destroyed) {
+        await resetLock();
+        return reply.code(499).send({ error: "Client disconnected before video row commit" });
       }
 
       // ── Path A: "db" backend — pre-commit video row and respond immediately ──
@@ -2320,12 +2360,28 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 .update(videos)
                 .set({ s3MirroredAt: new Date() })
                 .where(eq(videos.id, videoId))
-                .catch((err: unknown) =>
+                .catch((err: unknown) => {
                   capturedLog.warn(
                     { err, videoId },
-                    "[finalize:bg] s3MirroredAt stamp failed (non-fatal) — startup repair will recover on next boot",
-                  ),
-                ),
+                    "[finalize:bg] s3MirroredAt stamp failed — scheduling 30 s retry",
+                  );
+                  // Schedule a self-healing retry so broadcast admission isn't
+                  // gated until the next server restart.  Two attempts covers
+                  // the vast majority of transient DB blips; any surviving
+                  // gap is caught by repairMissingS3MirroredAt() on next boot.
+                  void (async () => {
+                    try {
+                      await new Promise<void>((r) => { const t = setTimeout(r, 30_000); t.unref(); });
+                      await db.update(videos).set({ s3MirroredAt: new Date() }).where(eq(videos.id, videoId));
+                      capturedLog.info({ videoId }, "[finalize:bg] s3MirroredAt stamp retry succeeded");
+                    } catch (retryErr: unknown) {
+                      capturedLog.warn(
+                        { err: retryErr, videoId },
+                        "[finalize:bg] s3MirroredAt stamp retry failed — startup repair will recover on next boot",
+                      );
+                    }
+                  })();
+                }),
             ]);
             // Notify all connected admin tabs that this upload is fully assembled
             // and in storage.  Tabs that did NOT initiate the upload (i.e. editors
