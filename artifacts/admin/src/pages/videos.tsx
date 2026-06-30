@@ -1111,6 +1111,44 @@ export default function VideosPage() {
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Deep recovery failed"),
   });
 
+  // ── Sync All to Queue ────────────────────────────────────────────────────
+  // Runs the full broadcast-v2 library sync: re-activates system-deactivated
+  // items, removes phantoms/duplicates, enqueues missing broadcast-ready local
+  // videos, and reloads the orchestrator — all in one shot.
+  const syncAllToQueueMutation = useMutation({
+    mutationFn: () =>
+      api.post<{
+        ok: boolean;
+        message: string;
+        enqueued: number;
+        reactivated: number;
+        assembling: number;
+        skipped: number;
+        durationMs: number;
+      }>("/broadcast-v2/sync-library"),
+    onSuccess: (res) => {
+      const { enqueued, reactivated, assembling } = res;
+      if (enqueued === 0 && reactivated === 0) {
+        if (assembling > 0) {
+          toast.info(`Queue is up to date — ${assembling} upload${assembling !== 1 ? "s" : ""} still assembling.`);
+        } else {
+          toast.info("Queue is fully in sync — no changes needed.");
+        }
+      } else {
+        const parts: string[] = [];
+        if (enqueued > 0) parts.push(`${enqueued} video${enqueued !== 1 ? "s" : ""} added`);
+        if (reactivated > 0) parts.push(`${reactivated} re-enabled`);
+        if (assembling > 0) parts.push(`${assembling} still assembling`);
+        toast.success(`Queue synced — ${parts.join(", ")}.`);
+      }
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-status"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
+    },
+    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Queue sync failed"),
+  });
+
   // ── Pipeline audit query ─────────────────────────────────────────────────
   // Lightweight poll (every 60 s) — informs the repair banner. Stale data
   // is fine here; we only need it to surface actionable warning counts.
@@ -1470,6 +1508,18 @@ export default function VideosPage() {
               {bulkFaststartAllMutation.isPending
                 ? <><Loader2 size={13} className="animate-spin" /> Optimising…</>
                 : <><Wand2 size={13} /> Optimise All</>}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={syncAllToQueueMutation.isPending}
+              onClick={() => syncAllToQueueMutation.mutate()}
+              className="gap-1.5"
+              title="Add every broadcast-ready local video to the broadcast queue in one shot. Re-enables previously deactivated items, removes phantoms and duplicates, and reloads the orchestrator."
+            >
+              {syncAllToQueueMutation.isPending
+                ? <><Loader2 size={13} className="animate-spin" /> Syncing…</>
+                : <><ListChecks size={13} /> Sync All to Queue</>}
             </Button>
             <Button size="sm" onClick={() => setUploadOpen(true)} className="gap-1.5 relative">
               <UploadCloud size={14} />
