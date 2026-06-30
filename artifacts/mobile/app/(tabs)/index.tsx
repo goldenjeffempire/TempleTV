@@ -249,12 +249,25 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
       accessibilityLabel={hasActiveBroadcast ? "Watch Now — live broadcast" : "Watch latest sermon"}
       accessibilityState={{ disabled: watchNowDisabled }}
     >
-      {/* Base layer — thumbnail when available */}
+      {/* Base layer — ambient blurred fill covers any letterbox/pillarbox areas
+          produced by the contained sharp thumbnail, so there are no harsh
+          black bars. Mirrors the pattern used in V2PlayerContainer's poster. */}
+      {thumbUrl && (
+        <Image
+          source={{ uri: thumbUrl }}
+          style={[StyleSheet.absoluteFill, { opacity: 0.5 }]}
+          resizeMode="cover"
+          blurRadius={25}
+          accessible={false}
+        />
+      )}
+      {/* Sharp thumbnail — contained so the full video frame is always visible
+          without cropping, matching the V2 player's ResizeMode.CONTAIN behaviour. */}
       {thumbUrl && (
         <Image
           source={{ uri: thumbUrl }}
           style={StyleSheet.absoluteFill}
-          resizeMode="cover"
+          resizeMode="contain"
         />
       )}
 
