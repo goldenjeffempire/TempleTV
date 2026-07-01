@@ -162,12 +162,17 @@ class ExpoPipAndroidModule : Module() {
 
     /** Post a low-priority persistent notification so the user can restore
      *  the full-screen player from anywhere. Auto-cancelled on resume. */
+    @Suppress("DEPRECATION")
     private fun postRestoreNotification(act: Activity) {
         if (Build.VERSION.SDK_INT < 26) return
         val nm = act.getSystemService(Activity.NOTIFICATION_SERVICE)
             as? NotificationManager ?: return
 
         // Create/update the notification channel (idempotent).
+        // NotificationChannel.IMPORTANCE_LOW controls display priority on API 26+;
+        // Notification.Builder.setPriority() is a pre-26 compat shim that is
+        // ignored when a channel is present.  We omit it entirely to avoid the
+        // deprecation warning — the channel importance is the single source of truth.
         val channel = NotificationChannel(
             CHANNEL_ID,
             "Picture in Picture",
@@ -181,13 +186,16 @@ class ExpoPipAndroidModule : Module() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
+        // Notification.Builder(context, channelId) is the API 26+ constructor;
+        // the single-arg Notification.Builder(context) ctor is what triggers
+        // @Deprecated, so @Suppress is on this method as a belt-and-suspenders
+        // measure in case the toolchain flags the two-arg ctor on older AGP versions.
         val notification = Notification.Builder(act, CHANNEL_ID)
             .setContentTitle("Temple TV")
             .setContentText("Tap to return to full screen")
             .setSmallIcon(android.R.drawable.ic_menu_zoom)
             .setContentIntent(pi)
             .setAutoCancel(true)
-            .setPriority(Notification.PRIORITY_LOW)
             .build()
 
         nm.notify(NOTIFICATION_ID, notification)

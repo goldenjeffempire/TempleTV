@@ -43,8 +43,20 @@ module.exports = function withForegroundServiceType(config) {
         name.toLowerCase().includes("music") ||
         name.toLowerCase().includes("mediaplayer");
 
-      if (isMediaService && !svc.$["android:foregroundServiceType"]) {
-        svc.$["android:foregroundServiceType"] = "mediaPlayback";
+      if (isMediaService) {
+        if (!svc.$["android:foregroundServiceType"]) {
+          svc.$["android:foregroundServiceType"] = "mediaPlayback";
+        }
+        // Android 12+ (API 31) requires every <service> to carry an explicit
+        // android:exported declaration.  Without it the Play Store flags the APK
+        // and some devices throw a SecurityException when the OS tries to bind
+        // the service on behalf of media-session clients.  MusicService is an
+        // internal service (it must NOT be exported — only the app itself binds
+        // it), so we force exported="false" as the safe default unless the
+        // library's own manifest already set it to "true".
+        if (svc.$["android:exported"] === undefined || svc.$["android:exported"] === null) {
+          svc.$["android:exported"] = "false";
+        }
       }
     }
 

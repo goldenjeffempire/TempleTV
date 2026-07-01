@@ -57,6 +57,17 @@ module.exports = function withAndroidActivityFlags(config) {
     // Ensure config-change handling covers the PiP lifecycle. Without
     // screenLayout + smallestScreenSize + screenSize, Android recreates
     // the activity on every PiP enter/exit which destroys playback state.
+    //
+    // layoutDirection: prevents activity recreation on locale/RTL changes
+    //   (API 24+). Without it a language change while in PiP kills the
+    //   ExoPlayer instance mid-stream and the user sees a black screen.
+    // density: prevents recreation on display-zoom / font-size changes
+    //   (API 26+). Without it adjusting Accessibility display size while
+    //   watching triggers a full Activity teardown inside the PiP window,
+    //   causing an ANR-looking black flash on low-end devices.
+    // fontScale: prevents recreation when the user changes system font size
+    //   in Accessibility settings (API 24+), which is a common accessibility
+    //   action taken while an app is backgrounded / in PiP.
     const existingConfigChanges = mainActivity.$["android:configChanges"] || "";
     const required = [
       "keyboard",
@@ -66,6 +77,9 @@ module.exports = function withAndroidActivityFlags(config) {
       "screenSize",
       "smallestScreenSize",
       "uiMode",
+      "layoutDirection",
+      "density",
+      "fontScale",
     ];
     const present = new Set(existingConfigChanges.split("|").filter(Boolean));
     for (const flag of required) present.add(flag);
