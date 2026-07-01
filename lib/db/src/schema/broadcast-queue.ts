@@ -4,7 +4,17 @@ import { videosTable } from "./videos";
 
 export const broadcastQueueTable = pgTable("broadcast_queue", {
   id: text("id").primaryKey(),
-  videoId: text("video_id").references(() => videosTable.id, { onDelete: "set null" }),
+  // onDelete:"cascade" — when a managed_videos row is hard-deleted, its queue
+  // rows must go with it. A previous `set null` nulled video_id on delete,
+  // which (a) defeated the delete route's WHERE video_id=:id cleanup and
+  // (b) produced orphaned *active* rows with a stale local_video_url that no
+  // integrity check catches (MISSING_VIDEO_JOIN requires video_id NOT NULL,
+  // NO_PLAYABLE_URL passes because local_video_url is still set) — so the
+  // orchestrator kept trying to air a deleted, blob-less video. Cascade makes
+  // orphaning structurally impossible, including under a concurrent
+  // enqueue-vs-delete race. NULL video_id (legacy prod-sync rows keyed by
+  // youtube_id) is unaffected: cascade only fires on an actual parent delete.
+  videoId: text("video_id").references(() => videosTable.id, { onDelete: "cascade" }),
   youtubeId: text("youtube_id").notNull().default(""),
   title: text("title").notNull(),
   thumbnailUrl: text("thumbnail_url").notNull().default(""),

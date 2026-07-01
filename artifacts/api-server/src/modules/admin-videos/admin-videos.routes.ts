@@ -727,6 +727,36 @@ export async function adminVideosRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const { id } = req.params;
+      const log = req.log;
+
+      // ── Step 0: Capture FK-set-null references BEFORE deleting the video ────
+      // broadcast_queue.video_id and transcoding_jobs.video_id both carry a
+      // foreign key with `onDelete: "set null"`. That means the moment the
+      // managed_videos row is deleted (Step 1), Postgres nulls out `video_id`
+      // on every referencing queue/job row. A subsequent `DELETE ... WHERE
+      // video_id = :id` would then match NOTHING, leaving orphaned *active*
+      // broadcast_queue rows that keep the deleted (now blob-less) video in
+      // rotation until the integrity validator's next sweep — exactly the
+      // loop-skip / dead-air the synchronous cleanup below is meant to prevent.
+      //
+      // So we capture the referencing row ids here, while `video_id` is still
+      // populated, and delete by those captured ids after the video is gone.
+      const queueRowsToRemove = await db
+        .select({ qid: schema.broadcastQueueTable.id })
+        .from(schema.broadcastQueueTable)
+        .where(eq(schema.broadcastQueueTable.videoId, id))
+        .catch((err) => {
+          log.warn({ err, id }, "video-delete: failed to look up broadcast_queue rows");
+          return [] as { qid: string }[];
+        });
+      const jobRowsToRemove = await db
+        .select({ jid: schema.transcodingJobsTable.id })
+        .from(schema.transcodingJobsTable)
+        .where(eq(schema.transcodingJobsTable.videoId, id))
+        .catch((err) => {
+          log.warn({ err, id }, "video-delete: failed to look up transcoding_jobs rows");
+          return [] as { jid: string }[];
+        });
 
       // ── Step 1: Hard-delete the video row ─────────────────────────────────
       // Capture storage fields via .returning() so the async blob cleanup has
@@ -745,8 +775,11 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       if (!deleted) return reply.code(404).send({ error: `Video not found: ${id}` });
 
       // ── Step 2: Synchronous DB reference cleanup ───────────────────────────
-      // These tables have no PostgreSQL FK cascades on videoId, so orphaned
-      // rows must be removed manually.  They run synchronously (before the 200
+      // broadcast_queue / transcoding_jobs carry a `set null` videoId FK (their
+      // video_id was nulled by Step 1), so they are cleaned up by the row ids
+      // captured in Step 0. series_episodes / playlist_videos / upload_sessions
+      // have no videoId FK, so their video_id is still intact and they are
+      // deleted by video_id here. They run synchronously (before the 200
       // response) because:
       //   a) broadcast_queue orphans cause the orchestrator to loop-skip
       //      forever on a video that no longer exists.
@@ -759,35 +792,41 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       // Failures are logged as warnings but do not block the 200 response —
       // the integrity monitor and orphan-cleanup worker sweep residual rows.
 
-      const log = req.log;
-
       // 2a. broadcast_queue — must be deleted and signalled BEFORE returning.
       //     The orchestrator's bus-bridge listens for broadcast-queue-updated
       //     and calls reload(), which re-reads the queue from DB. If queue rows
       //     were still present when reload() ran, the deleted video would remain
-      //     in rotation. We delete first, then signal.
-      const removedQueueItems = await db
-        .delete(schema.broadcastQueueTable)
-        .where(eq(schema.broadcastQueueTable.videoId, id))
-        .returning({ qid: schema.broadcastQueueTable.id })
-        .catch((err) => {
-          log.warn({ err, id }, "video-delete: failed to remove orphan broadcast_queue rows");
-          return [] as { qid: string }[];
-        });
-      if (removedQueueItems.length > 0) {
-        log.info(
-          { id, removedCount: removedQueueItems.length },
-          "video-delete: removed orphan broadcast_queue items",
-        );
+      //     in rotation. Delete by the ids captured in Step 0 — the set-null FK
+      //     already nulled video_id so a delete-by-video_id would match nothing.
+      let removedQueueCount = 0;
+      if (queueRowsToRemove.length > 0) {
+        const removedQueueItems = await db
+          .delete(schema.broadcastQueueTable)
+          .where(inArray(schema.broadcastQueueTable.id, queueRowsToRemove.map((r) => r.qid)))
+          .returning({ qid: schema.broadcastQueueTable.id })
+          .catch((err) => {
+            log.warn({ err, id }, "video-delete: failed to remove orphan broadcast_queue rows");
+            return [] as { qid: string }[];
+          });
+        removedQueueCount = removedQueueItems.length;
+        if (removedQueueCount > 0) {
+          log.info(
+            { id, removedCount: removedQueueCount },
+            "video-delete: removed orphan broadcast_queue items",
+          );
+        }
       }
 
       // 2b. transcoding_jobs — ghost jobs retry forever on a missing video row.
-      await db
-        .delete(schema.transcodingJobsTable)
-        .where(eq(schema.transcodingJobsTable.videoId, id))
-        .catch((err) =>
-          log.warn({ err, id }, "video-delete: failed to remove transcoding jobs"),
-        );
+      //     Same set-null FK caveat as broadcast_queue — delete by captured ids.
+      if (jobRowsToRemove.length > 0) {
+        await db
+          .delete(schema.transcodingJobsTable)
+          .where(inArray(schema.transcodingJobsTable.id, jobRowsToRemove.map((r) => r.jid)))
+          .catch((err) =>
+            log.warn({ err, id }, "video-delete: failed to remove transcoding jobs"),
+          );
+      }
 
       // 2c. series_episodes — orphan slots render as broken episode cards.
       const removedEpisodes = await db
@@ -872,7 +911,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       adminEventBus.push("broadcast-queue-updated", {
         reason: "video-deleted",
         videoId: id,
-        removedQueueItems: removedQueueItems.length,
+        removedQueueItems: removedQueueCount,
       });
 
       // ── Step 5: Fire-and-forget storage blob cleanup ───────────────────────

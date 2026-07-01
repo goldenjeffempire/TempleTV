@@ -1474,7 +1474,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
 
       // Bail early if the client disconnected while we were validating — no
       // point burning a DB-write slot or touching storage for a dropped upload.
-      if (req.raw.destroyed) {
+      if (req.signal?.aborted) {
         return reply.code(499).send({ error: "Client disconnected" });
       }
 
@@ -1501,7 +1501,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         let uploaded = false;
         for (let attempt = 1; attempt <= UPLOAD_PART_MAX_ATTEMPTS; attempt++) {
           // Abort retry loop if the client dropped the connection.
-          if (req.raw.destroyed) {
+          if (req.signal?.aborted) {
             req.log.debug({ sessionId, chunkIndex, attempt }, "[chunk] client disconnected — aborting retry loop");
             return reply.code(499).send({ error: "Client disconnected" });
           }
@@ -1529,7 +1529,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               await new Promise<void>((resolve) => {
                 const t = setTimeout(resolve, delay);
                 t.unref();
-                req.raw.once("close", () => { clearTimeout(t); resolve(); });
+                req.signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
               });
             }
           }
@@ -1560,7 +1560,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           // upload-integrity monitor will reconcile any part-without-metadata
           // rows on its next cycle (or the client will re-send the chunk on
           // resume, triggering the idempotency 409 path via the existing check).
-          if (req.raw.destroyed) {
+          if (req.signal?.aborted) {
             req.log.debug(
               { sessionId, chunkIndex, partNumber },
               "[chunk] client disconnected after uploadPart — skipping metadata insert (part is safe in storage)",
@@ -2018,7 +2018,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       // Fast-path: if the client already disconnected while we were acquiring
       // the assembly lock, release it immediately rather than running 5 heavy
       // pre-flight DB queries against a dead connection.
-      if (req.raw.destroyed) {
+      if (req.signal?.aborted) {
         await resetLock();
         return reply.code(499).send({ error: "Client disconnected before finalize pre-flight" });
       }
@@ -2181,7 +2181,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       // connection during the parts-count query, abort before pre-committing
       // the video row. The session stays in 'assembling' — the client's next
       // retry will re-acquire the lock and complete the pre-flight cleanly.
-      if (req.raw.destroyed) {
+      if (req.signal?.aborted) {
         await resetLock();
         return reply.code(499).send({ error: "Client disconnected before video row commit" });
       }

@@ -251,7 +251,6 @@ async function checkCodecCompat(tmpPath: string): Promise<VideoCheckResult> {
     "ffprobe",
     [
       "-v", "error",
-      "-select_streams", "v:0,a:0",
       "-show_entries", "stream=codec_type,codec_name",
       "-of", "json",
       tmpPath,
@@ -425,7 +424,6 @@ async function checkAvSync(tmpPath: string): Promise<VideoCheckResult> {
     "ffprobe",
     [
       "-v", "error",
-      "-select_streams", "v:0,a:0",
       "-show_entries", "stream=codec_type,start_time",
       "-of", "json",
       tmpPath,
