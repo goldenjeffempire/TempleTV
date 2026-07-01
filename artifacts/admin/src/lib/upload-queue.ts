@@ -1716,10 +1716,19 @@ class UploadQueueEngine {
 
         if (!finalizeResp.ok) {
           const errBody = (await finalizeResp.json().catch(() => ({}))) as Record<string, unknown>;
-          throw new Error(
+          const finalizeErrMsg =
             (errBody.message as string) ||
             (errBody.error as string) ||
-            `Finalize failed (${finalizeResp.status})`,
+            `Finalize failed (${finalizeResp.status})`;
+          // 5xx (server busy / restarting) and 499 (server-side client-disconnect
+          // detection, e.g. a mid-finalize connection reset) are transient: all
+          // chunks are already safely stored, so tag them so the outer catch routes
+          // the item into the auto-resume path (which re-runs the resume-check —
+          // skipping already-uploaded chunks — and re-calls /finalize) instead of
+          // dying permanently with "Client disconnected". Mirrors the chunk path.
+          throw Object.assign(
+            new Error(finalizeErrMsg),
+            finalizeResp.status >= 500 || finalizeResp.status === 499 ? { transient: true } : {},
           );
         }
         const result = (await finalizeResp.json()) as { id?: string };
