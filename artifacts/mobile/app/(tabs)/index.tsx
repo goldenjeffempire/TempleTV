@@ -133,19 +133,153 @@ function MinistryHeader({ topInset }: MinistryHeaderProps) {
   );
 }
 
+// ─── Now Playing Mini-bar ─────────────────────────────────────────────────────
+// Floats above the tab bar when the hero is unmuted AND a live (non-YouTube)
+// broadcast is running. Lets the viewer tap to jump to the full player without
+// losing their scroll position in the catalog, or tap the speaker to silence
+// the preview from anywhere on the screen.
+
+interface NowPlayingMiniBarProps {
+  heroMuted: boolean;
+  onMuteToggle: () => void;
+  bottomInset: number;
+}
+
+const NowPlayingMiniBar = React.memo(function NowPlayingMiniBar({
+  heroMuted,
+  onMuteToggle,
+  bottomInset,
+}: NowPlayingMiniBarProps) {
+  const c = useColors();
+  const apiBase = getApiBase() ?? "";
+  const { snapshot: v2Snapshot } = useV2BroadcastNative({
+    baseUrl: `${apiBase}/api/broadcast-v2`,
+  });
+  const v2Server = v2Snapshot.lastServerSnapshot;
+
+  const hasActiveBroadcast = !!(
+    v2Server?.current && v2Server.current.source?.kind !== "youtube"
+  );
+
+  // ── Slide animation ────────────────────────────────────────────────────────
+  // translateY: 0 = fully visible, +80 = hidden below tab bar.
+  const slideY   = useRef(new Animated.Value(80)).current;
+  const visible  = !heroMuted && hasActiveBroadcast;
+  const prevRef  = useRef(false);
+
+  useEffect(() => {
+    if (visible === prevRef.current) return;
+    prevRef.current = visible;
+    Animated.spring(slideY, {
+      toValue: visible ? 0 : 80,
+      useNativeDriver: true,
+      damping: 18,
+      stiffness: 220,
+    }).start();
+  }, [visible, slideY]);
+
+  // Don't bother rendering the subtree when the bar is and has always been hidden.
+  if (!visible && !prevRef.current) return null;
+
+  const title = v2Server?.current?.title ?? "Live Broadcast";
+  const thumbUrl = v2Server?.current?.thumbnailUrl ?? null;
+
+  const handleOpen = () => {
+    navigateToLive("", title, 0, undefined, thumbUrl ?? undefined);
+  };
+
+  const BAR_HEIGHT  = 62;
+  const BOTTOM_GAP  = bottomInset + 8; // sit just above the tab bar safe zone
+
+  return (
+    <Animated.View
+      style={[
+        styles.miniBarWrapper,
+        { transform: [{ translateY: slideY }], bottom: BOTTOM_GAP },
+      ]}
+      pointerEvents={visible ? "box-none" : "none"}
+    >
+      <Pressable
+        onPress={handleOpen}
+        style={[
+          styles.miniBar,
+          { height: BAR_HEIGHT, backgroundColor: c.card, borderColor: c.border },
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel={`Now playing: ${title}. Tap to open player.`}
+      >
+        {/* Thumbnail */}
+        {thumbUrl ? (
+          <Image
+            source={{ uri: thumbUrl }}
+            style={styles.miniBarThumb}
+          />
+        ) : (
+          <View style={[styles.miniBarThumb, { backgroundColor: c.muted }]}>
+            <Feather name="radio" size={18} color={c.mutedForeground} />
+          </View>
+        )}
+
+        {/* Title + LIVE badge */}
+        <View style={styles.miniBarInfo}>
+          <View style={styles.miniBarLiveRow}>
+            <View style={styles.miniBarLiveDot} />
+            <Text style={styles.miniBarLiveText}>LIVE</Text>
+          </View>
+          <Text
+            style={[styles.miniBarTitle, { color: c.foreground }]}
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
+            {title}
+          </Text>
+        </View>
+
+        {/* Controls: mute + open-player chevron */}
+        <View style={styles.miniBarControls}>
+          <Pressable
+            onPress={(e) => { e.stopPropagation?.(); onMuteToggle(); }}
+            hitSlop={10}
+            style={styles.miniBarMuteBtn}
+            accessibilityRole="button"
+            accessibilityLabel={heroMuted ? "Unmute" : "Mute"}
+          >
+            <Feather
+              name={heroMuted ? "volume-x" : "volume-2"}
+              size={18}
+              color={c.foreground}
+            />
+          </Pressable>
+          <Feather name="chevron-up" size={18} color={c.mutedForeground} />
+        </View>
+      </Pressable>
+    </Animated.View>
+  );
+});
+
 // ─── Hero Section ─────────────────────────────────────────────────────────────
 // The hero sits below the MinistryHeader — topInset is 0 because the header
 // above already handles the safe-area top inset.
 // topInset is kept as a prop (always 0 from WatchScreen) so the internal
 // overlay positioning logic (logo, emergency banner, gradient) still reads
 // consistently without requiring a wider refactor.
+//
+// heroMuted + onMuteToggle are lifted to WatchScreen so the NowPlayingMiniBar
+// can also read and toggle the same mute state from anywhere on the page.
 
 interface HeroSectionProps {
   fallbackSermon: Sermon | null;
   topInset: number;
+  heroMuted: boolean;
+  onMuteToggle: () => void;
 }
 
-const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }: HeroSectionProps) {
+const HeroSection = React.memo(function HeroSection({
+  fallbackSermon,
+  topInset,
+  heroMuted,
+  onMuteToggle,
+}: HeroSectionProps) {
   const c = useColors();
   const { width } = useWindowDimensions();
   // True 16:9 video area + status-bar region above it = total hero height.
@@ -155,23 +289,21 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
   const totalHeroHeight = videoHeight + topInset;
   const apiBase = getApiBase() ?? "";
 
-  const { isBroadcastMode } = usePlayer();
+  // V2 FSM singleton — attaches a React listener to the already-running session.
+  // Declared first so heroProgress + hasActiveBroadcast can reference v2Server.
+  // No extra WS connection — hooks into the same singleton used by V2PlayerContainer.
+  const { snapshot: v2Snapshot, forceRebind } = useV2BroadcastNative({
+    baseUrl: `${apiBase}/api/broadcast-v2`,
+  });
+  const v2Server = v2Snapshot.lastServerSnapshot;
 
-  // ── Hero mute/unmute state ─────────────────────────────────────────────────
-  // Default: muted. User can tap the speaker icon to hear the live preview.
-  // Auto-reset to muted when the full player screen opens (isBroadcastMode=true)
-  // so there is no audio bleed between the hero preview and the player.
-  const [heroMuted, setHeroMuted] = useState(true);
-
-  useEffect(() => {
-    if (isBroadcastMode) {
-      setHeroMuted(true);
-    }
-  }, [isBroadcastMode]);
-
-  const handleMuteToggle = useCallback(() => {
-    setHeroMuted((prev) => !prev);
-  }, []);
+  // STRICT POLICY: YouTube items are never promoted to the hero.
+  // Only uploaded/local platform broadcasts get the hero treatment.
+  // Declared early so heroProgress effect below can read it.
+  const hasUploadedBroadcast = !!(
+    v2Server?.current && v2Server.current.source?.kind !== "youtube"
+  );
+  const hasActiveBroadcast = hasUploadedBroadcast;
 
   // ── Hero live progress bar ─────────────────────────────────────────────────
   // Tracks how far into the current broadcast item we are: 0 = start, 1 = end.
@@ -204,14 +336,6 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
     isReconnecting,
     isFatal,
   } = useMediaPlayerState();
-
-  // V2 FSM singleton — attaches a React listener to the already-running session.
-  // No extra WS connection. Replaces v1-WS (useBroadcastSync) which caused hero
-  // flicker on every reconnect even when V2 was playing normally.
-  const { snapshot: v2Snapshot, forceRebind } = useV2BroadcastNative({
-    baseUrl: `${apiBase}/api/broadcast-v2`,
-  });
-  const v2Server = v2Snapshot.lastServerSnapshot;
 
   // ── Hero skeleton (initial broadcast connection) ───────────────────────────
   // Show the skeleton only during the very first connection attempt — once we
@@ -254,14 +378,6 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
     anim.start();
     return () => anim.stop();
   }, [syncState.emergencyBroadcast, emergencyPulseAnim]);
-
-  // STRICT POLICY: YouTube items are never promoted to the hero.
-  // Only uploaded/local platform broadcasts get the hero treatment.
-  const hasUploadedBroadcast = !!(
-    v2Server?.current &&
-    v2Server.current.source?.kind !== "youtube"
-  );
-  const hasActiveBroadcast = hasUploadedBroadcast;
 
   // Thumbnail: broadcast thumbnail > fallback sermon poster > null (gradient only).
   const thumbUrl =
@@ -336,7 +452,7 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
           Pressable from also firing navigateToLive. */}
       {hasActiveBroadcast && !isBroadcastMode && (
         <Pressable
-          onPress={handleMuteToggle}
+          onPress={onMuteToggle}
           style={({ pressed }) => [
             styles.heroMuteBtn,
             { top: topInset + 8, opacity: pressed ? 0.72 : 1 },
@@ -734,9 +850,19 @@ export default function WatchScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
   const { isOnline: networkConnected } = useNetworkStatus();
+  const { isBroadcastMode } = usePlayer();
 
   const { sermons, byCategory, loading, error, refetch, isStale, refreshFailed } = useVideos();
   const { continueWatching } = useWatchProgress();
+
+  // ── Hero mute state (lifted here so NowPlayingMiniBar can share it) ────────
+  // Default: muted. User unmutes via the hero speaker button or mini-bar.
+  // Auto-resets when the full player opens (isBroadcastMode) to prevent bleed.
+  const [heroMuted, setHeroMuted] = useState(true);
+  useEffect(() => {
+    if (isBroadcastMode) setHeroMuted(true);
+  }, [isBroadcastMode]);
+  const handleMuteToggle = useCallback(() => setHeroMuted((p) => !p), []);
 
   // Hero fallback — prefer a local sermon with a thumbnail so the hero is
   // never a bare gradient. YouTube-sourced items are explicitly excluded.
@@ -782,7 +908,12 @@ export default function WatchScreen() {
         <MinistryHeader topInset={insets.top} />
 
         {/* Hero — topInset=0 because the header above handles the safe area */}
-        <HeroSection fallbackSermon={fallbackSermon} topInset={0} />
+        <HeroSection
+          fallbackSermon={fallbackSermon}
+          topInset={0}
+          heroMuted={heroMuted}
+          onMuteToggle={handleMuteToggle}
+        />
 
         {/* Stale cache banner — inside ScrollView so it never floats over video.
             Three states:
@@ -873,12 +1004,91 @@ export default function WatchScreen() {
           )}
         </View>
       </ScrollView>
+
+      {/* ── Now Playing mini-bar ────────────────────────────────────────────────
+          Floats above the tab bar when hero is unmuted + live broadcast running.
+          Rendered outside the ScrollView so it stays fixed while the catalog
+          scrolls underneath. */}
+      <NowPlayingMiniBar
+        heroMuted={heroMuted}
+        onMuteToggle={handleMuteToggle}
+        bottomInset={insets.bottom}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+
+  // ── Now Playing mini-bar ─────────────────────────────────────────────────────
+  miniBarWrapper: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+    zIndex: 50,
+  },
+  miniBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 10,
+    // Shadow (iOS)
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    // Elevation (Android)
+    elevation: 8,
+  },
+  miniBarThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    flexShrink: 0,
+  },
+  miniBarInfo: {
+    flex: 1,
+    justifyContent: "center",
+    gap: 2,
+  },
+  miniBarLiveRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  miniBarLiveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#ef4444",
+  },
+  miniBarLiveText: {
+    fontSize: 10,
+    fontWeight: "700",
+    color: "#ef4444",
+    letterSpacing: 0.8,
+  },
+  miniBarTitle: {
+    fontSize: 13,
+    fontWeight: "600",
+    letterSpacing: 0.1,
+  },
+  miniBarControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    flexShrink: 0,
+  },
+  miniBarMuteBtn: {
+    padding: 4,
+  },
 
   // ── Ministry Header ───────────────────────────────────────────────────────────
   ministryHeader: {
