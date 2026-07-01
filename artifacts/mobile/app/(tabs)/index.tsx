@@ -157,6 +157,22 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
 
   const { isBroadcastMode } = usePlayer();
 
+  // ── Hero mute/unmute state ─────────────────────────────────────────────────
+  // Default: muted. User can tap the speaker icon to hear the live preview.
+  // Auto-reset to muted when the full player screen opens (isBroadcastMode=true)
+  // so there is no audio bleed between the hero preview and the player.
+  const [heroMuted, setHeroMuted] = useState(true);
+
+  useEffect(() => {
+    if (isBroadcastMode) {
+      setHeroMuted(true);
+    }
+  }, [isBroadcastMode]);
+
+  const handleMuteToggle = useCallback(() => {
+    setHeroMuted((prev) => !prev);
+  }, []);
+
   // Unified media state — drives badge, CTA, and status indicators.
   const {
     mediaState,
@@ -271,19 +287,47 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
         />
       )}
 
-      {/* V2 broadcast video — ALWAYS mounted (muted, minimal) to keep the singleton
-          FSM session warm. pointerEvents="none" lets hero touch events reach the Pressable.
-          suppressEventsOverride=isBroadcastMode: when the player screen is open, the full-
-          screen player instance is the sole FSM driver — suppress watchdogs/events from this
-          muted hero so it can't fire spurious buffer-error/stall that interrupt the player. */}
+      {/* V2 broadcast video — ALWAYS mounted (muted by default, minimal) to keep the
+          singleton FSM session warm. pointerEvents="none" lets hero touch events pass
+          through to the Pressable.
+          suppressEventsOverride=isBroadcastMode: when the player screen is open, the
+          full-screen player instance is the sole FSM driver — suppress watchdogs/events
+          from the hero so it can't fire spurious buffer-error/stall that interrupt the
+          player. heroMuted is reset to true automatically when isBroadcastMode becomes
+          true, preventing audio bleed between hero preview and the full player. */}
       <View style={[StyleSheet.absoluteFill, { pointerEvents: "none" }]}>
         <V2PlayerContainer
           baseUrl={`${apiBase}/api/broadcast-v2`}
-          muted
+          muted={heroMuted}
           minimal
           suppressEventsOverride={isBroadcastMode}
         />
       </View>
+
+      {/* ── Mute / Unmute toggle — top-right corner ──────────────────────────
+          Only shown when there is an active non-YouTube broadcast playing (so
+          the user has real audio to control). Positioned as a sibling of the
+          pointerEvents="none" layers so its own Pressable receives touches;
+          the inner Pressable stops propagation, preventing the outer hero
+          Pressable from also firing navigateToLive. */}
+      {hasActiveBroadcast && !isBroadcastMode && (
+        <Pressable
+          onPress={handleMuteToggle}
+          style={({ pressed }) => [
+            styles.heroMuteBtn,
+            { top: topInset + 8, opacity: pressed ? 0.72 : 1 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel={heroMuted ? "Unmute live preview" : "Mute live preview"}
+          hitSlop={10}
+        >
+          <Feather
+            name={heroMuted ? "volume-x" : "volume-2"}
+            size={16}
+            color="#fff"
+          />
+        </Pressable>
+      )}
 
       {/* ── Top gradient — protects status-bar icon readability ──────────────
           Explicit absolute position (NOT StyleSheet.absoluteFill) so that the
@@ -842,6 +886,18 @@ const styles = StyleSheet.create({
   },
 
   // ── Hero floating elements ───────────────────────────────────────────────────
+  // Mute/unmute toggle — top-right corner of hero.
+  heroMuteBtn: {
+    position: "absolute",
+    right: 14,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(0,0,0,0.52)",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 25,
+  },
   // Floating logo bar — anchored at top, positioned by topInset at render time.
   heroTopBar: {
     position: "absolute",
