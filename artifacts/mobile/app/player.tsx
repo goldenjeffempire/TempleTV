@@ -475,6 +475,35 @@ export default function PlayerScreen() {
   const fsHideTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fsControlsOpacity = useRef(new Animated.Value(1)).current;
 
+  // ── V2 broadcast continuity bridge ───────────────────────────────────────
+  // Pre-populates fsCurrentSecs + fsDuration from the V2 server snapshot the
+  // moment the player screen opens, so the fullscreen time display shows the
+  // correct broadcast position during the ~1-3 s window while the Video
+  // elements are loading the stream URL. Once the native player starts firing
+  // onPlaybackStatusUpdate (handleProgressWithPosition), videoPositionActiveRef
+  // flips true and the interval clears itself — the Video takes full ownership.
+  // Reset when the current queue item changes (v2Current.id dependency).
+  const videoPositionActiveRef = useRef(false);
+
+  useEffect(() => {
+    if (!isBroadcastV2 || !v2Current?.startsAtMs || !v2Current?.durationSecs) return;
+    videoPositionActiveRef.current = false; // reset on item change
+
+    const { startsAtMs, durationSecs } = v2Current;
+    // Seed duration immediately so the right-side time label shows total length.
+    setFsDuration(durationSecs);
+
+    const tick = () => {
+      if (videoPositionActiveRef.current) return; // Video took over — stop ticking
+      const elapsedSecs = Math.max(0, (Date.now() - startsAtMs) / 1000);
+      setFsCurrentSecs(Math.min(elapsedSecs, durationSecs));
+    };
+    tick(); // immediate first update
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBroadcastV2, v2Current?.id]);
+
   // ── Floating reactions refs — one per surface ─────────────────────────────
   // Inline player (normal scroll view) and fullscreen modal each get their own
   // ref so emitted particles appear in the currently-visible surface.
@@ -578,8 +607,13 @@ export default function PlayerScreen() {
 
   // Wraps handleProgress to also track current position for fullscreen hand-off
   // and to drive the fullscreen controls overlay (time display + scrub bar).
+  // On the first call, flips videoPositionActiveRef so the V2 continuity
+  // bridge interval yields ownership and clears itself.
   const handleProgressWithPosition = useCallback(
     (positionSecs: number, durationSecs: number) => {
+      // Signal the V2 continuity bridge that the native Video has taken over.
+      // The bridge's interval checks this flag and stops ticking.
+      videoPositionActiveRef.current = true;
       currentPositionMsRef.current = Math.round(positionSecs * 1000);
       if (!fsScrubbingRef.current) setFsCurrentSecs(positionSecs);
       if (durationSecs > 0) setFsDuration(durationSecs);

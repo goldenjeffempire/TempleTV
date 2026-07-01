@@ -173,6 +173,30 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
     setHeroMuted((prev) => !prev);
   }, []);
 
+  // ── Hero live progress bar ─────────────────────────────────────────────────
+  // Tracks how far into the current broadcast item we are: 0 = start, 1 = end.
+  // Ticks every second using the client clock against the V2 snapshot's
+  // startsAtMs (negligible server-client offset for a display bar). Resets
+  // automatically when the current item advances (v2Server.current.id changes).
+  const [heroProgress, setHeroProgress] = useState(0);
+
+  useEffect(() => {
+    const current = v2Server?.current;
+    if (!hasActiveBroadcast || !current?.startsAtMs || !current?.durationSecs) {
+      setHeroProgress(0);
+      return;
+    }
+    const { startsAtMs, durationSecs } = current;
+    const tick = () => {
+      const elapsedSecs = Math.max(0, (Date.now() - startsAtMs) / 1000);
+      setHeroProgress(Math.min(1, elapsedSecs / Math.max(1, durationSecs)));
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasActiveBroadcast, v2Server?.current?.id]);
+
   // Unified media state — drives badge, CTA, and status indicators.
   const {
     mediaState,
@@ -482,6 +506,24 @@ const HeroSection = React.memo(function HeroSection({ fallbackSermon, topInset }
             </Text>
           )}
         </Animated.View>
+      )}
+
+      {/* ── Live progress bar — bottom edge of hero ─────────────────────────
+          Shows broadcast position (elapsed / total duration) so viewers see at
+          a glance how far into the current item the broadcast is. Hidden when
+          off-air or no active non-YouTube broadcast. pointerEvents="none"
+          so hero taps still navigate to the player. */}
+      {hasActiveBroadcast && v2Server?.current && (
+        <View style={styles.heroProgressTrack} pointerEvents="none">
+          <View
+            style={[
+              styles.heroProgressFill,
+              // Use % width — flexbox resolves it correctly on RN.
+              // eslint-disable-next-line react-native/no-inline-styles
+              { width: `${Math.round(heroProgress * 100)}%` },
+            ]}
+          />
+        </View>
       )}
 
       {/* ── Hero skeleton overlay ──────────────────────────────────────────────
@@ -886,6 +928,22 @@ const styles = StyleSheet.create({
   },
 
   // ── Hero floating elements ───────────────────────────────────────────────────
+  // Live progress bar — bottom edge of hero (3 px, full-width track).
+  heroProgressTrack: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+    backgroundColor: "rgba(255,255,255,0.22)",
+    zIndex: 20,
+  },
+  heroProgressFill: {
+    height: 3,
+    backgroundColor: "rgba(255,255,255,0.88)",
+    borderTopRightRadius: 1.5,
+    borderBottomRightRadius: 1.5,
+  },
   // Mute/unmute toggle — top-right corner of hero.
   heroMuteBtn: {
     position: "absolute",
