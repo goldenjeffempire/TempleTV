@@ -2889,7 +2889,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   app.get("/queue-status", {
     ...adminGuard,
     schema: {
-      querystring: z.object({ videoIds: z.string().min(1) }),
+      querystring: z.object({ videoIds: z.string().optional() }),
       response: {
         200: z.object({
           status: z.record(z.string(), z.enum(["queued", "missing"])),
@@ -2900,7 +2900,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
   }, async (req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
-    const ids = (req.query as { videoIds: string }).videoIds
+    const ids = ((req.query as { videoIds?: string }).videoIds ?? "")
       .split(",")
       .map((s: string) => s.trim())
       .filter(Boolean)

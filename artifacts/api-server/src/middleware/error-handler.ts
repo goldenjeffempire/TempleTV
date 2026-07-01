@@ -101,6 +101,37 @@ export function registerErrorHandler(app: FastifyInstance) {
       return reply.code(400).send(body);
     }
 
+    // ── 1b. Validation-phase errors that are NOT clean ZodErrors ──────────────
+    // Any error raised while Fastify validates the request body / querystring /
+    // params / headers is, by definition, a client-input problem → 400, never
+    // 500. We must handle these separately from the `instanceof ZodError` branch
+    // above because they do not always arrive as a ZodError:
+    //   fastify-type-provider-zod@4's `createValidationError` reads
+    //   `error.errors` (undefined for some zod error shapes) and throws a raw
+    //   TypeError *during* the validation phase. Fastify tags that TypeError
+    //   with `code: "FST_ERR_VALIDATION"` + `validationContext`, but since it is
+    //   not a ZodError instance it would otherwise fall through to the generic
+    //   500 branch and surface to operators as a bogus "Internal server error".
+    // Detecting the validation phase via `validationContext` / the FST code keeps
+    // this robust regardless of the underlying formatter's health.
+    const fastifyErr = err as FastifyError & { validationContext?: string };
+    if (fastifyErr.validationContext || fastifyErr.code === "FST_ERR_VALIDATION") {
+      req.log.warn(
+        { err: { message: err.message, name: err.name, code: fastifyErr.code }, validationContext: fastifyErr.validationContext },
+        "request validation failed",
+      );
+      const body: ProblemDetails = {
+        type: "https://templetv.api/errors/validation",
+        title: "Validation failed",
+        status: 400,
+        code: "VALIDATION_ERROR",
+        error: "Validation failed",
+        detail: fastifyErr.validationContext ? `Invalid request ${fastifyErr.validationContext}` : undefined,
+        requestId,
+      };
+      return reply.code(400).send(body);
+    }
+
     // ── 2. Classify raw network / timeout errors before treating as 500 ───────
     const classified = classifyRawError(err);
     if (classified) {
