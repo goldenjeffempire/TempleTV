@@ -462,14 +462,22 @@ async function scanCorruptBlobs(deadlineMs: number): Promise<number> {
         "[integrity] corrupt blob unrecoverable (no parts) — deleted, video marked CORRUPT_SOURCE",
       );
 
-      adminEventBus.push("ops-alert", {
-        level: "error",
-        component: "upload-integrity-monitor",
-        message:
-          `Unrecoverable corrupt storage blob removed: key=${key} ` +
-          `(recorded ${size_bytes} bytes, actual ${actual_bytes} bytes, no upload parts remain). ` +
-          (video ? `Video ${video.id} marked CORRUPT_SOURCE.` : "No referencing video found."),
-      });
+      // Only raise an error-level ops-alert when we can tie the corrupt blob
+      // back to a real managed_videos row.  When video is null the blob key
+      // has no referencing video (e.g. orphaned MinIO multipart staging objects
+      // like "keys_parts/..." or "keys_meta/..." left over from a previous
+      // storage era).  Deleting those is routine GC — not operator-actionable
+      // — so we skip the alert entirely to avoid flooding the admin inbox.
+      if (video) {
+        adminEventBus.push("ops-alert", {
+          level: "error",
+          component: "upload-integrity-monitor",
+          message:
+            `Unrecoverable corrupt storage blob removed: key=${key} ` +
+            `(recorded ${size_bytes} bytes, actual ${actual_bytes} bytes, no upload parts remain). ` +
+            `Video ${video.id} marked CORRUPT_SOURCE — re-upload required.`,
+        });
+      }
 
       fixed++;
     } catch (err) {

@@ -322,26 +322,43 @@ async function doScan(): Promise<void> {
 
     // ── 4. Empty queue ────────────────────────────────────────────────────
     if (started && itemCount === 0) {
-      raiseAlert("QUEUE_EMPTY", "queue", "error", "Active broadcast queue is empty — nothing to air");
-      if (!onCooldown("QUEUE_EMPTY")) {
-        touchCooldown("QUEUE_EMPTY");
-        try {
-          const result = await scanLibraryAndEnqueue({ reason: "self-heal-empty" });
-          logAction({
-            service: "queue",
-            action: "Library scan triggered (empty queue)",
-            severity: "error",
-            result: result.enqueued > 0 ? "triggered" : "noop",
-            details: `Queue empty. Scanned ${result.scanned} videos, enqueued ${result.enqueued}.`,
-          });
-        } catch (err) {
-          logAction({
-            service: "queue",
-            action: "Library scan failed (empty queue)",
-            severity: "error",
-            result: "failed",
-            details: err instanceof Error ? err.message : String(err),
-          });
+      // Check whether ytShuffleFallback is active.  On YouTube-only deployments
+      // the local queue is always empty by design — ytShuffleFallback IS the
+      // broadcast driver.  Raising a QUEUE_EMPTY alert in that state floods the
+      // admin inbox with false-positive errors and triggers pointless library
+      // scans that always return 0.  Suppress both the alert and the scan when
+      // the override is a YouTube shuffle fallback.
+      let ytShuffleActive = false;
+      try {
+        const { ytShuffleFallback } = await import("./youtube-shuffle-fallback.js");
+        ytShuffleActive = ytShuffleFallback.isActive;
+      } catch { /* non-fatal */ }
+
+      if (ytShuffleActive) {
+        // Queue empty but YouTube shuffle is on-air — not an error.
+        clearAlert("QUEUE_EMPTY");
+      } else {
+        raiseAlert("QUEUE_EMPTY", "queue", "error", "Active broadcast queue is empty — nothing to air");
+        if (!onCooldown("QUEUE_EMPTY")) {
+          touchCooldown("QUEUE_EMPTY");
+          try {
+            const result = await scanLibraryAndEnqueue({ reason: "self-heal-empty" });
+            logAction({
+              service: "queue",
+              action: "Library scan triggered (empty queue)",
+              severity: "error",
+              result: result.enqueued > 0 ? "triggered" : "noop",
+              details: `Queue empty. Scanned ${result.scanned} videos, enqueued ${result.enqueued}.`,
+            });
+          } catch (err) {
+            logAction({
+              service: "queue",
+              action: "Library scan failed (empty queue)",
+              severity: "error",
+              result: "failed",
+              details: err instanceof Error ? err.message : String(err),
+            });
+          }
         }
       }
     } else if (itemCount > 0) {
