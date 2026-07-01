@@ -285,21 +285,71 @@ export async function repairMissingS3MirroredAt(videoId?: string): Promise<{ rep
 
     // Step 4: Stamp s3MirroredAt for every video whose blob is confirmed present.
     const toRepair = withKeys.filter((r) => presentSet.has(r.key)).map((r) => r.id);
-    if (toRepair.length === 0) return { repaired: 0 };
+    let bytea_repaired = 0;
 
-    await db
-      .update(videosTable)
-      .set({ s3MirroredAt: new Date() })
-      .where(inArray(videosTable.id, toRepair))
-      .catch((err: unknown) =>
-        logger.warn({ err, count: toRepair.length }, "[auto-enqueue] repair: s3MirroredAt batch stamp failed"),
+    if (toRepair.length > 0) {
+      await db
+        .update(videosTable)
+        .set({ s3MirroredAt: new Date() })
+        .where(inArray(videosTable.id, toRepair))
+        .catch((err: unknown) =>
+          logger.warn({ err, count: toRepair.length }, "[auto-enqueue] repair: s3MirroredAt batch stamp failed"),
+        );
+
+      bytea_repaired = toRepair.length;
+      logger.info(
+        { repaired: bytea_repaired, candidates: candidates.length, withKeys: withKeys.length, present: presentSet.size },
+        "[auto-enqueue] repair: stamped s3MirroredAt for videos with confirmed storage blobs",
       );
+    }
 
-    logger.info(
-      { repaired: toRepair.length, candidates: candidates.length, withKeys: withKeys.length, present: presentSet.size },
-      "[auto-enqueue] repair: stamped s3MirroredAt for videos with confirmed storage blobs",
-    );
-    return { repaired: toRepair.length };
+    // Step 5: Legacy HLS stamp — videos with transcodingStatus 'hls_ready' or
+    // 'ready' completed the full HLS transcoding pipeline, which only succeeds
+    // when the source MP4 was fully committed and readable.  These videos
+    // predate the s3MirroredAt column and will never appear in storage_blobs
+    // (they were assembled before BYTEA storage or their blob key cannot be
+    // derived from localVideoUrl), so the storage_blobs check in steps 1–4
+    // never stamps them — leaving them permanently excluded from the broadcast
+    // queue with no auto-recovery path.
+    //
+    // Stamp s3MirroredAt unconditionally for these videos: successful HLS
+    // transcoding is proof of content accessibility.  The queue integrity
+    // validator (MISSING_BLOB scan) remains the safety net for any video
+    // whose source is genuinely unreachable post-stamp.
+    const legacyCandidates = await db
+      .select({ id: videosTable.id })
+      .from(videosTable)
+      .where(
+        and(
+          ne(videosTable.videoSource, "youtube"),
+          isNull(videosTable.s3MirroredAt),
+          isNotNull(videosTable.localVideoUrl),
+          inArray(videosTable.transcodingStatus, ["hls_ready", "ready"]),
+          ...(videoId ? [eq(videosTable.id, videoId)] : []),
+        ),
+      )
+      .limit(500);
+
+    let legacy_repaired = 0;
+
+    if (legacyCandidates.length > 0) {
+      const legacyIds = legacyCandidates.map((r) => r.id);
+      await db
+        .update(videosTable)
+        .set({ s3MirroredAt: new Date() })
+        .where(inArray(videosTable.id, legacyIds))
+        .catch((err: unknown) =>
+          logger.warn({ err, count: legacyIds.length }, "[auto-enqueue] repair: legacy HLS s3MirroredAt stamp failed"),
+        );
+
+      legacy_repaired = legacyCandidates.length;
+      logger.info(
+        { stamped: legacy_repaired },
+        "[auto-enqueue] repair: stamped s3MirroredAt for legacy hls_ready/ready videos",
+      );
+    }
+
+    return { repaired: bytea_repaired + legacy_repaired };
   } catch (err) {
     logger.warn({ err }, "[auto-enqueue] repairMissingS3MirroredAt failed (non-fatal)");
     return { repaired: 0 };
