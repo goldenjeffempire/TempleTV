@@ -1258,7 +1258,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           durationSecs:
             body.durationSecs !== undefined ? Math.round(Number(body.durationSecs)) : null,
           uploadedBy: req.principal?.id ?? null,
-          storageBackend: "minio",
+          storageBackend: "db",
           status: "uploading",
           expectedFileSha256: body.fileSha256 ?? null,
         });
@@ -1291,7 +1291,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       req.log.info(
         {
           sessionId: body.sessionId,
-          storageBackend: "minio",
+          storageBackend: "db",
           totalChunks: body.totalChunks,
           totalBytes: body.totalBytes,
         },
@@ -1307,7 +1307,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       return {
         ok: true as const,
         sessionId: body.sessionId,
-        storageBackend: "minio",
+        storageBackend: "db",
         totalChunks: Number(body.totalChunks),
         chunkSize,
       };
@@ -1576,10 +1576,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             sizeBytes,
             byteOffset,
             s3Etag: etag,
-            storageBackend: "minio",
+            storageBackend: "db",
           });
 
-          return reply.send({ ok: true, chunkIndex, storageBackend: "minio" });
+          return reply.send({ ok: true, chunkIndex, storageBackend: "db" });
         } catch (err) {
           req.log.warn(
             { err, sessionId, chunkIndex, partNumber },
@@ -2601,7 +2601,29 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               { videoId, objectKey },
               "[finalize:bg] starting faststart pipeline (broadcast admission gate)",
             );
-            const fsResult = await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
+            // Wrap runFaststart in a defensive try/catch. The service contract
+            // guarantees it always returns a FaststartResult, but if it throws
+            // unexpectedly (e.g. DB failure after acquiring the semaphore) we
+            // must NOT let that propagate to the outer catch — the blob is
+            // already committed (assemblyCommitted=true) and the enqueue below
+            // must still fire so the video enters the broadcast queue as raw MP4.
+            let fsResult: Awaited<ReturnType<typeof runFaststart>>;
+            try {
+              fsResult = await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
+            } catch (fsErr) {
+              capturedLog.warn(
+                { err: fsErr, videoId },
+                "[finalize:bg] runFaststart threw unexpectedly — treating as failed; " +
+                "enrolling video as raw MP4; faststartRecoveryWorker will retry",
+              );
+              fsResult = {
+                ok: false,
+                finalStatus: "failed",
+                rootCause: fsErr instanceof Error ? fsErr.message : "Unexpected faststart error",
+                actions: ["caught unexpected throw"],
+                durationMs: 0,
+              };
+            }
             capturedLog.info(
               {
                 videoId,
@@ -2751,99 +2773,114 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             clearTimeout(assemblyWatchdog);
           } catch (err) {
             clearTimeout(assemblyWatchdog);
-            // Assembly failed — mark the video as failed and reset the session
-            // to "uploading" so the operator can retry from the upload queue.
-            capturedLog.error(
-              { err, sessionId, videoId, assemblyMs: Date.now() - assemblyStartMs },
-              "[finalize:bg] ASSEMBLY FAILED — resetting session, marking video failed",
-            );
-            // Best-effort orphan cleanup: if completeMultipartUpload threw
-            // (assemblyCommitted=false) a partially-assembled blob may remain
-            // at the final key.  Delete it so the storage GC doesn't carry it
-            // for 4 h and the next finalize retry starts from a clean slate.
-            //
-            // CRITICAL: skip deletion when assemblyCommitted=true.  That flag
-            // means completeMultipartUpload already committed the blob — the
-            // exception was thrown by a later step (e.g. telemetry write) and
-            // the video row still references this object.  Deleting it here
-            // would make the video permanently unrecoverable.
-            if (!assemblyCommitted && session.objectKey) {
-              capturedLog.warn(
-                { sessionId, videoId, objectKey: session.objectKey },
-                "[finalize:bg] deleting uncommitted partial assembly blob",
-              );
-              void storage().deleteObject(session.objectKey).catch(() => {});
-            } else if (assemblyCommitted && session.objectKey) {
+
+            if (assemblyCommitted) {
+              // ── Post-assembly step threw — blob is INTACT ──────────────────
+              // completeMultipartUpload already committed the blob atomically;
+              // the exception came from a later step (probes, faststart,
+              // enqueueIfMissing, or an adminEventBus call).
+              // The blob is safe and the video row is valid.
+              //
+              // CRITICAL: do NOT mark the video transcodingStatus="failed" here.
+              // Using CORRUPT_SOURCE would permanently exclude this video from
+              // reactivateSystemDeactivated() (which explicitly skips
+              // CORRUPT_SOURCE/SOURCE_MISSING/ASSEMBLY_FAILED rows), making the
+              // video unreachable from the broadcast queue forever with no
+              // auto-recovery path.
+              //
+              // Automatic recovery (no operator action required, ≤60 s):
+              //   1. repairMissingS3MirroredAt() (runs in uploadQueueReconciler
+              //      and before every scanLibraryAndEnqueue) stamps s3MirroredAt
+              //      if the post-assembly DB update was the step that failed.
+              //   2. uploadQueueReconciler.scan() (every 60 s) calls
+              //      enqueueIfMissing() once s3MirroredAt IS NOT NULL.
+              //   3. queueHealthGuard.scan() (every 10 min) as final backstop.
               capturedLog.error(
-                { sessionId, videoId, objectKey: session.objectKey },
-                "[finalize:bg] assembly committed but a later step threw — blob is PRESERVED; video row intact",
+                {
+                  err,
+                  sessionId,
+                  videoId,
+                  objectKey: session.objectKey,
+                  assemblyMs: Date.now() - assemblyStartMs,
+                },
+                "[finalize:bg] POST-ASSEMBLY STEP FAILED — blob is committed and intact; " +
+                "video stays at transcodingStatus=none; uploadQueueReconciler will " +
+                "re-stamp s3MirroredAt + enqueue within 60 s. No operator action needed.",
+              );
+              // Video row remains at transcodingStatus="none" + s3MirroredAt=null
+              // (or already stamped). The reconciler stamps it and enqueues within 60 s.
+              void invalidateVideosCatalogCache();
+              adminEventBus.push("videos-library-updated", {
+                videoId,
+                reason: "assembly-post-step-failed",
+              });
+              uploadTelemetry.serverFail(
+                sessionId,
+                session.sizeBytes,
+                "assembly_post_step_failed",
+                err instanceof Error ? err.message : "Post-assembly step failed (blob intact)",
+              );
+            } else {
+              // ── Assembly itself failed — blob NOT committed ─────────────────
+              // completeMultipartUpload threw or rolled back; the blob is absent
+              // or partial. Mark the video failed so the validator can deactivate
+              // any stale queue row, and reset the session to "uploading" so the
+              // operator can retry from the upload panel.
+              capturedLog.error(
+                { err, sessionId, videoId, assemblyMs: Date.now() - assemblyStartMs },
+                "[finalize:bg] ASSEMBLY FAILED — blob not committed; resetting session for operator retry",
+              );
+              // Best-effort orphan cleanup: delete the partial blob at the dest key
+              // so the next finalize retry starts from a clean slate.
+              if (session.objectKey) {
+                capturedLog.warn(
+                  { sessionId, videoId, objectKey: session.objectKey },
+                  "[finalize:bg] deleting uncommitted partial assembly blob",
+                );
+                void storage().deleteObject(session.objectKey).catch(() => {});
+              }
+              await Promise.allSettled([
+                db
+                  .update(videos)
+                  .set({
+                    transcodingStatus: "failed",
+                    transcodingErrorCode: "ASSEMBLY_FAILED",
+                    transcodingErrorMessage:
+                      `Assembly failed after ${Date.now() - assemblyStartMs} ms — ` +
+                      "the blob was not committed (transaction rolled back). " +
+                      "Reset the session from the upload panel and retry the upload to recover.",
+                  })
+                  .where(eq(videos.id, videoId)),
+                db
+                  .update(sessions)
+                  .set({
+                    status: "uploading",
+                    // CRITICAL: preserve completedVideoId so the reconciliation timer
+                    // can find this session for spawnAssemblyRetry with backoff.
+                    // Clearing it here permanently orphans the video from auto-recovery.
+                    // completedVideoId: null   ← intentionally preserved
+                    assemblyAttempts: sql`assembly_attempts + 1`,
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(sessions.sessionId, sessionId)),
+              ]);
+              // Invalidate catalog cache so TV/mobile clients stop seeing this
+              // video as "queued" for the full cache TTL after it has been failed.
+              void invalidateVideosCatalogCache();
+              adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-failed" });
+              uploadTelemetry.serverFail(
+                sessionId,
+                session.sizeBytes,
+                "assembly_failed",
+                err instanceof Error ? err.message : "Assembly failed",
               );
             }
-            // Error code selection:
-            //   assemblyCommitted=false → ASSEMBLY_FAILED: the blob is absent or
-            //     partial; session is reset to 'uploading' so operator can retry
-            //     finalization from the upload panel (recoverable).
-            //   assemblyCommitted=true  → CORRUPT_SOURCE: the blob committed
-            //     successfully but a post-assembly step threw (e.g. a DB write).
-            //     The blob is intact but the video row may be in an inconsistent
-            //     state; use CORRUPT_SOURCE to signal the validator to auto-deactivate
-            //     this queue item until an operator investigates.
-            await Promise.allSettled([
-              db
-                .update(videos)
-                .set({
-                  transcodingStatus: "failed",
-                  transcodingErrorCode: assemblyCommitted ? "CORRUPT_SOURCE" : "ASSEMBLY_FAILED",
-                  transcodingErrorMessage: assemblyCommitted
-                    ? `A post-assembly step failed after ${Date.now() - assemblyStartMs} ms — ` +
-                      "the blob is intact but the video may need operator review. " +
-                      "Check logs for the specific error."
-                    : `Assembly failed after ${Date.now() - assemblyStartMs} ms — ` +
-                      "the blob was not committed (transaction rolled back). Reset the session from the " +
-                      "upload panel and retry the upload to recover.",
-                })
-                .where(eq(videos.id, videoId)),
-              db
-                .update(sessions)
-                .set({
-                  status: "uploading",
-                  // CRITICAL: preserve completedVideoId in BOTH the committed and
-                  // uncommitted failure paths.
-                  //
-                  // assemblyCommitted=false (transaction rolled back):
-                  //   The video row exists (pre-committed before assembly started).
-                  //   Preserving completedVideoId lets the reconciliation timer find
-                  //   this session and schedule spawnAssemblyRetry with backoff.
-                  //   Clearing it here permanently orphans the video from auto-recovery.
-                  //
-                  // assemblyCommitted=true (post-assembly step threw):
-                  //   The blob IS committed and the video is valid.  Setting
-                  //   completedVideoId=null would make the reconciliation timer unable
-                  //   to re-link the session to the video for post-processing retry.
-                  //
-                  // completedVideoId: null   ← intentionally preserved
-                  assemblyAttempts: sql`assembly_attempts + 1`,
-                  updatedAt: new Date(),
-                })
-                .where(eq(sessions.sessionId, sessionId)),
-            ]);
-            // Invalidate the server-side public catalog cache so TV/mobile
-            // clients don't continue to see this video as "queued" for the
-            // full cache TTL after it has been marked "failed".
-            void invalidateVideosCatalogCache();
-            adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-failed" });
-            uploadTelemetry.serverFail(
-              sessionId,
-              session.sizeBytes,
-              "assembly_failed",
-              err instanceof Error ? err.message : "Assembly failed",
-            );
           }
         })();
 
         return {
           ...projectRow(row),
-          storageBackend: "minio" as const,
+          storageBackend: "db" as const,
           transcodingWarning: null,
         };
       }
