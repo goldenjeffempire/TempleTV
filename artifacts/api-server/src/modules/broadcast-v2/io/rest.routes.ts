@@ -2845,7 +2845,21 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     reply.header("Cache-Control", "no-store, max-age=0");
     const { videoId } = req.params as { videoId: string };
 
-    const result = await enqueueIfMissing({ videoId, reason: "enqueue-missing" });
+    let result = await enqueueIfMissing({ videoId, reason: "enqueue-missing" });
+
+    // Self-heal on explicit operator action: a "not-yet-playable" skip is most
+    // often caused by a missing s3_mirrored_at stamp (post-assembly UPDATE
+    // silently failed, or the blob key was only derivable via object_path).
+    // When an operator explicitly clicks "Sync to Queue", run a targeted
+    // blob-confirmation repair and retry once — turning the manual action into a
+    // one-click fix for videos whose blob IS committed to storage_blobs but was
+    // never stamped. Videos whose blob is genuinely absent stay skipped.
+    if (!result.enqueued && result.skipReason === "not-yet-playable") {
+      const { repaired } = await repairMissingS3MirroredAt(videoId);
+      if (repaired > 0) {
+        result = await enqueueIfMissing({ videoId, reason: "enqueue-missing" });
+      }
+    }
 
     if (result.skipReason === "video-not-found") {
       return reply.status(404).send({ error: "Video not found" });

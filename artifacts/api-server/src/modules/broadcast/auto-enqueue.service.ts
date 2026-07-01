@@ -234,14 +234,19 @@ function deriveStorageKeyFromUrl(localVideoUrl: string): string | null {
  *   - Batch-updates with a single UPDATE … WHERE id IN (…) to minimise
  *     round-trips; the cap of 500 rows prevents runaway scans on large DBs.
  */
-export async function repairMissingS3MirroredAt(): Promise<{ repaired: number }> {
+export async function repairMissingS3MirroredAt(videoId?: string): Promise<{ repaired: number }> {
   try {
     // Step 1: Find all local videos with s3MirroredAt IS NULL that look
     // potentially assembled (have a localVideoUrl and no terminal error).
+    // When `videoId` is supplied (e.g. from the manual "Sync to Queue" action)
+    // the scan is scoped to that single row — the blob check touches one key
+    // instead of up to 500, keeping the interactive path cheap on a memory-
+    // constrained host.
     const candidates = await db
       .select({
         id: videosTable.id,
         localVideoUrl: videosTable.localVideoUrl,
+        objectPath: videosTable.objectPath,
       })
       .from(videosTable)
       .where(
@@ -249,6 +254,7 @@ export async function repairMissingS3MirroredAt(): Promise<{ repaired: number }>
           ne(videosTable.videoSource, "youtube"),
           isNull(videosTable.s3MirroredAt),
           isNotNull(videosTable.localVideoUrl),
+          ...(videoId ? [eq(videosTable.id, videoId)] : []),
         ),
       )
       .limit(500);
@@ -256,8 +262,15 @@ export async function repairMissingS3MirroredAt(): Promise<{ repaired: number }>
     if (candidates.length === 0) return { repaired: 0 };
 
     // Step 2: Derive storage keys and filter out non-derivable URLs.
+    // Prefer object_path (the authoritative storage key written at upload time)
+    // over the URL-derived key — mirrors auditMissingBlobs(). Without this, a
+    // video whose blob IS present in storage_blobs under its object_path key but
+    // whose localVideoUrl derives a different/null key would never be stamped,
+    // leaving it permanently "not broadcast-ready — blob stamp is missing".
     const withKeys = candidates.flatMap((r) => {
-      const key = deriveStorageKeyFromUrl(r.localVideoUrl ?? "");
+      const keyFromPath = r.objectPath?.trim() || null;
+      const keyFromUrl = deriveStorageKeyFromUrl(r.localVideoUrl ?? "");
+      const key = keyFromPath ?? keyFromUrl;
       return key ? [{ id: r.id, key }] : [];
     });
     if (withKeys.length === 0) return { repaired: 0 };

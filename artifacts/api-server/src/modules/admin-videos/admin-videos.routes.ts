@@ -464,8 +464,13 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       // hardcoded `false` for those columns so PostgreSQL never sees their names.
       // Cursor mode skips the COUNT query (returns total=-1 as sentinel).
       type VideoRow = typeof videos.$inferSelect;
+      // Skip the COUNT query only on DEEP cursor pages (page > 1). The first
+      // page always runs COUNT so the library header shows an accurate total
+      // instead of the −1 sentinel; on page 1 no cursor filter is applied, so
+      // COUNT(*) equals the true library total. Cheap and client-cached (30 s).
+      const skipCount = useCursor && q.page > 1;
       const [rows, totalRows] = await (async (): Promise<[VideoRow[], { c: number | bigint }[]]> => {
-        const countPromise = useCursor
+        const countPromise = skipCount
           ? Promise.resolve([{ c: -1 as number | bigint }])
           : db.select({ c: count() }).from(videos).where(where as SQL | undefined);
         try {
@@ -482,7 +487,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         } catch (err: unknown) {
           if (!isUndefinedColumnError(err)) throw err;
           req.log.warn("[admin-videos] DB schema missing column — falling back to safe projection");
-          const countFallback = useCursor
+          const countFallback = skipCount
             ? Promise.resolve([{ c: -1 as number | bigint }])
             : db.select({ c: count() }).from(videos).where(where as SQL | undefined);
           return [

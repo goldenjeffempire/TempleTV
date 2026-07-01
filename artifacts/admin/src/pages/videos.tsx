@@ -1468,7 +1468,13 @@ export default function VideosPage() {
 
       <PageHeader
         title="Videos"
-        description={`${data?.total ?? 0} locally uploaded video${(data?.total ?? 0) !== 1 ? "s" : ""}`}
+        description={(() => {
+          // `total` is -1 on deep cursor pages (COUNT skipped). Never render a
+          // negative count — fall back to the number of rows actually loaded.
+          const t = data?.total ?? 0;
+          const c = t >= 0 ? t : (data?.videos?.length ?? 0);
+          return `${c} locally uploaded video${c !== 1 ? "s" : ""}`;
+        })()}
         actions={
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={() => void refetch()} className="gap-1.5">
