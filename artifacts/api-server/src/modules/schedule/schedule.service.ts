@@ -1,4 +1,4 @@
-import { asc, eq, gte, isNotNull, or, and } from "drizzle-orm";
+import { asc, eq, gte, isNotNull, and } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { z } from "zod";
 import { db, schema } from "../../infrastructure/db.js";

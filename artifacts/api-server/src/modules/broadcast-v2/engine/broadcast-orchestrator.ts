@@ -1174,7 +1174,7 @@ class BroadcastOrchestrator extends EventEmitter {
           this.queueCheckpoint = { itemId: diskSnap.currentItemId, positionMs: diskSnap.positionMs };
         }
         if (diskSnap.failoverActive && !this.failover.active) {
-          this.failover = { active: true, reason: diskSnap.failoverReason ?? undefined };
+          this.failover = { active: true, reason: diskSnap.failoverReason ?? null };
         }
         logger.warn(
           { channelId: this.channelId, diskSnap },
@@ -1500,7 +1500,7 @@ class BroadcastOrchestrator extends EventEmitter {
     // the server-side file has already been faststart-optimised.
     if (!opts?.preserveBadUrlCache && rawRows.length > 0) {
       const queueHash = rawRows
-        .map((r) => `${r.id}:${r.durationSecs}:${r.localVideoUrl ?? ""}:${r.hlsMasterUrl ?? ""}:${r.faststartApplied ? "1" : "0"}`)
+        .map((r) => `${r.id}:${r.durationSecs}:${r.localVideoUrl ?? ""}:${r.faststartApplied ? "1" : "0"}`)
         .join("|");
       if (queueHash === this._lastQueueHash) {
         // Nothing changed — update diagnostics and return fast.
@@ -1724,7 +1724,7 @@ class BroadcastOrchestrator extends EventEmitter {
     // and prevents premature queue advancement for newly-uploaded MP4 files.
     // Fire-and-forget; any errors are logged inside triggerDurationBackfill().
     if (resolved.some((item) => item.durationSecs === 1800)) {
-      void faststartRecoveryWorker.triggerDurationBackfill().catch((err) =>
+      void faststartRecoveryWorker.runSweep().catch((err: unknown) =>
         logger.warn({ err }, "[broadcast-v2] reloadInner: immediate duration backfill failed (non-fatal)"),
       );
     }

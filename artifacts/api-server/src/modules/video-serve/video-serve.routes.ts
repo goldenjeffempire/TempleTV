@@ -2,8 +2,6 @@ import type { FastifyInstance } from "fastify";
 import { desc, eq } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { storage } from "../../infrastructure/storage.js";
-import { env } from "../../config/env.js";
-import { logger } from "../../infrastructure/logger.js";
 import { registerNamedStore } from "../../infrastructure/cache.js";
 
 /**

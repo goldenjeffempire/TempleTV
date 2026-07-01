@@ -20,7 +20,7 @@ import {
 } from "../domain/commands.js";
 import { requireAuth } from "../../../middleware/auth.js";
 import { broadcastService } from "../../broadcast/broadcast.service.js";
-import { scanLibraryAndEnqueue, listMissingFromQueue, repairMissingS3MirroredAt } from "../../broadcast/auto-enqueue.service.js";
+import { scanLibraryAndEnqueue, listMissingFromQueue, repairMissingS3MirroredAt, enqueueIfMissing } from "../../broadcast/auto-enqueue.service.js";
 import { reactivateSystemDeactivated } from "../engine/queue-health-guard.js";
 import { markBadUrl, clearAllBadUrls, clearBadUrl, getItemsHealth, getBadUrlStats, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl, getUrlBadSourceSetsSize, persistBadUrlCache, clearSourceApproval, clearAllSourceApprovals } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
@@ -28,6 +28,7 @@ import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { eq, and, isNull, isNotNull, sql, inArray, or } from "drizzle-orm";
 import { probeUploadedDuration } from "../../transcoder/transcoder.service.js";
+import { enqueueTranscode } from "../../transcoder/transcoder.queue.js";
 import { transcoderDispatcher } from "../../transcoder/transcoder.dispatcher.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { mediaIntegrityScanner } from "../engine/media-integrity-scanner.js";
@@ -664,8 +665,9 @@ export async function restRoutes(app: FastifyInstance) {
           const tr = getTranscodingAutoRetryStatus();
           return {
             enabled: tr.enabled,
-            totalRetried: tr.totalRetried,
-            lastRetryCount: tr.lastRetryCount,
+            lastRunAt: tr.lastRunAt,
+            lastRunFound: tr.lastRunFound,
+            lastRunQueued: tr.lastRunQueued,
           };
         })(),
       },
@@ -854,7 +856,7 @@ export async function restRoutes(app: FastifyInstance) {
       const mpWindowOpen = isWindowActive(now, mpConfig);
       const mpHasVideos = midnightPrayersService.getVideos().length > 0;
       if (mpWindowOpen && mpHasVideos) {
-        const mpSnap = broadcastOrchestrator.snapshot() as Record<string, unknown>;
+        const mpSnap = broadcastOrchestrator.snapshot() as unknown as Record<string, unknown>;
         const offlineSnap = {
           ...mpSnap,
           mode: "offline_hold",
@@ -1847,22 +1849,14 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         .then((r) => r[0] ?? null)
         .catch(() => null);
 
-      const result = await storageBlobRecoveryService.runWaterfall({
-        videoId,
-        queueId: queueRow?.id ?? "",
-        title: videoRow.title,
-        objectPath: videoRow.objectPath,
-        videoSource: videoRow.videoSource,
-        sourceCleanupStatus: videoRow.sourceCleanupStatus,
-        triggeredBy: `manual:${req.principal?.email ?? "operator"}`,
-      });
+      const result = await storageBlobRecoveryService.runWaterfall(queueRow?.id ?? videoId);
 
       logger.info(
-        { videoId, tier: result.tier, message: result.message, operator: req.principal?.email },
+        { videoId, tier: result.tier, reason: result.reason, operator: req.principal?.email },
         "[broadcast-v2] manual storage-repair triggered",
       );
 
-      return { ok: true, tier: result.tier, message: result.message };
+      return { ok: result.ok, tier: result.tier ?? "none", message: result.reason ?? "" };
     },
   );
 
@@ -2849,7 +2843,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
   }, async (req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
-    const { videoId } = req.params;
+    const { videoId } = req.params as { videoId: string };
 
     const result = await enqueueIfMissing({ videoId, reason: "enqueue-missing" });
 
@@ -2859,7 +2853,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
 
     if (result.enqueued) {
       adminEventBus.push("broadcast-queue-updated", { reason: "force-enqueue", videoId });
-      void broadcastOrchestrator.reload("force-enqueue").catch(() => {});
+      void broadcastOrchestrator.reload().catch(() => {});
     }
 
     const message = result.enqueued
@@ -2892,21 +2886,21 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
   }, async (req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
-    const ids = req.query.videoIds
+    const ids = (req.query as { videoIds: string }).videoIds
       .split(",")
-      .map((s) => s.trim())
+      .map((s: string) => s.trim())
       .filter(Boolean)
       .slice(0, 100);
 
     if (ids.length === 0) return { status: {} };
 
     const rows = await db
-      .select({ videoId: schema.broadcastQueue.videoId })
-      .from(schema.broadcastQueue)
+      .select({ videoId: schema.broadcastQueueTable.videoId })
+      .from(schema.broadcastQueueTable)
       .where(
         and(
-          eq(schema.broadcastQueue.isActive, true),
-          inArray(schema.broadcastQueue.videoId, ids),
+          eq(schema.broadcastQueueTable.isActive, true),
+          inArray(schema.broadcastQueueTable.videoId, ids),
         ),
       );
 
@@ -3098,7 +3092,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
         .where(eq(schema.broadcastQueueTable.id, id));
 
       // Enqueue HLS transcoding (uses sourceUrl as the objectPath/videoPath)
-      await enqueueTranscode({ videoId, videoPath: sourceUrl, priority: 5 });
+      await enqueueTranscode({ videoId, objectKey: sourceUrl, priority: 5 });
       transcoderDispatcher.nudge();
 
       // Reload orchestrator so the updated row is visible immediately

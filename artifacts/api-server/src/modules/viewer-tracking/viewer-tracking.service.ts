@@ -157,7 +157,6 @@ class ViewerTrackingService extends EventEmitter {
   // ── Heartbeat (hot path) ─────────────────────────────────────────────────
 
   async heartbeat(payload: HeartbeatPayload): Promise<{ viewers: number; isNewSession: boolean }> {
-    const { sessionId, streamId } = payload;
     const now = Date.now();
     const expireAt = now + SESSION_TTL_MS;
 
@@ -411,7 +410,6 @@ class ViewerTrackingService extends EventEmitter {
 
     const pipeline = r.pipeline();
     for (const key of keys) {
-      const streamId = key.replace("vt:active:", "");
       // We do a pipeline sweep + count for each stream
       pipeline.zremrangebyscore(key, 0, now);
       pipeline.zcard(key);

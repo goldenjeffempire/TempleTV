@@ -242,8 +242,31 @@ export async function otaRoutes(app: FastifyInstance): Promise<void> {
         githubRepo: ghRepo,
       };
 
-      let branches: EasBranch[]    = [];
-      let workflowRuns: WorkflowRun[] = [];
+      type BranchDto = {
+        id: string;
+        name: string;
+        updates: {
+          id: string;
+          group: string;
+          message: string | null;
+          createdAt: string;
+          runtimeVersion: string;
+          platform: string;
+          actor: string | null;
+        }[];
+      };
+      type WorkflowRunDto = {
+        id: number;
+        name: string;
+        status: string;
+        conclusion: string | null;
+        html_url: string;
+        created_at: string;
+        updated_at: string;
+        message: string | null;
+      };
+      let branches: BranchDto[]    = [];
+      let workflowRuns: WorkflowRunDto[] = [];
       let error: string | null     = null;
 
       // Fetch EAS update history — protected by a circuit breaker.

@@ -4,7 +4,6 @@ import { mkdir, open as fsOpen, readdir, readFile, rename, rm, stat, statfs, wri
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import path from "node:path";
-import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { storage } from "../../infrastructure/storage.js";
 import { logger } from "../../infrastructure/logger.js";

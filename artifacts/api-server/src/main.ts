@@ -940,7 +940,7 @@ async function main() {
               `);
               await enqueueTranscode({
                 videoId: row.video_id,
-                videoPath: row.local_video_url,
+                objectKey: row.local_video_url,
                 priority: 5,
               });
               logger.warn(

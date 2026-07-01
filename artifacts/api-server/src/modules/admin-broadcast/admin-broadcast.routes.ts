@@ -289,7 +289,6 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
             ...videoMeta,
             transcodingProgress: row.videoId ? (progressMap.get(row.videoId) ?? null) : null,
             hlsMasterUrl: (videoMeta as { hlsMasterUrl?: string | null }).hlsMasterUrl
-              ?? row.hlsMasterUrl
               ?? null,
           };
           return toDto(coalesced);
@@ -422,7 +421,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
         if (inserted.videoId && video.localVideoUrl && !hlsById?.hlsMasterUrl) {
           void enqueueTranscode({
             videoId: inserted.videoId,
-            videoPath: video.localVideoUrl,
+            objectKey: video.localVideoUrl,
             priority: 10,
           }).then(() => {
             transcoderDispatcher.nudge();
@@ -475,7 +474,7 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
           // Same idempotent enqueue pattern as the slim path above.
           void enqueueTranscode({
             videoId: insertedExplicit.videoId,
-            videoPath: explicitLocalUrl,
+            objectKey: explicitLocalUrl,
             priority: 10,
           }).then(() => {
             transcoderDispatcher.nudge();

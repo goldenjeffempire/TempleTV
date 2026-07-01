@@ -333,10 +333,6 @@ async function spawnAssemblyRetry(
           // computed before the upload began.  Any mismatch causes the transaction
           // to roll back so no corrupt blob is ever committed.
           expectedSha256: session.expectedFileSha256 ?? undefined,
-          // Validate that storage_upload_parts contains exactly this many rows
-          // so phantom parts (from any uploadId collision) cannot silently corrupt
-          // the assembled blob.
-          totalChunks: session.totalChunks,
         });
       }
 
@@ -969,8 +965,8 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             {
               count: abandoned.length,
               ids,
-              uploadIdsCleared: uploadIds.length,
-              assemblyUploadIdsCleared: assemblyUploadIds.length,
+              uploadIdsCleared: abandoned.filter((s) => s.uploadId).length,
+              assemblyUploadIdsCleared: abandoned.filter((s) => s.assemblyUploadId).length,
             },
             "[upload] cleaned up abandoned upload sessions, chunks, and orphaned storage parts",
           );
@@ -1194,7 +1190,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       // Open a multipart upload slot in object storage.
       // Retry with exponential backoff + jitter so transient storage restarts
       // don't fail the entire upload init — the client would have to re-init.
-      let uploadId: string;
+      let uploadId: string | undefined = undefined;
       {
         const INIT_MAX_ATTEMPTS = 4;
         const INIT_BASE_DELAY_MS = 500;
@@ -1738,11 +1734,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             transcodingWarning: z.string().nullable().optional(),
           }),
           429: z.object({ error: z.string() }),
+          499: z.object({ error: z.string() }),
         },
         security: [{ bearerAuth: [] }],
       },
     },
-    async (req) => {
+    async (req, reply) => {
       const { sessionId } = req.params;
 
       // Abort early if the client disconnected before we begin. The background
@@ -2421,10 +2418,6 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               // Any mismatch causes the transaction to roll back: no corrupt blob is
               // ever committed to storage_blobs.
               expectedSha256: session.expectedFileSha256 ?? undefined,
-              // Validate that storage_upload_parts contains exactly this many rows
-              // so phantom parts (from any uploadId collision) cannot silently corrupt
-              // the assembled blob inside the transaction.
-              totalChunks: session.totalChunks,
             });
             // Blob is now committed in storage_blobs.  Any exception thrown
             // after this point must NOT delete the object.

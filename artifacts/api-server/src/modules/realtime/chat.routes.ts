@@ -12,7 +12,6 @@ import { env } from "../../config/env.js";
 import {
   chatHub,
   createMember,
-  DEFAULT_SETTINGS,
   type ChatSocket,
   type RoomMember,
 } from "./chat.hub.js";

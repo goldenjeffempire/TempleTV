@@ -545,7 +545,6 @@ export async function runFaststart(
     const isStructured = (err as { code?: string }).code;
     const code = isStructured ?? "FASTSTART_FAILED";
     const msg = err instanceof Error ? err.message : String(err);
-    const isUnrecoverable = (err as { unrecoverable?: boolean }).unrecoverable === true;
 
     log.error({ err, code, durationMs: elapsed() }, "[faststart] FAILED");
     actions.push(`ERROR [${code}]: ${msg}`);

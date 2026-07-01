@@ -102,11 +102,6 @@ export const broadcastService = {
           thumbnailUrl: item.thumbnailUrl,
           durationSecs: item.durationSecs,
           localVideoUrl: item.localVideoUrl ?? null,
-          // Stored on the queue row so the orchestrator's source resolver is
-          // self-contained (no managed_videos join required for source lookup).
-          // Populated immediately when the video already has HLS; updated to the
-          // HLS URL when transcoding completes (transcoder.dispatcher.ts UPDATE).
-          hlsMasterUrl: item.hlsMasterUrl ?? null,
           videoSource: item.videoSource,
           isActive: true,
           sortOrder,

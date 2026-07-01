@@ -300,7 +300,7 @@ async function sweepStuckTranscodes(stats: SweepStats): Promise<void> {
     const requeuedIds: string[] = [];
     for (const row of requeue) {
       try {
-        await enqueueTranscode({ videoId: row.id, videoPath: row.objectPath! });
+        await enqueueTranscode({ videoId: row.id, objectKey: row.objectPath! });
         requeuedIds.push(row.id);
       } catch (enqErr) {
         logger.warn(

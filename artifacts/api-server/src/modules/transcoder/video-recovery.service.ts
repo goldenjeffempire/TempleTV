@@ -188,7 +188,7 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
     ORDER BY mv.imported_at DESC
   `);
 
-  const rows = snapshotResult.rows as SnapshotRow[];
+  const rows = snapshotResult.rows as unknown as SnapshotRow[];
   log.info({ count: rows.length }, "deep-recovery: snapshot complete");
 
   if (rows.length === 0) {
@@ -352,7 +352,7 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
   for (const row of toEnqueue) {
     if (!row.object_path) continue;
     try {
-      await enqueueTranscode({ videoId: row.id, videoPath: row.object_path });
+      await enqueueTranscode({ videoId: row.id, objectKey: row.object_path });
       if (row.issueKind === "orphan_encoding") actions.resetOrphaned++;
       else if (row.issueKind === "stuck_queued") actions.resetStuck++;
       else actions.enqueuedUnprocessed++;

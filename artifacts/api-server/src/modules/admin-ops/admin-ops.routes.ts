@@ -2524,7 +2524,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       }
       const result = await enqueueTranscode({
         videoId,
-        videoPath: sourceKey,
+        objectKey: sourceKey,
         priority: body.priority,
       });
       transcoderDispatcher.nudge();

@@ -582,6 +582,8 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
         }
       })();
 
+      const transcodingWarning: string | null = null;
+
       req.log.info(
         {
           sessionId: body.sessionId,

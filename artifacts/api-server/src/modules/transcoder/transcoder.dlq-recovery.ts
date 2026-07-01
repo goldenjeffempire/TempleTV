@@ -226,7 +226,14 @@ export class DlqRecoveryWorker {
     }
 
     try {
-      const { jobId } = await requeueFromDlq(entry.id);
+      const requeueResult = await requeueFromDlq(entry.id);
+      if (!requeueResult.ok) {
+        logger.warn(
+          { dlqId: entry.id, videoId: entry.videoId, reason: requeueResult.reason },
+          "dlq-auto-requeue: requeueFromDlq returned not-ok (non-fatal)",
+        );
+        return;
+      }
 
       const nextTierMs = RECOVERY_TIERS_MS[requeueCount + 1];
       const nextRetryAt = nextTierMs != null
@@ -244,7 +251,6 @@ export class DlqRecoveryWorker {
 
       adminEventBus.push("transcoding-update", {
         type: "dlq-auto-requeue",
-        jobId,
         dlqId: entry.id,
         tier: requeueCount + 1,
         totalTiers: RECOVERY_TIERS_MS.length,
@@ -254,7 +260,6 @@ export class DlqRecoveryWorker {
       logger.info(
         {
           dlqId: entry.id,
-          jobId,
           videoId: entry.videoId,
           tier: requeueCount + 1,
           totalTiers: RECOVERY_TIERS_MS.length,

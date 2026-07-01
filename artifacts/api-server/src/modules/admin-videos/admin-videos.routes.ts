@@ -972,7 +972,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
 
       const { id: jobId, reused } = await enqueueTranscode({
         videoId: row.id,
-        videoPath: row.objectPath,
+        objectKey: row.objectPath,
         priority: 1,
       });
 
@@ -1293,7 +1293,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
           continue;
         }
         try {
-          await enqueueTranscode({ videoId: row.id, videoPath: row.objectPath });
+          await enqueueTranscode({ videoId: row.id, objectKey: row.objectPath });
           queued++;
         } catch (err) {
           req.log.warn({ err, videoId: row.id }, "bulk-transcode: enqueue failed for video (skipping)");
@@ -1476,7 +1476,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       // Invalidate catalog cache so updated thumbnailUrl is served immediately.
       if (result.generated) {
         invalidateVideosCatalogCache();
-        adminEventBus.push("videos-library-updated");
+        adminEventBus.push("videos-library-updated", {});
       }
 
       return {

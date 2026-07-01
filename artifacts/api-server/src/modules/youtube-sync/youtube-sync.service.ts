@@ -1314,7 +1314,7 @@ export async function syncYouTubeChannel(triggeredBy: "scheduler" | "manual" = "
     // Signal the broadcast orchestrator to reload — new YouTube videos are
     // available in managed_videos and the ytShuffleFallback catalog needs
     // updating if it is currently active.
-    adminEventBus.push("broadcast-queue-updated");
+    adminEventBus.push("broadcast-queue-updated", null);
 
     // If the YouTube shuffle fallback is currently active, merge any newly-
     // synced videos into the in-memory rotation without interrupting playback.

@@ -250,7 +250,7 @@ async function run(): Promise<void> {
       });
       // enqueueIfMissing already fires broadcast-queue-updated per item;
       // emit one more coalesced event so the admin SSE channel sees a single refresh.
-      adminEventBus.push("broadcast-queue-updated");
+      adminEventBus.push("broadcast-queue-updated", {});
 
       logger.info({ added, timeToEmptyMs }, "[auto-refill] refill complete");
     }
