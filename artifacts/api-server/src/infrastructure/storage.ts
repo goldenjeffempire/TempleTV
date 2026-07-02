@@ -637,82 +637,57 @@ class PostgresObjectStorage implements ObjectStorage {
       await tx.execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`);
 
       // ── 4. Assemble entirely inside PostgreSQL — zero bytes to Node.js ────
-      // bytea_agg(data ORDER BY part_number) concatenates all parts in a
-      // single server-side aggregate pass; the INSERT writes the result
-      // directly into storage_blobs.  Peak Node.js RSS contribution: ~0.
-      let usedFallback = false;
-      try {
-        await tx.execute(sql`
-          INSERT INTO storage_blobs (key, content_type, size_bytes, data, updated_at)
-          SELECT
-            ${key}                                     AS key,
-            ${contentType}                             AS content_type,
-            SUM(octet_length(data))                    AS size_bytes,
-            bytea_agg(data ORDER BY part_number)       AS data,
-            NOW()                                      AS updated_at
-          FROM storage_upload_parts
-          WHERE upload_id = ${uploadId}
-        `);
-      } catch (aggErr) {
-        const msg = String((aggErr as Error).message ?? "");
-        const isMissingAggregate =
-          msg.includes("bytea_agg") ||
-          (msg.includes("does not exist") && msg.includes("function"));
-        if (!isMissingAggregate) throw aggErr;
-        // bytea_agg not yet installed (rare first-boot race) — fall back to
-        // server-side iterative append (O(1) Node.js memory per part).
-        logger.warn(
-          { key, uploadId, partCount, totalBytes },
-          "[storage] completeMultipartUpload: bytea_agg unavailable — using server-side iterative append fallback",
-        );
-        usedFallback = true;
-      }
+      // Key design: large-file safety.
+      //
+      // For files > ~500 MB the old approach of separate INSERT + SELECT
+      // octet_length + SELECT sha256 caused three full reads of the blob in
+      // rapid succession.  On a 5+ GB file this regularly exceeded the
+      // server-side statement timeout and rolled back the transaction.
+      //
+      // Fix — two changes:
+      //   a) SET LOCAL statement_timeout = 0 before the assembly step so the
+      //      DB never kills the query mid-aggregate regardless of file size.
+      //      The advisory lock above already serialises concurrent assemblies;
+      //      the only risk of an unbounded query is resource consumption, which
+      //      is bounded by the file size the client already uploaded.
+      //   b) RETURNING clause on the INSERT folds size + SHA-256 verification
+      //      into the same server round-trip as the bytea_agg aggregate.
+      //      PostgreSQL returns the just-written tuple from its buffer cache —
+      //      no second full scan of the TOAST table.  3 large reads → 1.
 
-      if (usedFallback) {
-        // Iterative server-side concatenation.  Each UPDATE reads one part
-        // from storage_upload_parts and appends it to the growing blob —
-        // no data crosses the Node.js/PostgreSQL boundary.
-        // First part: INSERT the row.
-        await tx.execute(sql`
-          INSERT INTO storage_blobs (key, content_type, size_bytes, data, updated_at)
-          SELECT ${key}, ${contentType}, 0, data, NOW()
-          FROM storage_upload_parts
-          WHERE upload_id = ${uploadId} AND part_number = 1
-        `);
-        // Subsequent parts: server-side append.
-        for (let n = 2; n <= partCount; n++) {
-          await tx.execute(sql`
-            UPDATE storage_blobs
-            SET data = data || (
-              SELECT data FROM storage_upload_parts
-              WHERE upload_id = ${uploadId} AND part_number = ${n}
-            )
-            WHERE key = ${key}
-          `);
-        }
-        // Sync size_bytes once all parts are appended.
-        await tx.execute(sql`
-          UPDATE storage_blobs
-          SET size_bytes = octet_length(data), updated_at = NOW()
-          WHERE key = ${key}
-        `);
-      }
+      // Disable statement_timeout for the assembly step only.
+      // The transaction is already serialised by the advisory lock so there is
+      // no risk of a stale long-running query holding locks indefinitely.
+      await tx.execute(sql.raw(`SET LOCAL statement_timeout = 0`));
 
-      // ── 5. Post-assembly integrity validation ─────────────────────────────
-      // Verify both size_bytes (header field) and octet_length(data) (actual
-      // stored bytes) are non-zero and equal.  A discrepancy means the
-      // aggregate produced NULL or empty output and the INSERT/UPDATE succeeded
-      // on zero matching rows.
-      type SizeRow = { size_bytes: string; actual_length: string };
-      const sizeRow = firstRow<SizeRow>(await tx.execute<SizeRow>(sql`
-        SELECT size_bytes::text, octet_length(data)::text AS actual_length
-        FROM storage_blobs
-        WHERE key = ${key}
-        LIMIT 1
+      type AssemblyRow = { size_bytes: string; actual_length: string; file_sha256: string | null };
+      const assemblyRows = allRows<AssemblyRow>(await tx.execute<AssemblyRow>(sql`
+        INSERT INTO storage_blobs (key, content_type, size_bytes, data, updated_at)
+        SELECT
+          ${key}                                     AS key,
+          ${contentType}                             AS content_type,
+          SUM(octet_length(data))                    AS size_bytes,
+          bytea_agg(data ORDER BY part_number)       AS data,
+          NOW()                                      AS updated_at
+        FROM storage_upload_parts
+        WHERE upload_id = ${uploadId}
+        RETURNING
+          size_bytes::text                             AS size_bytes,
+          octet_length(data)::text                    AS actual_length,
+          encode(sha256(data), 'hex')                 AS file_sha256
       `));
 
-      const recordedSize = parseInt(sizeRow?.size_bytes ?? "0", 10);
-      const actualLength = parseInt(sizeRow?.actual_length ?? "0", 10);
+      // Re-enable the global statement_timeout for the remainder of the
+      // transaction (parts DELETE + advisory lock release are fast queries).
+      await tx.execute(sql.raw(`SET LOCAL statement_timeout = DEFAULT`));
+
+      const assemblyRow = assemblyRows[0];
+
+      // ── 5. Post-assembly integrity validation ─────────────────────────────
+      // Values come from RETURNING — the just-written buffer-cached tuple.
+      // No second full blob scan required.
+      const recordedSize = parseInt(assemblyRow?.size_bytes  ?? "0", 10);
+      const actualLength = parseInt(assemblyRow?.actual_length ?? "0", 10);
 
       if (recordedSize === 0 || actualLength === 0) {
         throw Object.assign(
@@ -721,7 +696,7 @@ class PostgresObjectStorage implements ObjectStorage {
             `(recorded=${recordedSize}, actual=${actualLength}) for key="${key}" ` +
             `uploadId=${uploadId} despite ${partCount} part(s) totaling ${totalBytes} B. ` +
             `Transaction rolled back — no partial blob committed. ` +
-            `Possible cause: bytea_agg received NULL inputs or aggregate aggregate failed silently.`,
+            `Possible cause: bytea_agg received NULL inputs or aggregate failed silently.`,
           ),
           { code: "ASSEMBLY_ZERO_BYTES" },
         );
@@ -740,19 +715,10 @@ class PostgresObjectStorage implements ObjectStorage {
       }
 
       // ── 6. End-to-end SHA-256 verification ───────────────────────────────
-      // sha256(data) runs entirely inside PostgreSQL — only the 32-byte hash
-      // is returned to Node.js (O(1) memory regardless of blob size).
-      // This provides a cryptographic proof that the assembled file is a
-      // byte-for-byte copy of the original, beyond per-chunk SHA-256 checks.
+      // Hash was computed inline by the RETURNING clause above — O(0) extra
+      // round-trips to the DB regardless of blob size.
       if (expectedSha256) {
-        type HashRow = { file_sha256: string };
-        const hashRow = firstRow<HashRow>(await tx.execute<HashRow>(sql`
-          SELECT encode(sha256(data), 'hex') AS file_sha256
-          FROM storage_blobs
-          WHERE key = ${key}
-          LIMIT 1
-        `));
-        const actualSha256 = hashRow?.file_sha256 ?? "";
+        const actualSha256 = assemblyRow?.file_sha256 ?? "";
         if (actualSha256 !== expectedSha256.toLowerCase()) {
           throw Object.assign(
             new Error(
