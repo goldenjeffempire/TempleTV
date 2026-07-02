@@ -47,15 +47,16 @@ const videos = schema.videosTable;
 // ─── Chunk-write concurrency semaphore ────────────────────────────────────────
 // Each in-flight chunk upload holds an 8 MiB body buffer in Node.js heap for
 // the entire duration of the uploadPart DB write (typically 13-15 s under
-// concurrent background-assembly I/O pressure). Without a cap, 3 concurrent
-// files × 4 parallel chunks = 12 × 8 MiB ≈ 96 MiB of simultaneous Buffer
+// concurrent background-assembly I/O pressure). Without a cap, 10 concurrent
+// files × 4 parallel chunks = 40 × 16 MiB ≈ 640 MiB of simultaneous Buffer
 // allocations. Combined with V8 heap fragmentation and the pg hex-encoding
 // overhead this pushes RSS well above the memory-watchdog restart threshold.
 //
-// Limiting concurrent DB writes to 6 keeps peak chunk-buffer memory under
-// ~50 MiB while still saturating a 10-connection pg pool. Override via
-// MAX_CONCURRENT_CHUNK_DB_OPS env var if you raise DB_POOL_MAX.
-const MAX_CONCURRENT_CHUNK_DB_OPS = Number(process.env["MAX_CONCURRENT_CHUNK_DB_OPS"] ?? 6);
+// Limiting concurrent DB writes to 20 keeps peak chunk-buffer memory under
+// ~320 MiB while still saturating a 40-connection pg pool (DB_POOL_MAX=40).
+// Override via MAX_CONCURRENT_CHUNK_DB_OPS env var — lower to 6–10 on
+// memory-constrained hosts (< 1 GiB), raise to 30–40 on large-memory hosts.
+const MAX_CONCURRENT_CHUNK_DB_OPS = env.MAX_CONCURRENT_CHUNK_DB_OPS ?? 20;
 let _activeChunkDbOps = 0;
 const _chunkDbQueue: Array<() => void> = [];
 
@@ -1082,10 +1083,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       preHandler: requireAuth("editor"),
       // Tighter limit than the global 120/min — init creates a DB session row
       // and reserves an upload slot, so a burst is more expensive than a
-      // typical read. 30/min is enough for any realistic bulk-upload workflow
-      // (3 concurrent uploads × 10 retries per minute) without leaving room
-      // for a runaway loop to churn DB rows. (P2 fix)
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
+      // typical read. 120/min supports batch workflows (10 concurrent files ×
+      // several retries per minute) without leaving room for runaway loops.
+      config: { rateLimit: { max: 120, timeWindow: "1 minute" } },      schema: {
         tags: ["uploads"],
         summary: "Initialize a resumable chunked upload session (server-relay path)",
         body: InitBodySchema,
@@ -1326,11 +1326,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       // Per-route bodyLimit: 12 MiB — covers the 8 MiB maximum adaptive
       // chunk size plus HTTP framing headroom. The previous 110 MiB limit
       // was unnecessarily large (the adaptive max is capped at 8 MiB client-side).
-      bodyLimit: 12 * 1024 * 1024,
-      // Chunk uploads: adaptive chunk size is 1–8 MiB, max concurrency=4.
-      // 600/min per IP covers 3 concurrent uploads × 4 parallel chunks
-      // at the maximum speed, with headroom for retries.
-      config: { rateLimit: { max: 600, timeWindow: "1 minute" } },
+      bodyLimit: 20 * 1024 * 1024,
+      // Chunk uploads: adaptive chunk size is 1–16 MiB, max concurrency=4.
+      // 2400/min per IP covers 10 concurrent uploads × 4 parallel chunks
+      // at the maximum speed, with headroom for retries. bodyLimit raised
+      // to 20 MiB to accommodate 16 MiB fast-connection chunks + headers.
+      config: { rateLimit: { max: 2400, timeWindow: "1 minute" } },
     },
     async (req: FastifyRequest, reply: FastifyReply) => {
       // Abort early if the client disconnected before we start any DB work.
@@ -1602,9 +1603,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     "/videos/upload/:sessionId/status",
     {
       preHandler: requireAuth("editor"),
-      // Called once per upload resume attempt: 60/min covers normal use
-      // (3 concurrent files × 10 resume checks) with headroom for retries.
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
+      // Called once per upload resume attempt: 200/min covers normal use
+      // (10 concurrent files × several resume checks) with headroom for retries.
+      config: { rateLimit: { max: 200, timeWindow: "1 minute" } },      schema: {
         tags: ["uploads"],
         summary: "Return received chunk indices so the client can skip them on resume",
         params: z.object({ sessionId: z.string().min(1).max(128) }),
@@ -1712,9 +1713,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     "/videos/upload/:sessionId/finalize",
     {
       preHandler: requireAuth("editor"),
-      // Finalize triggers DB assembly + transcoding job insertion. Same
-      // limit as /init (30/min) since both create durable server-side work.
-      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },      schema: {
+      // Finalize triggers DB assembly + transcoding job insertion. 120/min
+      // matches the init limit — both create durable server-side work, and
+      // bulk batch workflows can finalize 10+ files in rapid succession.
+      config: { rateLimit: { max: 120, timeWindow: "1 minute" } },      schema: {
         tags: ["uploads"],
         summary: "Complete the upload, insert the video row, and queue HLS transcoding",
         params: z.object({ sessionId: z.string().min(1).max(128) }),
@@ -2908,9 +2910,9 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     "/videos/upload/:sessionId/finalize-status",
     {
       preHandler: requireAuth("editor"),
-      // Client polls every 2 s during assembly. 60/min covers 3 concurrent
+      // Client polls every 2 s during assembly. 200/min covers 10 concurrent
       // uploads + generous headroom for tab-restore reconnects and retries.
-      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },      schema: {
+      config: { rateLimit: { max: 200, timeWindow: "1 minute" } },      schema: {
         tags: ["uploads"],
         summary: "Poll the finalization status of an upload session",
         params: z.object({ sessionId: z.string().min(1).max(128) }),

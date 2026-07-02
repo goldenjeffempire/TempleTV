@@ -248,11 +248,19 @@ const Env = z.object({
   // shared hosting). Override per-deployment: TRANSCODER_THREADS=8.
   TRANSCODER_THREADS: z.coerce.number().int().min(0).max(64).default(4),
   // Max number of simultaneous faststart (moov-atom relocation) FFmpeg jobs.
-  // Each job downloads the source file to disk and spawns an ffmpeg process,
-  // consuming 80–150 MiB of additional RSS.  Default 2 caps the spike at
-  // ~300 MiB; excess jobs wait in a queue instead of being dropped.
-  // Raise cautiously: 4 concurrent jobs ≈ 600 MiB additional RSS.
-  FASTSTART_MAX_CONCURRENT: z.coerce.number().int().min(1).max(16).default(2),
+  // Each job streams the source file to disk and spawns an ffmpeg process,
+  // consuming 80–150 MiB of additional RSS.  Default 4 caps the spike at
+  // ~600 MiB; excess jobs wait in a semaphore queue instead of being dropped.
+  // Lower to 2 on memory-constrained hosts (< 1 GiB free RSS headroom);
+  // raise to 8 on dedicated large-memory hosts (≥ 8 GiB RSS).
+  FASTSTART_MAX_CONCURRENT: z.coerce.number().int().min(1).max(32).default(4),
+  // Maximum source file size (GiB) eligible for background faststart re-mux.
+  // Files larger than this threshold are skipped — they are still broadcast-
+  // eligible as raw MP4, and faststart will be attempted by the recovery
+  // worker once more scratch-disk space is available. Set to 0 (default) for
+  // no limit. Useful on hosts with limited /tmp space (e.g. 20 GiB SSD where
+  // a 15 GiB source + 15 GiB remux output would exhaust the disk).
+  FASTSTART_MAX_FILE_SIZE_GB: z.coerce.number().nonnegative().default(0),
   TRANSCODER_DISABLE: z
     .union([z.boolean(), z.string()])
     .transform((v) => v === true || v === "true" || v === "1")
@@ -482,6 +490,15 @@ const Env = z.object({
   // transcodingErrorCode='ASSEMBLY_FAILED' and the session resets to 'uploading'
   // so the operator can retry finalization from the upload queue panel.
   ASSEMBLY_WATCHDOG_MS: z.coerce.number().int().positive().default(240 * 60_000),
+  // Maximum number of simultaneous chunk-to-PostgreSQL write operations across
+  // all concurrent upload sessions. Each write holds a Buffer of up to
+  // CHUNK_SIZE bytes (16 MiB on fast connections) in Node.js heap for the
+  // duration of the DB write. With 10 concurrent uploads × 4 chunk threads
+  // each = 40 possible in-flight writes; capping at 20 limits peak chunk-
+  // buffer RSS to ~320 MiB while still keeping DB_POOL_MAX connections busy.
+  // Lower to 6–10 on memory-constrained hosts (< 1 GiB). Raise to 30–40 on
+  // large-memory (≥ 8 GiB) hosts with a proportionally higher DB_POOL_MAX.
+  MAX_CONCURRENT_CHUNK_DB_OPS: z.coerce.number().int().min(1).max(200).default(20),
   // ── SMTP / email ────────────────────────────────────────────────────────
   // Non-sensitive connection params (set as plain env vars).
   // SMTP_PASS must be provided as a secret — it is never logged.

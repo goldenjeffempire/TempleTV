@@ -164,12 +164,39 @@ const PART_SIZE = 8 * 1024 * 1024; // 8 MiB per multipart part
 /**
  * Download a blob from PostgreSQL BYTEA storage to a local temp file using
  * streaming (O(1) Node.js RSS regardless of file size).
+ *
+ * Logs download progress every 10% so operators can track large-file jobs.
  */
-async function downloadToTemp(objectKey: string, destPath: string): Promise<void> {
+async function downloadToTemp(
+  objectKey: string,
+  destPath: string,
+  logCtx?: { info: (obj: object, msg: string) => void },
+): Promise<void> {
   const s = storage();
-  const { body } = await s.getObject(objectKey);
+  const { body, contentLength } = await s.getObject(objectKey);
   const ws = createWriteStream(destPath);
-  await pipeline(body, ws);
+
+  let written = 0;
+  let lastLoggedPct = -1;
+  const reportEveryPct = 10;
+
+  const trackingStream = new (await import("node:stream")).Transform({
+    transform(chunk: Buffer, _enc: string, cb: () => void) {
+      written += chunk.length;
+      if (contentLength && contentLength > 0) {
+        const pct = Math.floor((written / contentLength) * 100);
+        const bucket = Math.floor(pct / reportEveryPct) * reportEveryPct;
+        if (bucket > lastLoggedPct) {
+          lastLoggedPct = bucket;
+          logCtx?.info({ writtenBytes: written, totalBytes: contentLength, pct: bucket }, `[faststart] download ${bucket}%`);
+        }
+      }
+      this.push(chunk);
+      cb();
+    },
+  });
+
+  await pipeline(body, trackingStream, ws);
   const stats = await stat(destPath);
   if (stats.size === 0) {
     throw Object.assign(new Error(`Downloaded file is empty: ${objectKey}`), { code: "EMPTY_DOWNLOAD" });
@@ -184,8 +211,14 @@ async function downloadToTemp(objectKey: string, destPath: string): Promise<void
  * The existing blob at `destKey` is atomically replaced by the final
  * completeMultipartUpload PostgreSQL transaction — no serving window exists
  * where the URL returns empty data.
+ *
+ * Logs upload progress every 10% so operators can track large-file jobs.
  */
-async function uploadFromTemp(sourcePath: string, destKey: string): Promise<void> {
+async function uploadFromTemp(
+  sourcePath: string,
+  destKey: string,
+  logCtx?: { info: (obj: object, msg: string) => void },
+): Promise<void> {
   const s = storage();
   const fileStat = await stat(sourcePath);
   const fileSize = fileStat.size;
@@ -197,20 +230,32 @@ async function uploadFromTemp(sourcePath: string, destKey: string): Promise<void
 
   const parts: Array<{ partNumber: number; etag: string }> = [];
   let partNumber = 1;
-  let bytesRead = 0;
+  let bytesUploaded = 0;
+  let lastLoggedPct = -1;
+  const reportEveryPct = 10;
 
   const fh = await fsOpen(sourcePath, "r");
   try {
-    while (bytesRead < fileSize) {
-      const toRead = Math.min(PART_SIZE, fileSize - bytesRead);
+    while (bytesUploaded < fileSize) {
+      const toRead = Math.min(PART_SIZE, fileSize - bytesUploaded);
       const buf = Buffer.allocUnsafe(toRead);
-      const { bytesRead: n } = await fh.read(buf, 0, toRead, bytesRead);
+      const { bytesRead: n } = await fh.read(buf, 0, toRead, bytesUploaded);
       if (n === 0) break;
       const chunk = n < toRead ? buf.subarray(0, n) : buf;
       const { etag } = await s.uploadPart({ key: destKey, uploadId, partNumber, body: chunk });
       parts.push({ partNumber, etag });
-      bytesRead += n;
+      bytesUploaded += n;
       partNumber++;
+
+      const pct = Math.floor((bytesUploaded / fileSize) * 100);
+      const bucket = Math.floor(pct / reportEveryPct) * reportEveryPct;
+      if (bucket > lastLoggedPct) {
+        lastLoggedPct = bucket;
+        logCtx?.info(
+          { uploadedBytes: bytesUploaded, totalBytes: fileSize, pct: bucket, partNumber },
+          `[faststart] re-upload ${bucket}%`,
+        );
+      }
     }
   } finally {
     await fh.close().catch(() => undefined);
@@ -441,9 +486,24 @@ export async function runFaststart(
     actions.push(`blob confirmed: ${head.contentLength} bytes`);
     log.info({ sizeBytes: head.contentLength }, "[faststart] blob validated");
 
+    // ── 5a. Large-file guard ──────────────────────────────────────────────
+    // When FASTSTART_MAX_FILE_SIZE_GB > 0 skip files above the threshold.
+    // They are still broadcast-eligible as raw MP4; the recovery worker will
+    // retry once more scratch space is available (e.g. after other jobs clear).
+    const maxFileSizeGb = env.FASTSTART_MAX_FILE_SIZE_GB ?? 0;
+    if (maxFileSizeGb > 0 && (head.contentLength ?? 0) > maxFileSizeGb * 1024 * 1024 * 1024) {
+      const sizeGib = ((head.contentLength ?? 0) / (1024 * 1024 * 1024)).toFixed(2);
+      log.warn(
+        { sizeGib, maxFileSizeGb },
+        "[faststart] file exceeds FASTSTART_MAX_FILE_SIZE_GB — skipping (raw MP4 still playable)",
+      );
+      actions.push(`skipped: file is ${sizeGib} GiB, exceeds FASTSTART_MAX_FILE_SIZE_GB=${maxFileSizeGb} GiB`);
+      return { ok: true, finalStatus: "skipped", skipped: true, actions, durationMs: elapsed() };
+    }
+
     // ── 6. Download source to temp file ───────────────────────────────────
     actions.push("downloading source blob to temp file");
-    await downloadToTemp(normalizedKey, sourcePath);
+    await downloadToTemp(normalizedKey, sourcePath, log);
     const localStat = await stat(sourcePath);
     actions.push(`downloaded ${localStat.size} bytes to ${path.basename(sourcePath)}`);
     log.info({ sizeBytes: localStat.size, scratchDir }, "[faststart] source downloaded");
@@ -507,7 +567,7 @@ export async function runFaststart(
     // ── 10. Re-upload output to same storage key (atomic replace) ─────────
     actions.push("uploading remuxed file to object storage (atomic multipart replace)");
     log.info({ sizeBytes: outputStat.size }, "[faststart] uploading remuxed output");
-    await uploadFromTemp(outputPath, normalizedKey);
+    await uploadFromTemp(outputPath, normalizedKey, log);
     actions.push(`uploaded ${outputStat.size} bytes to ${normalizedKey}`);
     log.info("[faststart] upload complete");
 

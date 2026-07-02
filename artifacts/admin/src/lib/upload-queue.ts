@@ -7,9 +7,10 @@
  *
  * Architecture
  * ─────────────
- * • MAX_CONCURRENT_FILES (3) files upload in parallel. Within each file,
+ * • MAX_CONCURRENT_FILES (10) files upload in parallel. Within each file,
  *   chunk-level concurrency is determined adaptively by the Network Information
- *   API (1–4 parallel chunks per file).
+ *   API (1–4 parallel chunks per file). On fast connections each chunk is
+ *   16 MiB so a 4 GB file uses 256 chunks instead of 512, halving DB round-trips.
  * • Pause: sets a `paused` flag and aborts the current AbortController so the
  *   in-flight XHR throws AbortError. The catch branch sees `paused=true`
  *   and marks the item as 'paused' instead of 'cancelled'. On resume the GET
@@ -163,7 +164,13 @@ interface WorkerState {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const MAX_CONCURRENT_FILES = 3;
+/**
+ * Maximum files uploading simultaneously. Raised from 3 → 10 to support batch
+ * bulk-upload workflows (dropping dozens of sermon files at once). The server-
+ * side semaphore (MAX_CONCURRENT_CHUNK_DB_OPS) is the real back-pressure valve;
+ * this cap just prevents UI jank from spawning hundreds of concurrent workers.
+ */
+const MAX_CONCURRENT_FILES = 10;
 const MAX_CHUNK_RETRIES = 6;
 
 /**
@@ -210,9 +217,12 @@ function getAdaptiveParams(): {
   if (effectiveType === "3g" || (downlink !== null && !isNaN(downlink) && downlink < 5)) {
     return { chunkSize: 4 * 1024 * 1024, maxConcurrent: 2, speedLabel: "Moderate connection" };
   }
-  // Cap at 8 MiB regardless of connection speed — larger chunks increase
-  // memory pressure in mobile browsers and risk OOM on low-end devices.
-  return { chunkSize: 8 * 1024 * 1024, maxConcurrent: 3, speedLabel: "Fast connection" };
+  // 16 MiB chunks on fast connections: cuts chunk-count in half for large files
+  // (e.g. a 4 GB file goes from 512 → 256 chunks) which halves the number of
+  // DB round-trips during assembly. 4 parallel chunks per file maximises
+  // throughput on high-bandwidth links. The server bodyLimit is 20 MiB so
+  // 16 MiB chunks + HTTP headers fit comfortably within budget.
+  return { chunkSize: 16 * 1024 * 1024, maxConcurrent: 4, speedLabel: "Fast connection" };
 }
 
 async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
