@@ -1823,6 +1823,9 @@ class UploadQueueEngine {
 
 export const uploadQueue = new UploadQueueEngine();
 
+/** Maximum files uploading simultaneously — exported for UI slot-utilization display. */
+export const UPLOAD_MAX_CONCURRENT_FILES = 10;
+
 // ── React hook ────────────────────────────────────────────────────────────────
 
 import { useSyncExternalStore } from "react";

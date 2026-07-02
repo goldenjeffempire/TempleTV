@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatDistanceToNow } from "date-fns";
+import { UploadThroughputWidget } from "@/components/upload/UploadThroughputWidget";
 
 interface AdminStats {
   videos: {
@@ -450,6 +451,9 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Upload throughput widget — visible only when uploads are active/pending */}
+      <UploadThroughputWidget />
 
       {/* Quick links */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
