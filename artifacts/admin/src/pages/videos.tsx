@@ -292,6 +292,42 @@ const STATUS_COLORS: Record<string, string> = {
   uploaded: "outline", pending: "outline", none: "outline",
 };
 
+function getLocalStatusBadge(v: { transcodingStatus: string; faststartApplied: boolean | null; videoSource: string }): { label: string; variant: string; title: string } {
+  if (v.videoSource !== "local") {
+    const label = v.transcodingStatus === "hls_ready" || v.transcodingStatus === "ready"
+      ? "MP4 Ready"
+      : v.transcodingStatus === "queued" ? "HLS Queued"
+      : v.transcodingStatus === "encoding" || v.transcodingStatus === "processing" ? "Converting"
+      : v.transcodingStatus === "none" ? "MP4"
+      : v.transcodingStatus || "—";
+    const variant = STATUS_COLORS[v.transcodingStatus] ?? "outline";
+    return { label, variant, title: "" };
+  }
+  // Local video: derive badge from state machine
+  // UPLOADING → VERIFYING → STORED → FASTSTART → READY → QUEUED
+  if (v.transcodingStatus === "processing") {
+    return { label: "Applying FastStart", variant: "secondary", title: "Moov atom relocation in progress — video will enter the broadcast queue automatically when complete" };
+  }
+  if (v.transcodingStatus === "failed") {
+    return { label: "Failed", variant: "destructive", title: "Processing failed — see error details below" };
+  }
+  if (v.transcodingStatus === "ready" && v.faststartApplied === true) {
+    return { label: "MP4 Ready", variant: "default", title: "FastStart complete — moov atom is at byte 0; video is broadcast-ready" };
+  }
+  if (v.faststartApplied === true) {
+    return { label: "MP4 Ready", variant: "default", title: "FastStart complete — video is broadcast-ready" };
+  }
+  if (v.faststartApplied === false) {
+    return { label: "FastStart Failed", variant: "destructive", title: "Moov atom relocation failed — video cannot broadcast until fixed. Use Actions → Re-apply faststart." };
+  }
+  // faststartApplied === null: faststart never attempted (assembling or pending)
+  if (v.transcodingStatus === "none") {
+    return { label: "Awaiting FastStart", variant: "outline", title: "Upload assembled — waiting for moov atom relocation before broadcast admission" };
+  }
+  // Fallback for any other status
+  return { label: v.transcodingStatus || "—", variant: STATUS_COLORS[v.transcodingStatus] ?? "outline", title: "" };
+}
+
 // ── Format helpers ─────────────────────────────────────────────────────────────
 
 function formatDuration(secs: number | string | null | undefined): string {
@@ -1997,39 +2033,24 @@ export default function VideosPage() {
                       localVideoUrl={v.localVideoUrl}
                       hlsMasterUrl={v.hlsMasterUrl}
                     />
-                    <Badge
-                      variant={(STATUS_COLORS[v.transcodingStatus] ?? "outline") as "default" | "secondary" | "outline" | "destructive"}
-                      className="capitalize text-[11px]"
-                      title={
-                        v.transcodingStatus === "hls_ready" || v.transcodingStatus === "ready"
-                          ? "HLS stream ready — video is live in the broadcast queue"
-                          : v.transcodingStatus === "queued"
-                          ? "HLS transcoding queued — video is already live in the broadcast queue via MP4"
-                          : v.transcodingStatus === "encoding" || v.transcodingStatus === "processing"
-                          ? "Converting to HLS — video is already live in the broadcast queue via MP4"
-                          : v.transcodingStatus === "none"
-                          ? "Uploaded — video is in the broadcast queue via MP4; HLS transcoding pending"
-                          : v.transcodingStatus === "failed"
-                          ? "HLS conversion failed — video remains in broadcast queue via MP4 (retry to get HLS quality)"
-                          : undefined
-                      }
-                    >
-                      {v.transcodingStatus === "hls_ready" || v.transcodingStatus === "ready"
-                        ? "HLS Ready"
-                        : v.transcodingStatus === "queued"
-                        ? "HLS Queued"
-                        : v.transcodingStatus === "encoding" || v.transcodingStatus === "processing"
-                        ? "Converting"
-                        : v.transcodingStatus === "none"
-                        ? "MP4 Ready"
-                        : v.transcodingStatus || "—"}
-                    </Badge>
+                    {(() => {
+                      const sb = getLocalStatusBadge(v);
+                      return (
+                        <Badge
+                          variant={sb.variant as "default" | "secondary" | "outline" | "destructive"}
+                          className="text-[11px]"
+                          title={sb.title || undefined}
+                        >
+                          {sb.label}
+                        </Badge>
+                      );
+                    })()}
                     {/* Queue sync status — local videos only.
                         Confirmed by the /broadcast-v2/queue-status batch check.
                         • queued  → green badge (informational)
                         • missing → amber "Sync to Queue" button (actionable)
                         • loading → spinner while the query resolves */}
-                    {v.videoSource === "local" && (() => {
+                    {v.videoSource === "local" && v.faststartApplied === true && (() => {
                       const qs = queueStatus[v.id];
                       const isPending = forceEnqueueMutation.isPending && forceEnqueueMutation.variables === v.id;
                       if (qs === "queued") {
@@ -2040,9 +2061,7 @@ export default function VideosPage() {
                             title="Video is active in the broadcast queue and will air during rotation"
                           >
                             <ListChecks size={10} className="flex-shrink-0" />
-                            {v.transcodingStatus === "encoding" || v.transcodingStatus === "processing" || v.transcodingStatus === "queued"
-                              ? "In queue · upgrading"
-                              : "In queue"}
+                            In queue
                           </Badge>
                         );
                       }
@@ -2052,7 +2071,7 @@ export default function VideosPage() {
                             size="sm"
                             variant="outline"
                             className="h-5 text-[10px] px-1.5 border-amber-400 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 flex items-center gap-1"
-                            title="This video is not in the broadcast queue — click to add it now"
+                            title="FastStart complete but video is not yet in the broadcast queue — click to add it now"
                             disabled={isPending}
                             onClick={(e) => { e.stopPropagation(); forceEnqueueMutation.mutate(v.id); }}
                           >
@@ -2063,9 +2082,8 @@ export default function VideosPage() {
                           </Button>
                         );
                       }
-                      // Status query still loading — show subtle spinner for
-                      // broadcast-ready local videos to avoid layout shift.
-                      if (v.transcodingStatus !== "failed") {
+                      // Status query still loading
+                      if (qs === undefined) {
                         return (
                           <span className="text-[9px] text-muted-foreground/60 flex items-center gap-0.5">
                             <Loader2 size={8} className="animate-spin" />

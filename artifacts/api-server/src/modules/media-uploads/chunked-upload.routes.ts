@@ -420,19 +420,12 @@ async function spawnAssemblyRetry(
         log.warn({ err: probeErr, videoId }, "[assembly-retry] ffprobe failed (non-fatal) — using existing duration");
       }
 
-      // ── Enqueue raw MP4 immediately (before faststart) ───────────────────
-      // Raw MP4 is broadcast-eligible as soon as the blob is assembled.
-      // Faststart is a background quality upgrade — not a broadcast gate.
-      try {
-        const enqRes = await enqueueIfMissing({ videoId, reason: "assembly-retry" });
-        if (enqRes.enqueued) {
-          log.info({ videoId, queueItemId: enqRes.queueItemId }, "[assembly-retry] video enrolled in broadcast queue (raw MP4 — faststart pending in background)");
-          adminEventBus.push("broadcast-queue-updated", { reason: "assembly-retry", videoId });
-        }
-      } catch { /* non-fatal */ }
-
-      // ── Faststart: moov-atom relocation (background quality upgrade) ─────
-      log.info({ videoId, objectKey: vRow.objectPath }, "[assembly-retry] running faststart pipeline (background quality upgrade)");
+      // ── Faststart: moov-atom relocation (REQUIRED before broadcast) ─────
+      // FastStart MUST complete before the video enters the broadcast queue.
+      // Raw MP4 with moov at EOF causes blank screens on all TV/mobile surfaces.
+      // We enqueue ONLY after fsResult.ok — if faststart fails, the
+      // faststartRecoveryWorker retries and calls enqueueIfMissing on success.
+      log.info({ videoId, objectKey: vRow.objectPath }, "[assembly-retry] running faststart pipeline (required before broadcast)");
       const fsResult = await runFaststart(videoId, vRow.objectPath!, { skipStatusUpdate: false });
       log.info(
         { videoId, finalStatus: fsResult.finalStatus, remuxed: fsResult.remuxed ?? false, durationMs: fsResult.durationMs },
@@ -442,11 +435,11 @@ async function spawnAssemblyRetry(
       if (!fsResult.ok) {
         log.warn(
           { videoId, rootCause: fsResult.rootCause, actions: fsResult.actions },
-          "[assembly-retry] faststart FAILED — video stays in broadcast as raw MP4; faststartRecoveryWorker will retry",
+          "[assembly-retry] faststart FAILED — NOT enqueueing; faststartRecoveryWorker will retry and enqueue on success",
         );
         adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-failed" });
       } else {
-        // Faststart complete — moov now at byte 0. Video already enqueued above.
+        // Faststart complete — moov now at byte 0. NOW safe to enqueue.
         adminEventBus.push("broadcast-source-upgraded", { videoId, quality: "mp4_faststart" });
         adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-complete" });
         void invalidateVideosCatalogCache();
@@ -454,6 +447,15 @@ async function spawnAssemblyRetry(
         if (vRow?.objectPath) {
           scheduleVideoValidation(videoId, vRow.objectPath, { faststartApplied: true });
         }
+
+        // Enqueue only after faststart success — moov is confirmed at byte 0.
+        try {
+          const enqRes = await enqueueIfMissing({ videoId, reason: "assembly-retry" });
+          if (enqRes.enqueued) {
+            log.info({ videoId, queueItemId: enqRes.queueItemId }, "[assembly-retry] video enrolled in broadcast queue (faststart complete)");
+            adminEventBus.push("broadcast-queue-updated", { reason: "assembly-retry", videoId });
+          }
+        } catch { /* non-fatal — faststartRecoveryWorker will recover within 5 min */ }
       }
 
       log.info({ sessionId, videoId, attempt: currentAttempts }, "[assembly-retry] complete ✓");
@@ -2659,11 +2661,12 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               });
             }
 
-            // ── Enqueue after faststart ───────────────────────────────────────
-            // Fires on both faststart success and failure.  On success: video
-            // enters the queue with faststartApplied=true (optimised atom layout).
-            // On failure: video enters as raw MP4 with faststartRecoveryWorker
-            // queued for a background retry — broadcast continuity is preserved.
+            // ── Enqueue ONLY after faststart success ──────────────────────────
+            // FastStart MUST complete before the video enters the broadcast queue.
+            // Raw MP4 (moov at EOF) causes blank screens on all TV/mobile surfaces.
+            //
+            // When faststart fails: faststartRecoveryWorker retries every 5 min
+            // and calls enqueueIfMissing on success — no operator action required.
             //
             // s3MirroredAt was stamped after completeMultipartUpload committed the
             // blob, so isPlayableForBroadcast's blob-existence gate passes here.
@@ -2671,8 +2674,8 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             // Retry policy: up to 3 attempts with 5 s delays. Each attempt is
             // independent; if all fail the upload-queue-reconciler worker picks
             // the video up within 60 s as the final backstop.
-            {
-              const enqReason = fsResult.ok ? "faststart-complete" : "upload-finalize";
+            if (fsResult.ok) {
+              const enqReason = "faststart-complete";
               const MAX_ENQ_ATTEMPTS = 3;
               const ENQ_RETRY_DELAY_MS = 5_000;
               let enqueued = false;
