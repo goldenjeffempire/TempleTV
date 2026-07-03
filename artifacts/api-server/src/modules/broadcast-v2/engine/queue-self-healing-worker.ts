@@ -391,6 +391,60 @@ export const queueSelfHealingWorker = {
           continue;
         }
 
+        // ── Terminal video error code short-circuit ───────────────────────
+        // CORRUPT_SOURCE / SOURCE_MISSING blobs are broken or deleted — HEAD
+        // probing returns 200 (corrupt content passes but fails playback) or
+        // 404 (blob gone). Neither is fixable by URL probing. Skip R1/R2/R3
+        // and burn one repair attempt so the item progresses toward "blocked"
+        // without wasting 3 cycles × 4 h of fruitless retries.
+        // ASSEMBLY_FAILED normally never reaches this path (isPlayableForBroadcast
+        // rejects it), but we guard it here for safety.
+        if (queueItem.videoId) {
+          try {
+            const [videoRow] = await db
+              .select({ transcodingErrorCode: schema.videosTable.transcodingErrorCode })
+              .from(schema.videosTable)
+              .where(eq(schema.videosTable.id, queueItem.videoId))
+              .limit(1);
+            const errCode = videoRow?.transcodingErrorCode;
+            const TERMINAL_CODES = ["ASSEMBLY_FAILED", "CORRUPT_SOURCE", "SOURCE_MISSING"] as const;
+            if (errCode && (TERMINAL_CODES as ReadonlyArray<string>).includes(errCode)) {
+              await assetHealthRepo.markRepairing(healthRow.queueItemId);
+              const updatedRow = await assetHealthRepo.recordRepairOutcome(
+                healthRow.queueItemId,
+                "failure",
+                `Terminal video error '${errCode}' — re-upload required, URL probing cannot recover this`,
+              );
+              if (updatedRow.state === "blocked") {
+                result.blocked++;
+                logger.warn(
+                  { itemId: healthRow.queueItemId, title: queueItem.title, errCode },
+                  `${LOG_TAG} item permanently blocked — terminal video error code (${errCode})`,
+                );
+                adminEventBus.push("ops-alert", {
+                  level: "warning",
+                  title: "Broadcast Item Blocked (Terminal Error)",
+                  message: `Queue item "${queueItem.title}" blocked — terminal video error (${errCode}). Re-upload to restore.`,
+                  timestamp: new Date().toISOString(),
+                  source: "queue-self-healing",
+                  queueItemId: healthRow.queueItemId,
+                });
+              } else {
+                logger.info(
+                  { itemId: healthRow.queueItemId, title: queueItem.title, errCode, attempts: updatedRow.repairAttempts },
+                  `${LOG_TAG} terminal error code (${errCode}) — skipping URL probe, counting toward block`,
+                );
+              }
+              continue;
+            }
+          } catch (terminalCheckErr) {
+            logger.warn(
+              { err: terminalCheckErr, itemId: healthRow.queueItemId },
+              `${LOG_TAG} terminal error code check failed (non-fatal — proceeding with normal repair)`,
+            );
+          }
+        }
+
         logger.info(
           { itemId: healthRow.queueItemId, title: queueItem.title, attempt: healthRow.repairAttempts + 1 },
           `${LOG_TAG} attempting repair`,

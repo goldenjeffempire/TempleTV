@@ -341,7 +341,7 @@ class OrphanCleanupWorkerImpl {
         }>(sql`
           SELECT mv.id AS "videoId", mv.object_path AS "objectPath"
           FROM managed_videos mv
-          WHERE mv.transcoding_error_code IN ('SOURCE_MISSING', 'CORRUPT_SOURCE')
+          WHERE mv.transcoding_error_code IN ('SOURCE_MISSING', 'CORRUPT_SOURCE', 'ASSEMBLY_FAILED')
             AND NOT EXISTS (
               SELECT 1 FROM broadcast_queue bq
               WHERE bq.video_id = mv.id
@@ -386,13 +386,65 @@ class OrphanCleanupWorkerImpl {
               videoCount: terminalResult.rows.length,
               minAgeHours: env.ORPHAN_BLOB_MIN_AGE_HOURS,
             },
-            "[orphan-cleanup] pruned storage blobs for terminal-error (SOURCE_MISSING/CORRUPT_SOURCE) videos",
+            "[orphan-cleanup] pruned storage blobs for terminal-error (SOURCE_MISSING/CORRUPT_SOURCE/ASSEMBLY_FAILED) videos",
           );
         }
       } catch (terminalBlobErr) {
         logger.warn(
           { err: terminalBlobErr },
           "[orphan-cleanup] terminal video blob GC failed (non-fatal)",
+        );
+      }
+
+      // ── 7b. Orphaned upload blobs GC ─────────────────────────────────────
+      // storage_blobs rows with key LIKE 'uploads/%' whose objectPath is NOT
+      // referenced by any managed_videos row. These arise when:
+      //   • completeMultipartUpload committed the blob but the belt-and-
+      //     suspenders watchdog later cleared objectPath/localVideoUrl on the
+      //     video row (ASSEMBLY_FAILED scenario).
+      //   • The video row was hard-deleted without triggering blob cleanup.
+      // Only blobs older than ORPHAN_BLOB_MIN_AGE_HOURS are eligible, giving
+      // recently-assembled videos time to have their video row created before
+      // they're mistakenly cleaned up. Capped at 100 rows per sweep.
+      let prunedOrphanedUploadBlobs = 0;
+      try {
+        const orphanedBlobRows = await db.execute<{ key: string; sizeBytes: string }>(sql`
+          SELECT key, size_bytes::text AS "sizeBytes"
+          FROM storage_blobs
+          WHERE key LIKE 'uploads/%'
+            AND created_at < ${terminalBlobCutoff}
+            AND NOT EXISTS (
+              SELECT 1 FROM managed_videos mv
+              WHERE mv.object_path = storage_blobs.key
+                 OR mv.local_video_url = '/api/v1/uploads/' || storage_blobs.key
+                 OR mv.local_video_url = '/api/v1/upload/'  || storage_blobs.key
+            )
+          LIMIT 100
+        `);
+
+        const orphanedKeys: string[] = Array.isArray(orphanedBlobRows.rows)
+          ? orphanedBlobRows.rows.map((r) => r.key)
+          : [];
+
+        for (const key of orphanedKeys) {
+          try {
+            await storage().deleteObject(key);
+            prunedOrphanedUploadBlobs++;
+          } catch {
+            // Non-fatal: blob may have already been deleted or key may not exist
+          }
+        }
+
+        if (prunedOrphanedUploadBlobs > 0) {
+          logger.info(
+            { pruned: prunedOrphanedUploadBlobs, minAgeHours: env.ORPHAN_BLOB_MIN_AGE_HOURS },
+            "[orphan-cleanup] pruned orphaned upload blobs with no managed_videos reference",
+          );
+        }
+      } catch (orphanBlobErr) {
+        logger.warn(
+          { err: orphanBlobErr },
+          "[orphan-cleanup] orphaned upload blob GC failed (non-fatal)",
         );
       }
 
