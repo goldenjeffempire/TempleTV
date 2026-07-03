@@ -393,8 +393,13 @@ async function checkKeyframeInterval(tmpPath: string, durationSecs: number | nul
   if (maxInterval > MAX_KEYFRAME_INTERVAL_FAIL_SECS) {
     return {
       check: "KEYFRAME_INTERVAL",
-      status: "fail",
-      message: `Max keyframe interval ${maxInterval.toFixed(1)} s exceeds ${MAX_KEYFRAME_INTERVAL_FAIL_SECS} s limit — seeking will cause multi-second freeze on Smart TV and mobile`,
+      // Downgraded from "fail" to "warn": a wide keyframe interval causes seek
+      // stalls on Smart TV / mobile but the video is still fully playable and
+      // broadcasts without dead-air. Blocking a real sermon recording from the
+      // queue because it was encoded at 1 keyframe/30 s is a worse outcome than
+      // broadcasting it with degraded seek performance.
+      status: "warn",
+      message: `Max keyframe interval ${maxInterval.toFixed(1)} s exceeds ${MAX_KEYFRAME_INTERVAL_FAIL_SECS} s limit — seeking may cause a multi-second freeze on Smart TV and mobile; re-encode with a tighter keyframe interval for best results`,
       detail,
     };
   }
@@ -473,8 +478,13 @@ async function checkAvSync(tmpPath: string): Promise<VideoCheckResult> {
   if (offsetMs > AV_SYNC_FAIL_MS) {
     return {
       check: "AV_SYNC",
-      status: "fail",
-      message: `Audio/video offset ${offsetMs.toFixed(0)} ms exceeds ${AV_SYNC_FAIL_MS} ms limit — severe lip-sync / audio dropout expected`,
+      // Downgraded from "fail" to "warn": A/V sync drift is a quality issue
+      // but the video is still playable and will broadcast. Blocking a valid
+      // sermon recording from the queue entirely because of stream start-time
+      // drift is a worse outcome than broadcasting it with minor lip-sync skew.
+      // Operators are still notified via the warn status in validation reports.
+      status: "warn",
+      message: `Audio/video offset ${offsetMs.toFixed(0)} ms exceeds ${AV_SYNC_FAIL_MS} ms limit — lip-sync may be noticeable; re-encode to align audio/video tracks`,
       detail,
     };
   }
@@ -645,8 +655,14 @@ async function checkDurationAccuracy(
     return {
       result: {
         check: "DURATION_ACCURACY",
-        status: "fail",
-        message: `Duration deviation ${deviationPct.toFixed(1)}% (stored=${storedDurationSecs} s probed=${probed.toFixed(1)} s) — premature auto-advance or seek-past-EOF likely`,
+        // Downgraded from "fail" to "warn": a duration metadata mismatch does
+        // not prevent playback. The orchestrator's naturalItemEnd guard and the
+        // queue integrity validator's PLACEHOLDER_DURATION auto-fix both
+        // self-correct timing at runtime. Blocking a valid video from the
+        // broadcast queue because its stored duration field is stale or wrong
+        // is a worse outcome than letting it broadcast with corrected timing.
+        status: "warn",
+        message: `Duration deviation ${deviationPct.toFixed(1)}% (stored=${storedDurationSecs} s probed=${probed.toFixed(1)} s) — timing may be imprecise; queue validator will auto-correct the stored duration`,
         detail,
       },
       probedDurationSecs: probed,

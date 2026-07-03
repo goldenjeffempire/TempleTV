@@ -148,6 +148,7 @@ async function run(): Promise<void> {
           OR (mv.local_video_url IS NOT NULL AND mv.s3_mirrored_at IS NOT NULL)
         )
         AND mv.video_source != 'youtube'
+        AND (mv.category IS NULL OR mv.category != 'midnight-prayers')
         AND NOT EXISTS (
           SELECT 1 FROM broadcast_queue bq
           WHERE bq.video_id = mv.id AND bq.is_active = true

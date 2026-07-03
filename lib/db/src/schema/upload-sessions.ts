@@ -77,6 +77,15 @@ export const uploadSessionsTable = pgTable(
   (t) => [
     index("idx_upload_sessions_status").on(t.status),
     index("idx_upload_sessions_created_at").on(t.createdAt),
+    // Composite index for the assembly reconciliation timer query:
+    //   WHERE status='uploading'
+    //     AND completed_video_id IS NOT NULL
+    //     AND assembly_attempts > 0
+    //     AND assembly_attempts < MAX_AUTO_ASSEMBLY_ATTEMPTS
+    // Without this index, the 5-minute reconciliation scan performs a full
+    // table scan on every tick. With it, only sessions that are actually
+    // pending retry are examined (typically 0–5 rows in steady state).
+    index("idx_upload_sessions_reconcile").on(t.status, t.completedVideoId, t.assemblyAttempts),
   ],
 );
 

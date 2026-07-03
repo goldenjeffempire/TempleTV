@@ -81,10 +81,10 @@ function releaseChunkDbSlot(): void {
 //
 // Maximum number of automatic re-assembly attempts before the session is
 // permanently marked ASSEMBLY_FAILED and the operator must intervene manually.
-// Kept at 5 so a genuinely unrecoverable session (corrupt chunks, missing
-// parts) does not retry forever, while giving enough headroom to survive
-// transient DB / storage hiccups across multiple server restarts.
-const MAX_AUTO_ASSEMBLY_ATTEMPTS = 5;
+// Raised to 8 (from 5) to survive transient DB hiccups across multiple server
+// restarts, storage contention, and memory-pressure events without burning
+// through the retry budget too quickly on transient failures.
+const MAX_AUTO_ASSEMBLY_ATTEMPTS = 8;
 //
 // Per-attempt backoff delays (indexed by the attempt count AFTER the attempt
 // that just failed).  ASSEMBLY_BACKOFF_MS[n] = "wait n before attempting n+1".
@@ -94,8 +94,40 @@ const MAX_AUTO_ASSEMBLY_ATTEMPTS = 5;
 //   Attempt 2 failed  (assemblyAttempts now = 2) → wait 5 min.
 //   Attempt 3 failed  (assemblyAttempts now = 3) → wait 15 min.
 //   Attempt 4 failed  (assemblyAttempts now = 4) → wait 30 min.
-//   Attempt 5 failed  (assemblyAttempts now = 5 = MAX)  → ASSEMBLY_FAILED permanently.
-const ASSEMBLY_BACKOFF_MS: readonly number[] = [0, 30_000, 5 * 60_000, 15 * 60_000, 30 * 60_000];
+//   Attempt 5 failed  (assemblyAttempts now = 5) → wait 60 min.
+//   Attempt 6 failed  (assemblyAttempts now = 6) → wait 90 min.
+//   Attempt 7 failed  (assemblyAttempts now = 7) → wait 120 min.
+//   Attempt 8 failed  (assemblyAttempts now = 8 = MAX) → ASSEMBLY_FAILED permanently.
+const ASSEMBLY_BACKOFF_MS: readonly number[] = [
+  0,
+  30_000,
+  5  * 60_000,
+  15 * 60_000,
+  30 * 60_000,
+  60 * 60_000,
+  90 * 60_000,
+  120 * 60_000,
+];
+
+// ─── Terminal assembly error codes ────────────────────────────────────────────
+//
+// These error codes indicate that the assembly data is structurally unrecoverable
+// regardless of how many retries are attempted. Immediately marking the session
+// ASSEMBLY_FAILED — without burning the full retry budget — lets the operator see
+// the "re-upload required" call-to-action without waiting 0+30s+5m+15m+30m.
+//
+//   ASSEMBLY_CORRUPT_SOURCE  – SHA-256 mismatch; data was corrupted in transit
+//   ASSEMBLY_NO_PARTS        – staging parts already cleaned up; re-upload required
+//   ASSEMBLY_EMPTY_PARTS     – zero-byte chunk data; re-upload required
+//
+// ASSEMBLY_SIZE_MISMATCH and ASSEMBLY_WRONG_PART_COUNT are intentionally NOT in
+// this set — they can result from transient DB I/O or phantom-part edge cases
+// that may resolve on a subsequent attempt.
+const TERMINAL_ASSEMBLY_ERROR_CODES = new Set([
+  "ASSEMBLY_CORRUPT_SOURCE",
+  "ASSEMBLY_NO_PARTS",
+  "ASSEMBLY_EMPTY_PARTS",
+]);
 
 // ─── Assembly reconciliation interval ────────────────────────────────────────
 // How often the in-process reconciliation timer scans for sessions whose
@@ -212,19 +244,14 @@ async function spawnAssemblyRetry(
 ): Promise<void> {
   void (async () => {
     try {
-      // ── Step 0: Increment attempt counter BEFORE assembly ─────────────────
-      // Incrementing first makes the count crash-safe: if the server dies
-      // mid-assembly the DB reflects the correct attempt count so the next
-      // restart (or reconciliation scan) applies the right backoff.
-      await db
-        .update(sessions)
-        .set({ assemblyAttempts: sql`assembly_attempts + 1`, updatedAt: new Date() })
-        .where(eq(sessions.sessionId, sessionId))
-        .catch((err: unknown) =>
-          log.warn({ err, sessionId }, "[assembly-retry] assemblyAttempts increment failed (non-fatal)"),
-        );
-
-      // ── Step 1: Re-load the full session row ──────────────────────────────
+      // ── Step 0: Load the full session row FIRST ───────────────────────────
+      // Load BEFORE deciding whether to increment the attempt counter so a
+      // blob-already-present fast-path (assembly succeeded but post-processing
+      // failed) does NOT burn a retry attempt. This is the key fix for BUG-3:
+      // previously the counter was incremented unconditionally at the top, so
+      // every "blob present → post-step fails → retry" cycle consumed one of
+      // the 8 allotted attempts, eventually exhausting the budget and
+      // permanently failing a session whose blob was fully intact all along.
       const [session] = await db
         .select()
         .from(sessions)
@@ -236,53 +263,46 @@ async function spawnAssemblyRetry(
         return;
       }
 
-      const currentAttempts = session.assemblyAttempts ?? 1;
       const objectKey = session.objectKey;
 
       // No object key → no storage path → unrecoverable regardless of retry count.
       if (!objectKey) {
-        log.warn({ sessionId, videoId, currentAttempts }, "[assembly-retry] session has no objectKey — marking permanently failed");
+        log.warn({ sessionId, videoId }, "[assembly-retry] session has no objectKey — marking permanently failed");
         await _markAssemblyPermanentlyFailed(
           videoId, sessionId,
           "Upload session has no storage key. Delete this video and re-upload to recover.",
-          log, currentAttempts,
+          log, session.assemblyAttempts ?? 0, session.uploadId,
         );
         return;
       }
 
-      log.info(
-        { sessionId, videoId, attempt: currentAttempts, maxAttempts: MAX_AUTO_ASSEMBLY_ATTEMPTS, storageBackend: session.storageBackend, objectKey },
-        "[assembly-retry] starting background re-assembly",
-      );
-
-      // ── Step 2: Blob-exists shortcut + assembly ───────────────────────────
+      // ── Step 1: Blob-exists shortcut ──────────────────────────────────────
       //
       // CRITICAL IDEMPOTENCY GUARD: check whether the blob is already present
-      // in storage_blobs BEFORE attempting completeMultipartUpload.
+      // in storage_blobs BEFORE attempting completeMultipartUpload AND before
+      // incrementing the attempt counter.
       //
-      // WHY THIS IS NECESSARY:
-      //   completeMultipartUpload deletes staging parts from storage_upload_parts
-      //   inside the same transaction as assembly (idempotency safety). If assembly
-      //   succeeds but a later post-processing step throws (telemetry write, DB
-      //   hiccup in the s3MirroredAt stamp, etc.), the catch block in the finalize
-      //   handler resets the session to "uploading" with assemblyAttempts++. The
-      //   reconciliation timer then calls spawnAssemblyRetry again. Without this
-      //   guard, the retry calls completeMultipartUpload with an uploadId whose
-      //   parts are GONE → ASSEMBLY_NO_PARTS → marks the video permanently failed
-      //   even though the blob is fully intact in storage_blobs. This guard
-      //   prevents that cascade by recognising an already-assembled blob and
-      //   jumping straight to post-processing.
+      // WHY: if assembly succeeded but a later post-processing step threw
+      // (telemetry write, DB hiccup in s3MirroredAt stamp, etc.), the catch
+      // block in the finalize handler resets the session to "uploading" with
+      // assemblyAttempts++. The reconciliation timer calls spawnAssemblyRetry
+      // again. Without this guard, the retry would:
+      //   a) Call completeMultipartUpload → ASSEMBLY_NO_PARTS (parts deleted)
+      //      → burn another attempt toward ASSEMBLY_FAILED permanently.
+      //   b) Deplete the retry budget even though only post-processing needs to
+      //      complete and the blob is fully intact.
       //
-      //   The same scenario can also occur when the assembly watchdog fires
-      //   (resets session to "uploading") after a successful assembly whose
-      //   cleanup step timed out.
+      // With this guard: we recognise an already-assembled blob, skip both the
+      // assembly AND the attempt counter increment, then jump straight to
+      // post-processing. This is safe because post-processing is idempotent:
+      // ffprobe + faststart + enqueueIfMissing are all no-ops if already done.
       let blobAlreadyPresent = false;
       try {
         const existingBlob = await storage().headObject(objectKey);
         if (existingBlob.exists && (existingBlob.contentLength ?? 0) > 0) {
           log.info(
             { sessionId, videoId, objectKey, blobSizeBytes: existingBlob.contentLength },
-            "[assembly-retry] blob already present in storage_blobs — skipping re-assembly; running post-processing only",
+            "[assembly-retry] blob already present in storage_blobs — skipping re-assembly and attempt counter; running post-processing only",
           );
           blobAlreadyPresent = true;
         }
@@ -293,10 +313,50 @@ async function spawnAssemblyRetry(
         );
       }
 
+      // ── Step 2: Increment attempt counter BEFORE assembly (crash-safe) ────
+      // Only increment when we are actually going to attempt assembly — not for
+      // the blob-already-present fast-path. Incrementing before the assembly DB
+      // call makes the count crash-safe: if the process dies mid-assembly the
+      // DB reflects the correct attempt count so the next reconciliation scan
+      // applies the correct backoff window.
       if (!blobAlreadyPresent) {
-        if (!session.uploadId) {
+        await db
+          .update(sessions)
+          .set({ assemblyAttempts: sql`assembly_attempts + 1`, updatedAt: new Date() })
+          .where(eq(sessions.sessionId, sessionId))
+          .catch((err: unknown) =>
+            log.warn({ err, sessionId }, "[assembly-retry] assemblyAttempts increment failed (non-fatal)"),
+          );
+      }
+
+      // Re-read current attempt count from DB (reflects the conditional increment above).
+      const [sessionMeta] = await db
+        .select({ assemblyAttempts: sessions.assemblyAttempts, uploadId: sessions.uploadId })
+        .from(sessions)
+        .where(eq(sessions.sessionId, sessionId))
+        .limit(1)
+        .catch(() => [] as Array<{ assemblyAttempts: number | null; uploadId: string | null }>);
+      const currentAttempts = sessionMeta?.assemblyAttempts ?? 1;
+      const uploadId = session.uploadId ?? sessionMeta?.uploadId;
+
+      log.info(
+        {
+          sessionId,
+          videoId,
+          attempt: currentAttempts,
+          maxAttempts: MAX_AUTO_ASSEMBLY_ATTEMPTS,
+          objectKey,
+          blobAlreadyPresent,
+        },
+        "[assembly-retry] starting background re-assembly",
+      );
+
+      if (!blobAlreadyPresent) {
+        if (!uploadId) {
           throw new InternalError("session.uploadId is null — cannot re-assemble (re-upload required)");
         }
+
+        // ── Step 3: Validate upload_chunks metadata ───────────────────────
         const allChunks = await db
           .select({ chunkIndex: chunks.chunkIndex, s3Etag: chunks.s3Etag })
           .from(chunks)
@@ -316,6 +376,41 @@ async function spawnAssemblyRetry(
             "parts may have been cleaned up; re-upload to recover",
           );
         }
+
+        // ── Step 4: Validate storage_upload_parts BYTEA presence ──────────
+        // upload_chunks records metadata; storage_upload_parts holds the actual
+        // BYTEA. A transient failure during uploadPart() can write upload_chunks
+        // without the corresponding storage_upload_parts row, causing
+        // completeMultipartUpload to fail with ASSEMBLY_SEQUENCE_GAP inside the
+        // transaction AFTER burning a retry attempt. Validating here surfaces the
+        // mismatch with a descriptive error message before entering the assembly
+        // transaction — and avoids wasting a retry on a known-unrecoverable state.
+        try {
+          type PartsCountRow = { cnt: string };
+          const partsResult = await db.execute<PartsCountRow>(
+            sql`SELECT COUNT(*)::text AS cnt FROM storage_upload_parts WHERE upload_id = ${uploadId}`,
+          );
+          const rows = (partsResult as unknown as { rows?: PartsCountRow[] }).rows
+            ?? (partsResult as unknown as PartsCountRow[]);
+          const actualPartsCount = parseInt(rows[0]?.cnt ?? "0", 10);
+          if (actualPartsCount !== session.totalChunks) {
+            throw new InternalError(
+              `storage_upload_parts count mismatch: expected ${session.totalChunks} BYTEA rows, ` +
+              `found ${actualPartsCount} for uploadId=${uploadId}. ` +
+              "Parts may have been partially cleaned up — re-upload to recover.",
+            );
+          }
+        } catch (partsErr) {
+          if (partsErr instanceof InternalError) throw partsErr; // re-throw count mismatch
+          // DB query itself failed — log and proceed; completeMultipartUpload will
+          // surface the actual gap as ASSEMBLY_SEQUENCE_GAP or ASSEMBLY_WRONG_PART_COUNT.
+          log.warn(
+            { err: partsErr, sessionId, uploadId },
+            "[assembly-retry] storage_upload_parts count validation failed (non-fatal) — proceeding",
+          );
+        }
+
+        // ── Step 5: Assemble ─────────────────────────────────────────────
         // completeMultipartUpload assembles all staging parts from
         // storage_upload_parts into the final blob in storage_blobs.
         // The transaction deletes staging parts on success so a re-call
@@ -323,19 +418,21 @@ async function spawnAssemblyRetry(
         // by the blobAlreadyPresent shortcut.
         await storage().completeMultipartUpload({
           key: objectKey,
-          uploadId: session.uploadId,
+          uploadId,
           parts: allChunks.map((c) => ({
             partNumber: c.chunkIndex + 1,
             etag: c.s3Etag as string,
           })),
+          // Pass totalChunks so completeMultipartUpload's part-count cross-check
+          // fires inside the transaction in addition to our pre-check above.
+          totalChunks: session.totalChunks,
           // Re-verify the assembled blob's SHA-256 against the hash the client
-          // computed before the upload began.  Any mismatch causes the transaction
-          // to roll back so no corrupt blob is ever committed.
+          // computed before the upload began. Any mismatch rolls back the transaction.
           expectedSha256: session.expectedFileSha256 ?? undefined,
         });
       }
 
-      // ── Step 3: Verify assembled blob integrity ───────────────────────────
+      // ── Step 6: Verify assembled blob integrity ───────────────────────────
       const head = await storage().headObject(objectKey);
       if (!head.exists || (session.sizeBytes > 0 && head.contentLength !== session.sizeBytes)) {
         throw new InternalError(
@@ -345,7 +442,7 @@ async function spawnAssemblyRetry(
 
       const localVideoUrl = storage().publicUrl(objectKey);
 
-      // ── Step 4: Commit success state ──────────────────────────────────────
+      // ── Step 7: Commit success state ──────────────────────────────────────
       await Promise.all([
         db
           .update(sessions)
@@ -380,12 +477,11 @@ async function spawnAssemblyRetry(
       void invalidateVideosCatalogCache();
       log.info({ sessionId, videoId, attempt: currentAttempts }, "[assembly-retry] assembly succeeded — running post-processing");
 
-      // ── Step 5: Post-assembly processing (same as normal finalize path) ───
+      // ── Step 8: Post-assembly processing (same as normal finalize path) ───
       const [vRow] = await db
         .select({
           objectPath: videos.objectPath,
           faststartApplied: videos.faststartApplied,
-          hlsMasterUrl: videos.hlsMasterUrl,
         })
         .from(videos)
         .where(eq(videos.id, videoId))
@@ -396,8 +492,8 @@ async function spawnAssemblyRetry(
         return;
       }
 
-      // ── Step 5a: ffprobe — accurate duration + technical metadata ─────────
-      // The video row was reset to transcodingStatus="none" in step 4 and may
+      // ── Step 8a: ffprobe — accurate duration + technical metadata ─────────
+      // The video row was reset to transcodingStatus="none" in step 7 and may
       // carry the 1800-second upload-time placeholder duration. Run ffprobe now
       // to get the real duration and codec info BEFORE enqueueing for broadcast.
       // A wrong duration causes dead-air at end-of-slot or premature auto-skip.
@@ -436,33 +532,40 @@ async function spawnAssemblyRetry(
       log.info({ sessionId, videoId, attempt: currentAttempts }, "[assembly-retry] complete ✓");
 
     } catch (err) {
-      // ── Failure handling: backoff retry OR permanent failure ──────────────
+      // ── Failure handling: terminal fast-fail OR backoff retry ─────────────
       const errMsg = err instanceof Error ? err.message : String(err);
+      const errCode = (err as { code?: string })?.code;
 
-      // Re-read the attempt counter — it was incremented at step 0, even if
-      // the DB increment itself threw (in which case we default to 1).
+      // Re-read the attempt counter from DB (reflects the conditional increment above).
       const [sessionAfterFail] = await db
-        .select({ assemblyAttempts: sessions.assemblyAttempts })
+        .select({ assemblyAttempts: sessions.assemblyAttempts, uploadId: sessions.uploadId })
         .from(sessions)
         .where(eq(sessions.sessionId, sessionId))
         .limit(1)
-        .catch(() => [] as Array<{ assemblyAttempts: number | null }>);
+        .catch(() => [] as Array<{ assemblyAttempts: number | null; uploadId: string | null }>);
       const attempts = sessionAfterFail?.assemblyAttempts ?? 1;
+      const uploadIdForCleanup = sessionAfterFail?.uploadId;
 
-      if (attempts >= MAX_AUTO_ASSEMBLY_ATTEMPTS) {
-        // All auto-retry budget exhausted — mark permanently failed so the
-        // operator sees a clear "Retry Assembly" / re-upload call to action.
+      // Terminal error codes indicate data is structurally unrecoverable —
+      // immediately mark permanently failed without burning the remaining retry
+      // budget. This surfaces the "re-upload required" call-to-action immediately
+      // instead of waiting up to ~5.5 hours for all 8 backoff windows to elapse.
+      const isTerminal = errCode != null && TERMINAL_ASSEMBLY_ERROR_CODES.has(errCode);
+
+      if (attempts >= MAX_AUTO_ASSEMBLY_ATTEMPTS || isTerminal) {
+        // All auto-retry budget exhausted OR data is unrecoverable — mark
+        // permanently failed so the operator sees a clear call-to-action.
         log.error(
-          { err, sessionId, videoId, attempts, max: MAX_AUTO_ASSEMBLY_ATTEMPTS },
-          "[assembly-retry] max auto-retry attempts exhausted — marking ASSEMBLY_FAILED permanently",
+          { err, sessionId, videoId, attempts, max: MAX_AUTO_ASSEMBLY_ATTEMPTS, isTerminal, errCode },
+          "[assembly-retry] max auto-retry attempts exhausted or terminal error — marking ASSEMBLY_FAILED permanently",
         );
-        await _markAssemblyPermanentlyFailed(videoId, sessionId, errMsg, log, attempts);
+        await _markAssemblyPermanentlyFailed(videoId, sessionId, errMsg, log, attempts, uploadIdForCleanup);
       } else {
         // Transient failure — preserve completedVideoId so the reconciliation
         // timer can find and retry this session after the backoff window.
         const backoffMs = ASSEMBLY_BACKOFF_MS[attempts] ?? 30 * 60_000;
         log.warn(
-          { err, sessionId, videoId, attempts, backoffMs },
+          { err, sessionId, videoId, attempts, backoffMs, errCode },
           `[assembly-retry] attempt ${attempts} failed — will retry after ${Math.round(backoffMs / 1000)}s via reconciliation`,
         );
         await Promise.allSettled([
@@ -489,13 +592,19 @@ async function spawnAssemblyRetry(
 //
 // Marks a video ASSEMBLY_FAILED and resets its session so the operator sees
 // a clear call-to-action in the admin panel. Shared between the no-objectKey
-// fast-path and the max-attempts-exhausted path in spawnAssemblyRetry.
+// fast-path, the terminal-error fast-path, and the max-attempts-exhausted
+// path in spawnAssemblyRetry.
+//
+// uploadId is optional: when provided, the staging BYTEA parts in
+// storage_upload_parts are deleted immediately (instead of waiting for the
+// 24-hour stale-session cleanup sweep) to prevent storage bloat.
 async function _markAssemblyPermanentlyFailed(
   videoId: string,
   sessionId: string,
   lastError: string,
   log: FastifyInstance["log"],
   attempts?: number,
+  uploadId?: string | null,
 ): Promise<void> {
   const attemptNote = attempts != null ? ` after ${attempts} auto-retry attempt(s)` : "";
   await Promise.allSettled([
@@ -519,9 +628,17 @@ async function _markAssemblyPermanentlyFailed(
         updatedAt: new Date(),
       })
       .where(eq(sessions.sessionId, sessionId)),
+    // Clean up staging BYTEA parts immediately so they do not bloat
+    // storage_upload_parts until the 24-hour stale-session sweep fires.
+    // For a 1 GB upload (128 × 8 MB chunks) this reclaims 1 GB right away.
+    // Non-fatal: if this query fails the cleanup.worker sweep will collect them.
+    ...(uploadId
+      ? [db.execute(sql`DELETE FROM storage_upload_parts WHERE upload_id = ${uploadId}`)
+          .catch((err: unknown) => log.warn({ err, uploadId }, "[assembly-retry] parts cleanup on permanent failure (non-fatal)"))]
+      : []),
   ]);
   adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-retry-exhausted" });
-  log.error({ videoId, sessionId, attempts }, "[assembly-retry] permanently marked ASSEMBLY_FAILED");
+  log.error({ videoId, sessionId, attempts, uploadId }, "[assembly-retry] permanently marked ASSEMBLY_FAILED");
 }
 
 // (DB-fallback finalization removed — MinIO is the sole storage backend)
@@ -576,16 +693,25 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
       if (stuckRows.length > 0) {
         const recoveredSessionIds: string[] = [];
         const recoveredVideoIds: string[] = [];
+        // noVideoSessionIds: "assembling" sessions that crashed before the
+        // atomic pre-commit (video INSERT + session.completedVideoId UPDATE)
+        // completed. No video row was created, no blob was committed, no cleanup
+        // required. Handled separately to avoid misaligning the orphaned* parallel
+        // arrays — previously these were pushed to orphanedSessionIds[], leaving
+        // orphanedVideoIds[i] as undefined for these entries, which caused
+        // spawnAssemblyRetry(sid, undefined) and deleteObject(undefined) bugs.
+        const noVideoSessionIds: string[] = [];
         const orphanedSessionIds: string[] = [];
         const orphanedVideoIds: string[] = [];
         const orphanedObjectKeys: string[] = [];
         const orphanedTotalChunks: number[] = [];
 
         for (const row of stuckRows) {
-          // Sessions that never reached pre-commit (no video row yet) are
-          // straightforward: just reset to "uploading".
+          // Sessions that never reached pre-commit (no video row yet) go into a
+          // separate list — NOT orphanedSessionIds[] — to keep the parallel arrays
+          // aligned. These are reset to "uploading" at the end of this block.
           if (!row.completedVideoId || !row.objectKey) {
-            orphanedSessionIds.push(row.sessionId);
+            noVideoSessionIds.push(row.sessionId);
             continue;
           }
 
@@ -785,7 +911,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             void (async () => {
               try {
                 const [vRow] = await db
-                  .select({ objectPath: videos.objectPath })
+                  .select({ objectPath: videos.objectPath, faststartApplied: videos.faststartApplied })
                   .from(videos)
                   .where(eq(videos.id, videoId))
                   .limit(1);
@@ -811,6 +937,35 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                     { err: probeErr, videoId },
                     "[upload] recovery: ffprobe failed (non-fatal) — using existing duration",
                   );
+                }
+
+                // Faststart — moov-atom relocation required before broadcast.
+                // The crash may have occurred after completeMultipartUpload but
+                // before faststart or enqueueIfMissing ran. Running these here
+                // ensures a crash-recovered blob reaches broadcast-ready status
+                // immediately instead of waiting for faststartRecoveryWorker
+                // (up to 6 min). Both operations are idempotent — safe to re-run.
+                const fsResult = await runFaststart(videoId, vRow.objectPath, { skipStatusUpdate: false });
+                if (fsResult.ok) {
+                  app.log.info({ videoId, durationMs: fsResult.durationMs }, "[upload] recovery: faststart complete on crash-recovered blob");
+                  adminEventBus.push("broadcast-source-upgraded", { videoId, quality: "mp4_faststart" });
+                  adminEventBus.push("videos-library-updated", { videoId, reason: "recovery-faststart-complete" });
+                  void invalidateVideosCatalogCache();
+
+                  scheduleVideoValidation(videoId, vRow.objectPath, { faststartApplied: true });
+
+                  const enqRes = await enqueueIfMissing({ videoId, reason: "assembly-recovered-on-restart" }).catch(() => null);
+                  if (enqRes?.enqueued) {
+                    app.log.info({ videoId, queueItemId: enqRes.queueItemId }, "[upload] recovery: enrolled crash-recovered video in broadcast queue");
+                    adminEventBus.push("broadcast-queue-updated", { reason: "assembly-recovered-on-restart", videoId });
+                  }
+                } else {
+                  // Faststart failed — faststartRecoveryWorker will retry within ~5 min.
+                  app.log.warn(
+                    { videoId, rootCause: fsResult.rootCause },
+                    "[upload] recovery: faststart failed on crash-recovered blob — faststartRecoveryWorker will retry",
+                  );
+                  adminEventBus.push("videos-library-updated", { videoId, reason: "recovery-faststart-failed" });
                 }
 
               } catch (err) {
@@ -881,6 +1036,25 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               ids: trulyOrphanedSessionIds,
             },
             "[upload] reset interrupted assembling sessions (chunks incomplete) — video rows preserved with ASSEMBLY_FAILED status, partial blobs cleaned up",
+          );
+        }
+
+        // ── Reset sessions that crashed before pre-commit ──────────────────
+        // These sessions have status="assembling" but no video row and no blob —
+        // the process died between the CAS lock flip and the atomic pre-commit
+        // transaction. No blob or video row cleanup is needed; just reset the
+        // session status so the client's finalize retry can proceed cleanly.
+        if (noVideoSessionIds.length > 0) {
+          await db
+            .update(sessions)
+            .set({ status: "uploading", updatedAt: new Date() })
+            .where(inArray(sessions.sessionId, noVideoSessionIds))
+            .catch((err: unknown) =>
+              app.log.warn({ err, count: noVideoSessionIds.length }, "[upload] recovery: pre-commit-crashed session reset failed (non-fatal)"),
+            );
+          app.log.info(
+            { count: noVideoSessionIds.length, ids: noVideoSessionIds },
+            "[upload] recovery: reset assembling sessions that crashed before pre-commit (no video row created, no blob written)",
           );
         }
       }
@@ -2220,40 +2394,70 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
           "[finalize] pre-commit started",
         );
 
-        // Pre-insert the video row with the deterministic storage URL.
-        // Wrapped in try/catch: if this INSERT throws (e.g. DB connection hiccup or
-        // unique-key conflict), we must release the assembly lock so subsequent
-        // finalize retries can proceed instead of hitting a permanent 409.
-        let inserted: (typeof videos.$inferSelect)[];
+        // ── Atomic pre-commit: video INSERT + session.completedVideoId UPDATE ──
+        //
+        // Previously these were two separate DB writes. A server crash between
+        // them left the video row with no session link (completedVideoId=null),
+        // causing onReady to classify the session as "crashed before pre-commit"
+        // and reset it to "uploading" — permanently orphaning the video row even
+        // though the client had already received a 200 with the videoId.
+        //
+        // With a single db.transaction() call:
+        //   • Either BOTH the video INSERT and the completedVideoId UPDATE commit
+        //     atomically, or NEITHER does (ROLLBACK on any error).
+        //   • On crash between the client's 200 and the server's COMMIT, Postgres
+        //     rolls back both writes, leaving the session in a clean "assembling"
+        //     state that onReady can safely detect and recover.
+        //   • On transient DB error the lock is released and the client can retry
+        //     finalization with no stale state to clean up.
+        let row: typeof videos.$inferSelect;
         try {
-          inserted = await db
-            .insert(videos)
-            .values({
-              id: videoId,
-              youtubeId: null,
-              title: session.title,
-              description: session.description ?? "",
-              thumbnailUrl: "",
-              duration: String(durationSecs),
-              category: session.category ?? "sermon",
-              preacher: session.preacher ?? "",
-              publishedAt: null,
-              videoSource: "local",
-              localVideoUrl,
-              featured: session.featured,
-              originalFilename: session.originalFilename ?? null,
-              mimeType: session.mimeType ?? null,
-              sizeBytes: session.sizeBytes,
-              objectPath: objectKey,
-              uploadedBy: session.uploadedBy ?? null,
-              s3MirroredAt: null, // set after background assembly confirms blob exists
-              broadcastOnly: session.broadcastOnly ?? true,
-              transcodingStatus: "none", // blob not yet committed; faststart + HLS pending
-            })
-            .returning();
+          row = await db.transaction(async (tx) => {
+            const [inserted] = await tx
+              .insert(videos)
+              .values({
+                id: videoId,
+                youtubeId: null,
+                title: session.title,
+                description: session.description ?? "",
+                thumbnailUrl: "",
+                duration: String(durationSecs),
+                category: session.category ?? "sermon",
+                preacher: session.preacher ?? "",
+                publishedAt: null,
+                videoSource: "local",
+                localVideoUrl,
+                featured: session.featured,
+                originalFilename: session.originalFilename ?? null,
+                mimeType: session.mimeType ?? null,
+                sizeBytes: session.sizeBytes,
+                objectPath: objectKey,
+                uploadedBy: session.uploadedBy ?? null,
+                s3MirroredAt: null, // set after background assembly confirms blob exists
+                broadcastOnly: session.broadcastOnly ?? true,
+                transcodingStatus: "none", // blob not yet committed; faststart pending
+              })
+              .returning();
+
+            if (!inserted) {
+              throw new InternalError("videos INSERT returned no rows — database may be under load");
+            }
+
+            // Atomically link the new video row to the session so the idempotency
+            // guard, finalize-status poller, and onReady recovery all see the link
+            // immediately. sweepOrphanedSessions checks completedVideoId to decide
+            // whether to treat a session as abandoned — this update ensures it is
+            // set before the server responds and before any crash window opens.
+            await tx
+              .update(sessions)
+              .set({ completedVideoId: inserted.id, updatedAt: new Date() })
+              .where(eq(sessions.sessionId, sessionId));
+
+            return inserted;
+          });
         } catch (insertErr) {
           await resetLock();
-          req.log.error({ err: insertErr, sessionId, videoId }, "[finalize] video INSERT failed — lock released");
+          req.log.error({ err: insertErr, sessionId, videoId }, "[finalize] atomic pre-commit transaction failed — lock released");
           throw Object.assign(
             new Error(
               "Failed to create video record — database temporarily unavailable. " +
@@ -2261,51 +2465,6 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             ),
             { statusCode: 503, cause: insertErr },
           );
-        }
-
-        const row = inserted[0];
-        if (!row) {
-          await resetLock();
-          throw new InternalError("videos insert returned no rows — database may be under load, retry finalization");
-        }
-
-        // Store the pre-committed videoId on the session so that:
-        //   • Idempotent /finalize retries return the video row immediately.
-        //   • GET /finalize-status returns the videoId while assembling.
-        //   • sweepOrphanedSessions can see the link and NEVER deletes this blob.
-        // Session status stays "assembling" until background assembly completes.
-        //
-        // CRITICAL: This link is the primary guard against cleanup.worker.ts
-        // treating this session as orphaned and deleting the blob after 24 h.
-        // sweepOrphanedSessions now also cross-checks object_path → object_key,
-        // but setting completedVideoId is still the canonical protection.
-        // We retry up to 3 times with a short delay before giving up non-fatally.
-        let completedVideoIdSet = false;
-        for (let attempt = 0; attempt < 3 && !completedVideoIdSet; attempt++) {
-          try {
-            if (attempt > 0) {
-              await new Promise<void>((r) => { const t = setTimeout(r, 500 * attempt); t.unref(); });
-            }
-            await db
-              .update(sessions)
-              .set({ completedVideoId: videoId, updatedAt: new Date() })
-              .where(eq(sessions.sessionId, sessionId));
-            completedVideoIdSet = true;
-          } catch (updateErr) {
-            if (attempt < 2) {
-              req.log.warn(
-                { err: updateErr, sessionId, videoId, attempt },
-                "[finalize] completedVideoId update failed — retrying",
-              );
-            } else {
-              req.log.error(
-                { err: updateErr, sessionId, videoId },
-                "[finalize] completedVideoId update failed after 3 attempts (non-fatal) — " +
-                "cleanup.worker object_path cross-check will protect the blob, but " +
-                "idempotent re-finalize may not return the existing video immediately",
-              );
-            }
-          }
         }
 
         // The video will be enrolled in the broadcast queue (MP4-first) by the
@@ -2409,6 +2568,10 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               key: objectKey,
               uploadId,
               parts: partsForAssembly,
+              // Pass totalChunks so completeMultipartUpload's part-count cross-check
+              // fires inside the SQL transaction in addition to the pre-flight check
+              // that ran before the background task started. Belt-and-suspenders.
+              totalChunks: session.totalChunks,
               // Pass the client-declared whole-file SHA-256 so completeMultipartUpload
               // can verify the assembled blob inside the transaction before committing.
               // sha256(data) runs server-side in PostgreSQL — only the 32-byte hash
