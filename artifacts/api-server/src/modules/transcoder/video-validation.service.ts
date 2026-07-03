@@ -44,6 +44,7 @@ import { storage } from "../../infrastructure/storage.js";
 import { storagePaths } from "../../infrastructure/storage-paths.js";
 import { probeContainerIsValid, probeCanDecodeFirstFrame } from "./transcoder.service.js";
 import { env } from "../../config/env.js";
+import { setPipelineStage } from "../media-pipeline/pipeline-stage.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -962,6 +963,16 @@ export async function runVideoValidation(
       .catch((err: unknown) => {
         logger.warn({ err, videoId }, "[video-validation] failed to persist report (non-fatal)");
       });
+
+    await setPipelineStage(
+      videoId,
+      overallStatus === "failed" ? "failed" : "ready",
+      overallStatus === "failed"
+        ? `validation failed: ${remainingIssues.slice(0, 3).join("; ")}`
+        : `validation ${overallStatus} — broadcast-eligible`,
+    ).catch((err: unknown) => {
+      logger.warn({ err, videoId }, "[video-validation] pipeline-stage transition failed (non-fatal)");
+    });
   }
 
   return report;

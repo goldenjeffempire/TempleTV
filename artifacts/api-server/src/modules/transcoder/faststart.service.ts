@@ -54,6 +54,7 @@ import {
   validateLocalSourceFile,
   probeContainerIsValid,
 } from "./transcoder.service.js";
+import { setPipelineStage } from "../media-pipeline/pipeline-stage.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -423,6 +424,10 @@ export async function runFaststart(
     }
   }
 
+  await setPipelineStage(videoId, "faststart", "faststart job started").catch((err: unknown) =>
+    log.warn({ err }, "[faststart] pipeline-stage transition failed (non-fatal)"),
+  );
+
   // ── 2. Detect moov position from first 64 KiB ───────────────────────────
   actions.push("detecting moov atom position from first 64 KiB");
   let moovInfo: MoovInfo;
@@ -454,6 +459,9 @@ export async function runFaststart(
     // Still run the Range probe to confirm HTTP delivery works.
     const rangeOk = await validateRangeSupport(normalizedKey);
     actions.push(`HTTP Range probe: ${rangeOk ? "206 ✓" : "failed (non-fatal)"}`);
+    await setPipelineStage(videoId, "metadata", "faststart skipped (moov already at start) — proceeding to validation").catch(
+      (err: unknown) => log.warn({ err }, "[faststart] pipeline-stage transition failed (non-fatal)"),
+    );
     return { ok: true, finalStatus: "completed", skipped: true, actions, durationMs: elapsed() };
   }
 
@@ -590,6 +598,9 @@ export async function runFaststart(
         .where(eq(videos.id, videoId));
       actions.push("set faststartApplied=true in DB (skipStatusUpdate=true — status unchanged)");
     }
+    await setPipelineStage(videoId, "metadata", "faststart remux completed — proceeding to validation").catch(
+      (err: unknown) => log.warn({ err }, "[faststart] pipeline-stage transition failed (non-fatal)"),
+    );
     log.info({ durationMs: elapsed() }, "[faststart] complete");
 
     return {
@@ -617,6 +628,9 @@ export async function runFaststart(
         log.warn({ dbErr }, "[faststart] failed to persist failed status (non-fatal)");
       }
     }
+    await setPipelineStage(videoId, "failed", `faststart failed: [${code}] ${msg.slice(0, 200)}`).catch(
+      (pipelineErr: unknown) => log.warn({ pipelineErr }, "[faststart] pipeline-stage transition failed (non-fatal)"),
+    );
 
     return {
       ok: false,

@@ -178,6 +178,28 @@ export const videosTable = pgTable("managed_videos", {
   validationReport: jsonb("validation_report"),
   // UTC timestamp of the most recent completed validation run.
   validationCompletedAt: timestamp("validation_completed_at", { withTimezone: true }),
+  // ── Media pipeline state machine (media-pipeline/pipeline-stage.ts) ───────
+  // Canonical, explicit stage for local (non-YouTube) upload processing.
+  // Enforced forward-only (except 'failed', reachable from any stage) by
+  // setPipelineStage(). Never skipped or marked complete early — each stage
+  // is only entered once its ground-truth DB columns confirm the prior stage
+  // actually finished (blob committed, faststart applied, validation passed).
+  //   'uploading'    — chunk upload session open, bytes still arriving.
+  //   'verifying'    — all chunks received; assembling + checksum verification.
+  //   'stored'       — blob committed to storage_blobs (s3MirroredAt stamped).
+  //   'faststart'    — moov-atom relocation in progress.
+  //   'metadata'     — faststart done; ffprobe/playback validation running.
+  //   'ready'        — faststartApplied=true AND validationStatus passed/warn.
+  //                    Broadcast-admission-eligible; not yet in the queue.
+  //   'queued'       — present as an active row in broadcast_queue.
+  //   'broadcasting' — currently the live item on the main channel.
+  //   'failed'       — terminal failure at any stage (see transcodingErrorCode
+  //                    / transcodingErrorMessage for the reason).
+  pipelineStage: text("pipeline_stage").notNull().default("ready"),
+  // UTC timestamp of the most recent pipelineStage transition. Used by the
+  // pipeline-stage watchdog to detect stuck stages (e.g. 'faststart' with no
+  // progress for >10 min) and auto re-trigger the stalled step.
+  pipelineStageUpdatedAt: timestamp("pipeline_stage_updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("idx_managed_videos_imported_at").on(table.importedAt),
   index("idx_managed_videos_category").on(table.category),
