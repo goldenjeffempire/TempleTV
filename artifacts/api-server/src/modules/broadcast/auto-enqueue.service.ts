@@ -1,9 +1,21 @@
-import { and, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne, not, or, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
 import { broadcastService } from "./broadcast.service.js";
 import { ConflictError } from "../../shared/errors.js";
+
+/**
+ * Error codes that permanently disqualify a video from broadcast.
+ *
+ * A video with one of these codes has a definitively unrecoverable source:
+ * the assembly transaction rolled back (ASSEMBLY_FAILED), the source file
+ * failed integrity checks (CORRUPT_SOURCE), or the blob was explicitly
+ * removed (SOURCE_MISSING). Both `repairMissingS3MirroredAt` and
+ * `isPlayableForBroadcast` must skip these rows — re-admitting them would
+ * cause dead air at the source-resolver layer.
+ */
+const TERMINAL_ERROR_CODES = ["ASSEMBLY_FAILED", "CORRUPT_SOURCE", "SOURCE_MISSING"] as const;
 
 /**
  * Library → Broadcast Queue auto-enqueue pipeline.
@@ -254,6 +266,21 @@ export async function repairMissingS3MirroredAt(videoId?: string): Promise<{ rep
           ne(videosTable.videoSource, "youtube"),
           isNull(videosTable.s3MirroredAt),
           isNotNull(videosTable.localVideoUrl),
+          // Do NOT stamp permanently-broken uploads. These error codes mean the
+          // assembly transaction rolled back, the source is corrupt, or the blob
+          // was explicitly deleted — there is no valid blob to stamp s3MirroredAt
+          // for.  If one were somehow found and stamped, the video would be
+          // re-admitted to the broadcast queue and cause playback failures.
+          //
+          // IMPORTANT: transcodingErrorCode IS nullable. In SQL, `NULL NOT IN (...)`
+          // evaluates to NULL (not TRUE), so plain `not(inArray(...))` would exclude
+          // every row with a NULL error code — i.e., ALL normal uploads. The
+          // `or(isNull, not(inArray))` form correctly passes NULL rows through
+          // while still excluding rows with a terminal error code value.
+          or(
+            isNull(videosTable.transcodingErrorCode),
+            not(inArray(videosTable.transcodingErrorCode, [...TERMINAL_ERROR_CODES])),
+          ),
           ...(videoId ? [eq(videosTable.id, videoId)] : []),
         ),
       )
@@ -629,6 +656,18 @@ function isPlayableForBroadcast(row: {
 }): boolean {
   // YouTube is library-only — excluded from broadcast entirely.
   if (row.videoSource === "youtube") return false;
+
+  // Permanently broken uploads are never broadcast-eligible regardless of
+  // whether localVideoUrl or s3MirroredAt appear to be set.  These codes
+  // mean the assembly definitively failed, the source file is corrupt, or
+  // the blob was explicitly removed — playing the item would fail at the
+  // source-resolver or storage layer and cause dead air.
+  if (
+    row.transcodingErrorCode &&
+    (TERMINAL_ERROR_CODES as ReadonlyArray<string>).includes(row.transcodingErrorCode)
+  ) {
+    return false;
+  }
 
   // Midnight-prayers content is NEVER eligible for the MAIN broadcast queue.
   // It plays exclusively on the dedicated midnight-prayers channel during its

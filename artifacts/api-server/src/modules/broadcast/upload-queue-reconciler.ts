@@ -35,7 +35,15 @@ import { enqueueIfMissing, repairMissingS3MirroredAt } from "./auto-enqueue.serv
 const videosTable = schema.videosTable;
 const queueTable = schema.broadcastQueueTable;
 
-const LOOKBACK_MS = 24 * 60 * 60 * 1000;
+// 7-day lookback: the 24-hour window was too narrow — uploads that slipped
+// through the primary enqueue path exactly >24 h ago (DB crash at enqueue
+// time, pool exhaustion, SIGTERM between blob commit and enqueue call) were
+// permanently invisible to this worker and never automatically recovered.
+// scanLibraryAndEnqueue() covers older videos only when the queue is empty;
+// this reconciler runs every 60 s regardless of queue state, so widening the
+// window closes the gap without adding meaningful query cost (indexed scan on
+// imported_at + is_active).
+const LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PER_SCAN = 50;
 
 export const uploadQueueReconciler = {

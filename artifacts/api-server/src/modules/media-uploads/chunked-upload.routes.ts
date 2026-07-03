@@ -2,22 +2,22 @@
  * Resumable chunked upload gateway (server-relay path).
  *
  * All video data flows through the server — no browser-direct or presigned
- * URL uploads. Every chunk is stored as a native MinIO multipart part.
- * MinIO is the sole storage backend; there is no database BYTEA fallback.
+ * URL uploads. Every chunk is stored as a BYTEA row in the PostgreSQL
+ * `storage_upload_parts` table. PostgreSQL is the sole storage backend.
  *
  * Wire:
  *   POST /admin/videos/upload/init
- *     → create DB session; open MinIO multipart upload slot
+ *     → create DB session row; allocate upload slot
  *   POST /admin/videos/upload/:sessionId/chunk
  *     → receive raw binary chunk (application/octet-stream), verify SHA-256,
- *       store as a native MinIO multipart part (uploadPart)
+ *       store part as BYTEA in storage_upload_parts
  *   GET  /admin/videos/upload/:sessionId/status
  *     → return { uploadedChunkIndices } so the client can resume mid-flight
  *   POST /admin/videos/upload/:sessionId/thumbnail
- *     → accept optional custom thumbnail; store in MinIO
+ *     → accept optional custom thumbnail; store in storage_blobs
  *   POST /admin/videos/upload/:sessionId/finalize
- *     → completeMultipartUpload assembles all parts in MinIO, inserts
- *       managed_videos row, and enqueues HLS transcoding
+ *     → completeMultipartUpload assembles all parts via bytea_agg in one DB
+ *       transaction, inserts managed_videos row, and enqueues for broadcast
  */
 
 import { randomUUID, createHash } from "node:crypto";
