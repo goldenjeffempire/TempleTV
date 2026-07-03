@@ -56,7 +56,7 @@ export function isAutoEnqueueEnabled(): boolean {
  */
 export async function enqueueIfMissing(opts: {
   videoId: string;
-  reason: "upload-finalize" | "yt-sync" | "library-scan" | "manual-import" | "upload-recovery-on-restart" | "repair-all" | "enqueue-missing" | "assembly-retry" | "schedule-bridge" | "schedule-bridge-fallback" | "faststart-complete" | "faststart-recovery-complete" | "deep-recovery";
+  reason: "upload-finalize" | "yt-sync" | "library-scan" | "manual-import" | "upload-recovery-on-restart" | "repair-all" | "enqueue-missing" | "assembly-retry" | "assembly-recovered-on-restart" | "schedule-bridge" | "schedule-bridge-fallback" | "faststart-complete" | "faststart-recovery-complete" | "faststart-all" | "deep-recovery" | "manual-enqueue" | "bulk-enqueue";
 }): Promise<{ enqueued: boolean; queueItemId?: string; skipReason?: string }> {
   if (!isAutoEnqueueEnabled()) {
     return { enqueued: false, skipReason: "auto-enqueue-disabled" };

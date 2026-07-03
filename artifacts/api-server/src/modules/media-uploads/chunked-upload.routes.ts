@@ -911,7 +911,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
             void (async () => {
               try {
                 const [vRow] = await db
-                  .select({ objectPath: videos.objectPath, faststartApplied: videos.faststartApplied })
+                  .select({ objectPath: videos.objectPath })
                   .from(videos)
                   .where(eq(videos.id, videoId))
                   .limit(1);
@@ -939,33 +939,16 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   );
                 }
 
-                // Faststart — moov-atom relocation required before broadcast.
-                // The crash may have occurred after completeMultipartUpload but
-                // before faststart or enqueueIfMissing ran. Running these here
-                // ensures a crash-recovered blob reaches broadcast-ready status
-                // immediately instead of waiting for faststartRecoveryWorker
-                // (up to 6 min). Both operations are idempotent — safe to re-run.
-                const fsResult = await runFaststart(videoId, vRow.objectPath, { skipStatusUpdate: false });
-                if (fsResult.ok) {
-                  app.log.info({ videoId, durationMs: fsResult.durationMs }, "[upload] recovery: faststart complete on crash-recovered blob");
-                  adminEventBus.push("broadcast-source-upgraded", { videoId, quality: "mp4_faststart" });
-                  adminEventBus.push("videos-library-updated", { videoId, reason: "recovery-faststart-complete" });
-                  void invalidateVideosCatalogCache();
+                // MP4-only pipeline: enqueue immediately as raw MP4.
+                // Faststart pipeline is disabled — raw MP4 is broadcast-eligible
+                // via HTTP Range streaming regardless of moov atom position.
+                adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-recovered-on-restart" });
+                void invalidateVideosCatalogCache();
 
-                  scheduleVideoValidation(videoId, vRow.objectPath, { faststartApplied: true });
-
-                  const enqRes = await enqueueIfMissing({ videoId, reason: "assembly-recovered-on-restart" }).catch(() => null);
-                  if (enqRes?.enqueued) {
-                    app.log.info({ videoId, queueItemId: enqRes.queueItemId }, "[upload] recovery: enrolled crash-recovered video in broadcast queue");
-                    adminEventBus.push("broadcast-queue-updated", { reason: "assembly-recovered-on-restart", videoId });
-                  }
-                } else {
-                  // Faststart failed — faststartRecoveryWorker will retry within ~5 min.
-                  app.log.warn(
-                    { videoId, rootCause: fsResult.rootCause },
-                    "[upload] recovery: faststart failed on crash-recovered blob — faststartRecoveryWorker will retry",
-                  );
-                  adminEventBus.push("videos-library-updated", { videoId, reason: "recovery-faststart-failed" });
+                const enqRes = await enqueueIfMissing({ videoId, reason: "assembly-recovered-on-restart" }).catch(() => null);
+                if (enqRes?.enqueued) {
+                  app.log.info({ videoId, queueItemId: enqRes.queueItemId }, "[upload] recovery: enrolled crash-recovered video in broadcast queue");
+                  adminEventBus.push("broadcast-queue-updated", { reason: "assembly-recovered-on-restart", videoId });
                 }
 
               } catch (err) {
@@ -2435,7 +2418,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 uploadedBy: session.uploadedBy ?? null,
                 s3MirroredAt: null, // set after background assembly confirms blob exists
                 broadcastOnly: session.broadcastOnly ?? true,
-                transcodingStatus: "none", // blob not yet committed; faststart pending
+                transcodingStatus: "none", // blob not yet committed; raw MP4 will be enqueued after assembly
               })
               .returning();
 
@@ -2727,8 +2710,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               if (mediaMeta.videoBitrate != null) patch.videoBitrate = mediaMeta.videoBitrate;
               if (mediaMeta.videoWidth != null) patch.videoWidth = mediaMeta.videoWidth;
               if (mediaMeta.videoHeight != null) patch.videoHeight = mediaMeta.videoHeight;
-              // Do NOT set transcodingStatus=ready yet — the faststart pipeline
-              // below owns that transition.  Only metadata patches go here.
+              // Metadata patches only — transcodingStatus stays at "none" for raw MP4.
               if (Object.keys(patch).length > 0) {
                 await db.update(videos).set(patch).where(eq(videos.id, videoId));
                 void invalidateVideosCatalogCache();
@@ -2739,7 +2721,7 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               if (durSecs != null && durSecs > 10) ffprobeDurSecs = durSecs;
             } catch (err) {
               capturedLog.warn({ err, videoId }, "[finalize:bg] post-upload probes failed (non-fatal)");
-              // Probes are non-fatal — faststart runs regardless.
+              // Probes are non-fatal — enqueue runs regardless.
             }
 
             // ── Enqueue immediately after blob confirmation ────────────────────

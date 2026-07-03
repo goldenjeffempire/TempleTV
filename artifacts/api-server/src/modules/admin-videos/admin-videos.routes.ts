@@ -11,7 +11,7 @@ import { storage } from "../../infrastructure/storage.js";
 import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
-import { runFaststart } from "../transcoder/faststart.service.js";
+
 import { isUndefinedColumnError, SAFE_VIDEO_COLS } from "../../infrastructure/db-schema-guard.js";
 import { generateThumbnailForVideo } from "./thumbnail-generator.service.js";
 import { runVideoValidation, scheduleVideoValidation, getStoredValidationReport } from "../transcoder/video-validation.service.js";
@@ -1088,42 +1088,24 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         return reply.code(400).send({ error: "Video has completed HLS transcoding — faststart is not applicable." });
       }
 
+      // MP4-only pipeline: faststart is disabled. Enqueue the video directly
+      // so the operator can still trigger "add to queue" via this route.
       void (async () => {
         try {
-          const fsResult = await runFaststart(id, row.objectPath!, { skipStatusUpdate: false });
-          if (fsResult.ok) {
-            // faststart relocated the moov atom — enqueue for broadcast automatically
-            // so the operator doesn't need a separate manual step.
-            try {
-              const enqRes = await enqueueIfMissing({ videoId: id, reason: "faststart-complete" });
-              if (enqRes.enqueued) {
-                adminEventBus.push("broadcast-queue-updated", { reason: "manual-faststart-complete", videoId: id });
-                req.log.info({ videoId: id, queueItemId: enqRes.queueItemId }, "admin: faststart succeeded — video enrolled in broadcast queue");
-              } else {
-                req.log.info({ videoId: id }, "admin: faststart succeeded — video already in broadcast queue");
-              }
-            } catch (enqErr) {
-              req.log.warn({ err: enqErr, videoId: id }, "admin: enqueueIfMissing after faststart failed (non-fatal)");
-            }
-            adminEventBus.push("videos-library-updated", { videoId: id, reason: "faststart-complete" });
-            // Clear public catalog cache and notify the admin videos page
-            // so the "Applying faststart…" spinner is cleared immediately.
-            void invalidateVideosCatalogCache();
-            adminEventBus.push("broadcast-source-upgraded", { videoId: id, quality: "mp4_faststart" });
-            // Schedule comprehensive 9-check playback validation now that
-            // the moov atom is confirmed at the start of the file.
-            scheduleVideoValidation(id, row.objectPath!, { faststartApplied: true });
+          const enqRes = await enqueueIfMissing({ videoId: id, reason: "manual-enqueue" });
+          if (enqRes.enqueued) {
+            adminEventBus.push("broadcast-queue-updated", { reason: "manual-enqueue", videoId: id });
+            req.log.info({ videoId: id, queueItemId: enqRes.queueItemId }, "admin: video enrolled in broadcast queue (faststart disabled — raw MP4 pipeline)");
           } else {
-            req.log.warn({ videoId: id, rootCause: fsResult.rootCause }, "admin: manual faststart failed");
+            req.log.info({ videoId: id }, "admin: video already in broadcast queue");
           }
+          adminEventBus.push("videos-library-updated", { videoId: id, reason: "manual-enqueue" });
+          void invalidateVideosCatalogCache();
         } catch (err) {
-          req.log.warn({ err, videoId: id }, "admin: manual faststart failed (non-fatal)");
+          req.log.warn({ err, videoId: id }, "admin: enqueueIfMissing failed (non-fatal)");
         }
       })().catch((err) => {
-        // Defensive: ensures the void promise never escapes as an
-        // unhandledRejection if the inner try/catch itself faults
-        // (e.g. logger.warn throws during shutdown).
-        req.log.error({ err, videoId: id }, "admin: faststart task crashed outside inner handler");
+        req.log.error({ err, videoId: id }, "admin: manual enqueue task crashed");
       });
 
       req.log.info({ videoId: id, objectPath: row.objectPath }, "admin: manual faststart triggered");
@@ -1184,37 +1166,25 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         "admin: bulk faststart-all triggered",
       );
 
-      // Fire all jobs sequentially in the background so the memory profile stays
-      // flat (ffmpeg is spawned one-at-a-time, same as single-video faststart).
+      // MP4-only pipeline: faststart is disabled. Enqueue all candidates directly.
       void (async () => {
+        let enrolled = 0;
         for (const row of queued) {
           if (!row.objectPath) continue;
           try {
-            const fsResult = await runFaststart(row.id, row.objectPath, { skipStatusUpdate: false });
-            if (fsResult.ok) {
-              try {
-                const enqRes = await enqueueIfMissing({ videoId: row.id, reason: "faststart-all" });
-                if (enqRes.enqueued) {
-                  adminEventBus.push("broadcast-queue-updated", { reason: "faststart-all", videoId: row.id });
-                }
-              } catch { /* non-fatal */ }
-              void invalidateVideosCatalogCache();
-              adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "faststart-complete" });
-              adminEventBus.push("broadcast-source-upgraded", { videoId: row.id, quality: "mp4_faststart" });
-              scheduleVideoValidation(row.id, row.objectPath, { faststartApplied: true });
-              req.log.info({ videoId: row.id }, "admin: bulk faststart-all — video succeeded");
-            } else {
-              req.log.warn(
-                { videoId: row.id, rootCause: fsResult.rootCause },
-                "admin: bulk faststart-all — video failed (non-fatal, recovery worker will retry)",
-              );
+            const enqRes = await enqueueIfMissing({ videoId: row.id, reason: "bulk-enqueue" });
+            if (enqRes.enqueued) {
+              enrolled++;
+              adminEventBus.push("broadcast-queue-updated", { reason: "bulk-enqueue", videoId: row.id });
             }
+            void invalidateVideosCatalogCache();
+            adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "bulk-enqueue" });
           } catch (err) {
-            req.log.warn({ err, videoId: row.id }, "admin: bulk faststart-all — video crashed (non-fatal)");
+            req.log.warn({ err, videoId: row.id }, "admin: bulk enqueue — video failed (non-fatal)");
           }
         }
-        req.log.info({ processed: queued.length }, "admin: bulk faststart-all complete");
-      })().catch((err) => req.log.error({ err }, "admin: bulk faststart-all outer crash"));
+        req.log.info({ processed: queued.length, enrolled }, "admin: bulk enqueue complete");
+      })().catch((err) => req.log.error({ err }, "admin: bulk enqueue outer crash"));
 
       return reply.code(202).send({ ok: true as const, queued: queued.length, alreadyRunning: active.length });
     },
