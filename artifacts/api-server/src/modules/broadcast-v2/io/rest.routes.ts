@@ -2875,7 +2875,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       : result.skipReason === "already-queued"
       ? "Video is already in the broadcast queue"
       : result.skipReason === "not-yet-playable"
-      ? "Video is not yet broadcast-ready — upload may still be assembling or blob stamp is missing"
+      ? "Video is not yet broadcast-ready — FastStart (moov relocation) may still be in progress, or blob confirmation is missing"
       : `Skipped: ${result.skipReason ?? "unknown"}`;
 
     logger.info({ videoId, ...result }, "[force-enqueue] single-video enqueue result");

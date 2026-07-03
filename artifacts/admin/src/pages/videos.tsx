@@ -2032,6 +2032,7 @@ export default function VideosPage() {
                       videoSource={v.videoSource}
                       localVideoUrl={v.localVideoUrl}
                       hlsMasterUrl={v.hlsMasterUrl}
+                      faststartApplied={v.faststartApplied}
                     />
                     {(() => {
                       const sb = getLocalStatusBadge(v);

@@ -1,11 +1,19 @@
 import type { ComponentType } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Zap, CheckCircle2, Radio, Library, AlertCircle } from "lucide-react";
+import { Zap, CheckCircle2, Radio, Library, AlertCircle, Clock, XCircle } from "lucide-react";
 
 interface BroadcastReadyBadgeProps {
   videoSource: string;
   localVideoUrl: string | null | undefined;
   hlsMasterUrl: string | null | undefined;
+  /**
+   * FastStart state — required to gate the "MP4 Ready" label.
+   * true  = moov at byte 0 → broadcast-ready
+   * false = FastStart ran and failed → NOT broadcast-ready
+   * null  = never attempted (still assembling or recovery pending) → NOT broadcast-ready
+   * undefined = not available (legacy callers) → skip FastStart gate (backward-compat)
+   */
+  faststartApplied?: boolean | null;
   /** Show a longer label (default: compact) */
   verbose?: boolean;
 }
@@ -15,18 +23,32 @@ export type BroadcastReadiness =
   | "mp4_only"
   | "hls_only"
   | "library_only"
+  | "faststart_pending"
+  | "faststart_failed"
   | "not_ready";
 
 export function getBroadcastReadiness(
   videoSource: string,
   localVideoUrl: string | null | undefined,
   hlsMasterUrl: string | null | undefined,
+  faststartApplied?: boolean | null,
 ): BroadcastReadiness {
   if (videoSource === "youtube") return "library_only";
   const hasMP4 = !!(localVideoUrl && localVideoUrl.trim());
   const hasHLS = !!(hlsMasterUrl && hlsMasterUrl.trim());
-  if (hasMP4 && hasHLS) return "mp4_and_hls";
-  if (hasMP4) return "mp4_only";
+
+  if (hasMP4) {
+    // If faststartApplied is explicitly provided (not undefined), gate on it.
+    // undefined = legacy caller that doesn't know about FastStart → skip gate.
+    if (faststartApplied !== undefined) {
+      if (faststartApplied === false) return "faststart_failed";
+      if (faststartApplied !== true) return "faststart_pending";
+    }
+    // FastStart confirmed (or gate skipped) — video is broadcast-ready.
+    if (hasHLS) return "mp4_and_hls";
+    return "mp4_only";
+  }
+
   if (hasHLS) return "hls_only";
   return "not_ready";
 }
@@ -55,8 +77,7 @@ const CONFIG: Record<
     label: "MP4 Ready",
     verboseLabel: "MP4 Broadcast-Ready",
     tooltip:
-      "Broadcast-ready — will air via direct MP4 stream. " +
-      "HLS transcoding (when enabled) will upgrade quality asynchronously without interrupting broadcast.",
+      "Broadcast-ready — FastStart complete, moov atom is at byte 0 for instant start on all surfaces.",
     icon: CheckCircle2,
     className:
       "border-green-300 bg-green-50 text-green-700 dark:border-green-700 dark:bg-green-950/40 dark:text-green-400",
@@ -81,6 +102,26 @@ const CONFIG: Record<
     className:
       "border-muted-foreground/30 bg-muted/40 text-muted-foreground",
   },
+  faststart_pending: {
+    label: "FastStart Pending",
+    verboseLabel: "Awaiting FastStart",
+    tooltip:
+      "Upload assembled — waiting for moov atom relocation (FastStart) to complete before this video can broadcast. " +
+      "This happens automatically; no action needed.",
+    icon: Clock,
+    className:
+      "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-500",
+  },
+  faststart_failed: {
+    label: "FastStart Failed",
+    verboseLabel: "FastStart Failed",
+    tooltip:
+      "Moov atom relocation failed — video cannot broadcast until fixed. " +
+      "Use Actions → Re-apply faststart to retry.",
+    icon: XCircle,
+    className:
+      "border-red-300 bg-red-50 text-red-700 dark:border-red-700 dark:bg-red-950/40 dark:text-red-400",
+  },
   not_ready: {
     label: "Not Ready",
     verboseLabel: "Not Broadcast-Ready",
@@ -97,9 +138,10 @@ export function BroadcastReadyBadge({
   videoSource,
   localVideoUrl,
   hlsMasterUrl,
+  faststartApplied,
   verbose = false,
 }: BroadcastReadyBadgeProps) {
-  const readiness = getBroadcastReadiness(videoSource, localVideoUrl, hlsMasterUrl);
+  const readiness = getBroadcastReadiness(videoSource, localVideoUrl, hlsMasterUrl, faststartApplied);
   const cfg = CONFIG[readiness];
   const Icon = cfg.icon;
 
