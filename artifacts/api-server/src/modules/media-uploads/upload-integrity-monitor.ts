@@ -620,39 +620,49 @@ async function scanMissingBlobs(deadlineMs: number): Promise<number> {
           "[integrity] missing blob — upload parts present, session re-enrolled for auto-reassembly",
         );
       } else {
-        // No parts remain — permanently mark as failed.
+        // No parts remain — the blob was confirmed in storage at upload time
+        // (s3MirroredAt was set) but is now absent and cannot be reassembled.
+        // This is server-side data loss, NOT a user error: the operator did not
+        // delete this file. Mark STORAGE_LOST so:
+        //   • The admin UI shows a server-side data-loss banner (not "re-upload").
+        //   • sweepCorruptBlobs picks it up for retention-period cleanup.
+        //   • The video is excluded from re-upload prompts and retry flows.
         await withTimeout(
           db
             .update(videos)
             .set({
               transcodingStatus: "failed",
-              transcodingErrorCode: "ASSEMBLY_FAILED",
+              transcodingErrorCode: "STORAGE_LOST",
               transcodingErrorMessage:
-                `Storage integrity scan: blob at key=${object_path} is missing ` +
-                `and no upload parts remain to reassemble it. ` +
-                `Delete this video and re-upload to recover.`,
+                `Storage integrity scan: blob at key=${object_path} was previously ` +
+                `confirmed in storage but is no longer present, and no upload parts ` +
+                `remain to reassemble it. This is a server-side storage loss — ` +
+                `no operator action is required. Contact support if this persists.`,
             })
             .where(eq(videos.id, id)),
           REMEDIATION_TIMEOUT_MS,
-          `missing-blob-mark-failed:${id}`,
+          `missing-blob-mark-storage-lost:${id}`,
         );
 
         adminEventBus.push("videos-library-updated", {
           videoId: id,
-          reason: "integrity-scan-missing-blob-no-parts",
+          reason: "integrity-scan-missing-blob-storage-lost",
         });
 
         logger.error(
           { videoId: id, objectPath: object_path },
-          "[integrity] missing blob — no upload parts remain, video marked ASSEMBLY_FAILED",
+          "[integrity] missing blob — no upload parts remain, video marked STORAGE_LOST " +
+          "(server-side data loss, not user error)",
         );
 
         adminEventBus.push("ops-alert", {
           level: "error",
           component: "upload-integrity-monitor",
           message:
-            `Video ${id} has s3MirroredAt set but no blob at key=${object_path} ` +
-            `and no upload parts remain. Marked ASSEMBLY_FAILED — re-upload required.`,
+            `STORAGE_LOST: Video ${id} had a confirmed blob at key=${object_path} ` +
+            `that is now absent with no parts for reassembly. ` +
+            `This is server-side storage loss. Investigate storage_blobs integrity. ` +
+            `No operator re-upload is required.`,
         });
       }
 

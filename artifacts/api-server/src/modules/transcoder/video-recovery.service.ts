@@ -459,27 +459,49 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
     }
   }
 
-  // ── Phase 8: Confirm source_missing videos (check blob one more time) ─────
-  // Mark confirmed SOURCE_MISSING in the DB so they are excluded from future
-  // retryAllFailed() calls and operators know they need a re-upload.
+  // ── Phase 8: Classify source-gone videos as STORAGE_LOST or SOURCE_MISSING ──
+  // Distinguish between two very different failure modes:
+  //
+  //  STORAGE_LOST — video had s3MirroredAt set (blob was confirmed written), but
+  //    the blob is now absent. This is server-side data loss; the operator did
+  //    NOT delete it. No re-upload should be suggested.
+  //
+  //  SOURCE_MISSING — blob was never confirmed (s3MirroredAt IS NULL): the upload
+  //    was partially completed or aborted. The operator may need to re-upload,
+  //    or the integrity monitor can reassemble from parts.
+  //
+  // Using the wrong code (SOURCE_MISSING for server-side loss) tells operators to
+  // re-upload files they successfully uploaded — this is incorrect and confusing.
   const sourceMissingRows = classified.filter((r) => r.issueKind === "failed_source_gone");
   for (const row of sourceMissingRows) {
-    if (row.transcoding_error_code !== "SOURCE_MISSING") {
-      // Blob check was false but error code wasn't SOURCE_MISSING — correct it.
+    // Determine whether the blob was ever confirmed in storage.
+    const wasConfirmed = row.s3_mirrored_at != null;
+    const correctCode = wasConfirmed ? "STORAGE_LOST" : "SOURCE_MISSING";
+    const correctMsg = wasConfirmed
+      ? "Source blob confirmed absent from storage during deep recovery scan. " +
+        "The blob was previously written successfully (s3MirroredAt was set) — " +
+        "this is server-side storage loss. No operator re-upload is required."
+      : "Source blob absent from storage during deep recovery scan. " +
+        "The upload may have been interrupted before the blob was committed. " +
+        "Re-upload the original video file if the upload panel shows no recovery option.";
+
+    if (row.transcoding_error_code !== correctCode) {
       try {
         await db.execute(sql`
           UPDATE managed_videos
-          SET transcoding_error_code = 'SOURCE_MISSING',
-              transcoding_error_message = 'Source blob confirmed absent from storage during deep recovery scan. Re-upload the original video file.'
+          SET transcoding_error_code = ${correctCode},
+              transcoding_error_message = ${correctMsg}
           WHERE id = ${row.id}
             AND transcoding_status = 'failed'
         `);
-        actions.sourceMissingConfirmed++;
+        if (wasConfirmed) actions.storageLostConfirmed++;
+        else actions.sourceMissingConfirmed++;
       } catch (err) {
-        log.warn({ videoId: row.id, err }, "deep-recovery: failed to mark SOURCE_MISSING (non-fatal)");
+        log.warn({ videoId: row.id, err }, `deep-recovery: failed to mark ${correctCode} (non-fatal)`);
       }
     } else {
-      actions.sourceMissingConfirmed++;
+      if (wasConfirmed) actions.storageLostConfirmed++;
+      else actions.sourceMissingConfirmed++;
     }
   }
 

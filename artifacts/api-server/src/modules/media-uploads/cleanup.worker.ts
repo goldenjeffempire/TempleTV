@@ -73,14 +73,26 @@ async function sweepOrphanedSessions(stats: SweepStats): Promise<void> {
         AND NOT EXISTS (
           SELECT 1 FROM managed_videos v WHERE v.id = s.completed_video_id
         )
+        -- CRITICAL SAFETY NET: When the completedVideoId update fails non-fatally
+        -- (e.g. transient DB blip after the video INSERT succeeds), the session
+        -- has completed_video_id = NULL even though a managed_videos row exists
+        -- pointing to this exact object_key via object_path. Without this guard
+        -- the session would be treated as orphaned and its blob deleted, leaving
+        -- the video row permanently broken. This cross-check ensures we never
+        -- sweep a session whose storage key is still referenced by any video row.
+        AND (
+          s.object_key IS NULL
+          OR NOT EXISTS (
+            SELECT 1 FROM managed_videos v2 WHERE v2.object_path = s.object_key
+          )
+        )
       LIMIT 50
     `);
 
     for (const row of rows.rows) {
       if (_stopped) break;
       try {
-        // 1. Delete associated chunk rows first. Rows are lightweight MinIO
-        //    ETag records, but cleaning them keeps the upload_chunks table tidy.
+        // 1. Delete associated chunk rows first (lightweight ETag records).
         await db.execute(sql`
           DELETE FROM upload_chunks WHERE session_id = ${row.session_id}
         `).catch((err: unknown) =>
@@ -90,20 +102,51 @@ async function sweepOrphanedSessions(stats: SweepStats): Promise<void> {
           ),
         );
 
-        // 2. Abort any in-progress MinIO multipart upload for this session.
-        //    This releases MinIO's internal part storage for interrupted uploads.
-        if (row.upload_id && row.object_key) {
-          await storage().abortMultipartUpload({ key: row.object_key, uploadId: row.upload_id })
-            .catch((err: unknown) =>
-              logger.warn(
-                { err, sessionId: row.session_id, uploadId: row.upload_id },
-                "[cleanup-worker] abortMultipartUpload failed for orphaned session (non-fatal)",
-              ),
-            );
+        // 2. Delete staging parts for this upload (PostgreSQL storage — no MinIO
+        //    multipart to abort, but staging rows in storage_upload_parts should
+        //    be cleaned up so they do not waste BYTEA storage).
+        if (row.upload_id) {
+          await db.execute(sql`
+            DELETE FROM storage_upload_parts WHERE upload_id = ${row.upload_id}
+          `).catch((err: unknown) =>
+            logger.warn(
+              { err, sessionId: row.session_id, uploadId: row.upload_id },
+              "[cleanup-worker] staging-parts cleanup failed for orphaned session (non-fatal)",
+            ),
+          );
         }
 
-        // 3. Delete the assembled destination blob if one exists.
+        // 3. Delete the assembled destination blob — but only after a belt-and-
+        //    suspenders DB check confirms no video row references this key.
+        //    The SQL WHERE above prevents most races, but this guard is defence-
+        //    in-depth for any edge case where a video was inserted between the
+        //    SELECT and this point (very unlikely, but catastrophic if it occurs).
         if (row.object_key) {
+          const videoRef = await db.execute<{ id: string }>(sql`
+            SELECT id FROM managed_videos WHERE object_path = ${row.object_key} LIMIT 1
+          `).catch(() => null);
+          const referencedId = (videoRef?.rows as Array<{ id: string }> | undefined)?.[0]?.id;
+          if (referencedId) {
+            logger.warn(
+              {
+                sessionId: row.session_id,
+                objectKey: row.object_key,
+                videoId: referencedId,
+              },
+              "[cleanup-worker] SAFETY: skipping blob deletion — object_key is still " +
+              "referenced by a managed_videos row (completedVideoId update was non-fatal); " +
+              "marking session cancelled instead of deleting its blob",
+            );
+            await db.execute(sql`
+              UPDATE upload_sessions
+              SET status = 'cancelled',
+                  completed_video_id = ${referencedId},
+                  updated_at = NOW()
+              WHERE session_id = ${row.session_id}
+            `).catch(() => {});
+            continue;
+          }
+
           const s = storage();
           if (s.enabled) {
             await s.deleteObject(row.object_key).catch(() => {});
@@ -221,7 +264,7 @@ async function sweepCorruptBlobs(stats: SweepStats): Promise<void> {
       FROM managed_videos mv
       INNER JOIN media_audit_log mal ON mal.video_id = mv.id
       WHERE mv.transcoding_status = 'failed'
-        AND mv.transcoding_error_code IN ('CORRUPT_SOURCE', 'SOURCE_MISSING', 'ASSEMBLY_FAILED')
+        AND mv.transcoding_error_code IN ('CORRUPT_SOURCE', 'SOURCE_MISSING', 'STORAGE_LOST')
         AND mv.object_path IS NOT NULL
         AND mal.action = 'QUARANTINE'
         AND mal.created_at < ${cutoff.toISOString()}

@@ -1194,9 +1194,11 @@ const SortableQueueItem = memo(function SortableQueueItem({
               </Badge>
             );
           if (item.transcodingStatus === "failed") {
+            const isStorageLost = item.transcodingErrorCode === "STORAGE_LOST";
             const isTerminal =
               item.transcodingErrorCode === "CORRUPT_SOURCE" ||
-              item.transcodingErrorCode === "SOURCE_MISSING";
+              item.transcodingErrorCode === "SOURCE_MISSING" ||
+              isStorageLost;
             // structure_invalid: moov not confirmed absent — remux repair may recover
             // without a re-upload. moov_absent (or null for legacy items) requires re-upload.
             const isRepairEligible =
@@ -1207,7 +1209,9 @@ const SortableQueueItem = memo(function SortableQueueItem({
                 ? isRepairEligible ? "Repair needed" : "Re-upload required"
                 : item.transcodingErrorCode === "SOURCE_MISSING"
                   ? "Source missing"
-                  : "HLS failed";
+                  : isStorageLost
+                    ? "Storage lost"
+                    : "HLS failed";
             const terminalTitle =
               item.transcodingErrorCode === "CORRUPT_SOURCE"
                 ? isRepairEligible
@@ -1218,10 +1222,12 @@ const SortableQueueItem = memo(function SortableQueueItem({
                     ? `File is unrecoverable and must be re-uploaded.\n\nDetails: ${item.transcodingError}`
                     : "The video file is corrupt or unrecoverable (moov atom absent or container invalid). Please re-upload from the original source file."
                 : item.transcodingErrorCode === "SOURCE_MISSING"
-                  ? "The source video file is no longer in storage (deleted or never uploaded). Please re-upload the original file."
-                  : item.transcodingError
-                    ? `HLS transcoding failed.\n\nError: ${item.transcodingError}`
-                    : "HLS transcoding failed.";
+                  ? "The source video file was never committed to storage (upload may have been interrupted). Re-upload the original file if the upload panel shows no recovery option."
+                  : isStorageLost
+                    ? "Server-side storage loss — the file was committed to storage successfully but later disappeared. This is not an operator error. No re-upload is required; the system has been alerted."
+                    : item.transcodingError
+                      ? `HLS transcoding failed.\n\nError: ${item.transcodingError}`
+                      : "HLS transcoding failed.";
             return (
               <div className="flex items-center gap-1 shrink-0">
                 <Badge

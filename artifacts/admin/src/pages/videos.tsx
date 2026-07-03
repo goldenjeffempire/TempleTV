@@ -409,6 +409,7 @@ function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
       video.transcodingStatus === "failed" &&
       (video.transcodingErrorCode === "CORRUPT_SOURCE" ||
         video.transcodingErrorCode === "SOURCE_MISSING" ||
+        video.transcodingErrorCode === "STORAGE_LOST" ||
         video.sourceAvailable === false);
     return (
       <div className="flex flex-col items-center gap-3 py-10 text-center">
@@ -422,13 +423,17 @@ function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
           </>
         ) : isCorrupt ? (
           <>
-            <AlertTriangle size={28} className="text-red-500" />
+            <AlertTriangle size={28} className={video.transcodingErrorCode === "STORAGE_LOST" ? "text-orange-500" : "text-red-500"} />
             <div>
-              <p className="font-medium text-sm">Source unavailable</p>
+              <p className="font-medium text-sm">
+                {video.transcodingErrorCode === "STORAGE_LOST" ? "Storage lost (server-side)" : "Source unavailable"}
+              </p>
               <p className="text-xs text-muted-foreground mt-1">
-                {video.sourceAvailable === false
-                  ? "Source file was deleted. Re-upload the original to recover."
-                  : "File is corrupt or unreadable. Re-upload the original."}
+                {video.transcodingErrorCode === "STORAGE_LOST"
+                  ? "The file was committed to storage but later disappeared from server storage. This is a server-side issue — no re-upload is required."
+                  : video.sourceAvailable === false
+                    ? "Source file was not committed to storage. Re-upload the original to recover."
+                    : "File is corrupt or unreadable. Re-upload the original."}
               </p>
             </div>
           </>
@@ -1750,16 +1755,18 @@ export default function VideosPage() {
 
       {/* Failed-upload alert banner — shown when failed local videos exist on
           the current page and the user hasn't already filtered to the failed view.
-          Two flavours:
-          • retryableCount > 0 → source still in storage; can retry transcoding.
-          • noSourceCount  > 0 → source was deleted; re-upload genuinely required. */}
+          Three flavours:
+          • retryableCount > 0  → source still in storage; can retry transcoding.
+          • storageLostCount > 0 → server-side data loss; NO re-upload required.
+          • noSourceCount > 0   → source was deleted/never committed; re-upload needed. */}
       {(() => {
         const failedLocal = data?.videos.filter(
           (v) => v.transcodingStatus === "failed" && v.videoSource === "local",
         ) ?? [];
         if (failedLocal.length === 0 || statusFilter === "failed") return null;
-        const retryableCount = failedLocal.filter((v) => v.sourceAvailable !== false).length;
-        const noSourceCount  = failedLocal.filter((v) => v.sourceAvailable === false).length;
+        const retryableCount   = failedLocal.filter((v) => v.sourceAvailable !== false).length;
+        const storageLostCount = failedLocal.filter((v) => v.transcodingErrorCode === "STORAGE_LOST").length;
+        const noSourceCount    = failedLocal.filter((v) => v.sourceAvailable === false && v.transcodingErrorCode !== "STORAGE_LOST").length;
         return (
           <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50/60 dark:border-amber-900/40 dark:bg-amber-950/20 px-4 py-3">
             <AlertTriangle size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
@@ -1768,12 +1775,19 @@ export default function VideosPage() {
                 {failedLocal.length} video{failedLocal.length !== 1 ? "s" : ""} failed transcoding
               </p>
               <p className="text-xs text-amber-600/70 dark:text-amber-400/70 mt-0.5">
-                {retryableCount > 0 && noSourceCount === 0 &&
+                {retryableCount > 0 && noSourceCount === 0 && storageLostCount === 0 &&
                   `${retryableCount} file${retryableCount !== 1 ? "s have" : " has"} their source still available — use "Retry Transcoding" to re-process without re-uploading.`}
-                {noSourceCount > 0 && retryableCount === 0 &&
-                  `Source file${noSourceCount !== 1 ? "s were" : " was"} deleted — delete each video and re-upload a fresh copy to recover.`}
-                {retryableCount > 0 && noSourceCount > 0 &&
-                  `${retryableCount} can be retried directly; ${noSourceCount} require a fresh upload (source deleted).`}
+                {storageLostCount > 0 && noSourceCount === 0 && retryableCount === 0 &&
+                  `${storageLostCount} video${storageLostCount !== 1 ? "s were" : " was"} lost from server storage — this is a server-side issue, no re-upload is required. Support has been notified.`}
+                {noSourceCount > 0 && retryableCount === 0 && storageLostCount === 0 &&
+                  `Source file${noSourceCount !== 1 ? "s were" : " was"} not committed to storage — delete each video and re-upload a fresh copy to recover.`}
+                {(retryableCount > 0 || storageLostCount > 0 || noSourceCount > 0) &&
+                  [retryableCount > 0, storageLostCount > 0, noSourceCount > 0].filter(Boolean).length > 1 &&
+                  [
+                    retryableCount > 0 ? `${retryableCount} can retry without re-upload` : "",
+                    storageLostCount > 0 ? `${storageLostCount} lost from server storage (no action needed)` : "",
+                    noSourceCount > 0 ? `${noSourceCount} require re-upload` : "",
+                  ].filter(Boolean).join("; ") + "."}
               </p>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
@@ -2150,8 +2164,18 @@ export default function VideosPage() {
                               <RefreshCw size={9} className={`flex-shrink-0${retryAssemblyMutation.isPending ? " animate-spin" : ""}`} />
                               Retry Assembly
                             </Button>
+                          ) : v.transcodingErrorCode === "STORAGE_LOST" ? (
+                          <span title="Server-side storage loss — the file was committed to storage successfully but later disappeared. This is not a user error. No re-upload is required; support has been alerted.">
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1.5 h-4 border-orange-400 text-orange-600 dark:text-orange-400 flex items-center gap-0.5 cursor-default"
+                            >
+                              <AlertTriangle size={9} className="flex-shrink-0" />
+                              Storage lost
+                            </Badge>
+                          </span>
                           ) : (
-                          <span title="Source file was deleted — delete this video and re-upload a fresh copy to recover.">
+                          <span title="Source file was not committed to storage — delete this video and re-upload a fresh copy to recover.">
                             <Badge
                               variant="outline"
                               className="text-[10px] px-1.5 h-4 border-red-400 text-red-600 dark:text-red-400 flex items-center gap-0.5 cursor-default"

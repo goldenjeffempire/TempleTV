@@ -2297,21 +2297,40 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         // Store the pre-committed videoId on the session so that:
         //   • Idempotent /finalize retries return the video row immediately.
         //   • GET /finalize-status returns the videoId while assembling.
+        //   • sweepOrphanedSessions can see the link and NEVER deletes this blob.
         // Session status stays "assembling" until background assembly completes.
-        // Wrapped in try/catch: if this update fails the video row already exists,
-        // so the background assembly can still mark it completed. We log the failure
-        // and continue — the response still returns the video row so the client
-        // doesn't see a 500.
-        try {
-          await db
-            .update(sessions)
-            .set({ completedVideoId: videoId, updatedAt: new Date() })
-            .where(eq(sessions.sessionId, sessionId));
-        } catch (updateErr) {
-          req.log.warn(
-            { err: updateErr, sessionId, videoId },
-            "[finalize] completedVideoId update failed (non-fatal) — background task will set it on assembly completion",
-          );
+        //
+        // CRITICAL: This link is the primary guard against cleanup.worker.ts
+        // treating this session as orphaned and deleting the blob after 24 h.
+        // sweepOrphanedSessions now also cross-checks object_path → object_key,
+        // but setting completedVideoId is still the canonical protection.
+        // We retry up to 3 times with a short delay before giving up non-fatally.
+        let completedVideoIdSet = false;
+        for (let attempt = 0; attempt < 3 && !completedVideoIdSet; attempt++) {
+          try {
+            if (attempt > 0) {
+              await new Promise<void>((r) => { const t = setTimeout(r, 500 * attempt); t.unref(); });
+            }
+            await db
+              .update(sessions)
+              .set({ completedVideoId: videoId, updatedAt: new Date() })
+              .where(eq(sessions.sessionId, sessionId));
+            completedVideoIdSet = true;
+          } catch (updateErr) {
+            if (attempt < 2) {
+              req.log.warn(
+                { err: updateErr, sessionId, videoId, attempt },
+                "[finalize] completedVideoId update failed — retrying",
+              );
+            } else {
+              req.log.error(
+                { err: updateErr, sessionId, videoId },
+                "[finalize] completedVideoId update failed after 3 attempts (non-fatal) — " +
+                "cleanup.worker object_path cross-check will protect the blob, but " +
+                "idempotent re-finalize may not return the existing video immediately",
+              );
+            }
+          }
         }
 
         // The video will be enrolled in the broadcast queue (MP4-first) by the
