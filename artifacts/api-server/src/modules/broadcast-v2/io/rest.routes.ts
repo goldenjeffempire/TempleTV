@@ -2838,15 +2838,15 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     reply.header("Cache-Control", "no-store, max-age=0");
     const { videoId } = req.params as { videoId: string };
 
+    // NOTE: enqueueIfMissing() already performs an inline, synchronous
+    // blob-confirmation self-heal the moment it sees a missing s3_mirrored_at
+    // stamp (see auto-enqueue.service.ts isBlockedOnlyByMissingBlobConfirmation).
+    // A second explicit repair-and-retry pass is kept here as a belt-and-
+    // suspenders safety net for any edge case the inline heal doesn't catch
+    // (e.g. a repair that raced with a concurrent write) — it is cheap and
+    // idempotent, so there is no downside to attempting it again.
     let result = await enqueueIfMissing({ videoId, reason: "enqueue-missing" });
 
-    // Self-heal on explicit operator action: a "not-yet-playable" skip is most
-    // often caused by a missing s3_mirrored_at stamp (post-assembly UPDATE
-    // silently failed, or the blob key was only derivable via object_path).
-    // When an operator explicitly clicks "Sync to Queue", run a targeted
-    // blob-confirmation repair and retry once — turning the manual action into a
-    // one-click fix for videos whose blob IS committed to storage_blobs but was
-    // never stamped. Videos whose blob is genuinely absent stay skipped.
     if (!result.enqueued && result.skipReason === "not-yet-playable") {
       const { repaired } = await repairMissingS3MirroredAt(videoId);
       if (repaired > 0) {
@@ -2868,7 +2868,13 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       : result.skipReason === "already-queued"
       ? "Video is already in the broadcast queue"
       : result.skipReason === "not-yet-playable"
-      ? "Video is not yet broadcast-ready — FastStart (moov relocation) may still be in progress, or blob confirmation is missing"
+      // By this point two inline blob-confirmation self-heal attempts have
+      // already run (one inside enqueueIfMissing, one explicit retry above),
+      // so a genuine "not-yet-playable" here means the upload is still mid-
+      // assembly (blob not yet committed to storage) or its blob is truly
+      // absent — not a FastStart/optimization delay, which never blocks
+      // broadcast admission in this pipeline.
+      ? "Video is not yet broadcast-ready — its upload may still be assembling, or its source blob could not be confirmed in storage. It will self-heal automatically once the blob is committed; no FastStart or moov-relocation step is involved."
       : `Skipped: ${result.skipReason ?? "unknown"}`;
 
     logger.info({ videoId, ...result }, "[force-enqueue] single-video enqueue result");

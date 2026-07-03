@@ -106,7 +106,39 @@ export async function enqueueIfMissing(opts: {
 
     if (!row) return { enqueued: false, skipReason: "video-not-found" };
     if (!isPlayableForBroadcast(row)) {
-      return { enqueued: false, skipReason: "not-yet-playable" };
+      // ── Inline self-heal: never bounce on a stale blob-confirmation stamp ──
+      // The ONLY transient (non-terminal) reason isPlayableForBroadcast can
+      // reject a local upload is a missing s3MirroredAt stamp. That column is
+      // just a cache of "does the blob exist in storage_blobs" — if the write
+      // that set it failed (network blip, pool exhaustion) the blob itself is
+      // usually already committed and fine. Rather than returning
+      // "not-yet-playable" and waiting for the next uploadQueueReconciler tick
+      // (up to 60 s) or an operator's manual "Sync to Queue" click, attempt a
+      // live, scoped blob-existence check + stamp RIGHT NOW, synchronously,
+      // inside this same call. This is what makes "blob confirmed" and
+      // "broadcast ready" effectively the same instant for every caller
+      // (upload finalize, reconciler, library scan, force-enqueue) rather than
+      // just the happy path.
+      if (isBlockedOnlyByMissingBlobConfirmation(row)) {
+        const { repaired } = await repairMissingS3MirroredAt(opts.videoId);
+        if (repaired > 0) {
+          const [refetched] = await db
+            .select({ s3MirroredAt: videosTable.s3MirroredAt })
+            .from(videosTable)
+            .where(eq(videosTable.id, opts.videoId))
+            .limit(1);
+          if (refetched?.s3MirroredAt) {
+            logger.info(
+              { videoId: opts.videoId, reason: opts.reason },
+              "[broadcast] auto-enqueue: inline self-heal confirmed blob and stamped s3MirroredAt — proceeding to enqueue immediately",
+            );
+            row.s3MirroredAt = refetched.s3MirroredAt;
+          }
+        }
+      }
+      if (!isPlayableForBroadcast(row)) {
+        return { enqueued: false, skipReason: "not-yet-playable" };
+      }
     }
 
     // De-dup against both videoId (canonical) and youtubeId (legacy rows).
@@ -624,6 +656,37 @@ export async function enqueueManyIfMissing(
     }
   }
   return enqueued;
+}
+
+/**
+ * True when a video row is blocked from broadcast admission for the single
+ * transient/self-healable reason: a missing s3MirroredAt blob-confirmation
+ * stamp. Every other rejection reason (YouTube, midnight-prayers category,
+ * terminal transcoding error, failed validation, no localVideoUrl at all) is
+ * a genuine, non-transient exclusion that an inline blob repair cannot fix —
+ * attempting the repair for those cases would be wasted work at best and
+ * misleading (e.g. re-stamping a video whose blob was legitimately deleted)
+ * at worst.
+ */
+function isBlockedOnlyByMissingBlobConfirmation(row: {
+  videoSource: string;
+  localVideoUrl: string | null;
+  transcodingErrorCode?: string | null;
+  category?: string | null;
+  validationStatus?: string | null;
+  s3MirroredAt?: Date | null;
+}): boolean {
+  if (row.videoSource === "youtube") return false;
+  if (row.category === "midnight-prayers") return false;
+  if (row.validationStatus === "failed") return false;
+  if (
+    row.transcodingErrorCode &&
+    (TERMINAL_ERROR_CODES as ReadonlyArray<string>).includes(row.transcodingErrorCode)
+  ) {
+    return false;
+  }
+  if (!row.localVideoUrl || row.localVideoUrl.trim() === "") return false;
+  return row.s3MirroredAt !== undefined && !row.s3MirroredAt;
 }
 
 function isPlayableForBroadcast(row: {
