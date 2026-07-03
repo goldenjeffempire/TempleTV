@@ -111,6 +111,7 @@ class QueueIntegrityValidatorImpl {
           vLocalUrl: v.localVideoUrl,
           vDuration: v.duration,
           vSource: v.videoSource,
+          vValidationStatus: v.validationStatus,
         })
         .from(q)
         .leftJoin(v, eq(q.videoId, v.id))
@@ -191,6 +192,26 @@ class QueueIntegrityValidatorImpl {
             itemTitle: row.title,
             code: "ZERO_DURATION",
             message: `Item has durationSecs=${row.durationSecs} — orchestrator applies a 60 s floor; re-probe the source file or correct the duration`,
+          });
+        }
+
+        // VALIDATION_FAILED: the video passed structural checks at upload time
+        // but the background ffprobe/codec/container validation pipeline later
+        // determined it is not playable (bad codec, corrupt container, no video
+        // stream, etc.). Playing it would cause dead air on every client.
+        // isPlayableForBroadcast() already blocks re-enqueue; this check evicts
+        // items that were enqueued *before* validation completed or before this
+        // guard was deployed.
+        if (row.videoId && row.vValidationStatus === "failed") {
+          issues.push({
+            severity: "error",
+            itemId: row.id,
+            itemTitle: row.title,
+            code: "VALIDATION_FAILED",
+            message:
+              `Video '${row.videoId}' has validationStatus='failed' — ` +
+              "ffprobe/codec checks determined it is unplayable. " +
+              "Re-upload with a compatible MP4 to restore.",
           });
         }
 
@@ -595,6 +616,49 @@ class QueueIntegrityValidatorImpl {
 
       // NOTE: FASTSTART_PENDING auto-fix removed — raw MP4 admitted directly.
       // No de-queuing for faststart_pending reason is performed.
+
+      // ── Auto-fix: deactivate VALIDATION_FAILED items ─────────────────────
+      // Videos whose ffprobe/codec validation pipeline returned 'failed' are
+      // permanently unplayable. Keeping them in the active queue causes dead
+      // air on every client — the orchestrator will skip them repeatedly,
+      // driving up the auto-skip counter and potentially triggering a cascade.
+      // isPlayableForBroadcast() blocks new enqueue attempts; this pass evicts
+      // items that were already in the queue when they failed validation.
+      const validationFailedIds = issues
+        .filter((i) => i.severity === "error" && i.code === "VALIDATION_FAILED" && i.itemId)
+        .map((i) => i.itemId!);
+      if (validationFailedIds.length > 0) {
+        try {
+          await db
+            .update(schema.broadcastQueueTable)
+            .set({ isActive: false, validatorDeactivatedReason: "validation_failed" })
+            .where(inArray(schema.broadcastQueueTable.id, validationFailedIds));
+          logger.warn(
+            { count: validationFailedIds.length, itemIds: validationFailedIds },
+            "[queue-validator] AUTO-FIX: deactivated VALIDATION_FAILED items — " +
+            "validationStatus='failed' means ffprobe/codec checks reported an unplayable file; " +
+            "re-upload with a compatible MP4 to restore",
+          );
+          adminEventBus.push("broadcast-queue-updated", {
+            reason: "integrity-fix-validation-failed",
+            count: validationFailedIds.length,
+          });
+          adminEventBus.push("videos-library-updated", {
+            reason: "integrity-fix-validation-failed",
+            count: validationFailedIds.length,
+          });
+          sendBroadcastWebhook("item_deactivated", "main", {
+            reason: "validation_failed",
+            count: validationFailedIds.length,
+            itemIds: validationFailedIds,
+          });
+        } catch (fixErr) {
+          logger.warn(
+            { err: fixErr, count: validationFailedIds.length },
+            "[queue-validator] AUTO-FIX: failed to deactivate VALIDATION_FAILED items (non-fatal)",
+          );
+        }
+      }
 
       // ── Auto-fix (reverse): re-activate ORPHANED_VIDEO_REF items that now have a local URL ──
       {

@@ -527,7 +527,13 @@ export async function scanLibraryAndEnqueue(opts: {
           // its restricted 00:00–03:00 window. Belt-and-suspenders: isPlayableForBroadcast()
           // also guards per-row, but excluding at the query level is cheaper and prevents
           // any N-row scan from even considering these videos.
-          ne(videosTable.category, "midnight-prayers"),
+          //
+          // IMPORTANT: use or(isNull, ne) not plain ne().  In SQL, `NULL != 'midnight-prayers'`
+          // evaluates to NULL (not TRUE), so Drizzle's ne() would silently exclude every row
+          // where category IS NULL — i.e. any video uploaded without an explicit category.
+          // The or(isNull, ne) form correctly passes NULL-category rows through while still
+          // blocking 'midnight-prayers' rows.
+          or(isNull(videosTable.category), ne(videosTable.category, "midnight-prayers")),
           // Blob confirmed: repairMissingS3MirroredAt() runs immediately before
           // this query and stamps s3MirroredAt for any video whose post-assembly
           // DB update silently failed. s3MirroredAt IS NOT NULL guarantees the
@@ -675,6 +681,15 @@ function isPlayableForBroadcast(row: {
   // this category must never appear in the main queue regardless of upload
   // state, transcoding status, or caller reason.
   if (row.category === "midnight-prayers") return false;
+
+  // Videos that definitively failed the ffprobe/codec/container validation
+  // pipeline are never broadcast-eligible — playing them causes dead air or
+  // playback errors on client devices.
+  // null / undefined / "pending" / "running" / "passed" / "warn" are all
+  // allowed through. Only the explicit "failed" status blocks admission, so
+  // videos uploaded before validation ran (or on deployments where the
+  // validation worker is disabled) are never silently blocked.
+  if (row.validationStatus === "failed") return false;
 
   if (row.localVideoUrl && row.localVideoUrl.trim() !== "") {
     // ── Blob-existence gate ─────────────────────────────────────────────────

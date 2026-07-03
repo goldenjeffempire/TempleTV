@@ -26,7 +26,7 @@
  * No operator action is ever required to recover a missed enqueue.
  */
 
-import { and, desc, gt, isNotNull, ne, sql } from "drizzle-orm";
+import { and, desc, gt, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
@@ -63,7 +63,10 @@ export const uploadQueueReconciler = {
         .where(
           and(
             ne(videosTable.videoSource, "youtube"),
-            ne(videosTable.category, "midnight-prayers"),
+            // Use or(isNull, ne) — not plain ne() — to correctly include videos
+            // where category IS NULL. In SQL, NULL != 'midnight-prayers' evaluates
+            // to NULL (falsy), which would silently exclude NULL-category uploads.
+            or(isNull(videosTable.category), ne(videosTable.category, "midnight-prayers")),
             isNotNull(videosTable.localVideoUrl),
             isNotNull(videosTable.s3MirroredAt),
             gt(videosTable.importedAt, cutoff),

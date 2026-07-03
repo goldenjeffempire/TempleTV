@@ -37,6 +37,7 @@ import { uploadTelemetry } from "./upload-telemetry.service.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { ServiceUnavailableError, InternalError } from "../../shared/errors.js";
 import { quarantineVideo } from "../broadcast/quarantine.service.js";
+import { scheduleVideoValidation } from "../transcoder/video-validation.service.js";
 
 const sessions = schema.uploadSessionsTable;
 const chunks = schema.uploadChunksTable;
@@ -2825,6 +2826,16 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 );
               }
             }
+
+            // ── Schedule background validation ────────────────────────────────
+            // Run the 9-check ffprobe/codec/container validation pipeline
+            // asynchronously. If it concludes 'failed', the queue integrity
+            // validator auto-deactivates the queue row within its next 2-min
+            // cycle, and isPlayableForBroadcast() blocks any future re-enqueue.
+            // scheduleVideoValidation() is fully fire-and-forget — it never
+            // blocks the finalize path or delays the HTTP response.
+            scheduleVideoValidation(videoId, objectKey);
+            capturedLog.info({ videoId }, "[finalize:bg] background validation scheduled");
 
             capturedLog.info(
               { sessionId, videoId, totalMs: Date.now() - assemblyStartMs },
