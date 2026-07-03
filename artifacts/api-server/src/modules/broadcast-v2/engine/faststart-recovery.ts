@@ -1,20 +1,21 @@
 /**
- * Faststart recovery worker — background sweep to ensure every locally-uploaded
- * MP4 has its moov atom relocated to the front before it enters the broadcast.
+ * Faststart recovery worker — background sweep that relocates the moov atom to
+ * the front of every locally-uploaded MP4 that hasn't yet been optimised.
  *
  * WHY THIS EXISTS
  * ───────────────
- * The upload finalize path runs faststart inline (within its background task)
- * and gates the broadcast queue on `faststartApplied = true`.  But two failure
- * modes can leave videos stuck without faststart:
+ * FastStart is a background quality optimisation (NOT a broadcast admission gate).
+ * Videos with moov-at-EOF are broadcast-eligible immediately via HTTP Range
+ * streaming. This worker upgrades them so TV/mobile players benefit from
+ * progressive-download instant-start without waiting for a full download.
  *
+ * Two categories are swept:
  *   1. Server crash / SIGTERM mid-finalize: the process was killed while
  *      faststart was running.  `transcodingStatus` is left at 'processing'.
  *
- *   2. Old uploads: videos uploaded before this feature was enabled have
- *      `faststartApplied = false` and `transcodingStatus = 'ready'` — they
- *      aired as raw MP4 but now need upgrading to guarantee browser/TV/mobile
- *      instant-start behaviour.
+ *   2. Videos where faststart failed or was skipped (faststartApplied=false/null):
+ *      they air as raw MP4 but the worker retries moov relocation until
+ *      MAX_ATTEMPTS is reached, then alerts and leaves the raw MP4 in service.
  *
  * The recovery worker finds both categories and re-runs faststart on each one,
  * backoff-limited to MAX_ATTEMPTS per video.  After MAX_ATTEMPTS the video is

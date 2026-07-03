@@ -2601,35 +2601,124 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               if (durSecs != null && durSecs > 10) ffprobeDurSecs = durSecs;
             } catch (err) {
               capturedLog.warn({ err, videoId }, "[finalize:bg] post-upload probes failed (non-fatal)");
-              // Probes are non-fatal — faststart runs regardless and will
-              // validate the file independently.
+              // Probes are non-fatal — faststart runs regardless.
             }
 
-            // ── Faststart: moov-atom relocation (broadcast admission gate) ─────
-            // Faststart now runs BEFORE enqueueIfMissing so that:
-            //   (a) videos that already have moov at byte 0 (fast-path: reads
-            //       only the first 64 KB, < 100 ms) enter the queue immediately
-            //       and with faststartApplied=true — no raw-moov-at-EOF content
-            //       ever airs on the first play cycle;
-            //   (b) videos that need a full remux enter the queue AFTER the remux
-            //       completes — mobile/TV players get the optimised atom layout
-            //       from the very first segment request, eliminating the "moov at
-            //       EOF → client must seek to end of file" buffering penalty.
+            // ── Enqueue immediately after blob confirmation ────────────────────
+            // Raw MP4 is broadcast-eligible via HTTP Range streaming regardless of
+            // moov atom position — the client can seek to any byte offset on demand.
+            // Faststart (moov relocation) is a background quality optimisation that
+            // runs below: the video enters the queue NOW so the broadcast never waits
+            // for moov relocation to complete. The orchestrator picks up the optimised
+            // blob automatically via the broadcast-source-upgraded event fired below.
             //
-            // On faststart failure: enqueueIfMissing still fires (raw MP4 airs
-            // as a safety net) and faststartRecoveryWorker retries moov relocation
-            // in the background.  The video is never left out of the queue solely
-            // because faststart failed.
+            // Retry policy: up to 3 attempts with 5 s delays per attempt.
+            // If all fail, upload-queue-reconciler picks the video up within 60 s
+            // as the final backstop.
+            {
+              const enqReason = "upload-finalize" as const;
+              const MAX_ENQ_ATTEMPTS = 3;
+              const ENQ_RETRY_DELAY_MS = 5_000;
+              let enqueued = false;
+              let queueItemId: string | undefined;
+              let lastEnqSkipReason: string | undefined;
+
+              for (let attempt = 1; attempt <= MAX_ENQ_ATTEMPTS; attempt++) {
+                try {
+                  const enqRes = await enqueueIfMissing({ videoId, reason: enqReason });
+                  if (enqRes.enqueued) {
+                    enqueued = true;
+                    queueItemId = enqRes.queueItemId;
+                    break;
+                  }
+                  lastEnqSkipReason = enqRes.skipReason;
+                  if (enqRes.skipReason !== "error") break;
+                  if (attempt < MAX_ENQ_ATTEMPTS) {
+                    capturedLog.warn(
+                      { videoId, attempt, skipReason: enqRes.skipReason },
+                      "[finalize:bg] enqueueIfMissing returned error — retrying",
+                    );
+                    await new Promise<void>((resolve) => setTimeout(resolve, ENQ_RETRY_DELAY_MS).unref());
+                  }
+                } catch (enqErr) {
+                  lastEnqSkipReason = "error";
+                  if (attempt < MAX_ENQ_ATTEMPTS) {
+                    capturedLog.warn(
+                      { err: enqErr, videoId, attempt },
+                      "[finalize:bg] enqueueIfMissing threw — retrying",
+                    );
+                    await new Promise<void>((resolve) => setTimeout(resolve, ENQ_RETRY_DELAY_MS).unref());
+                  } else {
+                    capturedLog.warn(
+                      { err: enqErr, videoId },
+                      "[finalize:bg] enqueueIfMissing failed after all retries (non-fatal — upload-queue-reconciler will recover within 60 s)",
+                    );
+                  }
+                }
+              }
+
+              if (enqueued) {
+                capturedLog.info(
+                  { videoId, queueItemId, reason: enqReason },
+                  "[finalize:bg] video enrolled in broadcast queue immediately after upload",
+                );
+                // Update queue row with accurate ffprobe duration.
+                if (ffprobeDurSecs != null && ffprobeDurSecs > 10) {
+                  await db
+                    .update(schema.broadcastQueueTable)
+                    .set({ durationSecs: Math.round(ffprobeDurSecs) })
+                    .where(eq(schema.broadcastQueueTable.videoId, videoId))
+                    .catch((err: unknown) =>
+                      capturedLog.warn({ err, videoId }, "[finalize:bg] queue duration_secs update failed (non-fatal)"),
+                    );
+                }
+                adminEventBus.push("broadcast-queue-updated", { reason: enqReason, videoId });
+
+                // Post-enqueue verification: confirm the active row is visible in the
+                // DB so we can alert immediately if the insert silently failed.
+                const verified = await db
+                  .select({ id: schema.broadcastQueueTable.id })
+                  .from(schema.broadcastQueueTable)
+                  .where(
+                    and(
+                      eq(schema.broadcastQueueTable.videoId, videoId),
+                      eq(schema.broadcastQueueTable.isActive, true),
+                    ),
+                  )
+                  .limit(1)
+                  .catch(() => []);
+                if (verified.length === 0) {
+                  capturedLog.warn(
+                    { videoId },
+                    "[finalize:bg] post-enqueue verification FAILED — queue row not found; upload-queue-reconciler will re-enqueue within 60 s",
+                  );
+                } else {
+                  capturedLog.info(
+                    { videoId, queueRowId: verified[0]!.id },
+                    "[finalize:bg] post-enqueue verification OK — queue row confirmed active",
+                  );
+                }
+              } else {
+                capturedLog.info(
+                  { videoId, skipReason: lastEnqSkipReason },
+                  "[finalize:bg] video already in broadcast queue or not yet eligible — skipping enqueue",
+                );
+              }
+            }
+
+            // ── Faststart: moov-atom relocation (background quality optimization) ─────
+            // The video is already enrolled in the broadcast queue above as raw MP4.
+            // This step relocates the moov atom to byte 0 for optimal progressive-
+            // download performance on TV/mobile. On success: the orchestrator picks up
+            // the optimised blob via broadcast-source-upgraded. On failure:
+            // faststartRecoveryWorker retries in the background with no broadcast impact.
             capturedLog.info(
               { videoId, objectKey },
-              "[finalize:bg] starting faststart pipeline (broadcast admission gate)",
+              "[finalize:bg] starting faststart pipeline (background quality optimization)",
             );
-            // Wrap runFaststart in a defensive try/catch. The service contract
-            // guarantees it always returns a FaststartResult, but if it throws
-            // unexpectedly (e.g. DB failure after acquiring the semaphore) we
-            // must NOT let that propagate to the outer catch — the blob is
-            // already committed (assemblyCommitted=true) and the enqueue below
-            // must still fire so the video enters the broadcast queue as raw MP4.
+            // Defensive try/catch: runFaststart must not propagate unexpected throws
+            // to the outer catch since the blob is committed and the video is already
+            // enrolled in the broadcast queue above.
             let fsResult: Awaited<ReturnType<typeof runFaststart>>;
             try {
               fsResult = await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
@@ -2664,11 +2753,20 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   rootCause: fsResult.rootCause,
                   actions: fsResult.actions,
                 },
-                "[finalize:bg] faststart FAILED — enrolling video as raw MP4; faststartRecoveryWorker will retry moov relocation",
+                "[finalize:bg] faststart FAILED — video remains in queue as raw MP4; faststartRecoveryWorker will retry moov relocation",
               );
               adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-failed" });
+              // Validate the raw MP4 — MOOV_PLACEMENT produces "warn" not "fail"
+              // for moov-at-EOF so the video stays broadcast-eligible. All other
+              // critical checks (FILE_INTEGRITY, CODEC_COMPAT, FIRST_FRAME, etc.)
+              // still run and can produce "failed" for genuinely corrupt files.
+              scheduleVideoValidation(videoId, objectKey, {
+                faststartApplied: false,
+                storedDurationSecs: ffprobeDurSecs ?? null,
+              });
             } else {
-              // Faststart succeeded — moov is now at byte 0.
+              // Faststart succeeded — moov is now at byte 0. Signal the orchestrator
+              // to reload and serve the optimised blob on the next tick.
               void invalidateVideosCatalogCache();
               adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-complete" });
               adminEventBus.push("broadcast-source-upgraded", { videoId, quality: "mp4_faststart" });
@@ -2678,116 +2776,6 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 faststartApplied: true,
                 storedDurationSecs: ffprobeDurSecs ?? null,
               });
-            }
-
-            // ── Enqueue ONLY after faststart success ──────────────────────────
-            // FastStart MUST complete before the video enters the broadcast queue.
-            // Raw MP4 (moov at EOF) causes blank screens on all TV/mobile surfaces.
-            //
-            // When faststart fails: faststartRecoveryWorker retries every 5 min
-            // and calls enqueueIfMissing on success — no operator action required.
-            //
-            // s3MirroredAt was stamped after completeMultipartUpload committed the
-            // blob, so isPlayableForBroadcast's blob-existence gate passes here.
-            //
-            // Retry policy: up to 3 attempts with 5 s delays. Each attempt is
-            // independent; if all fail the upload-queue-reconciler worker picks
-            // the video up within 60 s as the final backstop.
-            if (fsResult.ok) {
-              const enqReason = "faststart-complete";
-              const MAX_ENQ_ATTEMPTS = 3;
-              const ENQ_RETRY_DELAY_MS = 5_000;
-              let enqueued = false;
-              let queueItemId: string | undefined;
-              let lastSkipReason: string | undefined;
-
-              for (let attempt = 1; attempt <= MAX_ENQ_ATTEMPTS; attempt++) {
-                try {
-                  const enqRes = await enqueueIfMissing({ videoId, reason: enqReason });
-                  if (enqRes.enqueued) {
-                    enqueued = true;
-                    queueItemId = enqRes.queueItemId;
-                    break;
-                  }
-                  lastSkipReason = enqRes.skipReason;
-                  if (enqRes.skipReason !== "error") break;
-                  if (attempt < MAX_ENQ_ATTEMPTS) {
-                    capturedLog.warn(
-                      { videoId, attempt, skipReason: enqRes.skipReason },
-                      "[finalize:bg] enqueueIfMissing returned error — retrying",
-                    );
-                    await new Promise<void>((resolve) => setTimeout(resolve, ENQ_RETRY_DELAY_MS).unref());
-                  }
-                } catch (enqErr) {
-                  lastSkipReason = "error";
-                  if (attempt < MAX_ENQ_ATTEMPTS) {
-                    capturedLog.warn(
-                      { err: enqErr, videoId, attempt },
-                      "[finalize:bg] enqueueIfMissing threw — retrying",
-                    );
-                    await new Promise<void>((resolve) => setTimeout(resolve, ENQ_RETRY_DELAY_MS).unref());
-                  } else {
-                    capturedLog.warn(
-                      { err: enqErr, videoId },
-                      "[finalize:bg] enqueueIfMissing failed after all retries (non-fatal — upload-queue-reconciler will recover within 60 s)",
-                    );
-                  }
-                }
-              }
-
-              if (enqueued) {
-                capturedLog.info(
-                  {
-                    videoId,
-                    queueItemId,
-                    faststartApplied: fsResult.ok,
-                    reason: enqReason,
-                  },
-                  "[finalize:bg] video enrolled in broadcast queue",
-                );
-                // Update queue row with accurate ffprobe duration now that we have it.
-                if (ffprobeDurSecs != null && ffprobeDurSecs > 10) {
-                  await db
-                    .update(schema.broadcastQueueTable)
-                    .set({ durationSecs: Math.round(ffprobeDurSecs) })
-                    .where(eq(schema.broadcastQueueTable.videoId, videoId))
-                    .catch((err: unknown) =>
-                      capturedLog.warn({ err, videoId }, "[finalize:bg] queue duration_secs update failed (non-fatal)"),
-                    );
-                }
-                adminEventBus.push("broadcast-queue-updated", { reason: enqReason, videoId });
-
-                // Post-enqueue verification: confirm the active row is visible
-                // in the DB so we can alert immediately if the insert silently
-                // failed (rather than discovering it during the next broadcast cycle).
-                const verified = await db
-                  .select({ id: schema.broadcastQueueTable.id })
-                  .from(schema.broadcastQueueTable)
-                  .where(
-                    and(
-                      eq(schema.broadcastQueueTable.videoId, videoId),
-                      eq(schema.broadcastQueueTable.isActive, true),
-                    ),
-                  )
-                  .limit(1)
-                  .catch(() => []);
-                if (verified.length === 0) {
-                  capturedLog.warn(
-                    { videoId },
-                    "[finalize:bg] post-enqueue verification FAILED — queue row not found; upload-queue-reconciler will re-enqueue within 60 s",
-                  );
-                } else {
-                  capturedLog.info(
-                    { videoId, queueRowId: verified[0]!.id },
-                    "[finalize:bg] post-enqueue verification OK — queue row confirmed active",
-                  );
-                }
-              } else {
-                capturedLog.info(
-                  { videoId, skipReason: lastSkipReason },
-                  "[finalize:bg] video already in broadcast queue or not yet eligible — skipping enqueue",
-                );
-              }
             }
 
             capturedLog.info(

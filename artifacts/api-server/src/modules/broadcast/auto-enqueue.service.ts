@@ -504,16 +504,10 @@ export async function scanLibraryAndEnqueue(opts: {
           // Blob confirmed: repairMissingS3MirroredAt() runs immediately before
           // this query and stamps s3MirroredAt for any video whose post-assembly
           // DB update silently failed. s3MirroredAt IS NOT NULL guarantees the
-          // storage blob was committed.
-          // FastStart (moov relocation) is a broadcast requirement — see
-          // faststartApplied gate below.
+          // storage blob was committed. Raw MP4 (any moov position) is admitted —
+          // faststart is a background quality optimisation, not an admission gate.
           isNotNull(videosTable.localVideoUrl),
           isNotNull(videosTable.s3MirroredAt),
-          // FastStart gate: moov atom MUST be at byte 0 before broadcast.
-          // Raw MP4 (moov at EOF) causes blank screens on all TV/mobile surfaces.
-          // faststartRecoveryWorker stamps faststartApplied=true after success;
-          // only those rows are eligible for the broadcast queue.
-          eq(videosTable.faststartApplied, true),
           // NOT EXISTS subquery — keeps the JOIN cheap and the candidate set
           // small; the dedupe inside enqueueIfMissing is the authoritative
           // backstop for the race where two concurrent scans run at once.
@@ -661,26 +655,6 @@ function isPlayableForBroadcast(row: {
   if (row.validationStatus === "failed") return false;
 
   if (row.localVideoUrl && row.localVideoUrl.trim() !== "") {
-    // ── FastStart gate ──────────────────────────────────────────────────────
-    // The moov atom MUST be at byte 0 before the video enters the broadcast
-    // queue.  Broadcasting a raw MP4 (moov at EOF) causes:
-    //   • Blank screens on all TV/mobile surfaces (they require progressive
-    //     download which needs moov first)
-    //   • Seeking failures and buffering stalls on web players
-    //   • Potential dead-air if the source resolver serves a 0-byte-playable
-    //     file while the player waits for metadata
-    //
-    // Only gate when faststartApplied was explicitly fetched and provided (not
-    // undefined). undefined = caller doesn't filter on faststart (e.g.
-    // listMissingFromQueue — diagnostic only, never writes to the queue).
-    //
-    // faststartApplied=null  → faststart never attempted (video still assembling
-    //                          or recovery not yet run); not broadcast-ready.
-    // faststartApplied=false → faststart ran and failed; faststartRecoveryWorker
-    //                          will retry; not broadcast-ready until it succeeds.
-    // faststartApplied=true  → moov confirmed at byte 0; safe to broadcast.
-    if (row.faststartApplied !== undefined && row.faststartApplied !== true) return false;
-
     // ── Blob-existence gate ─────────────────────────────────────────────────
     // Only gate when s3MirroredAt was explicitly fetched and provided (not
     // undefined). undefined = caller doesn't filter on blob confirmation (e.g.

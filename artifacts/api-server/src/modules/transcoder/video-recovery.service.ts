@@ -286,26 +286,23 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
     }
 
     // ── MP4-ready: blob present (or inconclusive) ────────────────────────────
+    // Raw MP4 is broadcast-eligible regardless of faststartApplied. FastStart is
+    // a background quality optimisation — it is NOT a broadcast admission gate.
+    // faststartApplied=null → faststart pending; =false → faststart failed but
+    // video airs as raw MP4 while faststartRecoveryWorker retries in background.
     const isMp4Ready =
       (st === "none" || st === "uploaded") &&
       !!row.local_video_url &&
       !!row.s3_mirrored_at &&
       blobValid !== false; // true OR null (inconclusive) both pass
 
-    // Broadcast-ready = MP4 present AND FastStart confirmed.
-    const isBroadcastReady = isMp4Ready && faststartApplied === true;
-
-    if (isBroadcastReady && row.in_broadcast_queue) {
+    if (isMp4Ready && row.in_broadcast_queue) {
       return { ...row, issueKind: "healthy" };
     }
-    if (isBroadcastReady && !row.in_broadcast_queue) {
+    if (isMp4Ready && !row.in_broadcast_queue) {
+      // Video is stored and playable but not in the broadcast queue — re-enqueue.
+      // Covers raw MP4 (faststartApplied=null/false) and faststart-complete files.
       return { ...row, issueKind: "missing_from_queue" };
-    }
-    // Blob present but FastStart not yet complete — in-progress, treat healthy.
-    // faststartApplied=null → pending; faststartApplied=false → failed (recovery
-    // worker handles it; no deep-recovery action needed here).
-    if (isMp4Ready) {
-      return { ...row, issueKind: "healthy" };
     }
 
     // Already healthy (HLS pipeline legacy)
