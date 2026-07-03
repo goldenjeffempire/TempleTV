@@ -138,7 +138,7 @@ function isExpired(deadlineMs: number, label: string): boolean {
  * completeMultipartUpload during the actual reassembly, so a count ≥ total
  * is a sufficient (and cheap, BYTEA-free) pre-check here.
  */
-async function findReassemblyContext(videoId: string): Promise<{
+export async function findReassemblyContext(videoId: string): Promise<{
   sessionId: string;
   uploadId: string;
   totalChunks: number;
