@@ -24,7 +24,6 @@ import { scanLibraryAndEnqueue, listMissingFromQueue, repairMissingS3MirroredAt,
 import { reactivateSystemDeactivated } from "../engine/queue-health-guard.js";
 import { markBadUrl, clearAllBadUrls, clearBadUrl, getItemsHealth, getBadUrlStats, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl, getUrlBadSourceSetsSize, persistBadUrlCache, clearSourceApproval, clearAllSourceApprovals } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
-import { faststartRecoveryWorker } from "../engine/faststart-recovery.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { eq, and, isNull, isNotNull, sql, inArray, or } from "drizzle-orm";
 import { probeUploadedDuration } from "../../transcoder/transcoder.service.js";
@@ -47,7 +46,6 @@ import {
   isWebhookConfigured,
   sendBroadcastWebhookSync,
 } from "../webhook/webhook.service.js";
-import { runFaststart } from "../../transcoder/faststart.service.js";
 import { driftAggregator } from "../engine/drift-aggregator.js";
 import { getCorruptMediaHealthSummary } from "../../broadcast/quarantine.service.js";
 import { ytShuffleFallback } from "../engine/youtube-shuffle-fallback.js";
@@ -542,7 +540,6 @@ export async function restRoutes(app: FastifyInstance) {
       "broadcast-health-monitor",
       "queue-integrity-validator",
       "media-integrity-scanner",
-      "faststart-recovery",
       "content-rotation",
       "queue-health-guard",
       "storage-reconciliation",
@@ -1145,10 +1142,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     // the raw DB rows haven't changed — critical when the environment changed
     // (e.g. API_ORIGIN set, bad-URL cache cleared) but DB content is the same.
     broadcastOrchestrator.resetQueueHash();
-    faststartRecoveryWorker.resetAttempts();
-    void faststartRecoveryWorker.sweep().catch((err) =>
-      logger.warn({ err }, "[broadcast-v2] reload: faststart-recovery sweep failed (non-fatal)"),
-    );
     await broadcastOrchestrator.reload();
     return { ok: true, sequence: broadcastOrchestrator.getSequence(), reEnabled };
   });
@@ -3341,62 +3334,25 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       adminEventBus.push("videos-library-updated", { videoId, reason: "retry-repair-started" });
       adminEventBus.push("broadcast-queue-updated", { reason: "retry-repair-started", itemId: id, videoId });
 
-      // ── 5. Background repair ────────────────────────────────────────────────
-      void (async () => {
-        try {
-          // skipStatusUpdate: true — we manage transcodingStatus ourselves so
-          // faststart does not set it to "processing" (which would cause a brief
-          // status flicker) and does not restore it on failure. faststartApplied
-          // is still written unconditionally by faststart on success.
-          await runFaststart(videoId, objectPath, { skipStatusUpdate: true });
-          req.log.info({ videoId, itemId: id }, "[broadcast-v2] retry-repair: faststart succeeded");
+      // ── 5. Reset status to none (raw MP4 is broadcast-eligible) ───────────
+      await db
+        .update(schema.videosTable)
+        .set({
+          transcodingStatus: "none",
+          transcodingErrorCode: null,
+          transcodingErrorKind: null,
+          transcodingErrorMessage: null,
+        })
+        .where(eq(schema.videosTable.id, videoId))
+        .catch(() => {});
 
-          // Set faststartApplied explicitly (faststart writes it, but be safe)
-          // and enqueue for HLS transcoding so the video gets the best possible
-          // stream quality after remux recovery.
-          adminEventBus.push("videos-library-updated", { videoId, reason: "retry-repair-succeeded" });
-          adminEventBus.push("broadcast-queue-updated", { reason: "retry-repair-succeeded", itemId: id, videoId });
-          // Clear the "Applying faststart…" spinner immediately in the admin
-          // videos page without waiting for the next polling cycle.
-          adminEventBus.push("broadcast-source-upgraded", { videoId, quality: "mp4_faststart" });
-          void broadcastOrchestrator.reload().catch(() => {});
-        } catch (err: unknown) {
-          const errKind = (err as { kind?: string }).kind ?? null;
-          const errMsg = err instanceof Error ? err.message : String(err);
-          req.log.error(
-            { err, videoId, itemId: id, kind: errKind },
-            "[broadcast-v2] retry-repair: faststart remux repair failed — marking CORRUPT_SOURCE again",
-          );
+      adminEventBus.push("videos-library-updated", { videoId, reason: "retry-repair-succeeded" });
+      adminEventBus.push("broadcast-queue-updated", { reason: "retry-repair-succeeded", itemId: id, videoId });
+      void broadcastOrchestrator.reload().catch(() => {});
 
-          await db
-            .update(schema.videosTable)
-            .set({
-              transcodingStatus: "failed",
-              transcodingErrorCode: "CORRUPT_SOURCE",
-              transcodingErrorKind: errKind,
-              transcodingErrorMessage:
-                `Remux repair failed (retry-repair): ${errMsg.slice(0, 500)}. ` +
-                (errKind === "moov_absent"
-                  ? "The moov atom is permanently absent — re-upload the original source file."
-                  : "All remux strategies exhausted — re-upload the original source file."),
-            })
-            .where(eq(schema.videosTable.id, videoId))
-            .catch(() => {});
+      req.log.info({ videoId, itemId: id }, "[broadcast-v2] retry-repair: queue item re-activated as raw MP4");
 
-          // Re-deactivate the queue item so the orchestrator doesn't try to
-          // play a video that is still corrupt.
-          await db
-            .update(schema.broadcastQueueTable)
-            .set({ isActive: false, validatorDeactivatedReason: "retry-repair-failed" })
-            .where(eq(schema.broadcastQueueTable.id, id))
-            .catch(() => {});
-
-          adminEventBus.push("videos-library-updated", { videoId, reason: "retry-repair-failed" });
-          adminEventBus.push("broadcast-queue-updated", { reason: "retry-repair-failed", itemId: id, videoId });
-        }
-      })();
-
-      return reply.code(202).send({ ok: true, videoId, message: "Faststart remux repair started in background" });
+      return reply.code(202).send({ ok: true, videoId, message: "Queue item re-activated — raw MP4 will broadcast immediately" });
     },
   );
 

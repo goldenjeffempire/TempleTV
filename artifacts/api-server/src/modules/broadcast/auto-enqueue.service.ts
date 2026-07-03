@@ -637,23 +637,6 @@ function isPlayableForBroadcast(row: {
   // state, transcoding status, or caller reason.
   if (row.category === "midnight-prayers") return false;
 
-  // Validation gate: if comprehensive playback validation explicitly failed
-  // (corrupt mdat, truncated file, moov missing after faststart, A/V sync
-  // > 2 s, etc.) the video is blocked from broadcast until repaired.
-  //
-  // null / 'pending' / 'running' / 'passed' / 'warn' → all allow broadcast:
-  //   null    — pre-feature rows (never validated); backward compatible.
-  //   pending — validation scheduled, not yet started.
-  //   running — validation in progress.
-  //   passed  — all 9 checks passed; safe to broadcast.
-  //   warn    — non-fatal issues (HEVC codec, wide keyframes); operator
-  //             review recommended but video is still broadcast-eligible.
-  //
-  // 'failed' → at least one fatal check (FILE_INTEGRITY, FIRST_FRAME,
-  //            LAST_FRAME, AV_SYNC > 2s, DURATION_ACCURACY > 30%) failed.
-  //            Block until the operator repairs and re-validates.
-  if (row.validationStatus === "failed") return false;
-
   if (row.localVideoUrl && row.localVideoUrl.trim() !== "") {
     // ── Blob-existence gate ─────────────────────────────────────────────────
     // Only gate when s3MirroredAt was explicitly fetched and provided (not

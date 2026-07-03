@@ -30,8 +30,6 @@ import { env } from "../../config/env.js";
 import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { generateQuickThumbnail, normalizeThumbnailBuffer, probeUploadedContainerValidity, probeUploadedDuration, probeVideoMetadata } from "../transcoder/transcoder.service.js";
-import { scheduleVideoValidation } from "../transcoder/video-validation.service.js";
-import { runFaststart } from "../transcoder/faststart.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
@@ -420,43 +418,20 @@ async function spawnAssemblyRetry(
         log.warn({ err: probeErr, videoId }, "[assembly-retry] ffprobe failed (non-fatal) — using existing duration");
       }
 
-      // ── Faststart: moov-atom relocation (REQUIRED before broadcast) ─────
-      // FastStart MUST complete before the video enters the broadcast queue.
-      // Raw MP4 with moov at EOF causes blank screens on all TV/mobile surfaces.
-      // We enqueue ONLY after fsResult.ok — if faststart fails, the
-      // faststartRecoveryWorker retries and calls enqueueIfMissing on success.
-      log.info({ videoId, objectKey: vRow.objectPath }, "[assembly-retry] running faststart pipeline (required before broadcast)");
-      const fsResult = await runFaststart(videoId, vRow.objectPath!, { skipStatusUpdate: false });
-      log.info(
-        { videoId, finalStatus: fsResult.finalStatus, remuxed: fsResult.remuxed ?? false, durationMs: fsResult.durationMs },
-        "[assembly-retry] faststart pipeline complete",
-      );
-
-      if (!fsResult.ok) {
-        log.warn(
-          { videoId, rootCause: fsResult.rootCause, actions: fsResult.actions },
-          "[assembly-retry] faststart FAILED — NOT enqueueing; faststartRecoveryWorker will retry and enqueue on success",
-        );
-        adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-failed" });
-      } else {
-        // Faststart complete — moov now at byte 0. NOW safe to enqueue.
-        adminEventBus.push("broadcast-source-upgraded", { videoId, quality: "mp4_faststart" });
-        adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-complete" });
-        void invalidateVideosCatalogCache();
-
-        if (vRow?.objectPath) {
-          scheduleVideoValidation(videoId, vRow.objectPath, { faststartApplied: true });
+      // ── Enqueue immediately as raw MP4 — no faststart required ──────────
+      // Raw MP4 is broadcast-eligible via HTTP Range streaming regardless of
+      // moov atom position. Enqueue now so the video enters rotation immediately.
+      try {
+        const enqRes = await enqueueIfMissing({ videoId, reason: "assembly-retry" });
+        if (enqRes.enqueued) {
+          log.info({ videoId, queueItemId: enqRes.queueItemId }, "[assembly-retry] video enrolled in broadcast queue");
+          adminEventBus.push("broadcast-queue-updated", { reason: "assembly-retry", videoId });
         }
-
-        // Enqueue only after faststart success — moov is confirmed at byte 0.
-        try {
-          const enqRes = await enqueueIfMissing({ videoId, reason: "assembly-retry" });
-          if (enqRes.enqueued) {
-            log.info({ videoId, queueItemId: enqRes.queueItemId }, "[assembly-retry] video enrolled in broadcast queue (faststart complete)");
-            adminEventBus.push("broadcast-queue-updated", { reason: "assembly-retry", videoId });
-          }
-        } catch { /* non-fatal — faststartRecoveryWorker will recover within 5 min */ }
+      } catch (enqErr) {
+        log.warn({ err: enqErr, videoId }, "[assembly-retry] enqueueIfMissing failed (non-fatal — upload-queue-reconciler will recover within 60 s)");
       }
+      adminEventBus.push("videos-library-updated", { videoId, reason: "assembly-retry-complete" });
+      void invalidateVideosCatalogCache();
 
       log.info({ sessionId, videoId, attempt: currentAttempts }, "[assembly-retry] complete ✓");
 
@@ -2704,78 +2679,6 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                   "[finalize:bg] video already in broadcast queue or not yet eligible — skipping enqueue",
                 );
               }
-            }
-
-            // ── Faststart: moov-atom relocation (background quality optimization) ─────
-            // The video is already enrolled in the broadcast queue above as raw MP4.
-            // This step relocates the moov atom to byte 0 for optimal progressive-
-            // download performance on TV/mobile. On success: the orchestrator picks up
-            // the optimised blob via broadcast-source-upgraded. On failure:
-            // faststartRecoveryWorker retries in the background with no broadcast impact.
-            capturedLog.info(
-              { videoId, objectKey },
-              "[finalize:bg] starting faststart pipeline (background quality optimization)",
-            );
-            // Defensive try/catch: runFaststart must not propagate unexpected throws
-            // to the outer catch since the blob is committed and the video is already
-            // enrolled in the broadcast queue above.
-            let fsResult: Awaited<ReturnType<typeof runFaststart>>;
-            try {
-              fsResult = await runFaststart(videoId, objectKey, { skipStatusUpdate: false });
-            } catch (fsErr) {
-              capturedLog.warn(
-                { err: fsErr, videoId },
-                "[finalize:bg] runFaststart threw unexpectedly — treating as failed; " +
-                "enrolling video as raw MP4; faststartRecoveryWorker will retry",
-              );
-              fsResult = {
-                ok: false,
-                finalStatus: "failed",
-                rootCause: fsErr instanceof Error ? fsErr.message : "Unexpected faststart error",
-                actions: ["caught unexpected throw"],
-                durationMs: 0,
-              };
-            }
-            capturedLog.info(
-              {
-                videoId,
-                finalStatus: fsResult.finalStatus,
-                remuxed: fsResult.remuxed ?? false,
-                durationMs: fsResult.durationMs,
-              },
-              "[finalize:bg] faststart pipeline complete",
-            );
-
-            if (!fsResult.ok) {
-              capturedLog.warn(
-                {
-                  videoId,
-                  rootCause: fsResult.rootCause,
-                  actions: fsResult.actions,
-                },
-                "[finalize:bg] faststart FAILED — video remains in queue as raw MP4; faststartRecoveryWorker will retry moov relocation",
-              );
-              adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-failed" });
-              // Validate the raw MP4 — MOOV_PLACEMENT produces "warn" not "fail"
-              // for moov-at-EOF so the video stays broadcast-eligible. All other
-              // critical checks (FILE_INTEGRITY, CODEC_COMPAT, FIRST_FRAME, etc.)
-              // still run and can produce "failed" for genuinely corrupt files.
-              scheduleVideoValidation(videoId, objectKey, {
-                faststartApplied: false,
-                storedDurationSecs: ffprobeDurSecs ?? null,
-              });
-            } else {
-              // Faststart succeeded — moov is now at byte 0. Signal the orchestrator
-              // to reload and serve the optimised blob on the next tick.
-              void invalidateVideosCatalogCache();
-              adminEventBus.push("videos-library-updated", { videoId, reason: "faststart-complete" });
-              adminEventBus.push("broadcast-source-upgraded", { videoId, quality: "mp4_faststart" });
-
-              // Comprehensive playback validation — fire-and-forget after faststart.
-              scheduleVideoValidation(videoId, objectKey, {
-                faststartApplied: true,
-                storedDurationSecs: ffprobeDurSecs ?? null,
-              });
             }
 
             capturedLog.info(

@@ -49,7 +49,6 @@ export const uploadQueueReconciler = {
         .select({
           id: videosTable.id,
           title: videosTable.title,
-          validationStatus: videosTable.validationStatus,
           importedAt: videosTable.importedAt,
         })
         .from(videosTable)
@@ -82,8 +81,6 @@ export const uploadQueueReconciler = {
 
       let enqueued = 0;
       for (const row of candidates) {
-        if (row.validationStatus === "failed") continue;
-
         const res = await enqueueIfMissing({ videoId: row.id, reason: "upload-finalize" });
         if (res.enqueued) {
           enqueued += 1;

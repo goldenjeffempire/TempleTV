@@ -9,7 +9,6 @@ import { eventLogRepo } from "../repository/event-log.repo.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
 import { checkpointRepo } from "../repository/checkpoint.repo.js";
 import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, getBadUrlCacheSize, getBadUrlStats, markUrlBadBySource, getUrlConfidenceState, markSourceApproved, isSourceApproved, clearSourceApproval, clearAllSourceApprovals, type RawQueueRow } from "../repository/queue.repo.js";
-import { faststartRecoveryWorker } from "./faststart-recovery.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { saveDiskBackup, loadDiskBackup } from "../repository/disk-state-backup.js";
 import { storagePaths } from "../../../infrastructure/storage-paths.js";
@@ -1723,11 +1722,8 @@ class BroadcastOrchestrator extends EventEmitter {
     // 60 s away).  This ensures the first broadcast cycle uses real durations
     // and prevents premature queue advancement for newly-uploaded MP4 files.
     // Fire-and-forget; any errors are logged inside triggerDurationBackfill().
-    if (resolved.some((item) => item.durationSecs === 1800)) {
-      void faststartRecoveryWorker.runSweep().catch((err: unknown) =>
-        logger.warn({ err }, "[broadcast-v2] reloadInner: immediate duration backfill failed (non-fatal)"),
-      );
-    }
+    // Note: duration backfill for 1800-s placeholders is handled by the
+    // queue-integrity-validator (runs every 2 min) and naturalItemEnd write-back.
 
     // Reset dead-air tracking state whenever items load successfully.
     //
@@ -2474,10 +2470,8 @@ class BroadcastOrchestrator extends EventEmitter {
    *                                      rows left by older server versions.
    *     2. clearAllBadUrls()           — removes in-memory 90 s / 5 min TTL
    *                                      blocks so items can be re-probed.
-   *     3. faststartRecoveryWorker.sweep() — immediately triggers faststart
-   *                                      for items with faststart_applied=false;
-   *                                      on success the worker fires
-   *                                      broadcast-queue-updated → reload().
+   *     3. scanLibraryAndEnqueue()     — enqueues any eligible library videos
+   *                                      not yet in the active broadcast queue.
    *     4. scheduleSelfHealReload()    — belt-and-suspenders reload that
    *                                      picks up any items re-enabled by (1).
    *
@@ -2580,10 +2574,6 @@ class BroadcastOrchestrator extends EventEmitter {
         });
 
         clearAllBadUrls();
-
-        void faststartRecoveryWorker.sweep().catch((err: unknown) =>
-          logger.warn({ err }, "[broadcast-v2] dead-air: faststart-recovery sweep failed (non-fatal)"),
-        );
 
         logger.info(
           { channel: this.channelId, dbActiveCount: dbCount, reEnabled },

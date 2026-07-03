@@ -24,7 +24,6 @@ import { env } from "../../config/env.js";
 import { sendAdminAlert } from "../mail/mail.service.js";
 import { installDeadAirTracker, getDeadAirStats } from "./engine/dead-air-tracker.js";
 import { queueSelfHealingWorker } from "./engine/queue-self-healing-worker.js";
-import { faststartRecoveryWorker } from "./engine/faststart-recovery.js";
 import { autoHealMonitor } from "./engine/auto-heal-monitor.js";
 import { autohealRoutes } from "./io/autoheal.routes.js";
 import { uploadQueueReconciler } from "../broadcast/upload-queue-reconciler.js";
@@ -429,21 +428,6 @@ function startSupervisedWorkers(): void {
     initialDelayMs: 5 * 60_000,
     backoffMs: [30_000, 60_000, 2 * 60_000],
     onCircuitOpen: makeCircuitOpenCallback("queue-self-healing"),
-  });
-
-  // Faststart recovery worker: finds videos stuck in 'processing' (>15 min)
-  // or marked 'ready' with faststartApplied=false, then re-runs the moov
-  // relocation pipeline.  After max 3 attempts it permanently flags the row
-  // and alerts ops so a human can review. Runs every 5 min; initial 3 min
-  // delay lets the finalize background task finish its own faststart pass
-  // before the recovery worker steps in.
-  workerSupervisor.spawn({
-    name: "faststart-recovery",
-    fn: () => faststartRecoveryWorker.sweep(),
-    intervalMs: 5 * 60_000,
-    initialDelayMs: 3 * 60_000,
-    backoffMs: [30_000, 60_000, 2 * 60_000],
-    onCircuitOpen: makeCircuitOpenCallback("faststart-recovery"),
   });
 
   // Upload Queue Reconciler: final safety-net for the upload→queue pipeline.
