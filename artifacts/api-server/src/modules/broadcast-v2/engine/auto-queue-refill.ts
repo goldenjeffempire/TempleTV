@@ -69,6 +69,15 @@ let _status: AutoRefillStatus = {
 };
 let _timer: NodeJS.Timeout | null = null;
 let _lastRefillAtMs = 0;
+// Separate cooldown for no-candidate runs (YouTube-only or all-queued).
+// Without this, `_lastRefillAtMs` is never updated on no-candidate runs so the
+// `now - _lastRefillAtMs < COOLDOWN_MS` gate is always false (unix timestamp
+// minus 0 is always > 5 min), causing 2 DB queries every 45 s in perpetuity
+// on deployments where no local videos need adding. 5-minute no-op cooldown
+// keeps the worker responsive to newly-uploaded content while eliminating the
+// constant background churn on stable YouTube-only or fully-queued libraries.
+const NO_OP_COOLDOWN_MS = 5 * 60 * 1000;
+let _lastNoOpAtMs = 0;
 
 export function getAutoRefillStatus(): AutoRefillStatus {
   return { ..._status };
@@ -106,6 +115,14 @@ async function run(): Promise<void> {
 
     if (timeToEmptyMs >= TRIGGER_MS) return;
     if (now - _lastRefillAtMs < COOLDOWN_MS) return;
+    // No-op cooldown: when a prior run found no candidates (YouTube-only library
+    // or all local videos already queued) we apply a 5-minute pause before the
+    // next full scan. Without this gate _lastRefillAtMs is never updated on
+    // no-candidate runs, so the cooldown above is always bypassed (a unix
+    // timestamp minus 0 is always > COOLDOWN_MS), causing 2 unnecessary DB
+    // queries every 45 s indefinitely. The cooldown is reset on the next
+    // successful refill so newly-uploaded content is picked up promptly.
+    if (now - _lastNoOpAtMs < NO_OP_COOLDOWN_MS) return;
 
     logger.info(
       { timeToEmptyMs, triggerMs: TRIGGER_MS, batch: BATCH },
@@ -162,6 +179,11 @@ async function run(): Promise<void> {
       : (candidates as unknown as { id: string; title: string }[]);
 
     if (!rows.length) {
+      // Arm the no-op cooldown so the next 45 s tick skips the DB queries.
+      // Cleared by a successful refill (see _lastNoOpAtMs reset below) so
+      // newly-uploaded local content is still picked up within 5 min.
+      _lastNoOpAtMs = now;
+
       // Before logging an alert, determine WHY there are no candidates.
       // If every video in the library is YouTube-sourced, this is expected behaviour
       // — the ytShuffleFallback handles broadcast continuity automatically.
@@ -235,6 +257,7 @@ async function run(): Promise<void> {
 
     if (added > 0) {
       _lastRefillAtMs = now;
+      _lastNoOpAtMs = 0; // reset so the next no-candidate run re-arms the cooldown fresh
       _status.lastRefillAtMs = now;
       _status.lastRefillCount = added;
       _status.totalRefilled += added;
