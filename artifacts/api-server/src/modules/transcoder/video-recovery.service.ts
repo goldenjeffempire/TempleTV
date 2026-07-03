@@ -42,6 +42,7 @@ type IssueKind =
   | "healthy"
   | "failed_retryable"
   | "failed_source_gone"
+  | "storage_lost"
   | "orphan_encoding"
   | "stuck_queued"
   | "never_processed"
@@ -57,6 +58,7 @@ type ActionTaken =
   | "requeued_from_dlq"
   | "enqueued_broadcast"
   | "quarantined_source_gone"
+  | "quarantined_storage_lost"
   | "error";
 
 export interface RecoveryItem {
@@ -90,6 +92,7 @@ export interface RecoveryReport {
     enqueuedBroadcast: number;
     requeuedDlq: number;
     sourceMissingConfirmed: number;
+    storageLostConfirmed: number;
     badUrlCacheCleared: boolean;
     suspendedReEnabled: number;
   };
@@ -109,6 +112,7 @@ interface SnapshotRow {
   hls_master_url: string | null;
   local_video_url: string | null;
   s3_mirrored_at: Date | null;
+  faststart_applied: boolean | null;
   latest_job_id: string | null;
   latest_job_status: string | null;
   latest_job_started_at: Date | null;
@@ -132,6 +136,7 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
     enqueuedBroadcast: 0,
     requeuedDlq: 0,
     sourceMissingConfirmed: 0,
+    storageLostConfirmed: 0,
     badUrlCacheCleared: false,
     suspendedReEnabled: 0,
   };
@@ -156,6 +161,7 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
       mv.hls_master_url,
       mv.local_video_url,
       mv.s3_mirrored_at,
+      mv.faststart_applied,
       latest.job_id           AS latest_job_id,
       latest.job_status       AS latest_job_status,
       latest.job_started_at   AS latest_job_started_at,
@@ -164,11 +170,36 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
         SELECT 1 FROM broadcast_queue bq
         WHERE bq.video_id = mv.id AND bq.is_active = true
       ) AS in_broadcast_queue,
+      -- blob_valid: tries objectPath first (authoritative storage key), then
+      -- falls back to deriving the key from localVideoUrl when objectPath is
+      -- NULL.  Returns NULL when neither column is set (no storage key at all).
       CASE
         WHEN mv.object_path IS NOT NULL THEN
           EXISTS(
             SELECT 1 FROM storage_blobs sb
             WHERE sb.key = mv.object_path AND sb.size_bytes > 0
+          )
+        WHEN mv.local_video_url IS NOT NULL THEN
+          EXISTS(
+            SELECT 1 FROM storage_blobs sb
+            WHERE sb.key = CASE
+              WHEN mv.local_video_url ~ '^https?://' THEN
+                CASE
+                  WHEN mv.local_video_url LIKE '%/api/v1/uploads/%'
+                  THEN 'uploads/' || SPLIT_PART(mv.local_video_url, '/api/v1/uploads/', 2)
+                  WHEN mv.local_video_url LIKE '%/api/uploads/%'
+                  THEN 'uploads/' || SPLIT_PART(mv.local_video_url, '/api/uploads/', 2)
+                  ELSE NULL
+                END
+              WHEN mv.local_video_url LIKE '/api/v1/uploads/%'
+              THEN 'uploads/' || SUBSTR(mv.local_video_url, LENGTH('/api/v1/uploads/') + 1)
+              WHEN mv.local_video_url LIKE '/api/uploads/%'
+              THEN 'uploads/' || SUBSTR(mv.local_video_url, LENGTH('/api/uploads/') + 1)
+              WHEN mv.local_video_url LIKE 'uploads/%'
+              THEN mv.local_video_url
+              ELSE NULL
+            END
+            AND sb.size_bytes > 0
           )
         ELSE NULL
       END AS blob_valid
@@ -206,6 +237,7 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
     const errCode = row.transcoding_error_code;
     const objectPath = row.object_path;
     const blobValid = row.blob_valid;
+    const faststartApplied = row.faststart_applied as boolean | null;
     const jobStatus = row.latest_job_status;
     const jobStarted = row.latest_job_started_at
       ? new Date(row.latest_job_started_at).getTime()
@@ -217,25 +249,63 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
 
     // ── MP4-pipeline healthy states ───────────────────────────────────────────
     // On the MP4-only pipeline (TRANSCODER_DISABLE=1) videos are admitted
-    // directly to the broadcast queue after upload (no HLS transcoding).
+    // directly to the broadcast queue after FastStart completes.
     // transcodingStatus stays "none" and localVideoUrl is set once the blob
-    // is assembled.  s3MirroredAt IS NOT NULL confirms the blob is in storage.
+    // is assembled.  s3MirroredAt IS NOT NULL confirms the blob was written.
     //
-    // "none" + localVideoUrl + s3MirroredAt + in broadcast queue → healthy.
-    // "none" + localVideoUrl + s3MirroredAt + NOT in queue       → missing_from_queue
-    //   → Phase 7 calls enqueueIfMissing() to add them.
+    // Classification ladder (evaluated in order):
     //
-    // "none" + localVideoUrl + s3MirroredAt IS NULL → still assembling or
-    //   stamp silently failed; repairMissingS3MirroredAt() heals within 90 s.
-    //   Treat as healthy (in-progress) and let auto-refill re-check later.
-    const isMp4Ready = (st === "none" || st === "uploaded") &&
+    //   s3_mirrored_at IS SET + blob_valid = false
+    //     → storage_lost: blob was confirmed-written but has since vanished
+    //       from storage_blobs.  This is server-side data loss.
+    //
+    //   local_video_url + s3_mirrored_at + blob_valid != false + faststartApplied=true
+    //     + in broadcast queue → healthy
+    //     + NOT in queue       → missing_from_queue (Phase 7 re-enqueues)
+    //
+    //   local_video_url + s3_mirrored_at + blob_valid != false + faststartApplied != true
+    //     → healthy (in-progress: FastStart pending or running; auto-repair handles it)
+    //
+    //   local_video_url + s3_mirrored_at IS NULL → still assembling or stamp
+    //     silently failed; repairMissingS3MirroredAt() heals within 90 s.
+    //     Treat as healthy (in-progress).
+
+    // ── STORAGE_LOST: blob confirmed written but now missing ─────────────────
+    // Highest priority — overrides all other classification.  Only fires when
+    // s3_mirrored_at is set (assembly was confirmed) AND blob_valid is
+    // explicitly false (not null — null means the check was inconclusive).
+    const blobConfirmedMissing =
       !!row.local_video_url &&
-      !!row.s3_mirrored_at;
-    if (isMp4Ready && row.in_broadcast_queue) {
+      !!row.s3_mirrored_at &&
+      blobValid === false;
+    if (blobConfirmedMissing && st !== "failed") {
+      return { ...row, issueKind: "storage_lost" };
+    }
+    if (blobConfirmedMissing && errCode !== "STORAGE_LOST") {
+      return { ...row, issueKind: "storage_lost" };
+    }
+
+    // ── MP4-ready: blob present (or inconclusive) ────────────────────────────
+    const isMp4Ready =
+      (st === "none" || st === "uploaded") &&
+      !!row.local_video_url &&
+      !!row.s3_mirrored_at &&
+      blobValid !== false; // true OR null (inconclusive) both pass
+
+    // Broadcast-ready = MP4 present AND FastStart confirmed.
+    const isBroadcastReady = isMp4Ready && faststartApplied === true;
+
+    if (isBroadcastReady && row.in_broadcast_queue) {
       return { ...row, issueKind: "healthy" };
     }
-    if (isMp4Ready && !row.in_broadcast_queue) {
+    if (isBroadcastReady && !row.in_broadcast_queue) {
       return { ...row, issueKind: "missing_from_queue" };
+    }
+    // Blob present but FastStart not yet complete — in-progress, treat healthy.
+    // faststartApplied=null → pending; faststartApplied=false → failed (recovery
+    // worker handles it; no deep-recovery action needed here).
+    if (isMp4Ready) {
+      return { ...row, issueKind: "healthy" };
     }
 
     // Already healthy (HLS pipeline legacy)
@@ -247,12 +317,18 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
       return { ...row, issueKind: "missing_from_queue" };
     }
     // Dead-letter job (max attempts exhausted) — not a terminal video state
-    if (jobStatus === "dead_letter" && errCode !== "SOURCE_MISSING" && !(errCode === "CORRUPT_SOURCE" && !objectPath)) {
+    if (jobStatus === "dead_letter" && errCode !== "SOURCE_MISSING" && !(errCode === "CORRUPT_SOURCE" && !objectPath) && errCode !== "STORAGE_LOST") {
       return { ...row, issueKind: "dead_letter" };
     }
-    // Failed
+    // Failed — distinguish blob-missing from retryable
     if (st === "failed") {
-      if (errCode === "SOURCE_MISSING" || blobValid === false) {
+      if (errCode === "SOURCE_MISSING" || errCode === "STORAGE_LOST" || blobValid === false) {
+        return { ...row, issueKind: "failed_source_gone" };
+      }
+      // ASSEMBLY_FAILED on MP4 pipeline = upload session may still have parts;
+      // this is handled by upload-integrity-monitor, not deep-recovery.
+      // Treat as non-retryable (no transcoding job to retry) — just log.
+      if (errCode === "ASSEMBLY_FAILED" && !objectPath) {
         return { ...row, issueKind: "failed_source_gone" };
       }
       return { ...row, issueKind: "failed_retryable" };
@@ -269,10 +345,9 @@ export async function runDeepRecovery(): Promise<RecoveryReport> {
     if (st === "queued" && lastActivity > 0 && (nowMs - lastActivity) > STUCK_QUEUE_MS) {
       return { ...row, issueKind: "stuck_queued" };
     }
-    // Never processed — objectPath present but no transcoding job and no local
-    // video URL.  This is a legacy state from before the MP4-only pipeline
-    // switch; enqueueTranscode is disabled so this is effectively a no-op,
-    // but we still log it for operator visibility.
+    // Never processed — objectPath present but no localVideoUrl.
+    // Legacy state from pre-MP4 pipeline (HLS-era); transcoder is disabled
+    // so no recovery action is possible without a fresh re-upload.
     if ((st === "none" || st === "uploaded") && objectPath && !row.local_video_url) {
       return { ...row, issueKind: "never_processed" };
     }
