@@ -215,7 +215,7 @@ async function downloadToTemp(
  *
  * Logs upload progress every 10% so operators can track large-file jobs.
  */
-async function uploadFromTemp(
+export async function uploadFromTemp(
   sourcePath: string,
   destKey: string,
   logCtx?: { info: (obj: object, msg: string) => void },

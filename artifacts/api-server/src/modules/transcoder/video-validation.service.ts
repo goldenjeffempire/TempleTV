@@ -37,12 +37,13 @@ import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql, and, or, lt, isNull, inArray } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { storage } from "../../infrastructure/storage.js";
 import { storagePaths } from "../../infrastructure/storage-paths.js";
-import { probeContainerIsValid, probeCanDecodeFirstFrame } from "./transcoder.service.js";
+import { probeContainerIsValid, probeCanDecodeFirstFrame, remuxForFaststart, detectMdatWithoutMoov } from "./transcoder.service.js";
+import { uploadFromTemp } from "./faststart.service.js";
 import { env } from "../../config/env.js";
 import { setPipelineStage } from "../media-pipeline/pipeline-stage.js";
 
@@ -75,6 +76,33 @@ const LAST_FRAME_MIN_DURATION_SECS = 10;
 /** Total validation job wall-clock budget. */
 const VALIDATION_JOB_TIMEOUT_MS = 180_000;
 
+/**
+ * Checks that can still return "fail" (all others were softened to warn/skip
+ * in prior hardening passes). A "fail" on any of these is what remediation
+ * targets — if the remux repair fixes the underlying container/stream issue,
+ * these are the checks re-run to confirm the fix actually worked.
+ */
+const REMEDIABLE_CHECKS = ["FILE_INTEGRITY", "CODEC_COMPAT", "FIRST_FRAME", "LAST_FRAME"] as const;
+
+/**
+ * Retry/backoff for transient (infra) failures — download errors, storage
+ * unavailability, unhandled exceptions that are NOT a genuine per-check
+ * "fail" result. These must never permanently mark a video "failed"; they
+ * are retried with backoff and, once exhausted, left in a non-blocking
+ * state (validationStatus reverted to null/'pending') so the video still
+ * broadcasts while the stuck-job recovery worker keeps retrying later.
+ */
+const TRANSIENT_RETRY_BACKOFF_MS = [30_000, 60_000, 2 * 60_000, 5 * 60_000, 15 * 60_000];
+
+/** Hard cap on self-heal re-attempts for rows that keep failing genuinely. */
+const MAX_VALIDATION_ATTEMPTS = 8;
+
+/** A 'running' job with no terminal status past this age is presumed crashed. */
+const STUCK_RUNNING_THRESHOLD_MS = 15 * 60_000;
+
+/** A 'pending' job that never actually started past this age was dropped (e.g. process restart before setImmediate fired). */
+const STUCK_PENDING_THRESHOLD_MS = 10 * 60_000;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type CheckStatus = "pass" | "warn" | "fail" | "skip";
@@ -96,6 +124,16 @@ export interface VideoValidationReport {
   remainingIssues: string[];
   durationMs: number;
   completedAt: string;
+  /** True if a remux-based auto-remediation attempt was made (regardless of outcome). */
+  remediationAttempted?: boolean;
+  /**
+   * Only set when status ends up 'failed' AFTER a remediation attempt:
+   *   'CORRUPT_SOURCE'         — mdat present but moov permanently missing;
+   *                              no stream-copy remux can recover this file.
+   *   'REMEDIATION_EXHAUSTED'  — remux ran but the repaired output still
+   *                              failed the same check(s).
+   */
+  rootCauseCode?: "CORRUPT_SOURCE" | "REMEDIATION_EXHAUSTED";
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -763,6 +801,150 @@ async function checkRangeSupport(localVideoUrl: string | null): Promise<VideoChe
   }
 }
 
+// ── Remediation ────────────────────────────────────────────────────────────────
+
+interface RemediationOutcome {
+  /** A remux attempt was actually made (false when short-circuited as unrecoverable). */
+  attempted: boolean;
+  /** Populated only when every previously-failing check now passes/warns. */
+  updatedChecks: VideoCheckResult[];
+  repairsPerformed: string[];
+  newDurationSecs: number | null;
+  rootCauseCode?: "CORRUPT_SOURCE" | "REMEDIATION_EXHAUSTED";
+}
+
+/**
+ * Best-effort automatic repair for a video that failed one or more of the
+ * still-hard checks (FILE_INTEGRITY, CODEC_COMPAT, FIRST_FRAME, LAST_FRAME).
+ *
+ * Strategy: remux (stream-copy, no re-encode) via the same battle-tested
+ * `remuxForFaststart` used by the faststart pipeline — this fixes the vast
+ * majority of "fails" that are actually just a malformed/misordered
+ * container (bad box ordering, missing duration atoms, minor mdat framing
+ * issues) rather than genuinely corrupt media. Only the checks that
+ * originally failed are re-run against the repaired output — if ALL of them
+ * now pass/warn, the repaired file replaces the stored blob so the fix is
+ * durable; if even one still fails, the remediation is treated as a no-op
+ * and the caller falls back to the original (still-failing) results.
+ *
+ * `detectMdatWithoutMoov` short-circuits the whole attempt when the moov
+ * atom is permanently absent — ffmpeg cannot stream-copy a file it cannot
+ * demux in the first place, so running it would just burn ~30 s to fail the
+ * same way. That case is classified CORRUPT_SOURCE (genuinely unplayable);
+ * everything else that still fails after a real remux attempt is classified
+ * REMEDIATION_EXHAUSTED (repair was tried, didn't help).
+ */
+async function attemptRemediation(opts: {
+  videoId: string;
+  objectKey: string;
+  tmpDir: string;
+  tmpPath: string;
+  failedChecks: VideoCheckResult[];
+  storedDurationSecs: number | null;
+}): Promise<RemediationOutcome> {
+  const { videoId, objectKey, tmpDir, tmpPath, failedChecks, storedDurationSecs } = opts;
+
+  let genuinelyUnrecoverable = false;
+  try {
+    genuinelyUnrecoverable = await detectMdatWithoutMoov(tmpPath);
+  } catch (err) {
+    logger.warn({ err, videoId }, "[video-validation] mdat/moov detection failed — proceeding with remux attempt anyway");
+  }
+
+  if (genuinelyUnrecoverable) {
+    logger.warn(
+      { videoId, objectKey },
+      "[video-validation] remediation skipped — mdat present but moov permanently missing (unrecoverable via stream-copy remux)",
+    );
+    return { attempted: false, updatedChecks: [], repairsPerformed: [], newDurationSecs: null, rootCauseCode: "CORRUPT_SOURCE" };
+  }
+
+  const repairedPath = path.join(tmpDir, "repaired.mp4");
+  let strategy: string | null = null;
+  try {
+    strategy = await remuxForFaststart(tmpPath, repairedPath, videoId);
+  } catch (err) {
+    logger.warn({ err, videoId, objectKey }, "[video-validation] remediation remux threw");
+    return { attempted: true, updatedChecks: [], repairsPerformed: [], newDurationSecs: null, rootCauseCode: "REMEDIATION_EXHAUSTED" };
+  }
+
+  if (!strategy) {
+    return { attempted: true, updatedChecks: [], repairsPerformed: [], newDurationSecs: null, rootCauseCode: "REMEDIATION_EXHAUSTED" };
+  }
+
+  const updatedChecks: VideoCheckResult[] = [];
+  for (const failedCheck of failedChecks) {
+    if (failedCheck.check === "FILE_INTEGRITY") {
+      updatedChecks.push(await checkFileIntegrity(repairedPath).catch((err: Error) => ({
+        check: "FILE_INTEGRITY", status: "skip" as CheckStatus, message: `Re-check skipped: ${err.message}`,
+      })));
+    } else if (failedCheck.check === "CODEC_COMPAT") {
+      updatedChecks.push(await checkCodecCompat(repairedPath).catch((err: Error) => ({
+        check: "CODEC_COMPAT", status: "skip" as CheckStatus, message: `Re-check skipped: ${err.message}`,
+      })));
+    } else if (failedCheck.check === "FIRST_FRAME") {
+      updatedChecks.push(await checkFirstFrame(repairedPath).catch((err: Error) => ({
+        check: "FIRST_FRAME", status: "skip" as CheckStatus, message: `Re-check skipped: ${err.message}`,
+      })));
+    } else if (failedCheck.check === "LAST_FRAME") {
+      updatedChecks.push(await checkLastFrame(repairedPath, storedDurationSecs).catch((err: Error) => ({
+        check: "LAST_FRAME", status: "skip" as CheckStatus, message: `Re-check skipped: ${err.message}`,
+      })));
+    }
+  }
+
+  const stillFailing = updatedChecks.filter((c) => c.status === "fail");
+  if (stillFailing.length > 0) {
+    logger.warn(
+      { videoId, objectKey, strategy, stillFailing: stillFailing.map((c) => c.check) },
+      "[video-validation] remediation remux ran but repaired output still fails — treating as exhausted",
+    );
+    return { attempted: true, updatedChecks: [], repairsPerformed: [], newDurationSecs: null, rootCauseCode: "REMEDIATION_EXHAUSTED" };
+  }
+
+  // Repair succeeded — replace the stored blob so the fix is durable across
+  // restarts/re-validation, not just for this in-memory report.
+  const repairsPerformed: string[] = [
+    `REMUX_REPAIR: strategy='${strategy}' fixed ${failedChecks.map((c) => c.check).join(", ")}`,
+  ];
+  let newDurationSecs: number | null = null;
+  try {
+    await uploadFromTemp(repairedPath, objectKey, logger);
+    const durProbe = await spawnWithTimeout(
+      "ffprobe",
+      ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", repairedPath],
+      CHECK_TIMEOUT_MS,
+    );
+    const probed = parseFloat(durProbe.stdout.trim());
+    if (Number.isFinite(probed) && probed > 0) newDurationSecs = probed;
+
+    await db
+      .update(schema.videosTable)
+      .set({ faststartApplied: true })
+      .where(eq(schema.videosTable.id, videoId))
+      .catch((err: unknown) => {
+        logger.warn({ err, videoId }, "[video-validation] failed to persist faststartApplied after remediation (non-fatal)");
+      });
+    repairsPerformed.push("BLOB_REPLACED: repaired file re-uploaded to storage — fix is durable across restarts");
+    logger.info({ videoId, objectKey, strategy }, "[video-validation] remediation succeeded — video repaired and re-validated");
+  } catch (err) {
+    // The repaired file passed re-validation in-memory, but we could not make
+    // the fix durable. Surface this clearly rather than silently keeping the
+    // old (still-broken) blob while reporting checks as passing.
+    logger.error(
+      { err, videoId, objectKey },
+      "[video-validation] remediation passed re-validation but re-upload failed — stored blob is UNCHANGED; will retry on next attempt",
+    );
+    return { attempted: true, updatedChecks: [], repairsPerformed: [], newDurationSecs: null, rootCauseCode: "REMEDIATION_EXHAUSTED" };
+  }
+
+  return { attempted: true, updatedChecks, repairsPerformed, newDurationSecs };
+}
+
+function failedCheck_names(checks: VideoCheckResult[]): string {
+  return checks.map((c) => c.check).join(", ");
+}
+
 // ── Main orchestrator ─────────────────────────────────────────────────────────
 
 interface RunValidationOpts {
@@ -795,11 +977,19 @@ export async function runVideoValidation(
 
   const videos = schema.videosTable;
 
-  // Mark as running immediately so the admin UI reflects progress.
+  // Mark as running immediately so the admin UI reflects progress. Stamp
+  // validationStartedAt so the stuck-job recovery worker can detect a crash
+  // mid-run (process restart / OOM / unhandled rejection never reaching the
+  // terminal write below), and bump validationAttempts so backoff/self-heal
+  // caps have a real counter to work from.
   if (storeResult) {
     await db
       .update(videos)
-      .set({ validationStatus: "running" })
+      .set({
+        validationStatus: "running",
+        validationStartedAt: new Date(),
+        validationAttempts: sql`${videos.validationAttempts} + 1`,
+      })
       .where(eq(videos.id, videoId))
       .catch((err: unknown) => {
         logger.warn({ err, videoId }, "[video-validation] failed to mark running (non-fatal)");

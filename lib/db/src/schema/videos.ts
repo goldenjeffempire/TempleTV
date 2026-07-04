@@ -178,6 +178,20 @@ export const videosTable = pgTable("managed_videos", {
   validationReport: jsonb("validation_report"),
   // UTC timestamp of the most recent completed validation run.
   validationCompletedAt: timestamp("validation_completed_at", { withTimezone: true }),
+  // Number of times validation has been *scheduled* for this video (initial
+  // run + every retry/self-heal re-attempt). Used to (a) apply exponential
+  // backoff on transient/infra failures, (b) cap self-healing re-attempts on
+  // rows that are genuinely corrupt so the recovery worker doesn't loop
+  // forever, and (c) surface "stuck after N attempts" in health monitoring.
+  // Resets to 0 on a new upload (new objectPath) — same convention as
+  // faststartAttempts above.
+  validationAttempts: integer("validation_attempts").notNull().default(0),
+  // UTC timestamp of when the *current* validation attempt began (set when
+  // validationStatus transitions to 'running'). Used by the stuck-job
+  // recovery worker to detect jobs that crashed mid-run (process restart,
+  // OOM, unhandled rejection) and never reached a terminal status — such a
+  // row would otherwise sit in 'running' forever with no other signal.
+  validationStartedAt: timestamp("validation_started_at", { withTimezone: true }),
   // ── Media pipeline state machine (media-pipeline/pipeline-stage.ts) ───────
   // Canonical, explicit stage for local (non-YouTube) upload processing.
   // Enforced forward-only (except 'failed', reachable from any stage) by
