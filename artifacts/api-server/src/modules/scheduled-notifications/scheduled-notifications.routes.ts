@@ -36,9 +36,21 @@ const ScheduledNotifSchema = z.object({
   scheduledAt: z.string(),
   status: z.string(),
   sentCount: z.number().int().nullable(),
+  // Dedicated retry-attempt counter (decoupled from sentCount — see
+  // lib/db/src/schema/scheduled-notifications.ts for why).
+  attempts: z.number().int(),
   errorMessage: z.string().nullable(),
   createdAt: z.string(),
   sentAt: z.string().nullable(),
+  claimedAt: z.string().nullable(),
+  deadLetteredAt: z.string().nullable(),
+});
+
+const HealthResponseSchema = z.object({
+  pendingDue: z.number().int(),
+  sending: z.number().int(),
+  deadLetter: z.number().int(),
+  oldestPendingDueAgeMs: z.number().int().nullable(),
 });
 
 const ScheduleBodySchema = z.object({
@@ -61,9 +73,12 @@ function toDto(row: typeof scheduled.$inferSelect): z.infer<typeof ScheduledNoti
     scheduledAt: row.scheduledAt.toISOString(),
     status: row.status,
     sentCount: row.sentCount,
+    attempts: row.attempts,
     errorMessage: row.errorMessage,
     createdAt: row.createdAt.toISOString(),
     sentAt: row.sentAt?.toISOString() ?? null,
+    claimedAt: row.claimedAt?.toISOString() ?? null,
+    deadLetteredAt: row.deadLetteredAt?.toISOString() ?? null,
   };
 }
 
@@ -192,6 +207,50 @@ export async function scheduledNotificationsRoutes(app: FastifyInstance) {
         .orderBy(desc(scheduled.scheduledAt))
         .limit(limit);
       return { count: rows.length, items: rows.map(toDto) };
+    },
+  );
+
+  // Health/monitoring snapshot for the dispatcher — same underlying counts
+  // as the Prometheus backlog gauge, exposed as JSON for the admin console
+  // and for lightweight uptime checks that don't scrape /metrics.
+  r.get(
+    "/notifications/scheduled/health",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Scheduled-notification dispatcher health snapshot (backlog + dead-letter counts)",
+        response: { 200: HealthResponseSchema, 429: z.object({ error: z.string() }) },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async () => {
+      const [pendingDueRows, sendingRows, deadLetterRows, oldestPending] = await Promise.all([
+        db
+          .select({ id: scheduled.id })
+          .from(scheduled)
+          .where(and(eq(scheduled.status, "pending"), lte(scheduled.scheduledAt, new Date()))),
+        db.select({ id: scheduled.id }).from(scheduled).where(eq(scheduled.status, "sending")),
+        db
+          .select({ id: scheduled.id })
+          .from(scheduled)
+          .where(and(eq(scheduled.status, "failed"))),
+        db
+          .select({ scheduledAt: scheduled.scheduledAt })
+          .from(scheduled)
+          .where(and(eq(scheduled.status, "pending"), lte(scheduled.scheduledAt, new Date())))
+          .orderBy(scheduled.scheduledAt)
+          .limit(1),
+      ]);
+      return {
+        pendingDue: pendingDueRows.length,
+        sending: sendingRows.length,
+        deadLetter: deadLetterRows.length,
+        oldestPendingDueAgeMs: oldestPending[0]
+          ? Date.now() - oldestPending[0].scheduledAt.getTime()
+          : null,
+      };
     },
   );
 

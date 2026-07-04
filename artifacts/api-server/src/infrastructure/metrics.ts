@@ -362,3 +362,38 @@ export const workerCircuitResetTotal = new Counter({
   labelNames: ["worker", "service", "env"] as const,
   registers: [promRegistry],
 });
+
+/**
+ * Backlog sizes for the scheduled-notification dispatcher, refreshed once
+ * per dispatcher tick. `state` distinguishes pending-due (waiting to be
+ * claimed), sending (in-flight — should normally be ~0 between ticks),
+ * and dead_letter (permanently exhausted).
+ */
+export const scheduledNotifBacklogGauge = new Gauge({
+  name: "scheduled_notification_backlog",
+  help: "Scheduled notification row counts by state (pending_due, sending, dead_letter)",
+  labelNames: ["state", "service", "env"] as const,
+  registers: [promRegistry],
+});
+
+/**
+ * Total dispatch attempts by outcome. `result` is "sent" or "failed" (a
+ * failed attempt that hasn't necessarily exhausted retries yet).
+ */
+export const scheduledNotifDispatchedTotal = new Counter({
+  name: "scheduled_notification_dispatched_total",
+  help: "Total scheduled-notification dispatch attempts, by result",
+  labelNames: ["result", "service", "env"] as const,
+  registers: [promRegistry],
+});
+
+/**
+ * Total scheduled notifications that exhausted SCHEDULED_NOTIF_MAX_ATTEMPTS
+ * and were permanently dead-lettered (status=failed, deadLetteredAt set).
+ */
+export const scheduledNotifDeadLetterTotal = new Counter({
+  name: "scheduled_notification_dead_letter_total",
+  help: "Total scheduled notifications permanently dead-lettered after exhausting retries",
+  labelNames: ["service", "env"] as const,
+  registers: [promRegistry],
+});

@@ -106,7 +106,10 @@ export const notificationsService = {
    * transaction so a partial failure (e.g. count succeeds, insert
    * fails) doesn't leave orphaned state.
    */
-  async sendPush(body: z.infer<typeof SendPushBodySchema>) {
+  async sendPush(
+    body: z.infer<typeof SendPushBodySchema>,
+    opts: { awaitDelivery?: boolean } = {},
+  ) {
     // Fast-path dedup: if the caller supplied an idempotency key and
     // we already have a row for it, return it immediately. The unique
     // index below makes the second INSERT safe even if two requests
@@ -197,11 +200,21 @@ export const notificationsService = {
         : "push notification queued for delivery",
     );
 
-    // Fire-and-forget actual push delivery in background. The HTTP handler
-    // returns immediately — the client doesn't need to wait for APNs/FCM/
-    // Web Push round-trips (which can take 1–3 s each). The notification
-    // row status is updated from "pending" to "sent" or "failed" once
-    // delivery completes. Deduplicated rows are already sent/failed — skip.
+    // Fire-and-forget actual push delivery in background by default. The
+    // HTTP handler returns immediately — the client doesn't need to wait
+    // for APNs/FCM/Web Push round-trips (which can take 1–3 s each). The
+    // notification row status is updated from "pending" to "sent" or
+    // "failed" once delivery completes. Deduplicated rows are already
+    // sent/failed — skip.
+    //
+    // callers that need the *true* delivery outcome before proceeding
+    // (currently: the scheduled-notification dispatcher) pass
+    // `awaitDelivery: true`. Without this, the dispatcher would mark its
+    // own row "sent" with `sentCount = total` (the estimated recipient
+    // count at insert time) the instant this call returns — before actual
+    // delivery even started — so a genuine delivery failure downstream
+    // would never surface on the scheduled row, and sent_count would never
+    // reflect real deliveries.
     //
     // .catch() is added so unexpected errors from deliverPushNotification
     // surface in logs rather than being swallowed silently. The `void`
@@ -209,25 +222,37 @@ export const notificationsService = {
     // crashes (e.g., missing DB column, network stack failure) from the
     // on-call engineer. The row is already persisted in sent_notifications
     // so the delivery can be retried manually if the error is logged.
+    let finalRow = row;
     if (!deduplicated) {
-      deliverPushNotification({
+      const deliveryPromise = deliverPushNotification({
         notificationId: row.id,
         title: body.title,
         body: body.body,
         type: body.type,
         videoId: body.videoId,
-      }).catch((err: unknown) => {
-        logger.error(
-          { err, notificationId: row.id, type: body.type },
-          "push notification delivery threw unexpectedly — delivery may be incomplete",
-        );
       });
+      if (opts.awaitDelivery) {
+        await deliveryPromise;
+        const [refreshed] = await db
+          .select()
+          .from(sent)
+          .where(eq(sent.id, row.id))
+          .limit(1);
+        if (refreshed) finalRow = refreshed;
+      } else {
+        deliveryPromise.catch((err: unknown) => {
+          logger.error(
+            { err, notificationId: row.id, type: body.type },
+            "push notification delivery threw unexpectedly — delivery may be incomplete",
+          );
+        });
+      }
     }
 
     return {
-      ...toDto(row),
+      ...toDto(finalRow),
       recipients: total,
-      delivered: total,
+      delivered: finalRow.status === "sent" ? finalRow.sentCount : total,
       deduplicated,
     };
   },

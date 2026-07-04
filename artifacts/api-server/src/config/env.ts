@@ -234,6 +234,11 @@ const Env = z.object({
   // accuracy without thrashing the DB.
   SCHEDULED_NOTIF_POLL_MS: z.coerce.number().int().positive().default(30_000),
   SCHEDULED_NOTIF_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
+  // Bounds how many rows a single dispatcher tick claims with
+  // `FOR UPDATE SKIP LOCKED`. Without a cap, a large backlog (e.g. after
+  // downtime) would claim thousands of rows in one UPDATE, holding row
+  // locks for the full serial processing loop and starving other writers.
+  SCHEDULED_NOTIF_BATCH_SIZE: z.coerce.number().int().positive().default(25),
 
   // Transcoder dispatcher cadence. Polls `transcoding_jobs` for
   // status='queued' rows and runs ffmpeg one job at a time per replica.
