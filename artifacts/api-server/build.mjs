@@ -91,6 +91,11 @@ const shared = {
     // zod v4 ships ESM-only files that esbuild cannot resolve through pnpm's
     // virtual store symlinks on Replit. Externalise it so Node loads it at runtime.
     "zod",
+    // drizzle-orm sub-paths (pg-core, relations, etc.) live in lib/db's own
+    // node_modules copy which esbuild cannot resolve through pnpm's virtual
+    // store symlinks. Externalise the entire package so Node loads it at runtime.
+    "drizzle-orm",
+    "drizzle-orm/*",
   ],
 };
 
