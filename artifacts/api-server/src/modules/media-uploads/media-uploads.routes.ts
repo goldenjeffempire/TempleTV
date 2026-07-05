@@ -471,6 +471,14 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
           videoSource: "local",
           localVideoUrl: localVideoUrl ?? null,
           featured: body.featured ?? false,
+          // Blob is confirmed committed by completeMultipartUpload + headObject
+          // above. Stamp s3MirroredAt immediately so enqueueIfMissing() can
+          // admit this video without needing the inline repair path.
+          s3MirroredAt: new Date(),
+          objectPath: body.objectKey,
+          originalFilename: body.originalFilename ?? null,
+          mimeType: body.mimeType ?? null,
+          sizeBytes: body.sizeBytes ?? null,
         })
         .returning()
         .catch(async (dbErr: unknown) => {

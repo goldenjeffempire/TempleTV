@@ -547,7 +547,6 @@ export async function scanLibraryAndEnqueue(opts: {
         transcodingErrorCode: videosTable.transcodingErrorCode,
         s3MirroredAt: videosTable.s3MirroredAt,
         category: videosTable.category,
-        validationStatus: videosTable.validationStatus,
       })
       .from(videosTable)
       .where(
@@ -678,7 +677,6 @@ function isBlockedOnlyByMissingBlobConfirmation(row: {
 }): boolean {
   if (row.videoSource === "youtube") return false;
   if (row.category === "midnight-prayers") return false;
-  if (row.validationStatus === "failed") return false;
   if (
     row.transcodingErrorCode &&
     (TERMINAL_ERROR_CODES as ReadonlyArray<string>).includes(row.transcodingErrorCode)
@@ -744,15 +742,6 @@ function isPlayableForBroadcast(row: {
   // this category must never appear in the main queue regardless of upload
   // state, transcoding status, or caller reason.
   if (row.category === "midnight-prayers") return false;
-
-  // Videos that definitively failed the ffprobe/codec/container validation
-  // pipeline are never broadcast-eligible — playing them causes dead air or
-  // playback errors on client devices.
-  // null / undefined / "pending" / "running" / "passed" / "warn" are all
-  // allowed through. Only the explicit "failed" status blocks admission, so
-  // videos uploaded before validation ran (or on deployments where the
-  // validation worker is disabled) are never silently blocked.
-  if (row.validationStatus === "failed") return false;
 
   if (row.localVideoUrl && row.localVideoUrl.trim() !== "") {
     // ── Blob-existence gate ─────────────────────────────────────────────────

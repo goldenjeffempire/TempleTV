@@ -195,23 +195,21 @@ class QueueIntegrityValidatorImpl {
           });
         }
 
-        // VALIDATION_FAILED: the video passed structural checks at upload time
-        // but the background ffprobe/codec/container validation pipeline later
-        // determined it is not playable (bad codec, corrupt container, no video
-        // stream, etc.). Playing it would cause dead air on every client.
-        // isPlayableForBroadcast() already blocks re-enqueue; this check evicts
-        // items that were enqueued *before* validation completed or before this
-        // guard was deployed.
+        // VALIDATION_FAILED (monitoring only): validation reported an issue for
+        // this video. Surfaced as a warning for operator visibility but does NOT
+        // deactivate the queue item — videos are broadcast-eligible immediately
+        // after blob confirmation regardless of validation state. Raw MP4s are
+        // served directly via HTTP byte-range; validation is advisory only.
         if (row.videoId && row.vValidationStatus === "failed") {
           issues.push({
-            severity: "error",
+            severity: "warn",
             itemId: row.id,
             itemTitle: row.title,
             code: "VALIDATION_FAILED",
             message:
               `Video '${row.videoId}' has validationStatus='failed' — ` +
-              "ffprobe/codec checks determined it is unplayable. " +
-              "Re-upload with a compatible MP4 to restore.",
+              "ffprobe/codec checks reported an issue. Item remains in broadcast rotation. " +
+              "Re-upload with a compatible MP4 if playback problems occur.",
           });
         }
 
@@ -617,46 +615,54 @@ class QueueIntegrityValidatorImpl {
       // NOTE: FASTSTART_PENDING auto-fix removed — raw MP4 admitted directly.
       // No de-queuing for faststart_pending reason is performed.
 
-      // ── Auto-fix: deactivate VALIDATION_FAILED items ─────────────────────
-      // Videos whose ffprobe/codec validation pipeline returned 'failed' are
-      // permanently unplayable. Keeping them in the active queue causes dead
-      // air on every client — the orchestrator will skip them repeatedly,
-      // driving up the auto-skip counter and potentially triggering a cascade.
-      // isPlayableForBroadcast() blocks new enqueue attempts; this pass evicts
-      // items that were already in the queue when they failed validation.
-      const validationFailedIds = issues
-        .filter((i) => i.severity === "error" && i.code === "VALIDATION_FAILED" && i.itemId)
-        .map((i) => i.itemId!);
-      if (validationFailedIds.length > 0) {
+      // NOTE: VALIDATION_FAILED is a warning only — no auto-deactivation.
+      // Videos with validationStatus='failed' remain in the broadcast queue
+      // so they can play via HTTP byte-range. Validation is advisory; it does
+      // not gate broadcast admission or queue membership.
+
+      // ── Auto-fix (reverse): re-activate items previously deactivated by validation_failed ──
+      // Pipeline was updated to treat validation as advisory-only. Items that
+      // were previously auto-deactivated by the old validation gate are restored
+      // to broadcast rotation so they can play immediately.
+      {
+        type ValidationReviveRow = { id: string; title: string };
+        let validationReviveRows: ValidationReviveRow[] = [];
         try {
-          await db
-            .update(schema.broadcastQueueTable)
-            .set({ isActive: false, validatorDeactivatedReason: "validation_failed" })
-            .where(inArray(schema.broadcastQueueTable.id, validationFailedIds));
-          logger.warn(
-            { count: validationFailedIds.length, itemIds: validationFailedIds },
-            "[queue-validator] AUTO-FIX: deactivated VALIDATION_FAILED items — " +
-            "validationStatus='failed' means ffprobe/codec checks reported an unplayable file; " +
-            "re-upload with a compatible MP4 to restore",
-          );
-          adminEventBus.push("broadcast-queue-updated", {
-            reason: "integrity-fix-validation-failed",
-            count: validationFailedIds.length,
-          });
-          adminEventBus.push("videos-library-updated", {
-            reason: "integrity-fix-validation-failed",
-            count: validationFailedIds.length,
-          });
-          sendBroadcastWebhook("item_deactivated", "main", {
-            reason: "validation_failed",
-            count: validationFailedIds.length,
-            itemIds: validationFailedIds,
-          });
-        } catch (fixErr) {
-          logger.warn(
-            { err: fixErr, count: validationFailedIds.length },
-            "[queue-validator] AUTO-FIX: failed to deactivate VALIDATION_FAILED items (non-fatal)",
-          );
+          const result = await db.execute<ValidationReviveRow>(sql`
+            SELECT bq.id, bq.title
+            FROM broadcast_queue bq
+            INNER JOIN managed_videos mv ON mv.id = bq.video_id
+            WHERE bq.is_active = false
+              AND bq.validator_deactivated_reason = 'validation_failed'
+              AND mv.local_video_url IS NOT NULL
+          `);
+          validationReviveRows = (result.rows as ValidationReviveRow[]) ?? [];
+        } catch (qErr) {
+          logger.debug({ err: qErr }, "[queue-validator] reverse-VALIDATION_FAILED query failed (non-fatal)");
+        }
+
+        if (validationReviveRows.length > 0) {
+          const reviveIds = validationReviveRows.map((r) => r.id);
+          try {
+            await db
+              .update(schema.broadcastQueueTable)
+              .set({ isActive: true, validatorDeactivatedReason: null })
+              .where(inArray(schema.broadcastQueueTable.id, reviveIds));
+            logger.info(
+              { count: reviveIds.length, itemIds: reviveIds },
+              "[queue-validator] AUTO-FIX (reverse): re-activated validation_failed items — " +
+              "validation is now advisory only; items returned to broadcast rotation",
+            );
+            adminEventBus.push("broadcast-queue-updated", {
+              reason: "integrity-fix-revived-validation-failed",
+              count: reviveIds.length,
+            });
+          } catch (fixErr) {
+            logger.warn(
+              { err: fixErr, count: reviveIds.length },
+              "[queue-validator] AUTO-FIX (reverse): failed to re-activate validation_failed items (non-fatal)",
+            );
+          }
         }
       }
 
