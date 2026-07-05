@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import Hls from "hls.js";
 import { useV2Broadcast } from "@workspace/player-core/react";
 import type { V2Source, V2SourceKind } from "@workspace/player-core";
@@ -323,17 +323,14 @@ function classifySourceFailure(
     if (isApiUpload) {
       // MP4-first policy: TV, mobile, and web all receive the raw MP4 when HLS
       // is not yet ready. A failure here is NOT preview-only — it likely affects
-      // all viewer surfaces too. The most common cause is moov-atom-at-EOF
-      // (faststart not yet applied). Faststart runs automatically 30–90 s after
-      // upload and relocates the moov atom to the front of the file so browsers
-      // can stream it without buffering the entire file first.
+      // all viewer surfaces too.
       return {
         scope: "likely-all-surfaces",
         headline: "MP4 source issue — may affect viewers",
         reason:
-          "The browser could not load this MP4 upload. Most likely the moov metadata block is still at the end of the file (faststart not yet applied). Click Re-apply faststart below to trigger it immediately — or the background worker retries automatically every 5 minutes.",
+          "The browser could not load this MP4 upload. The file may still be assembling or the source may be unavailable.",
         viewerNote:
-          "With MP4-first broadcasting, TV and mobile viewers receive the same MP4 source when HLS is not yet ready. Apply Faststart to fix playback for everyone, or wait for it to complete automatically.",
+          "With MP4-first broadcasting, TV and mobile viewers receive the same MP4 source when HLS is not yet ready. Check the Videos page for the current upload status.",
         urlHint: url,
         typeLabel: "MP4 upload",
       };
@@ -704,28 +701,6 @@ export function BroadcastPreviewV2({ className }: Props) {
     return classifySourceFailure(source);
   }, [snapshot.state, snapshot.activeBufferId, snapshot.bufferA, snapshot.bufferB, server]);
 
-  // Extract the managed_videos ID for the currently-failing item so the operator
-  // can re-trigger faststart directly from this panel. Prefer the active buffer
-  // (which is the item the FSM was trying to play) then fall back to the server
-  // snapshot's current item. `videoId` was added to V2Item in player-core v2.1.
-  const faststartVideoId = useMemo<string | null>(() => {
-    if (snapshot.state !== "SKIP_PENDING") return null;
-    const activeItem =
-      snapshot.activeBufferId === "A" ? snapshot.bufferA : snapshot.bufferB;
-    const vid =
-      (activeItem && "videoId" in activeItem
-        ? (activeItem as { videoId?: string | null }).videoId
-        : null) ?? server?.current?.videoId ?? null;
-    return vid ?? null;
-  }, [snapshot.state, snapshot.activeBufferId, snapshot.bufferA, snapshot.bufferB, server]);
-
-  const faststartMutation = useMutation({
-    mutationFn: (videoId: string) =>
-      api.post<{ ok: boolean; videoId: string }>(`/admin/videos/${videoId}/faststart`),
-    onSuccess: () => toast.success("Faststart applied — stream will load faster"),
-    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Failed to apply faststart"),
-  });
-
   const title = server?.override?.title ?? server?.current?.title ?? null;
   // Thumbnail used for the cinematic ambient blur fill behind the video frame.
   // Falls back through: current item → next item → nothing (plain black).
@@ -967,47 +942,6 @@ export function BroadcastPreviewV2({ className }: Props) {
                       <p className="text-[10px] text-muted-foreground/60 font-mono break-all leading-tight border-t border-border/50 pt-2">
                         {truncateUrl(skipDiagnosis.urlHint)}
                       </p>
-                    )}
-
-                    {/* One-click faststart action — shown when we know the videoId and the
-                        failure is an API-upload MP4 (moov atom likely at EOF). */}
-                    {faststartVideoId && skipDiagnosis.scope === "preview-only" && (
-                      <div className="border-t border-border/50 pt-2">
-                        {faststartMutation.isSuccess ? (
-                          <div className="flex items-center gap-1.5 text-[11px] text-emerald-400">
-                            <CheckCircle2 size={12} className="shrink-0" />
-                            <span>Faststart queued — queue will reload automatically.</span>
-                          </div>
-                        ) : faststartMutation.isError ? (
-                          <div className="space-y-1.5">
-                            <div className="flex items-center gap-1.5 text-[11px] text-red-400">
-                              <AlertTriangle size={12} className="shrink-0" />
-                              <span>Faststart request failed. Try again from the Videos page.</span>
-                            </div>
-                            <button
-                              className="flex items-center gap-1.5 text-[11px] font-medium text-amber-300 hover:text-amber-200 transition-colors"
-                              onClick={() => faststartMutation.mutate(faststartVideoId)}
-                            >
-                              <RefreshCw size={11} className="shrink-0" />
-                              Retry
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            className="flex items-center gap-1.5 text-[11px] font-medium text-emerald-300 hover:text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                            onClick={() => faststartMutation.mutate(faststartVideoId)}
-                            disabled={faststartMutation.isPending}
-                            title="Re-run MP4 faststart to relocate the moov atom to the beginning of the file"
-                          >
-                            {faststartMutation.isPending ? (
-                              <Loader2 size={11} className="animate-spin shrink-0" />
-                            ) : (
-                              <RefreshCw size={11} className="shrink-0" />
-                            )}
-                            {faststartMutation.isPending ? "Applying faststart…" : "Re-apply faststart"}
-                          </button>
-                        )}
-                      </div>
                     )}
 
                     {/* Read-only guarantee footnote */}

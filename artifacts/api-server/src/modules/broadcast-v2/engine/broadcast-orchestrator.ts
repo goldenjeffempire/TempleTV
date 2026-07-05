@@ -122,7 +122,7 @@ const EMPTY_POLLS_BEFORE_LIBRARY_SCAN = 6;
  * If the DB has active items that are being filtered out, a targeted recovery
  * cycle runs: re-enable any DB-suspended items, clear the in-memory bad-URL
  * cache, and trigger an immediate faststart-recovery sweep so items with
- * faststart_applied=false can be fast-started and re-admitted.
+ * Videos with source issues can be re-admitted after the underlying problem is fixed.
  *
  * This fires before the library-scan backstop (EMPTY_POLLS_BEFORE_LIBRARY_SCAN)
  * and is complementary to it: the library scan promotes missing videos, the

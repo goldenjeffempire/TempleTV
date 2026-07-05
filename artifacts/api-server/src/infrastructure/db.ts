@@ -388,20 +388,6 @@ export async function ensureMidnightPrayersTable(): Promise<void> {
 
 /**
  * Reset managed_videos rows stuck in transcodingStatus='processing'.
- *
- * 'processing' is the transient state set by runFaststart while it atomically
- * replaces the stored blob.  runFaststart restores the prior status on a clean
- * failure, but a mid-faststart server crash leaves the row permanently blocked:
- * loadActive() excludes 'processing' items, so the broadcast queue slot is
- * silently held but never aired.
- *
- * At startup we can safely reset any 'processing' row back to 'queued' (if it
- * has a playable localVideoUrl) or 'none' (if not).  The object-storage blob is
- * always consistent — runFaststart uses a multipart atomic swap so the key
- * holds either the old un-optimised file or the fully written new file.
- * faststartApplied is intentionally left unchanged; the value was false before
- * the crash and the file may or may not be optimised.
- *
  * Called once at boot, non-blocking.
  */
 export async function resetStuckProcessingVideos(): Promise<void> {
@@ -419,9 +405,7 @@ export async function resetStuckProcessingVideos(): Promise<void> {
     if (reset > 0) {
       logger.warn(
         { reset },
-        "db: reset stuck 'processing' videos to queued/none — " +
-          "these were interrupted mid-faststart by a server crash; " +
-          "they will join the broadcast queue once HLS transcoding completes (HLS-gate policy)",
+        "db: reset stuck 'processing' videos to queued/none",
       );
     } else {
       logger.info("db: no stuck processing videos found at startup");
@@ -680,14 +664,6 @@ export async function ensureRuntimeIndexes(): Promise<void> {
     await run("idx_managed_videos_source_transcoding", `
       CREATE INDEX IF NOT EXISTS idx_managed_videos_source_transcoding
         ON managed_videos (video_source, transcoding_status)
-    `);
-    await run("idx_managed_videos_faststart_applied", `
-      CREATE INDEX IF NOT EXISTS idx_managed_videos_faststart_applied
-        ON managed_videos (faststart_applied)
-    `);
-    await run("idx_managed_videos_broadcast_admission", `
-      CREATE INDEX IF NOT EXISTS idx_managed_videos_broadcast_admission
-        ON managed_videos (video_source, transcoding_status, faststart_applied)
     `);
     await run("idx_managed_videos_uploaded_by", `
       CREATE INDEX IF NOT EXISTS idx_managed_videos_uploaded_by
@@ -1194,21 +1170,6 @@ export async function ensureRuntimeIndexes(): Promise<void> {
         ON s3_upload_telemetry (video_id, event, created_at DESC)
     `);
 
-    // ── Faststart recovery sweep ────────────────────────────────────────────
-    // faststartRecoveryWorker.sweep() joins broadcast_queue with managed_videos
-    // to find active queue items whose linked video has faststart_applied=false,
-    // video_source='local', and a non-null objectPath. This partial index makes
-    // that sweep O(un-fast-started local rows) instead of a full table scan.
-    // run() catches SQLSTATE 42703 if faststart_applied is missing on an old
-    // prod DB that hasn't run ensureUserSchemaColumns yet — non-fatal; the next
-    // restart (post-column-add) will create it.
-    await run("idx_managed_videos_faststart_pending", `
-      CREATE INDEX IF NOT EXISTS idx_managed_videos_faststart_pending
-        ON managed_videos (object_path)
-        WHERE video_source     = 'local'
-          AND faststart_applied = false
-          AND object_path       IS NOT NULL
-    `);
 
     // ── Transcoding error kind — broadcast reprobe + admin broadcast view ───
     // admin-broadcast.routes.ts and broadcast-v2/io/rest.routes.ts query
@@ -1345,11 +1306,6 @@ export async function ensureUserSchemaColumns(): Promise<void> {
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS metadata_locked BOOLEAN NOT NULL DEFAULT false
     `);
-    // Faststart tracking — added May 2026.
-    await col("managed_videos.faststart_applied", `
-      ALTER TABLE managed_videos
-        ADD COLUMN IF NOT EXISTS faststart_applied BOOLEAN NOT NULL DEFAULT false
-    `);
     // Broadcast-only flag — added May 2026.
     // Public catalogue filters WHERE COALESCE(broadcast_only, false) = false.
     await col("managed_videos.broadcast_only", `
@@ -1401,15 +1357,6 @@ export async function ensureUserSchemaColumns(): Promise<void> {
     await col("managed_videos.transcoding_error_kind", `
       ALTER TABLE managed_videos
         ADD COLUMN IF NOT EXISTS transcoding_error_kind TEXT
-    `);
-    // faststart_attempts — added June 2026.
-    // Counter incremented each time runFaststart() is attempted for a video.
-    // The faststart-recovery worker uses this to enforce a per-process attempt
-    // cap (MAX_ATTEMPTS=3) so a permanently corrupt source does not stampede
-    // ffmpeg. NOT NULL DEFAULT 0 matches the Drizzle schema default.
-    await col("managed_videos.faststart_attempts", `
-      ALTER TABLE managed_videos
-        ADD COLUMN IF NOT EXISTS faststart_attempts INTEGER NOT NULL DEFAULT 0
     `);
 
     // ── transcoding_jobs ──────────────────────────────────────────────────

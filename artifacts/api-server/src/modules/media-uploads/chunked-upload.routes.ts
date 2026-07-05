@@ -482,7 +482,6 @@ async function spawnAssemblyRetry(
       const [vRow] = await db
         .select({
           objectPath: videos.objectPath,
-          faststartApplied: videos.faststartApplied,
         })
         .from(videos)
         .where(eq(videos.id, videoId))

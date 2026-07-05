@@ -31,9 +31,9 @@ import {
   Video, Search, MoreVertical, Pencil, Trash2,
   RefreshCw, Star, StarOff, ChevronLeft, ChevronRight, Film, Eye, EyeOff,
   UploadCloud, X, FileVideo, Layers, Lock, LockOpen, Youtube, HardDrive,
-  ArrowUpDown, SlidersHorizontal, Zap, Clapperboard, Globe, AlertTriangle,
+  ArrowUpDown, SlidersHorizontal, Zap, Globe, AlertTriangle,
   Wrench, CheckCircle2, Play, Loader2, Info, ClipboardList, TriangleAlert,
-  CircleCheck, CircleX, RefreshCcw, Inbox, CalendarClock, BookOpen, Plus, Wand2,
+  CircleCheck, CircleX, RefreshCcw, Inbox, CalendarClock, BookOpen, Plus,
   ListChecks,
 } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -93,11 +93,6 @@ interface AdminVideo {
   scheduledPublishAt: string | null;
   scheduledUnpublishAt: string | null;
   chapters: { startSecs: number; title: string }[] | null;
-  /**
-   * Whether the MP4 moov atom has been relocated to the start of the file.
-   * true = faststart done; false = faststart ran and failed; null = never attempted / YouTube.
-   */
-  faststartApplied: boolean | null;
 }
 
 interface VideoListResponse {
@@ -292,39 +287,22 @@ const STATUS_COLORS: Record<string, string> = {
   uploaded: "outline", pending: "outline", none: "outline",
 };
 
-function getLocalStatusBadge(v: { transcodingStatus: string; faststartApplied: boolean | null; videoSource: string }): { label: string; variant: string; title: string } {
-  if (v.videoSource !== "local") {
-    const label = v.transcodingStatus === "hls_ready" || v.transcodingStatus === "ready"
-      ? "MP4 Ready"
-      : v.transcodingStatus === "queued" ? "HLS Queued"
-      : v.transcodingStatus === "encoding" || v.transcodingStatus === "processing" ? "Converting"
-      : v.transcodingStatus === "none" ? "MP4"
-      : v.transcodingStatus || "—";
-    const variant = STATUS_COLORS[v.transcodingStatus] ?? "outline";
-    return { label, variant, title: "" };
-  }
-  // Local video: derive badge from state machine
-  // UPLOADING → VERIFYING → STORED → FASTSTART → READY → QUEUED
-  if (v.transcodingStatus === "processing") {
-    return { label: "Applying FastStart", variant: "secondary", title: "Moov atom relocation in progress — video will enter the broadcast queue automatically when complete" };
-  }
+function getLocalStatusBadge(v: { transcodingStatus: string; videoSource: string }): { label: string; variant: string; title: string } {
   if (v.transcodingStatus === "failed") {
     return { label: "Failed", variant: "destructive", title: "Processing failed — see error details below" };
   }
-  if (v.transcodingStatus === "ready" && v.faststartApplied === true) {
-    return { label: "MP4 Ready", variant: "default", title: "FastStart complete — moov atom is at byte 0; video is broadcast-ready" };
+  if (v.transcodingStatus === "ready" || v.transcodingStatus === "hls_ready") {
+    return { label: "Ready", variant: "default", title: "Video is broadcast-ready" };
   }
-  if (v.faststartApplied === true) {
-    return { label: "MP4 Ready", variant: "default", title: "FastStart complete — video is broadcast-ready" };
-  }
-  if (v.faststartApplied === false) {
-    return { label: "FastStart Failed", variant: "destructive", title: "Moov atom relocation failed — video cannot broadcast until fixed. Use Actions → Re-apply faststart." };
-  }
-  // faststartApplied === null: faststart never attempted (assembling or pending)
   if (v.transcodingStatus === "none") {
-    return { label: "Awaiting FastStart", variant: "outline", title: "Upload assembled — waiting for moov atom relocation before broadcast admission" };
+    return { label: "Uploaded", variant: "outline", title: "Upload complete — video is being prepared for broadcast" };
   }
-  // Fallback for any other status
+  if (v.transcodingStatus === "encoding") {
+    return { label: "Converting", variant: "secondary", title: "HLS transcoding in progress" };
+  }
+  if (v.transcodingStatus === "queued") {
+    return { label: "Queued", variant: "secondary", title: "Video is in the broadcast queue" };
+  }
   return { label: v.transcodingStatus || "—", variant: STATUS_COLORS[v.transcodingStatus] ?? "outline", title: "" };
 }
 
@@ -386,7 +364,7 @@ function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
     const onErr = () => setPlayerError(
       isHls
         ? "HLS stream failed to load in this browser. Try Chrome or Firefox."
-        : "This MP4 could not load. The moov atom may not yet be at the start of the file — faststart may still be in progress. The video is already in the broadcast queue and will air as raw MP4 while faststart optimises it in the background.",
+        : "This MP4 could not load in the browser preview — it may still be assembling. The video will air correctly when it is broadcast.",
     );
     el.src = previewUrl;
     el.addEventListener("loadedmetadata", onMeta);
@@ -403,8 +381,7 @@ function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
   if (!previewUrl) {
     const inProgress =
       video.transcodingStatus === "queued" ||
-      video.transcodingStatus === "encoding" ||
-      video.transcodingStatus === "processing";
+      video.transcodingStatus === "encoding";
     const isCorrupt =
       video.transcodingStatus === "failed" &&
       (video.transcodingErrorCode === "CORRUPT_SOURCE" ||
@@ -417,8 +394,8 @@ function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
           <>
             <Loader2 size={28} className="animate-spin text-amber-500" />
             <div>
-              <p className="font-medium text-sm">Faststart in progress</p>
-              <p className="text-xs text-muted-foreground mt-1">Relocating moov atom for instant playback. Preview will be available shortly.</p>
+              <p className="font-medium text-sm">Processing…</p>
+              <p className="text-xs text-muted-foreground mt-1">Video is being prepared. Preview will be available shortly.</p>
             </div>
           </>
         ) : isCorrupt ? (
@@ -477,12 +454,8 @@ function VideoPreviewPlayer({ video }: { video: AdminVideo }) {
           </>
         ) : (
           <>
-            <Info size={11} className={video.faststartApplied ? "text-emerald-500 shrink-0 mt-0.5" : "text-amber-500 shrink-0 mt-0.5"} />
-            <span>
-              {video.faststartApplied
-                ? "Previewing faststart-optimised MP4 — moov atom is at the front for instant browser playback. This is the same file broadcast viewers receive."
-                : "Previewing raw MP4. Faststart (moov relocation) is pending — browser playback may stall. The video is already in the broadcast queue and airing as raw MP4 while faststart optimises it in the background."}
-            </span>
+            <Info size={11} className="text-blue-500 shrink-0 mt-0.5" />
+            <span>Previewing raw MP4. This is the same file broadcast viewers receive.</span>
           </>
         )}
       </div>
@@ -566,13 +539,6 @@ export default function VideosPage() {
   const [dialogDragOver, setDialogDragOver] = useState(false);
   const [titleErrors, setTitleErrors] = useState<Set<string>>(new Set());
 
-  // Faststart in-flight tracking: Set of video IDs with faststart currently
-  // running server-side (triggered by the operator or recovery worker).
-  // Cleared when the query data confirms faststartApplied=true or on SSE.
-  const [faststartPendingIds, setFaststartPendingIds] = useState<Set<string>>(new Set());
-  // Brief "Faststart ready!" flash (3 s) after the spinner clears.
-  const [faststartJustDoneIds, setFaststartJustDoneIds] = useState<Set<string>>(new Set());
-
   // Upload queue — used only to show active count in the button
   const { summary } = useUploadQueue();
 
@@ -655,45 +621,9 @@ export default function VideosPage() {
     void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
   });
 
-  // broadcast-source-upgraded is emitted by faststart.service (via the caller)
-  // and by the transcoder dispatcher when a source upgrades to mp4_faststart or
-  // hls. Use it to immediately clear the faststart spinner for the specific
-  // video — this fires before the next polling cycle picks up the change.
-  useSSEEvent("broadcast-source-upgraded", (payload) => {
+  useSSEEvent("broadcast-source-upgraded", () => {
     void qc.invalidateQueries({ queryKey: ["admin-videos"] });
-    const p = payload as { videoId?: string } | null;
-    const vid = p?.videoId;
-    if (vid) {
-      setFaststartPendingIds((prev) => {
-        if (!prev.has(vid)) return prev;
-        const next = new Set(prev); next.delete(vid); return next;
-      });
-      setFaststartJustDoneIds((prev) => new Set([...prev, vid]));
-      setTimeout(() => setFaststartJustDoneIds((prev) => {
-        const next = new Set(prev); next.delete(vid); return next;
-      }), 3000);
-    }
   });
-
-  // Watch query data for faststart completions when SSE was missed.
-  // When a pending video's faststartApplied flips to true (server confirmed),
-  // move it from "pending" to "just done" and schedule a 3 s flash clear.
-  useEffect(() => {
-    if (!data || faststartPendingIds.size === 0) return;
-    const readyIds = data.videos
-      .filter((v) => faststartPendingIds.has(v.id) && v.faststartApplied === true)
-      .map((v) => v.id);
-    if (readyIds.length === 0) return;
-    setFaststartPendingIds((prev) => {
-      const next = new Set(prev); readyIds.forEach((id) => next.delete(id)); return next;
-    });
-    setFaststartJustDoneIds((prev) => new Set([...prev, ...readyIds]));
-    const t = setTimeout(() => setFaststartJustDoneIds((prev) => {
-      const next = new Set(prev); readyIds.forEach((id) => next.delete(id)); return next;
-    }), 3000);
-    return () => clearTimeout(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data]);
 
   // Belt-and-suspenders: when any upload completes, force-invalidate all
   // affected query caches so the newly uploaded video appears immediately
@@ -967,55 +897,6 @@ export default function VideosPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
     },
     onError: (e) => toast.error(e instanceof HttpError ? e.message : "Transcoding request failed"),
-  });
-
-  const bulkFaststartAllMutation = useMutation({
-    mutationFn: () =>
-      api.post<{ ok: boolean; queued: number; alreadyRunning: number }>("/admin/videos/faststart-all"),
-    onSuccess: (res) => {
-      if (res.queued === 0) {
-        toast.success("All local videos are already faststart-optimised — nothing to do.");
-      } else {
-        toast.success(
-          `FastStart started for ${res.queued} video${res.queued !== 1 ? "s" : ""} — cards update automatically as each one completes.`,
-        );
-      }
-      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
-      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
-      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
-    },
-    onError: (e) => toast.error(e instanceof HttpError ? e.message : "Bulk faststart request failed"),
-  });
-
-  const faststartMutation = useMutation({
-    mutationFn: (id: string) =>
-      api.post<{ ok: boolean; videoId: string }>(`/admin/videos/${id}/faststart`),
-    onMutate: (id) => {
-      // Immediately show the spinner on the card while the server works.
-      setFaststartPendingIds((prev) => new Set([...prev, id]));
-    },
-    onSuccess: (_, id) => {
-      toast.success("Faststart started — the card updates automatically when complete");
-      void qc.invalidateQueries({ queryKey: ["admin-videos"] });
-      void qc.invalidateQueries({ queryKey: ["youtube-library-videos"] });
-      // Broadcast queue shows source URL status — invalidate so the Broadcast
-      // panel reflects the faststart-in-progress state without waiting for SSE.
-      void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
-      // Faststart creates a transcoding-type job visible in the Transcoding
-      // dashboard — invalidate so the new in-progress row appears immediately.
-      void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
-      void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
-      // Faststart directly addresses "UNSTARTED_FASTSTART" remediation items —
-      // refresh the report so the panel reflects the in-progress state.
-      void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
-      void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
-      void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
-    },
-    onError: (e, id) => {
-      // Clear the spinner immediately on error so the operator knows it didn't start.
-      setFaststartPendingIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
-      toast.error(e instanceof HttpError ? e.message : "Faststart request failed");
-    },
   });
 
   const thumbnailMutation = useMutation({
@@ -1548,18 +1429,6 @@ export default function VideosPage() {
             <Button
               variant="outline"
               size="sm"
-              disabled={bulkFaststartAllMutation.isPending}
-              onClick={() => bulkFaststartAllMutation.mutate()}
-              className="gap-1.5"
-              title="Apply MP4 faststart (moov-atom relocation) to every locally-uploaded video that hasn't been optimised yet. Jobs run sequentially in the background — each card updates automatically when its video completes."
-            >
-              {bulkFaststartAllMutation.isPending
-                ? <><Loader2 size={13} className="animate-spin" /> Optimising…</>
-                : <><Wand2 size={13} /> Optimise All</>}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
               disabled={syncAllToQueueMutation.isPending}
               onClick={() => syncAllToQueueMutation.mutate()}
               className="gap-1.5"
@@ -2046,10 +1915,9 @@ export default function VideosPage() {
                       videoSource={v.videoSource}
                       localVideoUrl={v.localVideoUrl}
                       hlsMasterUrl={v.hlsMasterUrl}
-                      faststartApplied={v.faststartApplied}
                     />
                     {(() => {
-                      const sb = getLocalStatusBadge(v);
+                      const sb = getLocalStatusBadge({ transcodingStatus: v.transcodingStatus, videoSource: v.videoSource });
                       return (
                         <Badge
                           variant={sb.variant as "default" | "secondary" | "outline" | "destructive"}
@@ -2065,7 +1933,7 @@ export default function VideosPage() {
                         • queued  → green badge (informational)
                         • missing → amber "Sync to Queue" button (actionable)
                         • loading → spinner while the query resolves */}
-                    {v.videoSource === "local" && v.faststartApplied === true && (() => {
+                    {v.videoSource === "local" && v.localVideoUrl && (() => {
                       const qs = queueStatus[v.id];
                       const isPending = forceEnqueueMutation.isPending && forceEnqueueMutation.variables === v.id;
                       if (qs === "queued") {
@@ -2086,7 +1954,7 @@ export default function VideosPage() {
                             size="sm"
                             variant="outline"
                             className="h-5 text-[10px] px-1.5 border-amber-400 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 flex items-center gap-1"
-                            title="FastStart complete but video is not yet in the broadcast queue — click to add it now"
+                            title="Video is ready but not yet in the broadcast queue — click to add it now"
                             disabled={isPending}
                             onClick={(e) => { e.stopPropagation(); forceEnqueueMutation.mutate(v.id); }}
                           >
@@ -2108,7 +1976,7 @@ export default function VideosPage() {
                       }
                       return null;
                     })()}
-                    {(v.transcodingStatus === "encoding" || v.transcodingStatus === "processing") && v.transcodingProgress !== null && (
+                    {v.transcodingStatus === "encoding" && v.transcodingProgress !== null && (
                       <div className="w-24 flex flex-col items-end gap-0.5">
                         <div className="w-full h-1 bg-muted rounded-full overflow-hidden">
                           <div
@@ -2118,36 +1986,6 @@ export default function VideosPage() {
                         </div>
                         <span className="text-[9px] text-muted-foreground tabular-nums">{v.transcodingProgress}%</span>
                       </div>
-                    )}
-                    {/* Faststart progress pill — local MP4 uploads only.
-                        Pending → amber spinner; Just done → 3 s emerald flash;
-                        faststartApplied=false → amber "Faststart needed" warning. */}
-                    {v.videoSource === "local" && v.localVideoUrl && (
-                      faststartPendingIds.has(v.id) ? (
-                        <span
-                          className="text-[9px] text-amber-600 dark:text-amber-400 flex items-center gap-0.5"
-                          title="Relocating moov atom to start of file — card updates automatically when complete"
-                        >
-                          <Loader2 size={8} className="animate-spin flex-shrink-0" />
-                          Applying faststart…
-                        </span>
-                      ) : faststartJustDoneIds.has(v.id) ? (
-                        <span
-                          className="text-[9px] text-emerald-600 dark:text-emerald-400 flex items-center gap-0.5"
-                          title="Moov atom relocated — video is now broadcast-ready from byte 0"
-                        >
-                          <CheckCircle2 size={8} className="flex-shrink-0" />
-                          Faststart ready!
-                        </span>
-                      ) : v.faststartApplied === false ? (
-                        <span
-                          className="text-[9px] text-amber-600 dark:text-amber-400 flex items-center gap-0.5 cursor-help"
-                          title="Moov atom is at end-of-file — TV and mobile players may buffer before playback starts. Use Actions → Re-apply faststart to fix."
-                        >
-                          <AlertTriangle size={8} className="flex-shrink-0" />
-                          Faststart needed
-                        </span>
-                      ) : null
                     )}
                     {v.transcodingStatus === "failed" && v.videoSource === "local" && (
                       <>
@@ -2267,22 +2105,6 @@ export default function VideosPage() {
                             : v.transcodingStatus === "failed"
                               ? "Retry Transcoding"
                               : "Convert to HLS"}
-                        </DropdownMenuItem>
-                      )}
-                      {v.videoSource === "local" && (v.transcodingStatus === "queued" || v.transcodingStatus === "failed" || v.transcodingStatus === "none") && (
-                        <DropdownMenuItem
-                          onClick={() => faststartMutation.mutate(v.id)}
-                          disabled={faststartMutation.isPending || faststartPendingIds.has(v.id)}
-                          title={
-                            faststartPendingIds.has(v.id)
-                              ? "Faststart is already running for this video…"
-                              : "Relocate the moov atom to the front of the MP4 file so it plays from byte 0 on all surfaces — auto-enqueues for broadcast on success"
-                          }
-                        >
-                          {faststartPendingIds.has(v.id)
-                            ? <Loader2 size={13} className="mr-2 text-orange-400 animate-spin" />
-                            : <Clapperboard size={13} className="mr-2 text-orange-500" />}
-                          {faststartPendingIds.has(v.id) ? "Applying faststart…" : "Re-apply faststart"}
                         </DropdownMenuItem>
                       )}
                       <DropdownMenuItem

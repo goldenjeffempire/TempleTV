@@ -199,14 +199,7 @@ export const SAFE_VIDEO_COLS = {
   //
   // metadataLocked / broadcastOnly default to false: safe conservative values
   // (metadata is editable; video is not hidden from the public catalog).
-  //
-  // faststartApplied uses NULL (not false) because false means "faststart
-  // explicitly ran and FAILED" — an important semantic distinction in the
-  // queue-integrity validator (=== false check) and midnight-prayers service.
-  // NULL means "never attempted / unknown", which is the correct fallback for
-  // a pre-migration DB that lacks the column entirely.
   metadataLocked:   sql<boolean>`false`,
-  faststartApplied: sql<boolean | null>`NULL::boolean`,
   broadcastOnly:    sql<boolean>`false`,
   // Late-added text columns — hardcoded NULL so no column reference appears
   // in the SQL until the migration adds them.
@@ -222,8 +215,4 @@ export const SAFE_VIDEO_COLS = {
   // Stubbed NULL here so pre-migration DBs that lack the column never see
   // its name in a query and never throw 42703.
   transcodingErrorKind:         sql<string | null>`NULL`,
-  // Late-added integer column: number of faststart attempts for this video.
-  // Stubbed 0 so pre-migration DBs skip the column reference gracefully;
-  // the faststart-recovery worker treats 0 attempts as "never tried".
-  faststartAttempts:            sql<number>`0`,
 } as const;

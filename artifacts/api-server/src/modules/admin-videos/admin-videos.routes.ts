@@ -107,19 +107,6 @@ const VideoRowSchema = z.object({
   /** Free-form admin-assigned tags. null = no tags. */
   tags: z.array(z.string()).nullable(),
   /**
-   * Whether the MP4 moov atom has been relocated to the start of the file.
-   * - true  → faststart applied; video plays from byte 0 on all surfaces.
-   * - false → faststart explicitly ran and failed (moov still at end-of-file).
-   * - null  → never attempted (pre-migration DBs) or not applicable (YouTube).
-   */
-  faststartApplied: z.boolean().nullable(),
-  /**
-   * Number of faststart processing attempts made so far.
-   * 0 = never attempted; 1–2 = in-progress retries; 3 = max attempts reached (failed).
-   * The recovery worker caps retries at 3 and marks the video permanently failed.
-   */
-  faststartAttempts: z.number().int().nonnegative(),
-  /**
    * Result of the comprehensive 9-check broadcast validation pipeline.
    * null      — never validated (pre-feature rows or YouTube videos).
    * 'pending' — validation scheduled, not yet started.
@@ -289,8 +276,6 @@ function toDto(row: typeof videos.$inferSelect, progress: number | null = null):
       const filtered = raw.filter((t): t is string => typeof t === "string");
       return filtered.length > 0 ? filtered : null;
     })(),
-    faststartApplied: row.faststartApplied ?? null,
-    faststartAttempts: (row as { faststartAttempts?: number | null }).faststartAttempts ?? 0,
     validationStatus: (() => {
       const vs = (row as { validationStatus?: string | null }).validationStatus;
       if (vs === "pending" || vs === "running" || vs === "passed" || vs === "warn" || vs === "failed") return vs;
@@ -1036,159 +1021,6 @@ export async function adminVideosRoutes(app: FastifyInstance) {
     },
   );
 
-  // ── POST /videos/:id/faststart ───────────────────────────────────────────────
-  // Re-run MP4 faststart (moov-atom relocation) on a locally-uploaded video.
-  // Useful for videos stuck in `queued` or `failed` state when the HLS
-  // transcoder is disabled. Runs in the background — returns 202 immediately.
-  r.post(
-    "/videos/:id/faststart",
-    {
-      preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },      schema: {
-        tags: ["admin"],
-        summary: "Re-apply MP4 faststart optimisation to a locally-uploaded video",
-        params: z.object({ id: z.string().min(1).max(128) }),
-        response: {
-          202: z.object({ ok: z.literal(true), videoId: z.string() }),
-          400: z.object({ error: z.string() }),
-          404: z.object({ error: z.string() }),
-          409: z.object({ error: z.string() }),
-          429: z.object({ error: z.string() }),
-        },
-        security: [{ bearerAuth: [] }],
-      },
-    },
-    async (req, reply) => {
-      const { id } = req.params;
-
-      const [row] = await db
-        .select({
-          id: videos.id,
-          objectPath: videos.objectPath,
-          videoSource: videos.videoSource,
-          transcodingStatus: videos.transcodingStatus,
-        })
-        .from(videos)
-        .where(eq(videos.id, id))
-        .limit(1);
-
-      if (!row) {
-        return reply.code(404).send({ error: `Video not found: ${id}` });
-      }
-      if (row.videoSource !== "local") {
-        return reply.code(400).send({ error: "Faststart only applies to locally-uploaded videos." });
-      }
-      if (!row.objectPath) {
-        return reply.code(400).send({ error: "Video has no stored source file — it may still be uploading." });
-      }
-      if (row.transcodingStatus === "processing") {
-        return reply.code(409).send({ error: "Faststart is already running for this video." });
-      }
-      if (row.transcodingStatus === "hls_ready") {
-        return reply.code(400).send({ error: "Video has completed HLS transcoding — faststart is not applicable." });
-      }
-
-      // MP4-only pipeline: faststart is disabled. Enqueue the video directly
-      // so the operator can still trigger "add to queue" via this route.
-      void (async () => {
-        try {
-          const enqRes = await enqueueIfMissing({ videoId: id, reason: "manual-enqueue" });
-          if (enqRes.enqueued) {
-            adminEventBus.push("broadcast-queue-updated", { reason: "manual-enqueue", videoId: id });
-            req.log.info({ videoId: id, queueItemId: enqRes.queueItemId }, "admin: video enrolled in broadcast queue (faststart disabled — raw MP4 pipeline)");
-          } else {
-            req.log.info({ videoId: id }, "admin: video already in broadcast queue");
-          }
-          adminEventBus.push("videos-library-updated", { videoId: id, reason: "manual-enqueue" });
-          void invalidateVideosCatalogCache();
-        } catch (err) {
-          req.log.warn({ err, videoId: id }, "admin: enqueueIfMissing failed (non-fatal)");
-        }
-      })().catch((err) => {
-        req.log.error({ err, videoId: id }, "admin: manual enqueue task crashed");
-      });
-
-      req.log.info({ videoId: id, objectPath: row.objectPath }, "admin: manual faststart triggered");
-      return reply.code(202).send({ ok: true as const, videoId: id });
-    },
-  );
-
-  // ── POST /videos/faststart-all ───────────────────────────────────────────────
-  // Bulk-apply MP4 faststart (moov-atom relocation) to every locally-uploaded
-  // video that has not yet been optimised (faststartApplied IS NULL or false)
-  // and is not currently running (transcodingStatus != 'processing').
-  // All jobs run sequentially in the background — the route returns 202 as soon
-  // as the candidate list is built, so large libraries never block the request.
-  r.post(
-    "/videos/faststart-all",
-    {
-      preHandler: requireAuth("editor"),
-      config: { rateLimit: { max: 5, timeWindow: "1 minute" } },
-      schema: {
-        tags: ["admin"],
-        summary: "Apply MP4 faststart optimisation to all unoptimised locally-uploaded videos",
-        response: {
-          202: z.object({
-            ok: z.literal(true),
-            queued: z.number().int(),
-            alreadyRunning: z.number().int(),
-          }),
-          429: z.object({ error: z.string() }),
-        },
-        security: [{ bearerAuth: [] }],
-      },
-    },
-    async (req, reply) => {
-      // Fetch all candidates: local uploads with an object path that are either
-      // unoptimised (faststartApplied IS NULL → never attempted, or false → failed)
-      // and not currently being processed.
-      const candidates = await db
-        .select({
-          id: videos.id,
-          objectPath: videos.objectPath,
-          transcodingStatus: videos.transcodingStatus,
-        })
-        .from(videos)
-        .where(
-          and(
-            ne(videos.videoSource, "youtube"),
-            isNotNull(videos.objectPath),
-            or(isNull(videos.faststartApplied), eq(videos.faststartApplied, false)),
-          ),
-        )
-        .orderBy(asc(videos.importedAt));
-
-      const active = candidates.filter((r) => r.transcodingStatus === "processing");
-      const queued = candidates.filter((r) => r.transcodingStatus !== "processing");
-
-      req.log.info(
-        { total: candidates.length, queued: queued.length, alreadyRunning: active.length },
-        "admin: bulk faststart-all triggered",
-      );
-
-      // MP4-only pipeline: faststart is disabled. Enqueue all candidates directly.
-      void (async () => {
-        let enrolled = 0;
-        for (const row of queued) {
-          if (!row.objectPath) continue;
-          try {
-            const enqRes = await enqueueIfMissing({ videoId: row.id, reason: "bulk-enqueue" });
-            if (enqRes.enqueued) {
-              enrolled++;
-              adminEventBus.push("broadcast-queue-updated", { reason: "bulk-enqueue", videoId: row.id });
-            }
-            void invalidateVideosCatalogCache();
-            adminEventBus.push("videos-library-updated", { videoId: row.id, reason: "bulk-enqueue" });
-          } catch (err) {
-            req.log.warn({ err, videoId: row.id }, "admin: bulk enqueue — video failed (non-fatal)");
-          }
-        }
-        req.log.info({ processed: queued.length, enrolled }, "admin: bulk enqueue complete");
-      })().catch((err) => req.log.error({ err }, "admin: bulk enqueue outer crash"));
-
-      return reply.code(202).send({ ok: true as const, queued: queued.length, alreadyRunning: active.length });
-    },
-  );
 
   // ── POST /videos/:id/reset-for-reupload ─────────────────────────────────────
   // Clears a CORRUPT_SOURCE failure so the admin can re-upload the source file.
@@ -1421,7 +1253,6 @@ export async function adminVideosRoutes(app: FastifyInstance) {
           id: videos.id,
           objectPath: videos.objectPath,
           videoSource: videos.videoSource,
-          faststartApplied: videos.faststartApplied,
           localVideoUrl: videos.localVideoUrl,
           duration: videos.duration,
         })
@@ -1439,7 +1270,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
 
       if (sync) {
         const report = await runVideoValidation(id, row.objectPath, {
-          faststartApplied: row.faststartApplied ?? null,
+          faststartApplied: null,
           localVideoUrl: row.localVideoUrl ?? null,
           storedDurationSecs: row.duration ? parseFloat(row.duration) : null,
         });
@@ -1447,7 +1278,7 @@ export async function adminVideosRoutes(app: FastifyInstance) {
       }
 
       scheduleVideoValidation(id, row.objectPath, {
-        faststartApplied: row.faststartApplied ?? null,
+        faststartApplied: null,
         localVideoUrl: row.localVideoUrl ?? null,
         storedDurationSecs: row.duration ? parseFloat(row.duration) : null,
       });

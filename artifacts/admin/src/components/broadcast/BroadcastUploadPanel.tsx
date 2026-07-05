@@ -149,7 +149,6 @@ type PipelineStage =
   | "uploading"
   | "finalizing"
   | "executing"
-  | "faststart"
   | "encoding"
   | "hls-queued"
   | "ready"
@@ -179,7 +178,6 @@ function getPipelineStage(params: {
   }
   if (isOnAir) return "on-air";
   const ts = queueRow.transcodingStatus;
-  if (ts === "processing") return "faststart";
   if (ts === "encoding") return "encoding";
   if (ts === "queued") return "hls-queued";
   if (ts === "hls_ready" || ts === "ready" || queueRow.hasHls) return "ready";
@@ -213,13 +211,6 @@ function StageBadge({ stage }: { stage: PipelineStage }) {
       <Badge variant="secondary" className="gap-1 shrink-0 text-[10px]">
         <Clock className="h-2.5 w-2.5" />
         HLS queued
-      </Badge>
-    );
-  if (stage === "faststart")
-    return (
-      <Badge variant="secondary" className="gap-1 shrink-0 text-[10px] text-blue-600 border-blue-200 dark:border-blue-800">
-        <Loader2 className="h-2.5 w-2.5 animate-spin" />
-        Optimizing…
       </Badge>
     );
   if (stage === "executing")
@@ -1065,8 +1056,6 @@ export function BroadcastUploadPanel({ server, queueItems }: BroadcastUploadPane
                           <Upload className="h-3.5 w-3.5 text-blue-500" />
                         ) : stage === "finalizing" || stage === "executing" ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-500" />
-                        ) : stage === "faststart" ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />
                         ) : stage === "encoding" || stage === "hls-queued" ? (
                           <RotateCw className={`h-3.5 w-3.5 ${stage === "encoding" ? "animate-spin" : ""} text-amber-500`} />
                         ) : stage === "ready" ? (
@@ -1116,11 +1105,6 @@ export function BroadcastUploadPanel({ server, queueItems }: BroadcastUploadPane
                     )}
 
                     {/* Stage hints */}
-                    {stage === "faststart" && (
-                      <p className="pl-6 text-[10px] text-blue-600 dark:text-blue-400">
-                        Optimizing for streaming — moov atom relocation in progress.
-                      </p>
-                    )}
                     {stage === "encoding" && (
                       <p className="pl-6 text-[10px] text-amber-600 dark:text-amber-400">
                         HLS transcoding in progress — video airs as MP4 until encoding completes.

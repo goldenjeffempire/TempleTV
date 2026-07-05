@@ -276,7 +276,7 @@ async function checkMoovPlacement(tmpPath: string, faststartApplied: boolean | n
     return {
       check: "MOOV_PLACEMENT",
       status: "warn",
-      message: "faststartApplied=false — moov atom is at end-of-file; byte-range streaming still works but seek performance may be degraded. The faststart worker will relocate the moov atom in the background.",
+      message: "faststartApplied=false — moov atom is at end-of-file; byte-range streaming still works but seek performance may be degraded.",
     };
   }
   if (faststartApplied === true) {

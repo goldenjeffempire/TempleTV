@@ -321,7 +321,6 @@ class MidnightPrayersService {
           localVideoUrl: schema.videosTable.localVideoUrl,
           hlsMasterUrl: schema.videosTable.hlsMasterUrl,
           youtubeId: schema.videosTable.youtubeId,
-          faststartApplied: schema.videosTable.faststartApplied,
           transcodingStatus: schema.videosTable.transcodingStatus,
           videoSource: schema.videosTable.videoSource,
         })

@@ -89,9 +89,6 @@ export async function enqueueIfMissing(opts: {
         localVideoUrl: videosTable.localVideoUrl,
         hlsMasterUrl: videosTable.hlsMasterUrl,
         transcodingStatus: videosTable.transcodingStatus,
-        // faststart_applied was removed from the Drizzle schema; use NULL::boolean
-        // as the safe fallback (isPlayableForBroadcast treats undefined/null as "unknown").
-        faststartApplied: sql<boolean | null>`NULL::boolean`,
         transcodingErrorCode: videosTable.transcodingErrorCode,
         category: videosTable.category,
         validationStatus: videosTable.validationStatus,
@@ -545,7 +542,6 @@ export async function scanLibraryAndEnqueue(opts: {
         localVideoUrl: videosTable.localVideoUrl,
         hlsMasterUrl: videosTable.hlsMasterUrl,
         transcodingStatus: videosTable.transcodingStatus,
-        faststartApplied: sql<boolean | null>`NULL::boolean`,
         transcodingErrorCode: videosTable.transcodingErrorCode,
         s3MirroredAt: videosTable.s3MirroredAt,
         category: videosTable.category,
@@ -695,7 +691,6 @@ function isPlayableForBroadcast(row: {
   localVideoUrl: string | null;
   hlsMasterUrl: string | null;
   transcodingStatus?: string | null;
-  faststartApplied?: boolean | null;
   transcodingErrorCode?: string | null;
   category?: string | null;
   validationStatus?: string | null;

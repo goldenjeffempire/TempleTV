@@ -3325,7 +3325,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
           transcodingErrorCode: null,
           transcodingErrorKind: null,
           transcodingErrorMessage: null,
-          faststartApplied: false,
         })
         .where(eq(schema.videosTable.id, videoId));
 
