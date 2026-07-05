@@ -2108,6 +2108,10 @@ class BroadcastOrchestrator extends EventEmitter {
     // Videos broadcast directly via their original MP4/YouTube source.
     // The A/B dual-buffer player handles transient load failures gracefully
     // without removing items from the broadcast rotation.
+    //
+    // NOTE: this method always returns a non-null V2Item. The null-return path
+    // and accompanying forward-scan branches in snapshot() are retained as
+    // dead-code safeguards in case source blocking is re-introduced in future.
     return {
       id: item.id,
       title: item.title,

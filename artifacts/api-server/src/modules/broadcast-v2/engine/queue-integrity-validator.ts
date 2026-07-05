@@ -719,19 +719,21 @@ class QueueIntegrityValidatorImpl {
       // ── Auto-fix: repair PLACEHOLDER_DURATION items ────────────────────────
       // When the queue row carries the 1800-s upload-time sentinel but the joined
       // managed_videos row already holds a real probe duration, write it into
-      // broadcast_queue in a single UPDATE so the orchestrator's next reload sees
-      // the correct value.  No event is fired here — the orchestrator's drift-poll
-      // will pick up the change within 10 s.
+      // broadcast_queue so the orchestrator's next reload sees the correct value.
+      // Updates run concurrently (Promise.all) to avoid N × round-trip latency.
+      // The bus event triggers an immediate orchestrator reload.
       if (placeholderDurationItems.length > 0) {
         try {
-          for (const fix of placeholderDurationItems) {
-            await db.execute(sql`
-              UPDATE broadcast_queue
-              SET duration_secs = ${Math.round(fix.realDur)}
-              WHERE id = ${fix.id}
-                AND duration_secs = 1800
-            `);
-          }
+          await Promise.all(
+            placeholderDurationItems.map((fix) =>
+              db.execute(sql`
+                UPDATE broadcast_queue
+                SET duration_secs = ${Math.round(fix.realDur)}
+                WHERE id = ${fix.id}
+                  AND duration_secs = 1800
+              `)
+            )
+          );
           logger.info(
             { count: placeholderDurationItems.length },
             "[queue-validator] AUTO-FIX: corrected PLACEHOLDER_DURATION (1800 s) → real duration for queue rows",

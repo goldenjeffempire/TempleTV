@@ -27,6 +27,7 @@ import { and, count, eq, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
+import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { scanLibraryAndEnqueue } from "../../broadcast/auto-enqueue.service.js";
 
 const q = schema.broadcastQueueTable;
@@ -123,6 +124,13 @@ export async function reactivateSystemDeactivated(): Promise<number> {
         { count },
         "[queue-reconcile] re-enabled system-deactivated queue items that are now admissible",
       );
+      // Notify the orchestrator immediately so re-activated items enter the
+      // broadcast cycle on the next tick rather than waiting up to 30 s for
+      // the self-heal stale timer or the next 10-minute health guard scan.
+      adminEventBus.push("broadcast-queue-updated", {
+        reason: "reactivated-system-deactivated",
+        count,
+      });
     }
     return count;
   } catch (err) {
