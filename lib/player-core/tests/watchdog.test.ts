@@ -262,31 +262,27 @@ describe("Watchdog — slow-death notifyActive streak cap", () => {
     // Use a threshold that is NOT a multiple of 500 ms so the interval tick
     // clears the strict `>` comparison.
     //
-    // Execution trace:
-    //   arm() at t=0            → lastAdvanceMs = 0
-    //   i=0:  notifyActive() at t=0  (streak 1 ≤ 40) → lastAdvanceMs = 0
-    //         advanceTimersByTime(10) → t=10
-    //   i=1:  notifyActive() at t=10 (streak 2 ≤ 40) → lastAdvanceMs = 10
-    //         advanceTimersByTime(10) → t=20
+    // MAX_NOTIFY_ACTIVE_STREAK = 120. Execution trace:
+    //   arm() at t=0              → lastAdvanceMs = 0
+    //   i=0:   notifyActive() (streak 1 ≤ 120) → lastAdvanceMs = 0,  t→10
+    //   i=1:   notifyActive() (streak 2 ≤ 120) → lastAdvanceMs = 10, t→20
     //   ...
-    //   i=39: notifyActive() at t=390 (streak 40 ≤ 40) → lastAdvanceMs = 390
-    //         advanceTimersByTime(10) → t=400
-    //   i=40: notifyActive() at t=400 (streak 41 > 40) → NO reset (lastAdvanceMs stays 390)
-    //         advanceTimersByTime(10) → t=410
-    //   loop end: t=410, lastAdvanceMs=390
+    //   i=119: notifyActive() (streak 120 ≤ 120) → lastAdvanceMs=1190, t→1200
+    //   i=120: notifyActive() (streak 121 > 120) → NO reset (stays 1190)
+    //          advanceTimersByTime(10) → t=1210
+    //   loop end: t=1210, lastAdvanceMs=1190
     //
-    //   advanceTimersByTime(700) → t=1110
-    //     interval fires at t=500 : gap = 500 - 390 = 110 > 200? NO
-    //     interval fires at t=1000: gap = 1000 - 390 = 610 > 200? YES → stall fires ✓
+    //   advanceTimersByTime(700) → t=1910
+    //     interval fires at t=1500: gap = 1500 - 1190 = 310 > 200? YES → stall fires ✓
     const { wd, stalls } = makeWatchdog({ initialLoadThresholdMs: 200 });
     wd.arm();
 
-    for (let i = 0; i < 41; i++) {
+    for (let i = 0; i < 121; i++) {
       wd.notifyActive();
       vi.advanceTimersByTime(10);
     }
-    // t=410, lastAdvanceMs=390. Advance 700 ms more → t=1110.
-    // Interval at t=1000: gap 610 > 200 — stall fires.
+    // t=1210, lastAdvanceMs=1190. Advance 700 ms more → t=1910.
+    // Interval at t=1500: gap 310 > 200 — stall fires.
     vi.advanceTimersByTime(700);
     expect(stalls.length).toBeGreaterThanOrEqual(1);
     wd.disarm();
@@ -295,7 +291,7 @@ describe("Watchdog — slow-death notifyActive streak cap", () => {
   it("below MAX streak, notifyActive still resets the clock and prevents stall", () => {
     const { wd, stalls } = makeWatchdog({ initialLoadThresholdMs: 500 });
     wd.arm();
-    // Fire 30 notifyActive calls (under the cap of 40) with 200 ms gaps.
+    // Fire 30 notifyActive calls (well under the cap of 120) with 200 ms gaps.
     // Each call resets the stall clock so the 500 ms threshold never expires.
     for (let i = 0; i < 30; i++) {
       vi.advanceTimersByTime(200);

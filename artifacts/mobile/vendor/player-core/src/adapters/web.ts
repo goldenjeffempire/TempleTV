@@ -44,15 +44,17 @@ export interface WebAdapterCallbacks {
  * How long to wait for `canplay` / `loadedmetadata` after a `bind` before
  * declaring the source unreachable.
  *
- * 20 s gives headroom for:
- *   - Non-faststart MP4s routed through the media proxy on high-latency
- *     connections (dev → API → CDN chain can add 2–5 s on cold TCP).
+ * 40 s gives headroom for:
+ *   - Non-faststart MP4s served from PostgreSQL BYTEA storage: the DB query
+ *     itself can take several seconds under load before the first byte reaches
+ *     the browser. The `progress` extension (BIND_PROGRESS_TIMEOUT_MS = 90 s)
+ *     then takes over once bytes flow, but only if the FIRST byte arrives
+ *     within this window. Raised from 20 s → 40 s to cover the BYTEA query
+ *     latency on a loaded PostgreSQL host.
  *   - HLS manifest + first segment on a 2–3 Mbps mobile link.
- * The `progress` extension (BIND_PROGRESS_TIMEOUT_MS = 90 s) kicks in as
- * soon as any bytes arrive, so a large file never hits this deadline while
- * data is flowing.
+ *   - Cold TCP connections and CDN edge-cache misses on high-latency links.
  */
-const BIND_LOAD_TIMEOUT_MS = 20_000;
+const BIND_LOAD_TIMEOUT_MS = 40_000;
 
 /**
  * Extended timeout once `progress` fires during the bind phase.
@@ -66,13 +68,17 @@ const BIND_PROGRESS_TIMEOUT_MS = 90_000;
 // Watchdog thresholds — per-phase values passed directly to the Watchdog
 // constructor below. See watchdog.ts for the 3-phase model documentation.
 //
-// Raised from 15/15/25 → 20/20/30 s to give more tolerance for buffering
-// on slow/congested networks without causing spurious stall→skip cascades.
-// Broadcast content (sermons, worship streams) regularly pauses to buffer
-// on mobile links during initial segment fetch and mid-stream rebuffer;
-// the old 15 s thresholds fired false-positive stalls too aggressively.
-const WATCHDOG_INITIAL_LOAD_MS = 20_000;
-const WATCHDOG_REBUFFER_MS     = 20_000;
+// Raised from 15/15/25 → 45/25/30 s (aligned with lib/player-core web adapter):
+//  • Initial load: 45 s gives MP4 files served from PostgreSQL BYTEA storage
+//    enough time to receive the moov atom and start playing before the watchdog
+//    declares a stall. Also covers slow mobile links during initial segment fetch.
+//  • Rebuffer: 25 s — slightly more generous than the old 20 s for mid-stream
+//    hiccups on congested links, but still short enough to detect genuinely
+//    frozen streams within half a minute.
+//  • Stable / stable play: unchanged — long-running stable streams benefit
+//    from the 30 s threshold.
+const WATCHDOG_INITIAL_LOAD_MS = 45_000;
+const WATCHDOG_REBUFFER_MS     = 25_000;
 const WATCHDOG_STABLE_MS       = 30_000;
 const WATCHDOG_STABLE_PLAY_MS  = 30_000;
 

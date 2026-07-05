@@ -62,11 +62,24 @@ export interface WatchdogConfig {
  * events the watchdog stops resetting the clock so check() can fire and the
  * FSM can escalate the failure through the recovery path.
  *
- * At approximately one `progress` event per second this gives ~40 s of
+ * At approximately one `progress` event per second this gives ~120 s of
  * tolerance for legitimate slow-start / rebuffer scenarios before a
  * permanently stalled source is declared.
+ *
+ * Raised from 40 → 120 for PostgreSQL BYTEA MP4 storage:
+ *   Non-faststart MP4 files store the moov atom at the END of the file.
+ *   The browser must download the entire file before it can decode the first
+ *   frame and fire `timeupdate`. During this download, `progress` events fire
+ *   continuously (data is flowing) but `timeupdate` is silent (no frames yet).
+ *   The previous cap of 40 (~40 s of data flow) was too low for large uploads
+ *   (e.g. 500 MB sermon on a 50 Mbps link takes ~80 s to download), causing
+ *   false-positive RECOVERING_PRIMARY transitions on healthy videos. 120 s of
+ *   tolerance covers the download window for files up to ~750 MB at 50 Mbps.
+ *   The slow-death guard still fires for truly frozen sources (corrupted codec,
+ *   dead TCP connection delivering no new bytes) because those sources stop
+ *   triggering `progress` entirely — they never reach the new cap.
  */
-const MAX_NOTIFY_ACTIVE_STREAK = 40;
+const MAX_NOTIFY_ACTIVE_STREAK = 120;
 
 type WatchdogPhase = "initial" | "rebuffer" | "stable";
 

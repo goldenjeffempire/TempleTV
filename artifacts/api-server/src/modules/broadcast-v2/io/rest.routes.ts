@@ -22,7 +22,7 @@ import { requireAuth } from "../../../middleware/auth.js";
 import { broadcastService } from "../../broadcast/broadcast.service.js";
 import { scanLibraryAndEnqueue, listMissingFromQueue, repairMissingS3MirroredAt, enqueueIfMissing } from "../../broadcast/auto-enqueue.service.js";
 import { reactivateSystemDeactivated } from "../engine/queue-health-guard.js";
-import { markBadUrl, clearAllBadUrls, clearBadUrl, getItemsHealth, getBadUrlStats, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl, getUrlBadSourceSetsSize, persistBadUrlCache, clearSourceApproval, clearAllSourceApprovals } from "../repository/queue.repo.js";
+import { markBadUrl, markBadUrlWithTtl, clearAllBadUrls, clearBadUrl, getItemsHealth, getBadUrlStats, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl, getUrlBadSourceSetsSize, persistBadUrlCache, clearSourceApproval, clearAllSourceApprovals } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { eq, and, isNull, isNotNull, sql, inArray, or } from "drizzle-orm";
@@ -1146,6 +1146,55 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     return { ok: true, sequence: broadcastOrchestrator.getSequence(), reEnabled };
   });
 
+  // ── Internal-upload URL detection ─────────────────────────────────────
+  // Identifies URLs that resolve to PostgreSQL BYTEA blobs served by this
+  // API server at /api/v1/uploads/… (or legacy /api/uploads/…).
+  //
+  // BYTEA-backed uploads are ALWAYS physically available in the database
+  // (the blob is committed before the queue item is admitted). A client-side
+  // stall on one of these URLs almost certainly indicates a transient issue:
+  //   • Large non-faststart MP4 downloading before the moov atom is found
+  //   • PostgreSQL BYTEA query latency spike under load
+  //   • Client-side watchdog false-positive during initial buffering
+  //
+  // These should NOT be blacklisted with the escalating TTL schedule
+  // (60 s → 3 min → 5 min → …) used for genuinely broken external URLs.
+  // Instead, use a short flat TTL so the item skips one queue cycle only,
+  // then re-enters rotation with a clean failure count.
+  //
+  // Note: absolute URLs may include any API origin (REPLIT_DEV_DOMAIN,
+  // localhost, or the configured API_ORIGIN). Match the pathname prefix only
+  // to avoid misclassifying external URLs that happen to contain these strings
+  // in a query parameter or fragment.
+  function isInternalUploadUrl(url: string): boolean {
+    if (!url) return false;
+    try {
+      // Parse absolute URLs to extract the pathname cleanly.
+      const pathname = url.startsWith("http")
+        ? new URL(url).pathname
+        : url.split("?")[0]!.split("#")[0]!; // strip query/fragment for relative URLs
+      return pathname.startsWith("/api/v1/uploads/") || pathname.startsWith("/api/uploads/");
+    } catch {
+      // URL parse failed (malformed URL) — do not classify as internal.
+      return false;
+    }
+  }
+
+  /**
+   * Short bad-URL TTL for internal BYTEA upload sources.
+   *
+   * 15 s is long enough to skip the current orchestrator snapshot cycle
+   * (snapshot cadence ~1 s tick + 8 s keepalive) so the item doesn't
+   * immediately re-appear as current after the skip. Short enough to allow
+   * re-admission within the same broadcast hour so a transient false positive
+   * doesn't pull the item from rotation for minutes.
+   *
+   * Crucially, this does NOT increment the bad-URL failure count, so a
+   * series of transient stalls on a large upload does not escalate into a
+   * 20-minute blackout for healthy content.
+   */
+  const INTERNAL_UPLOAD_BAD_URL_TTL_MS = 15_000;
+
   // ── Unauthenticated: client stall report ─────────────────────────────
   // Players (TV, mobile, web) call this when the FSM reaches SKIP_PENDING
   // — i.e. the active source failed to load after all local retries. After
@@ -1263,14 +1312,26 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       stallActionCooldown.set(cooldownKey, Date.now());
 
       // Blacklist the failing source URLs so the orchestrator's toItem()
-      // returns null for these URLs for the next 60 s. Without this,
+      // returns null for these URLs for the next cycle. Without this,
       // the orchestrator continues presenting the same broken URL as
       // "current" after every skip, causing an endless cycle of:
-      //   player loads URL → 502 → RECOVERING → SKIP_PENDING → stall report
+      //   player loads URL → stall → RECOVERING → SKIP_PENDING → stall report
       //   → server skips → SAME broken URL becomes current again → repeat.
       // With the bad-URL cache, the first stall report immediately removes
       // that URL from the rotation. If all items share the same broken URL,
       // snapshot().current becomes null → FSM → SYNCING → overlay: "Off air".
+      //
+      // TTL strategy: use a short flat TTL for internal PostgreSQL BYTEA
+      // upload URLs (INTERNAL_UPLOAD_BAD_URL_TTL_MS = 15 s) instead of the
+      // standard escalating schedule (60 s → 3 min → 5 min → 10 min → 20 min).
+      // BYTEA-backed uploads are always physically present in the DB — a client
+      // stall on these is almost certainly a transient false positive (large
+      // non-faststart MP4 still downloading past the moov atom, DB latency
+      // spike, watchdog false trigger during initial buffering). The short TTL
+      // ensures the item skips exactly one queue pass, then re-enters rotation
+      // with a clean failure count. External URLs that are genuinely broken
+      // (404, 502, removed CDN asset) continue to use the escalating schedule
+      // so they do not hammer clients with repeated load attempts.
       const snapForBlacklist = broadcastOrchestrator.snapshot();
       // Clear the source approval so probeCurrentItem() re-validates this
       // item on its next fire rather than serving stale approval from a
@@ -1278,10 +1339,20 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       // path: client-side stall evidence always overrides a cached approval.
       clearSourceApproval(body.itemId);
       if (snapForBlacklist.current?.source?.url) {
-        markBadUrl(snapForBlacklist.current.source.url);
+        const srcUrl = snapForBlacklist.current.source.url;
+        if (isInternalUploadUrl(srcUrl)) {
+          markBadUrlWithTtl(srcUrl, INTERNAL_UPLOAD_BAD_URL_TTL_MS);
+        } else {
+          markBadUrl(srcUrl);
+        }
       }
       if (snapForBlacklist.current?.failoverSource?.url) {
-        markBadUrl(snapForBlacklist.current.failoverSource.url);
+        const foUrl = snapForBlacklist.current.failoverSource.url;
+        if (isInternalUploadUrl(foUrl)) {
+          markBadUrlWithTtl(foUrl, INTERNAL_UPLOAD_BAD_URL_TTL_MS);
+        } else {
+          markBadUrl(foUrl);
+        }
       }
       await broadcastOrchestrator.skip();
       // Increment the per-item failure counter and auto-suspend if it has

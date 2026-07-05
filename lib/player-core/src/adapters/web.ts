@@ -44,15 +44,21 @@ export interface WebAdapterCallbacks {
  * How long to wait for `canplay` / `loadedmetadata` after a `bind` before
  * declaring the source unreachable.
  *
- * 20 s gives headroom for:
- *   - Non-faststart MP4s routed through the media proxy on high-latency
- *     connections (dev → API → CDN chain can add 2–5 s on cold TCP).
+ * 40 s gives headroom for:
+ *   - Non-faststart MP4s served from PostgreSQL BYTEA storage: the DB query
+ *     itself can take several seconds under load before the first byte reaches
+ *     the browser. The `progress` extension (BIND_PROGRESS_TIMEOUT_MS = 90 s)
+ *     then takes over once bytes flow, but only if the FIRST byte arrives
+ *     within this window. Raised from 20 s → 40 s to cover the BYTEA query
+ *     latency on a loaded PostgreSQL host without relying on the progress
+ *     extension (which requires at least one byte in the browser's buffer).
  *   - HLS manifest + first segment on a 2–3 Mbps mobile link.
- * The `progress` extension (BIND_PROGRESS_TIMEOUT_MS = 90 s) kicks in as
- * soon as any bytes arrive, so a large file never hits this deadline while
- * data is flowing.
+ *   - Cold TCP connections and CDN edge-cache misses on high-latency links.
+ *
+ * The active buffer uses this timeout directly; the inactive (preload) buffer
+ * gets 3× (120 s) since it has the entire 120 s preload window to start.
  */
-const BIND_LOAD_TIMEOUT_MS = 20_000;
+const BIND_LOAD_TIMEOUT_MS = 40_000;
 
 /**
  * Extended timeout once `progress` fires during the bind phase.
