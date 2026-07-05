@@ -2818,8 +2818,10 @@ export async function adminOpsRoutes(app: FastifyInstance) {
               enqueuedBroadcast: z.number(),
               requeuedDlq: z.number(),
               sourceMissingConfirmed: z.number(),
+              storageLostConfirmed: z.number(),
               badUrlCacheCleared: z.boolean(),
               suspendedReEnabled: z.number(),
+              blobStampsRepaired: z.number(),
             }),
             items: z.array(z.object({
               videoId: z.string(),
