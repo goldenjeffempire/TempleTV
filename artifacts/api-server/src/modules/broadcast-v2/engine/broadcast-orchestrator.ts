@@ -163,15 +163,8 @@ interface CachedQueueItem {
   primaryUrl: string | null;
   source: V2Source;
   failoverSource: { kind: "mp4"; url: string } | null;
-  /**
-   * Quality tier of the primary source, computed once at queue-load time in
-   * reloadInner() so projectItem() and snapshot() incur zero extra DB I/O.
-   *   "mp4_faststart" — faststart applied: moov at byte-0, fully seekable
-   *   "mp4_raw"       — raw upload, moov may be at EOF (range-stream only)
-   */
-  sourceQuality: "mp4_faststart" | "mp4_raw";
-  /** Whether faststart was applied — used to derive quality when HLS is blocked. */
-  faststartApplied: boolean;
+  /** Source quality tier — always 'mp4' for local uploads (raw MP4, byte-range streaming). */
+  sourceQuality: "mp4";
 }
 
 /**
@@ -1486,20 +1479,12 @@ class BroadcastOrchestrator extends EventEmitter {
     //     must continue to the consecutiveEmptyPolls / dead-air logic below.
     //   • A hash mismatch clears _lastQueueHash so the next reload always runs.
     //
-    // Hash format: pipe-separated "id:durationSecs:localVideoUrl:hlsMasterUrl:faststartApplied"
-    // tuples in DB order. Changes to any item's ID, duration, primary URL, or
-    // faststart status produce a new hash and bypass the short-circuit.
-    //
-    // faststartApplied is intentionally included even though upgradeItemSource()
-    // handles the real-time in-place update: if that event is missed (e.g. process
-    // kill between the two bus events, or the companion broadcast-queue-updated
-    // reload races before upgradeItemSource() can run), including faststartApplied
-    // here ensures the next drift-poll reloadInner() does a full re-resolution and
-    // emits queue.changed — preventing connected clients from playing mp4_raw when
-    // the server-side file has already been faststart-optimised.
+    // Hash format: pipe-separated "id:durationSecs:localVideoUrl" tuples in DB
+    // order. Changes to any item's ID, duration, or primary URL produce a new
+    // hash and bypass the short-circuit.
     if (!opts?.preserveBadUrlCache && rawRows.length > 0) {
       const queueHash = rawRows
-        .map((r) => `${r.id}:${r.durationSecs}:${r.localVideoUrl ?? ""}:${r.faststartApplied ? "1" : "0"}`)
+        .map((r) => `${r.id}:${r.durationSecs}:${r.localVideoUrl ?? ""}`)
         .join("|");
       if (queueHash === this._lastQueueHash) {
         // Nothing changed — update diagnostics and return fast.
@@ -1578,7 +1563,6 @@ class BroadcastOrchestrator extends EventEmitter {
         source: v2.source,
         failoverSource: v2.failoverSource,
         sourceQuality: row.sourceQuality,
-        faststartApplied: row.faststartApplied,
       });
     }
     // Auto-clear bad-URL cache for items that survived resolution.
@@ -4460,12 +4444,11 @@ class BroadcastOrchestrator extends EventEmitter {
    * Used by the play-now endpoint to build the new ordered list without
    * an extra DB round-trip — the items array is always in sync after reload.
    */
-  getItems(): { id: string; localVideoUrl: string | null; hlsMasterUrl: string | null; faststartApplied: boolean; sourceQuality: "mp4_faststart" | "mp4_raw" }[] {
+  getItems(): { id: string; localVideoUrl: string | null; hlsMasterUrl: string | null; sourceQuality: "mp4" }[] {
     return this.items.map((i) => ({
       id: i.id,
       localVideoUrl: i.source.kind === "mp4" || i.source.kind === "youtube" ? i.source.url : null,
       hlsMasterUrl: i.source.kind === "dash" ? i.source.url : null,
-      faststartApplied: i.faststartApplied,
       sourceQuality: i.sourceQuality,
     }));
   }
@@ -4709,9 +4692,8 @@ class BroadcastOrchestrator extends EventEmitter {
   /**
    * Performs an optimistic in-place source quality upgrade for a queue item.
    *
-   * Called when the bus bridge receives `broadcast-source-upgraded` (fired by
-   * faststart.service.ts or transcoder.dispatcher.ts after a source upgrade
-   * completes). Updates `sourceQuality` on the matching CachedQueueItem
+   * Called by transcoder.dispatcher.ts after a source upgrade completes (e.g.
+   * MP4 → HLS). Updates `sourceQuality` on the matching CachedQueueItem
    * immediately so the next snapshot includes the correct quality metadata
    * without waiting for the full queue reload triggered by the companion
    * `broadcast-queue-updated` event.
@@ -4727,7 +4709,7 @@ class BroadcastOrchestrator extends EventEmitter {
    */
   upgradeItemSource(opts: {
     videoId: string;
-    quality: "mp4_faststart" | "mp4_raw";
+    quality: "hls" | "mp4";
   }): boolean {
     try {
       const idx = this.items.findIndex((it) => it.videoId === opts.videoId);
@@ -4735,8 +4717,7 @@ class BroadcastOrchestrator extends EventEmitter {
       const item = this.items[idx]!;
       const oldQuality = item.sourceQuality;
       if (oldQuality === opts.quality) return false; // no-op — already at target quality
-      item.sourceQuality = opts.quality;
-      if (opts.quality === "mp4_faststart") item.faststartApplied = true;
+      item.sourceQuality = opts.quality as "mp4";
       logger.info(
         { videoId: opts.videoId, itemId: item.id, oldQuality, newQuality: opts.quality },
         "[broadcast-v2] in-place source quality upgrade applied",
@@ -4784,7 +4765,7 @@ class BroadcastOrchestrator extends EventEmitter {
       title: string;
       durationSecs: number;
       thumbnailUrl: string | null;
-      sourceQuality: "mp4_faststart" | "mp4_raw";
+      sourceQuality: "mp4";
     }>;
   } | null {
     if (this.items.length === 0 || this.cycleDurationMs === 0) return null;

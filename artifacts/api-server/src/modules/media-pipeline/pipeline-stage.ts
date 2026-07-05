@@ -2,24 +2,24 @@
  * Media pipeline state machine.
  *
  * Single source of truth for where a locally-uploaded video sits in the
- * UPLOADING → VERIFYING → STORED → FASTSTART → METADATA → READY → QUEUED →
+ * UPLOADING → VERIFYING → STORED → METADATA → READY → QUEUED →
  * BROADCASTING pipeline. Every stage write goes through `setPipelineStage()`,
  * which enforces forward-only transitions (skipping a stage or re-entering an
  * earlier one silently is impossible) and is idempotent (re-setting the same
  * stage is a structured-log no-op, not a DB write).
  *
  * `computeCanonicalStage()` derives the stage that the *ground-truth* columns
- * (objectPath, s3MirroredAt, faststartApplied, validationStatus,
- * transcodingErrorCode) imply. The watchdog (`pipeline-stage-watchdog.ts`)
- * calls this periodically and repairs any drift — this is what makes stale
- * caches, crashed workers, or a missed status write self-heal instead of
- * leaving a video permanently stuck or falsely marked ready.
+ * (objectPath, s3MirroredAt, validationStatus, transcodingErrorCode) imply.
+ * The watchdog (`pipeline-stage-watchdog.ts`) calls this periodically and
+ * repairs any drift — this is what makes stale caches, crashed workers, or a
+ * missed status write self-heal instead of leaving a video permanently stuck
+ * or falsely marked ready.
  *
- * IMPORTANT: this module never *decides* to do work (run faststart, run
- * validation, enqueue). It only records where a video is. The actual step
- * triggers stay in their existing owners (faststart.service.ts,
- * video-validation.service.ts, auto-enqueue.service.ts) — this keeps the
- * blast radius small and avoids re-implementing already-hardened logic.
+ * IMPORTANT: this module never *decides* to do work (run validation, enqueue).
+ * It only records where a video is. The actual step triggers stay in their
+ * existing owners (video-validation.service.ts, auto-enqueue.service.ts) —
+ * this keeps the blast radius small and avoids re-implementing already-hardened
+ * logic.
  */
 
 import { eq } from "drizzle-orm";
@@ -30,7 +30,6 @@ export const PIPELINE_STAGES = [
   "uploading",
   "verifying",
   "stored",
-  "faststart",
   "metadata",
   "ready",
   "queued",
@@ -48,11 +47,10 @@ const STAGE_RANK: Record<Exclude<PipelineStage, "failed">, number> = {
   uploading: 0,
   verifying: 1,
   stored: 2,
-  faststart: 3,
-  metadata: 4,
-  ready: 5,
-  queued: 6,
-  broadcasting: 7,
+  metadata: 3,
+  ready: 4,
+  queued: 5,
+  broadcasting: 6,
 };
 
 export function isPipelineStage(value: unknown): value is PipelineStage {
@@ -64,7 +62,6 @@ interface PipelineRow {
   transcodingErrorCode?: string | null;
   objectPath?: string | null;
   s3MirroredAt?: Date | null;
-  faststartApplied?: boolean | null;
   validationStatus?: string | null;
 }
 
@@ -81,13 +78,12 @@ interface PipelineRow {
  * should call `setPipelineStage()` directly instead of relying on this.
  */
 export function computeCanonicalStage(row: PipelineRow): Exclude<PipelineStage, "uploading" | "verifying" | "queued" | "broadcasting"> {
-  if (row.transcodingStatus === "failed" && !row.faststartApplied) return "failed";
+  if (row.transcodingStatus === "failed") return "failed";
   if (row.transcodingErrorCode === "SOURCE_MISSING" || row.transcodingErrorCode === "CORRUPT_SOURCE") return "failed";
   if (row.validationStatus === "failed") return "failed";
 
   if (!row.objectPath) return "failed";
-  if (!row.s3MirroredAt) return "stored"; // not really — caller should treat "no objectPath yet" upstream as verifying/uploading
-  if (!row.faststartApplied) return "faststart";
+  if (!row.s3MirroredAt) return "stored";
   if (row.validationStatus === "passed" || row.validationStatus === "warn") return "ready";
   return "metadata";
 }
@@ -185,7 +181,6 @@ export async function reconcilePipelineStage(videoId: string): Promise<{ correct
       transcodingErrorCode: videos.transcodingErrorCode,
       objectPath: videos.objectPath,
       s3MirroredAt: videos.s3MirroredAt,
-      faststartApplied: videos.faststartApplied,
       validationStatus: videos.validationStatus,
     })
     .from(videos)
@@ -198,7 +193,7 @@ export async function reconcilePipelineStage(videoId: string): Promise<{ correct
   const canonical = computeCanonicalStage(row);
 
   // Never regress an event-driven stage (queued/broadcasting) toward
-  // 'stored'/'faststart'/'metadata'/'ready' based on ground truth alone —
+  // 'stored'/'metadata'/'ready' based on ground truth alone —
   // those columns don't know about queue membership. Only allow the
   // canonical value to override when it says 'failed' (a real problem).
   if ((current === "queued" || current === "broadcasting") && canonical !== "failed") {

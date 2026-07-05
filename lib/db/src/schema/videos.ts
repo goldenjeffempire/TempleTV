@@ -80,24 +80,6 @@ export const videosTable = pgTable("managed_videos", {
   // auto-detected values. Set by the admin when they have manually curated
   // the metadata for a video. Defaults to false so fresh sync works normally.
   metadataLocked: boolean("metadata_locked").notNull().default(false),
-  // Set to true by faststart.service.ts once `ffmpeg -movflags +faststart`
-  // has successfully relocated the moov atom to byte 0 and re-uploaded the
-  // file. This flag is written regardless of skipStatusUpdate so the
-  // broadcast-v2 queue can distinguish two otherwise-identical 'failed'
-  // scenarios:
-  //   • transcodingStatus='failed' AND faststart_applied=true  →
-  //       HLS transcoder failed AFTER faststart succeeded → localVideoUrl
-  //       IS seekable → safe to broadcast.
-  //   • transcodingStatus='failed' AND faststart_applied=false →
-  //       faststart itself failed → raw upload, moov at EOF → NOT seekable
-  //       → must NOT enter the live broadcast rotation.
-  faststartApplied: boolean("faststart_applied").notNull().default(false),
-  // Number of times the faststart job has been attempted for this video.
-  // Written by faststart.service.ts on each attempt. Used by the orchestrator
-  // to rate-limit automatic re-queuing of faststart jobs for repeatedly-failing
-  // sources (e.g. corrupt containers that pass the validity gate but always
-  // fail the moov-relocation step). Resets to 0 on a new upload (new objectPath).
-  faststartAttempts: integer("faststart_attempts").notNull().default(0),
   // When true, this video was uploaded for internal broadcast use only and
   // will NOT appear in the public library (TV, mobile, web catalogue).
   // Set automatically to true for all new uploads. Admin can set to false
@@ -159,9 +141,9 @@ export const videosTable = pgTable("managed_videos", {
   // are playing, creating silent dead air that the orchestrator cannot detect.
   isEmbeddable: boolean("is_embeddable").notNull().default(true),
   // ── Broadcast-grade playback validation ───────────────────────────────────
-  // Set by video-validation.service.ts after faststart completes. 9 isolated
-  // checks verify codec compatibility, keyframe intervals, A/V sync, first +
-  // last frame decodability, duration accuracy, and HTTP Range support.
+  // Set by video-validation.service.ts. 9 isolated checks verify codec
+  // compatibility, keyframe intervals, A/V sync, first + last frame
+  // decodability, duration accuracy, and HTTP Range support.
   //
   // Values:
   //   null       — never validated (pre-feature rows; not gated)
@@ -183,8 +165,7 @@ export const videosTable = pgTable("managed_videos", {
   // backoff on transient/infra failures, (b) cap self-healing re-attempts on
   // rows that are genuinely corrupt so the recovery worker doesn't loop
   // forever, and (c) surface "stuck after N attempts" in health monitoring.
-  // Resets to 0 on a new upload (new objectPath) — same convention as
-  // faststartAttempts above.
+  // Resets to 0 on a new upload (new objectPath).
   validationAttempts: integer("validation_attempts").notNull().default(0),
   // UTC timestamp of when the *current* validation attempt began (set when
   // validationStatus transitions to 'running'). Used by the stuck-job
@@ -197,13 +178,12 @@ export const videosTable = pgTable("managed_videos", {
   // Enforced forward-only (except 'failed', reachable from any stage) by
   // setPipelineStage(). Never skipped or marked complete early — each stage
   // is only entered once its ground-truth DB columns confirm the prior stage
-  // actually finished (blob committed, faststart applied, validation passed).
+  // actually finished (blob committed, validation passed).
   //   'uploading'    — chunk upload session open, bytes still arriving.
   //   'verifying'    — all chunks received; assembling + checksum verification.
   //   'stored'       — blob committed to storage_blobs (s3MirroredAt stamped).
-  //   'faststart'    — moov-atom relocation in progress.
-  //   'metadata'     — faststart done; ffprobe/playback validation running.
-  //   'ready'        — faststartApplied=true AND validationStatus passed/warn.
+  //   'metadata'     — ffprobe/playback validation running.
+  //   'ready'        — validationStatus passed/warn.
   //                    Broadcast-admission-eligible; not yet in the queue.
   //   'queued'       — present as an active row in broadcast_queue.
   //   'broadcasting' — currently the live item on the main channel.
@@ -211,8 +191,8 @@ export const videosTable = pgTable("managed_videos", {
   //                    / transcodingErrorMessage for the reason).
   pipelineStage: text("pipeline_stage").notNull().default("ready"),
   // UTC timestamp of the most recent pipelineStage transition. Used by the
-  // pipeline-stage watchdog to detect stuck stages (e.g. 'faststart' with no
-  // progress for >10 min) and auto re-trigger the stalled step.
+  // pipeline-stage watchdog to detect stuck stages and auto re-trigger
+  // the stalled step.
   pipelineStageUpdatedAt: timestamp("pipeline_stage_updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   index("idx_managed_videos_imported_at").on(table.importedAt),
@@ -238,11 +218,6 @@ export const videosTable = pgTable("managed_videos", {
   // WHERE video_source='local' AND hls_master_url IS NULL query with a
   // tighter scan than two individual indexes.
   index("idx_managed_videos_source_transcoding").on(table.videoSource, table.transcodingStatus),
-  // faststart_applied: broadcast-v2 loadActive() filters on this boolean on
-  // every orchestrator reload (10-30 s cadence). Without an index the query
-  // full-scans managed_videos via the JOIN; with it Postgres can use a bitmap
-  // index scan to narrow rows before evaluating the heavier OR conditions.
-  index("idx_managed_videos_faststart_applied").on(table.faststartApplied),
   // youtube_live_status: live-status.service.ts runs a background sweep every
   // 2 minutes to heal stale 'live' rows (WHERE youtube_live_status = 'live').
   // Without this index every sweep is a full table scan — critical at scale.
@@ -251,13 +226,6 @@ export const videosTable = pgTable("managed_videos", {
   // preserve existing category/preacher. Without an index every sync pass scans
   // the full table before the transcoding_status filter is applied.
   index("idx_managed_videos_metadata_locked").on(table.metadataLocked),
-  // Composite broadcast-admission index: mirrors the primary admission predicate
-  // in loadActive() — (video_source, transcoding_status, faststart_applied).
-  // faststart_applied is still used for the 'failed' state guard
-  // (faststartApplied=true required to broadcast a failed-transcode file).
-  // All other states (none/queued/encoding/ready/hls_ready) are admitted by
-  // transcoding_status alone — see idx_managed_videos_source_transcoding above.
-  index("idx_managed_videos_broadcast_admission").on(table.videoSource, table.transcodingStatus, table.faststartApplied),
   // uploaded_by: admin "filter by uploader" queries and audit trail lookups.
   // Also enables JOIN/WHERE patterns for upload attribution without a full table scan.
   index("idx_managed_videos_uploaded_by").on(table.uploadedBy),

@@ -18,7 +18,7 @@ export interface V2Source {
   expiresAtMs: number | null;
 }
 
-export type V2SourceQuality = "hls" | "mp4_faststart" | "mp4_raw";
+export type V2SourceQuality = "hls" | "mp4";
 
 export interface V2Item {
   id: string;
@@ -34,9 +34,8 @@ export interface V2Item {
   endsAtMs: number;
   /**
    * Source quality classification populated by the orchestrator.
-   * 'hls'           — adaptive HLS stream (preferred)
-   * 'mp4_faststart' — moov-at-byte-0 range-seekable MP4
-   * 'mp4_raw'       — sequential-only MP4 (may buffer slowly on seek)
+   * 'hls' — adaptive HLS stream (preferred)
+   * 'mp4' — raw MP4 (byte-range streaming)
    */
   sourceQuality?: V2SourceQuality;
 }
@@ -84,8 +83,7 @@ export interface V2Snapshot {
   /**
    * Source quality of the currently-playing item.
    * 'hls'           — adaptive HLS stream (preferred)
-   * 'mp4_faststart' — moov-at-byte-0 range-seekable MP4
-   * 'mp4_raw'       — sequential-only MP4 (may buffer slowly)
+   * 'mp4'           — raw MP4 (byte-range streaming)
    * 'live_override' — operator HLS/RTMP live override
    * 'youtube'       — YouTube live override
    * null            — off-air

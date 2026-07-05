@@ -53,13 +53,6 @@ export const storageBlobsTable = pgTable(
      * All new rows written by PostgresObjectStorage will have data set.
      */
     data: bytea("data"),
-    /**
-     * Set to true by faststart.service.ts just before it starts the multipart
-     * re-upload that atomically replaces the raw upload blob with the
-     * moov-at-byte-0 version. Cleared in a `finally` block once the swap
-     * completes (or fails). Informational only — no correctness impact.
-     */
-    faststartLocked: boolean("faststart_locked").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },

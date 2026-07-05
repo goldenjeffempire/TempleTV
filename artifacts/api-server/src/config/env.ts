@@ -252,27 +252,13 @@ const Env = z.object({
   // instances. Set to 0 for unlimited (claims all cores — not recommended on
   // shared hosting). Override per-deployment: TRANSCODER_THREADS=8.
   TRANSCODER_THREADS: z.coerce.number().int().min(0).max(64).default(4),
-  // Max number of simultaneous faststart (moov-atom relocation) FFmpeg jobs.
-  // Each job streams the source file to disk and spawns an ffmpeg process,
-  // consuming 80–150 MiB of additional RSS.  Default 4 caps the spike at
-  // ~600 MiB; excess jobs wait in a semaphore queue instead of being dropped.
-  // Lower to 2 on memory-constrained hosts (< 1 GiB free RSS headroom);
-  // raise to 8 on dedicated large-memory hosts (≥ 8 GiB RSS).
-  FASTSTART_MAX_CONCURRENT: z.coerce.number().int().min(1).max(32).default(4),
-  // Maximum source file size (GiB) eligible for background faststart re-mux.
-  // Files larger than this threshold are skipped — they are still broadcast-
-  // eligible as raw MP4, and faststart will be attempted by the recovery
-  // worker once more scratch-disk space is available. Set to 0 (default) for
-  // no limit. Useful on hosts with limited /tmp space (e.g. 20 GiB SSD where
-  // a 15 GiB source + 15 GiB remux output would exhaust the disk).
-  FASTSTART_MAX_FILE_SIZE_GB: z.coerce.number().nonnegative().default(0),
   TRANSCODER_DISABLE: z
     .union([z.boolean(), z.string()])
     .transform((v) => v === true || v === "true" || v === "1")
     .default(false),
   // Kill-switch for the Library → Broadcast Queue auto-enqueue pipeline.
-  // When unset (default), every newly-uploaded / faststart-completed / YT-
-  // synced video is automatically reflected in `broadcast_queue` so the
+  // When unset (default), every newly-uploaded / YT-synced video is
+  // automatically reflected in `broadcast_queue` so the
   // broadcast stays 24/7 with zero operator action. Set to 1 to disable the
   // entire pipeline (e.g. during a content audit window) without removing
   // the call sites. The orchestrator's empty-queue self-heal also respects
