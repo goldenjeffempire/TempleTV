@@ -1150,17 +1150,6 @@ const SortableQueueItem = memo(function SortableQueueItem({
                 HLS
               </Badge>
             );
-          if (item.transcodingStatus === "processing")
-            return (
-              <Badge
-                variant="secondary"
-                className="gap-1 shrink-0 text-[10px] text-amber-600 border-amber-200 dark:border-amber-800"
-                title="Faststart running in background — moov atom is being relocated to byte 0. Item is already airing on the raw upload; streaming quality improves once faststart completes."
-              >
-                <Loader2 className="h-2.5 w-2.5 animate-spin" />
-                Optimising…
-              </Badge>
-            );
           if (item.transcodingStatus === "encoding")
             return (
               <div className="flex flex-col gap-0.5 shrink-0">
@@ -1288,7 +1277,7 @@ const SortableQueueItem = memo(function SortableQueueItem({
               <Badge
                 variant="outline"
                 className="gap-1 shrink-0 text-[10px] text-amber-600 border-amber-300 dark:border-amber-700"
-                title="MP4 only — faststart applied (moov at byte-0). Seekable and safe for all players. Use 'Prepare HLS' for adaptive-bitrate streaming."
+                title="MP4 — video is broadcast-ready as raw MP4."
               >
                 MP4 only
               </Badge>
@@ -1298,7 +1287,7 @@ const SortableQueueItem = memo(function SortableQueueItem({
               <Badge
                 variant="outline"
                 className="gap-1 shrink-0 text-[10px] text-slate-500 border-slate-300 dark:border-slate-600"
-                title="Raw MP4 — faststart not yet applied. Moov atom may be at end-of-file; slow connections may experience buffering. Faststart will run automatically."
+                title="Raw MP4 — video is broadcast-ready. Moov atom may be at end-of-file; most players handle this correctly."
               >
                 Raw MP4
               </Badge>
@@ -2128,8 +2117,7 @@ function ProgramGuideCard({ guide }: { guide: ProgramGuide | undefined }) {
 
   const qualityBadge = (q: string) => {
     if (q === "hls") return <Badge variant="outline" className="text-[9px] py-0 h-4 px-1 border-blue-400 text-blue-600">HLS</Badge>;
-    if (q === "mp4_faststart") return <Badge variant="outline" className="text-[9px] py-0 h-4 px-1 border-green-400 text-green-600">MP4</Badge>;
-    if (q === "mp4_raw") return <Badge variant="outline" className="text-[9px] py-0 h-4 px-1 border-orange-400 text-orange-600" title="Raw MP4 — moov atom may be at end-of-file. Faststart will run in background to optimize streaming.">RAW</Badge>;
+    if (q === "mp4_faststart" || q === "mp4_raw" || q === "mp4") return <Badge variant="outline" className="text-[9px] py-0 h-4 px-1 border-green-400 text-green-600">MP4</Badge>;
     return <Badge variant="outline" className="text-[9px] py-0 h-4 px-1">SD</Badge>;
   };
 
@@ -2405,9 +2393,6 @@ function BroadcastV2PageInner() {
   // Dismissible sequence-stale banner — fires when the tick loop dies after
   // the orchestrator has already started (sequenceStale=true from /health).
   const [sequenceStaleAlertDismissed, setSequenceStaleAlertDismissed] = useState(false);
-  // Dismissible faststart-in-progress banner. Auto-reset when no items remain
-  // in 'processing' state so the banner reappears if a new faststart starts.
-  const [processingAlertDismissed, setProcessingAlertDismissed] = useState(false);
   // Dismissible circuit-open banner. Auto-reset when all workers are healthy.
   const [circuitOpenDismissed, setCircuitOpenDismissed] = useState(false);
   // Dismissible dead-air banner. Auto-reset when a current item is found so
@@ -3871,14 +3856,6 @@ function BroadcastV2PageInner() {
   const pendingHlsCount = localQueueItems.filter((i) => !i.hasHls).length;
   const allHlsReady = localQueueItems.length > 0 && pendingHlsCount === 0;
 
-  // Items currently being faststarted (moov atom relocation in progress).
-  // These items ARE in the broadcast queue and will air normally — the raw
-  // upload blob remains readable throughout the multipart atomic swap.
-  // Once faststart completes the optimised file replaces the original in-place.
-  const processingCount = queueItems.filter(
-    (i) => i.isActive && i.transcodingStatus === "processing",
-  ).length;
-
   // Detect the "stuck-at-sequence-0" signature. Use the server-computed
   // `stuck` field which already incorporates itemCount > 0 and boot.started
   // guards — avoids a false "stuck" banner on empty queues or un-booted
@@ -3945,12 +3922,6 @@ function BroadcastV2PageInner() {
   useEffect(() => {
     if (circuitOpenWorkers.length === 0) setCircuitOpenDismissed(false);
   }, [circuitOpenWorkers.length]);
-
-  // Auto-reset the processing banner when no more items are in 'processing'.
-  useEffect(() => {
-    if (processingCount === 0) setProcessingAlertDismissed(false);
-  }, [processingCount]);
-
 
   // Combined "live link health" indicator.
   const fullyConnected = sse.state === "connected";
@@ -4395,17 +4366,6 @@ function BroadcastV2PageInner() {
             </Badge>
           )
         )}
-        {/* Faststart-processing badge */}
-        {processingCount > 0 && (
-          <Badge
-            variant="outline"
-            className="gap-1 border-blue-400/70 bg-blue-50 text-blue-800 dark:bg-blue-900/30 dark:text-blue-200"
-            title={`${processingCount} item${processingCount !== 1 ? "s" : ""} being optimised for streaming (moov atom relocation). ${processingCount !== 1 ? "They are" : "It is"} airing normally on the raw upload while faststart runs in the background.`}
-          >
-            <Loader2 className="h-3 w-3 animate-spin" />
-            {processingCount} optimising
-          </Badge>
-        )}
         {/* Dead-air badge — queue has items but nothing is on air */}
         {isDeadAir && (
           <Badge
@@ -4600,34 +4560,6 @@ function BroadcastV2PageInner() {
             aria-label="Dismiss worker circuit alert"
             onClick={() => setCircuitOpenDismissed(true)}
             className="shrink-0 rounded p-0.5 hover:bg-amber-200/60 dark:hover:bg-amber-800/40"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      )}
-
-      {/* Faststart-processing banner — dismissible blue info strip */}
-      {processingCount > 0 && !processingAlertDismissed && (
-        <div
-          role="status"
-          className="flex items-start gap-3 rounded-md border border-blue-300/60 bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:border-blue-700/60 dark:bg-blue-950/30 dark:text-blue-200"
-        >
-          <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
-          <div className="flex-1">
-            <strong>
-              {processingCount} queue item{processingCount !== 1 ? "s are" : " is"} being optimised for streaming.
-            </strong>{" "}
-            The moov atom is being relocated to byte 0 (faststart) so the video can stream
-            instantly without an HTTP Range pre-flight.{" "}
-            {processingCount !== 1 ? "These items are already airing" : "This item is already airing"} on
-            the raw upload — faststart improves initial buffering for new viewers without
-            interrupting the live broadcast. No operator action needed.
-          </div>
-          <button
-            type="button"
-            aria-label="Dismiss faststart-processing notice"
-            onClick={() => setProcessingAlertDismissed(true)}
-            className="shrink-0 rounded p-0.5 hover:bg-blue-200/60 dark:hover:bg-blue-800/40"
           >
             <X className="h-4 w-4" />
           </button>
@@ -5585,8 +5517,8 @@ function BroadcastV2PageInner() {
       </Card>
 
       {/* ── Queue Health Report ──────────────────────────────────────────────── */}
-      {/* Shows ZERO_DURATION, UNSTARTED_FASTSTART, HLS_STORAGE_MISSING, and   */}
-      {/* STUCK_ENCODING issues from the last validator cycle so operators can  */}
+      {/* Shows ZERO_DURATION, HLS_STORAGE_MISSING, STUCK_ENCODING, and        */}
+      {/* PLACEHOLDER_DURATION issues from the last validator cycle so          */}
       {/* spot queue health problems without reading server logs.               */}
       {remediationReport && (
         <Card>
@@ -5695,7 +5627,7 @@ function BroadcastV2PageInner() {
                             className="h-3.5 shrink-0 px-1 text-[9px]"
                             title={`Broadcasting via ${issue.sourceQuality}`}
                           >
-                            {issue.sourceQuality === "hls" ? "HLS" : issue.sourceQuality === "mp4_faststart" ? "MP4" : "MP4 raw"}
+                            {issue.sourceQuality === "hls" ? "HLS" : "MP4"}
                           </Badge>
                         )}
                         {issue.code === "FAILED_IN_QUEUE" && !issue.sourceQuality && (
@@ -5864,7 +5796,7 @@ function BroadcastV2PageInner() {
       {/* Shown when the queue has items but the orchestrator loaded 0 of them. */}
       {/* This happens when old server code wrote is_active=false to the DB     */}
       {/* (auto-suspension bug) or when all items fail the playability check    */}
-      {/* (faststart not applied, bad URL, etc.). "Recover broadcast" calls     */}
+      {/* (bad URL, missing blob, etc.). "Recover broadcast" calls             */}
       {/* POST /reload which now re-enables all suspended items + clears the    */}
       {/* bad-URL cache before reloading, giving every item a fresh attempt.    */}
       {!queueLoading &&
@@ -5886,7 +5818,7 @@ function BroadcastV2PageInner() {
                   The queue has {queueItems.length} item{queueItems.length !== 1 ? "s" : ""} but none
                   were accepted by the orchestrator. Items may have been auto-suspended after repeated
                   playback failures, or their video files may not yet have a playable source (MP4
-                  faststart / HLS). Click <strong>Recover broadcast</strong> to re-enable all suspended
+                  MP4 upload). Click <strong>Recover broadcast</strong> to re-enable all suspended
                   items and reload the queue.
                 </p>
               </div>

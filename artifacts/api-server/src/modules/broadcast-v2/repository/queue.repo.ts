@@ -882,8 +882,6 @@ export interface RawQueueRow {
   thumbnailUrl: string | null;
   durationSecs: number;
   localVideoUrl: string | null;
-  /** True when faststart.service.ts successfully relocated the moov atom. */
-  faststartApplied: boolean;
   /**
    * Raw ffprobe duration string from the joined managed_videos row
    * (e.g. "3600.123"). Preferred over durationSecs when valid — prevents
@@ -892,11 +890,10 @@ export interface RawQueueRow {
    */
   videoDuration: string | null;
   /**
-   * Computed source quality for this queue item.
-   * 'mp4_faststart' — faststart applied (moov at byte-0, seekable)
-   * 'mp4_raw'       — raw upload (moov at EOF; still playable in most players)
+   * Source quality for this queue item. Always "mp4" — the FastStart pipeline
+   * has been retired; all local videos broadcast directly as raw MP4.
    */
-  sourceQuality: "mp4_faststart" | "mp4_raw";
+  sourceQuality: "mp4";
 }
 
 /**
@@ -909,8 +906,8 @@ export interface RawQueueRow {
  *   A) "Truly empty" — no active rows in the DB → library-scan backstop
  *      is the right recovery path.
  *   B) "Filtered out" — active rows exist but are excluded by the strict
- *      broadcast policy (faststart_applied=false, status='processing', etc.)
- *      → re-enabling suspended items + triggering faststart recovery is the
+ *      broadcast policy (bad URL, missing blob, etc.)
+ *      → re-enabling suspended items + triggering queue reload is the
  *      right path. Library scan would find nothing new to add, so running
  *      it alone doesn't help.
  *
@@ -940,74 +937,52 @@ export const queueRepo = {
     //      (hlsMasterUrl OR localVideoUrl OR a row-level localVideoUrl
     //      from an early auto-enqueue before transcode finishes), AND
     //   3. The joined video is NOT sourced from YouTube.
-    //
-    // Schema resilience: faststartApplied references managed_videos.faststart_applied.
-    // Production DBs deployed before this column was added will throw PostgreSQL error
-    // 42703 (undefined_column). We catch that and retry with `false` as a safe fallback
-    // — the field is informational only and is NOT used in toItem() or the orchestrator
-    // state machine. The column is added automatically on the next Render deploy
-    // (build command runs `pnpm --filter @workspace/db run push-force`).
-    const buildQuery = (faststartExpr: ReturnType<typeof sql>) =>
-      db
-        .select({
-          id: q.id,
-          videoId: q.videoId,
-          youtubeId: q.youtubeId,
-          title: q.title,
-          thumbnailUrl: sql<string | null>`COALESCE(NULLIF(${q.thumbnailUrl}, ''), ${v.thumbnailUrl})`,
-          durationSecs: q.durationSecs,
-          // Actual ffprobe duration from the joined video row. Preferred over
-          // q.durationSecs in the post-query validation pass when it is a
-          // valid positive number — see comment at the validation loop below.
-          videoDuration: v.duration,
-          // Coalesce against the joined videos row so an item enqueued before
-          // its row-level `localVideoUrl` was populated (or with only a
-          // joined HLS master) still resolves to a playable source in
-          // `toItem()`. Without this, the WHERE clause could admit a row
-          // that `toItem()` then fails to project, triggering a needless
-          // auto-skip cycle on the orchestrator.
-          localVideoUrl: sql<string | null>`COALESCE(${q.localVideoUrl}, ${v.localVideoUrl})`,
-          faststartApplied: faststartExpr as ReturnType<typeof sql<boolean>>,
-          // Source quality: 'mp4_faststart' when moov atom is at byte-0
-          // (browser can seek without a full download); 'mp4_raw' otherwise.
-          sourceQuality: sql<"mp4_faststart" | "mp4_raw">`
-            CASE
-              WHEN ${faststartExpr} = true
-                AND COALESCE(${v.localVideoUrl}, ${q.localVideoUrl}) IS NOT NULL
-                THEN 'mp4_faststart'
-              ELSE 'mp4_raw'
-            END
-          `,
-        })
-        .from(q)
-        .leftJoin(v, eq(q.videoId, v.id))
-        .where(
-          and(
-            eq(q.isActive, true),
-            // Reject any joined video whose source is YouTube. Rows with
-            // no joined video (videoId IS NULL) are kept only when they
-            // carry their own localVideoUrl — covers the "early-enqueue
-            // on upload finalize" path before the videos row is fully
-            // hydrated.
-            or(ne(v.videoSource, "youtube"), sql`${v.id} IS NULL`),
-            // Admit every active row that has at least one playable MP4 URL.
-            // Any item with a localVideoUrl airs immediately; playback failures
-            // are handled at runtime by the orchestrator's bad-URL cache and
-            // auto-skip logic.
-            or(isNotNull(v.localVideoUrl), isNotNull(q.localVideoUrl)),
-          ),
-        )
-        .orderBy(asc(q.sortOrder), asc(q.addedAt))
-        // Safety cap: prevents the orchestrator from loading an unbounded number
-        // of rows into its in-memory cycle array on every 30 s reload.  Items
-        // beyond the cap are NOT removed from the DB — they will air once
-        // earlier items are removed or the cap is raised via BROADCAST_QUEUE_MAX_ITEMS.
-        .limit(env.BROADCAST_QUEUE_MAX_ITEMS);
-
-    // faststart_applied was removed from the Drizzle schema when the FastStart
-    // pipeline was retired. Always pass `false` — the field is informational
-    // only and is not used by toItem() or the orchestrator state machine.
-    const rows = await buildQuery(sql<boolean>`false`);
+    const rows = await db
+      .select({
+        id: q.id,
+        videoId: q.videoId,
+        youtubeId: q.youtubeId,
+        title: q.title,
+        thumbnailUrl: sql<string | null>`COALESCE(NULLIF(${q.thumbnailUrl}, ''), ${v.thumbnailUrl})`,
+        durationSecs: q.durationSecs,
+        // Actual ffprobe duration from the joined video row. Preferred over
+        // q.durationSecs in the post-query validation pass when it is a
+        // valid positive number — see comment at the validation loop below.
+        videoDuration: v.duration,
+        // Coalesce against the joined videos row so an item enqueued before
+        // its row-level `localVideoUrl` was populated (or with only a
+        // joined HLS master) still resolves to a playable source in
+        // `toItem()`. Without this, the WHERE clause could admit a row
+        // that `toItem()` then fails to project, triggering a needless
+        // auto-skip cycle on the orchestrator.
+        localVideoUrl: sql<string | null>`COALESCE(${q.localVideoUrl}, ${v.localVideoUrl})`,
+        // FastStart pipeline retired — all local MP4s broadcast as raw MP4.
+        sourceQuality: sql<"mp4">`'mp4'`,
+      })
+      .from(q)
+      .leftJoin(v, eq(q.videoId, v.id))
+      .where(
+        and(
+          eq(q.isActive, true),
+          // Reject any joined video whose source is YouTube. Rows with
+          // no joined video (videoId IS NULL) are kept only when they
+          // carry their own localVideoUrl — covers the "early-enqueue
+          // on upload finalize" path before the videos row is fully
+          // hydrated.
+          or(ne(v.videoSource, "youtube"), sql`${v.id} IS NULL`),
+          // Admit every active row that has at least one playable MP4 URL.
+          // Any item with a localVideoUrl airs immediately; playback failures
+          // are handled at runtime by the orchestrator's bad-URL cache and
+          // auto-skip logic.
+          or(isNotNull(v.localVideoUrl), isNotNull(q.localVideoUrl)),
+        ),
+      )
+      .orderBy(asc(q.sortOrder), asc(q.addedAt))
+      // Safety cap: prevents the orchestrator from loading an unbounded number
+      // of rows into its in-memory cycle array on every 30 s reload.  Items
+      // beyond the cap are NOT removed from the DB — they will air once
+      // earlier items are removed or the cap is raised via BROADCAST_QUEUE_MAX_ITEMS.
+      .limit(env.BROADCAST_QUEUE_MAX_ITEMS);
     // Warn operators when the queue is at or near the cap — items beyond the
     // limit are silently excluded from the current broadcast cycle.
     if (rows.length >= env.BROADCAST_QUEUE_MAX_ITEMS) {
@@ -1076,11 +1051,10 @@ export const queueRepo = {
     }
 
     // All items that passed the SQL WHERE + post-query validation pass are
-    // admitted unconditionally. Storage blob presence, transcoding status, and
-    // source integrity are validated asynchronously by background workers
-    // (storage-reconciliation, queue-integrity-validator, faststart-recovery).
-    // Playback failures on admitted items are handled at runtime by the
-    // orchestrator's bad-URL cache and auto-skip logic — no admission gate needed.
+    // admitted unconditionally. Storage blob presence and source integrity are
+    // validated asynchronously by background workers (storage-reconciliation,
+    // queue-integrity-validator). Playback failures on admitted items are handled
+    // at runtime by the orchestrator's bad-URL cache and auto-skip logic.
     return validated.map((r) => ({ ...r, durationSecs: Math.max(1, r.durationSecs) }));
   },
 
