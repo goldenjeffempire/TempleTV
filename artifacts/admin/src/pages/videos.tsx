@@ -1279,8 +1279,12 @@ export default function VideosPage() {
   const LARGE_FILE_WARN_BYTES = 5 * 1024 * 1024 * 1024; // 5 GiB
 
   const addFilesToDialog = useCallback((rawFiles: File[]) => {
+    // Empty rawFiles means no files were in the drop (e.g. dragging text/links).
+    // Silently ignore — do NOT show a validation error for non-file drags.
+    if (rawFiles.length === 0) return;
     const vids = rawFiles.filter((f) => f.type.startsWith("video/") || /\.(mp4|mov|mkv|avi|webm|m4v|flv|wmv|ts|mts|m2ts)$/i.test(f.name));
     if (vids.length === 0) {
+      // Files were provided but none are video — this is a genuine user mistake.
       toast.error("Please select video files (MP4, MOV, MKV, etc.)");
       return;
     }
@@ -1306,13 +1310,21 @@ export default function VideosPage() {
   }, []);
 
   const handlePageDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault(); setPageDragOver(false);
-    addFilesToDialog(Array.from(e.dataTransfer.files));
+    e.preventDefault();
+    setPageDragOver(false);
+    // Only process genuine file drops — ignore text/link/DOM-element drags.
+    if (!e.dataTransfer.types.includes("Files")) return;
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) addFilesToDialog(files);
   }, [addFilesToDialog]);
 
   const handleDialogDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault(); setDialogDragOver(false);
-    addFilesToDialog(Array.from(e.dataTransfer.files));
+    e.preventDefault();
+    setDialogDragOver(false);
+    // Only process genuine file drops — ignore text/link/DOM-element drags.
+    if (!e.dataTransfer.types.includes("Files")) return;
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) addFilesToDialog(files);
   }, [addFilesToDialog]);
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1371,7 +1383,12 @@ export default function VideosPage() {
   return (
     <div
       className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6 relative"
-      onDragOver={(e) => { e.preventDefault(); setPageDragOver(true); }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        // Only show the drop overlay when the drag payload contains files.
+        // Dragging text, links, or browser UI elements must not trigger upload UX.
+        if (e.dataTransfer.types.includes("Files")) setPageDragOver(true);
+      }}
       onDragLeave={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node)) setPageDragOver(false);
       }}
@@ -2291,8 +2308,16 @@ export default function VideosPage() {
                 dialogDragOver ? "border-primary bg-primary/5" : "hover:border-primary/50 hover:bg-muted/30"
               }`}
               onClick={() => fileInputRef.current?.click()}
-              onDragOver={(e) => { e.preventDefault(); setDialogDragOver(true); }}
-              onDragLeave={() => setDialogDragOver(false)}
+              onDragOver={(e) => {
+                e.preventDefault();
+                // Only highlight the drop zone for actual file drags.
+                if (e.dataTransfer.types.includes("Files")) setDialogDragOver(true);
+              }}
+              onDragLeave={(e) => {
+                // Only clear the highlight when leaving the drop zone itself,
+                // not when moving over a child element inside it (avoids flicker).
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) setDialogDragOver(false);
+              }}
               onDrop={handleDialogDrop}
             >
               <input
