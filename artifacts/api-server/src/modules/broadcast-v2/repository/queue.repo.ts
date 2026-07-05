@@ -1004,25 +1004,10 @@ export const queueRepo = {
         // earlier items are removed or the cap is raised via BROADCAST_QUEUE_MAX_ITEMS.
         .limit(env.BROADCAST_QUEUE_MAX_ITEMS);
 
-    let rows: Awaited<ReturnType<typeof buildQuery>>;
-    try {
-      rows = await buildQuery(sql<boolean>`COALESCE(${v.faststartApplied}, false)`);
-    } catch (err: unknown) {
-      // PostgreSQL SQLSTATE 42703 = "undefined_column". The production DB schema
-      // may pre-date the `faststart_applied` column. Retry with a hardcoded false
-      // — the field is informational only, not used by toItem() or the orchestrator.
-      //
-      // Drizzle wraps the raw pg error in _DrizzleQueryError, so the SQLSTATE code
-      // lives on err.cause.code — not on err.code directly. Walk the error chain to
-      // find it, and also check the error message as a belt-and-suspenders fallback
-      // (PostgreSQL sets message = 'column "faststart_applied" does not exist').
-      if (!isUndefinedColumnError(err, "faststart_applied")) throw err;
-      logger.warn(
-        "[broadcast-v2] loadActive: managed_videos.faststart_applied column not found " +
-        "— retrying with faststartApplied=false (run `pnpm --filter @workspace/db run push` to fix permanently)",
-      );
-      rows = await buildQuery(sql<boolean>`false`);
-    }
+    // faststart_applied was removed from the Drizzle schema when the FastStart
+    // pipeline was retired. Always pass `false` — the field is informational
+    // only and is not used by toItem() or the orchestrator state machine.
+    const rows = await buildQuery(sql<boolean>`false`);
     // Warn operators when the queue is at or near the cap — items beyond the
     // limit are silently excluded from the current broadcast cycle.
     if (rows.length >= env.BROADCAST_QUEUE_MAX_ITEMS) {

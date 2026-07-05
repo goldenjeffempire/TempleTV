@@ -31,7 +31,7 @@
  *   'failed'                         → blocked in isPlayableForBroadcast()
  */
 
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, open } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
@@ -43,8 +43,48 @@ import { logger } from "../../infrastructure/logger.js";
 import { storage } from "../../infrastructure/storage.js";
 import { storagePaths } from "../../infrastructure/storage-paths.js";
 import { probeContainerIsValid, probeCanDecodeFirstFrame, remuxForFaststart, detectMdatWithoutMoov } from "./transcoder.service.js";
-import { uploadFromTemp } from "./faststart.service.js";
 import { env } from "../../config/env.js";
+
+/** Chunk size for multipart re-upload of repaired blobs: 8 MiB. */
+const REPAIR_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Upload a repaired file from a local temp path to object storage, replacing
+ * the existing blob for the given key. Replaces the deleted faststart.service.ts
+ * uploadFromTemp export — faststart is no longer a separate service.
+ *
+ * Uses multipart upload in 8 MiB chunks to keep Node.js RSS O(1) regardless
+ * of file size. Avoids the spike that readFile() → Buffer → putObject() would
+ * cause on large sermon recordings (500 MiB – 5 GiB).
+ */
+async function uploadFromTemp(
+  tempPath: string,
+  objectKey: string,
+  log: typeof logger,
+): Promise<void> {
+  const s = storage();
+  const { uploadId } = await s.createMultipartUpload({ key: objectKey, contentType: "video/mp4" });
+
+  let totalBytes = 0;
+  let partNumber = 1;
+  const fh = await open(tempPath, "r");
+  try {
+    while (true) {
+      const buf = Buffer.allocUnsafe(REPAIR_UPLOAD_CHUNK_BYTES);
+      const { bytesRead } = await fh.read(buf, 0, REPAIR_UPLOAD_CHUNK_BYTES);
+      if (bytesRead === 0) break;
+      const chunk = bytesRead === REPAIR_UPLOAD_CHUNK_BYTES ? buf : buf.subarray(0, bytesRead);
+      await s.uploadPart({ key: objectKey, uploadId, partNumber, body: chunk });
+      totalBytes += bytesRead;
+      partNumber++;
+    }
+  } finally {
+    await fh.close();
+  }
+
+  await s.completeMultipartUpload({ key: objectKey, uploadId, parts: [], totalChunks: partNumber - 1 });
+  log.info({ objectKey, sizeBytes: totalBytes, parts: partNumber - 1 }, "[video-validation] repaired blob re-uploaded to storage");
+}
 import { setPipelineStage } from "../media-pipeline/pipeline-stage.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -918,13 +958,7 @@ async function attemptRemediation(opts: {
     const probed = parseFloat(durProbe.stdout.trim());
     if (Number.isFinite(probed) && probed > 0) newDurationSecs = probed;
 
-    await db
-      .update(schema.videosTable)
-      .set({ faststartApplied: true })
-      .where(eq(schema.videosTable.id, videoId))
-      .catch((err: unknown) => {
-        logger.warn({ err, videoId }, "[video-validation] failed to persist faststartApplied after remediation (non-fatal)");
-      });
+    // faststart_applied column removed from schema — no DB write needed.
     repairsPerformed.push("BLOB_REPLACED: repaired file re-uploaded to storage — fix is durable across restarts");
     logger.info({ videoId, objectKey, strategy }, "[video-validation] remediation succeeded — video repaired and re-validated");
   } catch (err) {
@@ -1005,7 +1039,11 @@ export async function runVideoValidation(
     const [row] = await db
       .select({
         duration: videos.duration,
-        faststartApplied: videos.faststartApplied,
+        // faststart_applied was removed from the Drizzle schema; use NULL::boolean
+        // as the safe fallback (the column may or may not exist in the live DB, but
+        // faststartApplied is only informational in the validation pipeline — it drives
+        // the MOOV_PLACEMENT check which already treats null as "legacy row, run probe").
+        faststartApplied: sql<boolean | null>`NULL::boolean`,
         localVideoUrl: videos.localVideoUrl,
       })
       .from(videos)

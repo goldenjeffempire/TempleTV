@@ -637,10 +637,7 @@ function sample() {
           heapUsedMb: heapUsedMbNow,
           heapLimitMb: heapLimitMbNow,
         });
-        // Cancel all faststart jobs (each holds 80–150 MiB) + drain HLS cache.
-        void import("../modules/transcoder/faststart.service.js")
-          .then(({ cancelAllFaststartJobs }) => { cancelAllFaststartJobs(); })
-          .catch(() => {});
+        // Drain HLS cache (faststart pipeline removed — no jobs to cancel).
         void import("../modules/video-serve/video-serve.routes.js")
           .then(({ trimHlsSegmentCache }) => { trimHlsSegmentCache(0); })
           .catch(() => {});
@@ -765,9 +762,7 @@ function sample() {
       rssMb,
       absoluteMaxMb,
     });
-    void import("../modules/transcoder/faststart.service.js")
-      .then(({ cancelAllFaststartJobs }) => { cancelAllFaststartJobs(); })
-      .catch(() => {});
+    // Drain HLS cache (faststart pipeline removed — no jobs to cancel).
     void import("../modules/video-serve/video-serve.routes.js")
       .then(({ trimHlsSegmentCache }) => { trimHlsSegmentCache(0); })
       .catch(() => {});
@@ -841,11 +836,7 @@ function sample() {
         };
       } catch { /* non-fatal — module may not be loaded */ }
 
-      // Step 2: cancel faststart jobs (80–150 MiB each)
-      try {
-        const { cancelAllFaststartJobs } = await import("../modules/transcoder/faststart.service.js");
-        cancelAllFaststartJobs();
-      } catch { /* non-fatal — module may not be loaded */ }
+      // Step 2: faststart pipeline removed — no jobs to cancel.
 
       // Step 3: aggressive cache drain + GC pass 1
       try {
