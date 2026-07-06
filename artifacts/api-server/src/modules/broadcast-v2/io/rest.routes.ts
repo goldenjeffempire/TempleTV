@@ -1296,6 +1296,41 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     });
 
     if (count >= STALL_VOTE_THRESHOLD) {
+      // ── Server-side re-verification before a global skip ────────────────
+      // A single client's stall report reflects ONLY that client's local
+      // conditions (WiFi drop, CPU throttle on a TV/mobile device, brief
+      // buffer starvation) after it already exhausted 3 local retry/failover
+      // attempts. That is strong evidence the SOURCE is broken — but it is
+      // not proof: the client's own network/device can be the actual fault
+      // while every other viewer plays the file fine. Blindly trusting one
+      // report and skipping for the entire broadcast is a real cause of
+      // "random" video skipping. Before acting, independently re-probe the
+      // source from the server. Only a confirmed-broken (or ambiguous, i.e.
+      // "not disproven") result is allowed to advance the broadcast for
+      // everyone; a confirmed-reachable source means this was a local
+      // client-side hiccup and no global action is taken.
+      const urlToVerify = snap.current?.source?.url;
+      if (urlToVerify) {
+        const reachable = await broadcastOrchestrator
+          .verifySourceReachable(urlToVerify)
+          .catch(() => null);
+        if (reachable === true) {
+          stallVotes.delete(key);
+          logger.info(
+            { itemId: body.itemId, url: urlToVerify },
+            "[broadcast-v2] report-stall: source verified reachable server-side — treating as a local client-side hiccup, no global skip",
+          );
+          playbackAnalytics.record({
+            type: "stall",
+            itemId: body.itemId,
+            itemTitle: snap.current?.title ?? null,
+            ts: Date.now(),
+            meta: { voteCount: count, falsePositive: true },
+          });
+          return { ok: true, acted: false, reason: "source-verified-reachable", count };
+        }
+      }
+
       stallVotes.delete(key);
 
       // ── Cooldown guard ────────────────────────────────────────────────

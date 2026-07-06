@@ -3295,6 +3295,29 @@ class BroadcastOrchestrator extends EventEmitter {
     this.emitSnapshot();
   }
 
+  /**
+   * Public wrapper around {@link probeUrlReachability} for use by the
+   * `/report-stall` route. A single client's local network hiccup (WiFi
+   * drop, CPU throttle on a TV/mobile device, brief buffer starvation) can
+   * exhaust its local retry/failover budget and report a "stall" even
+   * though the source is perfectly healthy for every other viewer. Blindly
+   * trusting one client's self-report and skipping for the ENTIRE broadcast
+   * is a genuine root cause of "random" video skipping — the skip is real,
+   * but the failure was local to one viewer, not the source.
+   *
+   * This lets the caller independently re-verify the source server-side
+   * (same HEAD→ranged-GET / HLS-manifest probe used for proactive checks)
+   * before committing to a global skip. Returns:
+   *   - true  — source confirmed reachable (the report was a false positive)
+   *   - false — source confirmed broken (skip is justified)
+   *   - null  — ambiguous (timeout/5xx) — treat as "not disproven", still
+   *             justifies a skip so a genuinely wedged source doesn't leave
+   *             every viewer stuck waiting on repeated ambiguous probes.
+   */
+  async verifySourceReachable(rawUrl: string): Promise<boolean | null> {
+    return this.probeUrlReachability(this.extractRawProbeUrl(rawUrl));
+  }
+
   async skip(): Promise<void> {
     if (this.items.length === 0 || this.cycleDurationMs === 0) return;
     // Compute the advance using elapsed position in the cycle rather than
