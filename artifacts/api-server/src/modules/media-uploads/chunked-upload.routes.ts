@@ -2610,6 +2610,18 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                       await new Promise<void>((r) => { const t = setTimeout(r, 30_000); t.unref(); });
                       await db.update(videos).set({ s3MirroredAt: new Date() }).where(eq(videos.id, videoId));
                       capturedLog.info({ videoId }, "[finalize:bg] s3MirroredAt stamp retry succeeded");
+                      // Blob-confirmation stamp is now set. Enqueue immediately
+                      // so the video enters the broadcast queue right now rather
+                      // than waiting up to 60 s for the reconciler tick.
+                      try {
+                        const retryEnqRes = await enqueueIfMissing({ videoId, reason: "upload-finalize" });
+                        if (retryEnqRes.enqueued) {
+                          adminEventBus.push("broadcast-queue-updated", { reason: "upload-finalize-s3-stamp-retry", videoId });
+                          capturedLog.info({ videoId, queueItemId: retryEnqRes.queueItemId }, "[finalize:bg] enqueued after s3MirroredAt stamp retry — broadcast ready");
+                        }
+                      } catch {
+                        // Non-fatal: upload-queue-reconciler handles within 60 s.
+                      }
                     } catch (retryErr: unknown) {
                       capturedLog.warn(
                         { err: retryErr, videoId },
@@ -2752,11 +2764,20 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                     break;
                   }
                   lastEnqSkipReason = enqRes.skipReason;
-                  if (enqRes.skipReason !== "error") break;
+                  // After assembly is committed (assemblyCommitted=true), the blob
+                  // IS in storage_blobs. A "not-yet-playable" result here always
+                  // means both the s3MirroredAt stamp AND the inline self-heal
+                  // (repairMissingS3MirroredAt) hit a transient DB blip — the next
+                  // attempt will almost certainly succeed. Treat it identically to
+                  // "error" so all 3 retry slots are used before falling back to the
+                  // 60 s reconciler. Any genuinely non-playable video (terminal error
+                  // codes, wrong category, no localVideoUrl) is excluded earlier by
+                  // isPlayableForBroadcast and will never reach this point.
+                  if (enqRes.skipReason !== "error" && enqRes.skipReason !== "not-yet-playable") break;
                   if (attempt < MAX_ENQ_ATTEMPTS) {
                     capturedLog.warn(
                       { videoId, attempt, skipReason: enqRes.skipReason },
-                      "[finalize:bg] enqueueIfMissing returned error — retrying",
+                      "[finalize:bg] enqueueIfMissing returned error/not-yet-playable — retrying",
                     );
                     await new Promise<void>((resolve) => setTimeout(resolve, ENQ_RETRY_DELAY_MS).unref());
                   }
@@ -2884,6 +2905,20 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 videoId,
                 reason: "assembly-post-step-failed",
               });
+              // Blob is committed and intact. Schedule an immediate enqueue
+              // attempt — the inline self-heal inside enqueueIfMissing handles
+              // any missing s3MirroredAt stamp. Any remaining gap is picked up
+              // by the 60 s upload-queue-reconciler. Fire-and-forget: never
+              // let an enqueue failure propagate to the outer catch (which
+              // would re-run this same branch on a double-fault).
+              void enqueueIfMissing({ videoId, reason: "upload-finalize" })
+                .then((enqRes) => {
+                  if (enqRes.enqueued) {
+                    adminEventBus.push("broadcast-queue-updated", { reason: "assembly-post-step-recovery", videoId });
+                    capturedLog.info({ videoId, queueItemId: enqRes.queueItemId }, "[finalize:bg] post-assembly-step recovery: video enqueued successfully");
+                  }
+                })
+                .catch(() => { /* non-fatal — reconciler picks up within 60 s */ });
               uploadTelemetry.serverFail(
                 sessionId,
                 session.sizeBytes,

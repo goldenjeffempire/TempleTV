@@ -2961,7 +2961,14 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       querystring: z.object({ videoIds: z.string().optional() }),
       response: {
         200: z.object({
-          status: z.record(z.string(), z.enum(["queued", "missing"])),
+          // Three states:
+          //   "queued"     — active row in broadcast_queue (will air)
+          //   "assembling" — blob not yet committed (s3MirroredAt IS NULL);
+          //                  "Sync to Queue" would fail immediately — show a
+          //                  spinner instead so the admin knows to wait
+          //   "missing"    — blob confirmed (s3MirroredAt IS NOT NULL) but no
+          //                  active queue row; actionable via force-enqueue
+          status: z.record(z.string(), z.enum(["queued", "missing", "assembling"])),
         }),
         429: _429err,
       },
@@ -2977,22 +2984,49 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
 
     if (ids.length === 0) return { status: {} };
 
-    const rows = await db
-      .select({ videoId: schema.broadcastQueueTable.videoId })
-      .from(schema.broadcastQueueTable)
-      .where(
-        and(
-          eq(schema.broadcastQueueTable.isActive, true),
-          inArray(schema.broadcastQueueTable.videoId, ids),
+    // Run both lookups in parallel: one for the active queue rows, one for the
+    // blob-confirmation stamp. Together they let us distinguish three states
+    // without a JOIN: "queued" > "assembling" (no blob yet) > "missing".
+    const [queueRows, videoRows] = await Promise.all([
+      db
+        .select({ videoId: schema.broadcastQueueTable.videoId })
+        .from(schema.broadcastQueueTable)
+        .where(
+          and(
+            eq(schema.broadcastQueueTable.isActive, true),
+            inArray(schema.broadcastQueueTable.videoId, ids),
+          ),
         ),
-      );
+      db
+        .select({ id: schema.videosTable.id, s3MirroredAt: schema.videosTable.s3MirroredAt })
+        .from(schema.videosTable)
+        .where(inArray(schema.videosTable.id, ids)),
+    ]);
 
     const queuedSet = new Set(
-      rows.map((r) => r.videoId).filter((id): id is string => id != null),
+      queueRows.map((r) => r.videoId).filter((id): id is string => id != null),
     );
-    const status: Record<string, "queued" | "missing"> = {};
+    // Videos with s3MirroredAt=null have not had their blob committed yet.
+    // Broadcasting them would cause "Blob not found in storage" errors; the
+    // "Sync to Queue" / force-enqueue action returns "not yet broadcast-ready".
+    // Surface these as "assembling" so the UI shows a spinner, not a button.
+    const blobConfirmedSet = new Set(
+      videoRows.filter((r) => r.s3MirroredAt != null).map((r) => r.id),
+    );
+
+    const status: Record<string, "queued" | "missing" | "assembling"> = {};
     for (const id of ids) {
-      status[id] = queuedSet.has(id) ? "queued" : "missing";
+      if (queuedSet.has(id)) {
+        status[id] = "queued";
+      } else if (!blobConfirmedSet.has(id)) {
+        // Not in queue AND blob not yet confirmed in storage → still assembling.
+        // This is transient: once completeMultipartUpload commits the blob and
+        // stamps s3MirroredAt, the next poll/invalidation returns "missing" or
+        // "queued" (enqueueIfMissing fires automatically after assembly).
+        status[id] = "assembling";
+      } else {
+        status[id] = "missing";
+      }
     }
     return { status };
   });

@@ -573,14 +573,14 @@ export default function VideosPage() {
   const { data: queueStatusData } = useQuery({
     queryKey: ["broadcast-v2-queue-status", localVideoIds.slice().sort().join(",")],
     queryFn: () =>
-      api.get<{ status: Record<string, "queued" | "missing"> }>(
+      api.get<{ status: Record<string, "queued" | "missing" | "assembling"> }>(
         `/broadcast-v2/queue-status?videoIds=${localVideoIds.join(",")}`,
       ),
     enabled: localVideoIds.length > 0,
     staleTime: 30_000,
     placeholderData: (prev) => prev,
   });
-  const queueStatus: Record<string, "queued" | "missing"> = queueStatusData?.status ?? {};
+  const queueStatus: Record<string, "queued" | "missing" | "assembling"> = queueStatusData?.status ?? {};
 
   useSSEEvent("youtube-live-status-changed", () => {
     void qc.invalidateQueries({ queryKey: ["admin-videos"] });
@@ -619,6 +619,15 @@ export default function VideosPage() {
   useSSEEvent("broadcast-queue-updated", () => {
     void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-status"] });
     void qc.invalidateQueries({ queryKey: ["broadcast-queue"] });
+  });
+
+  // When assembly completes the blob transitions from null → stamped, which
+  // changes the queue-status from "assembling" → "missing" (or "queued" if
+  // enqueueIfMissing succeeded immediately). Invalidate so the badge updates
+  // without waiting for the 30 s staleTime or the next broadcast-queue-updated.
+  useSSEEvent("upload-assembly-complete", () => {
+    void qc.invalidateQueries({ queryKey: ["broadcast-v2-queue-status"] });
+    void qc.invalidateQueries({ queryKey: ["admin-videos"] });
   });
 
   useSSEEvent("broadcast-source-upgraded", () => {
@@ -1963,6 +1972,17 @@ export default function VideosPage() {
                             <ListChecks size={10} className="flex-shrink-0" />
                             In queue
                           </Badge>
+                        );
+                      }
+                      if (qs === "assembling") {
+                        return (
+                          <span
+                            className="text-[9px] text-muted-foreground/70 flex items-center gap-0.5"
+                            title="Upload is being assembled in storage — will be added to the broadcast queue automatically once the blob is confirmed. No action needed."
+                          >
+                            <Loader2 size={8} className="animate-spin flex-shrink-0" />
+                            Assembling…
+                          </span>
                         );
                       }
                       if (qs === "missing") {
