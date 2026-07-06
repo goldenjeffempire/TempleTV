@@ -182,6 +182,24 @@ const FATAL_BACKOFF_MAX_MS = 240_000;
  */
 const MAX_HANDOFF_WAIT_MS = 8_000;
 
+/**
+ * Number of recovery attempts on the active buffer before the FSM gives up
+ * and requests a server-side skip. Budget: (1) silent primary reload,
+ * (2) failover source (or a second primary reload if no failover exists),
+ * (3) one final primary reload. Only the 4th consecutive error escalates to
+ * SKIP_PENDING.
+ *
+ * Raised from 2 → 3 attempts: the platform's broadcast-admission guarantee
+ * (raw MP4s only enter the queue once their blob is confirmed committed —
+ * see `isPlayableForBroadcast()`) means a source that fails to bind is,
+ * overwhelmingly, a *transient* network/DB-latency hiccup rather than a
+ * genuinely missing file. Every extra automatic retry here is a video that
+ * plays to completion instead of being skipped, which is the operator's
+ * explicit top priority for 24/7 broadcast — worth the few extra seconds of
+ * recovery buffering on the rare occasion the source really is broken.
+ */
+const MAX_PRIMARY_RETRIES = 3;
+
 export class PlayerMachine {
   private snapshot: PlayerSnapshot = {
     state: "BOOTSTRAP",
@@ -1100,8 +1118,11 @@ export class PlayerMachine {
       return;
     }
     this.primaryRetries += 1;
-    if (this.primaryRetries === 1) {
-      // Silent reload of the same source.
+    if (this.primaryRetries === 1 || this.primaryRetries === MAX_PRIMARY_RETRIES) {
+      // Silent reload of the same source. Used both on the first error
+      // (give the primary an immediate second chance) and on the final
+      // retry (attempt #MAX_PRIMARY_RETRIES) so a source that recovered
+      // between attempt #2's failover and now still gets to play out.
       this.transition("RECOVERING_PRIMARY");
       const item = bufferId === "A" ? this.snapshot.bufferA : this.snapshot.bufferB;
       if (item) {
@@ -1114,10 +1135,10 @@ export class PlayerMachine {
         const positionSecs = resolvePositionSecs(item as V2Item, startsAtMs, this.clockOffsetMs);
         this.emit({ type: "play", bufferId, positionSecs });
       }
-    } else if (this.primaryRetries === 2) {
-      // Try failover source if one is available; otherwise do one more
-      // silent reload of the primary. A single stall can be a transient
-      // network hiccup — giving the primary a second chance avoids
+    } else if (this.primaryRetries < MAX_PRIMARY_RETRIES) {
+      // Middle retries: try failover source if one is available; otherwise
+      // do another silent reload of the primary. A single stall can be a
+      // transient network hiccup — giving the primary another chance avoids
       // unnecessarily cycling the broadcast queue.
       const item = bufferId === "A" ? this.snapshot.bufferA : this.snapshot.bufferB;
       if (item && "failoverSource" in item && item.failoverSource) {
@@ -1126,7 +1147,7 @@ export class PlayerMachine {
         this.emit({ type: "bind", bufferId, item: fb });
         this.emit({ type: "play", bufferId, positionSecs: 0 });
       } else {
-        // No failover — try primary once more before giving up.
+        // No failover — try primary again before giving up.
         this.transition("RECOVERING_PRIMARY");
         if (item) {
           this.emit({ type: "bind", bufferId, item });
@@ -1141,8 +1162,10 @@ export class PlayerMachine {
       }
     } else {
       // Give up — request server-side skip.
-      // Fires on the 3rd error: after two primary retries (or one primary
-      // retry + one failover attempt), the source is considered unplayable.
+      // Fires on the (MAX_PRIMARY_RETRIES + 1)th error: after a primary
+      // reload, a failover attempt (or extra primary reload), and one final
+      // primary reload have all failed, the source is considered genuinely
+      // unplayable rather than transiently stalled.
       //
       // Record the current item's startsAtMs as the skip-pending anchor so
       // that handleServerSnapshot knows NOT to rebind the same broken source
