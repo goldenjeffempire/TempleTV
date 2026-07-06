@@ -170,11 +170,35 @@ const FATAL_BACKOFF_MAX_MS = 240_000;
  * When the inactive buffer preloaded successfully (typical case, ~120 s of
  * lead time), canplay already fired and the HANDOFF is immediate.  This timer
  * is only the last resort for pathological cases (very slow network, browser
- * throttling) where the inactive buffer still hasn't decoded a first frame
- * by the time the active buffer ends.  3 s caps the "frozen last frame"
- * duration without letting the display hang indefinitely.
+ * throttling, PostgreSQL BYTEA reads under load) where the inactive buffer
+ * still hasn't decoded a first frame by the time the active buffer ends.
+ *
+ * Raised from 3 s → 8 s because the adapter now waits for `canplay`
+ * (readyState ≥ 3, first frame decoded) rather than `loadedmetadata`
+ * (readyState = 1, metadata only).  `canplay` takes slightly longer than
+ * `loadedmetadata` on the first frame, so the safety-valve budget needs to
+ * be correspondingly larger.  8 s is still short enough to avoid a
+ * prolonged black screen while being generous for the BYTEA storage path.
  */
-const MAX_HANDOFF_WAIT_MS = 3_000;
+const MAX_HANDOFF_WAIT_MS = 8_000;
+
+/**
+ * Number of recovery attempts on the active buffer before the FSM gives up
+ * and requests a server-side skip. Budget: (1) silent primary reload,
+ * (2) failover source (or a second primary reload if no failover exists),
+ * (3) one final primary reload. Only the 4th consecutive error escalates to
+ * SKIP_PENDING.
+ *
+ * Raised from 2 → 3 attempts: the platform's broadcast-admission guarantee
+ * (raw MP4s only enter the queue once their blob is confirmed committed —
+ * see `isPlayableForBroadcast()`) means a source that fails to bind is,
+ * overwhelmingly, a *transient* network/DB-latency hiccup rather than a
+ * genuinely missing file. Every extra automatic retry here is a video that
+ * plays to completion instead of being skipped, which is the operator's
+ * explicit top priority for 24/7 broadcast — worth the few extra seconds of
+ * recovery buffering on the rare occasion the source really is broken.
+ */
+const MAX_PRIMARY_RETRIES = 3;
 
 export class PlayerMachine {
   private snapshot: PlayerSnapshot = {
@@ -320,6 +344,18 @@ export class PlayerMachine {
    */
   private skipPendingAnchorMs: number | null = null;
   /**
+   * The item `id` that caused the machine to enter SKIP_PENDING.
+   *
+   * Purpose: guard against re-binding the SAME broken item even when the
+   * orchestrator has issued it a fresh `startsAtMs` (i.e. the cycle wrapped
+   * around back to the only item in a single-item queue).  Without this,
+   * `handleServerSnapshot` sees a new `startsAtMs` → clears the anchor →
+   * rebinds the same broken source → fails → SKIP_PENDING → loop forever.
+   *
+   * Cleared in the same places as `skipPendingAnchorMs`.
+   */
+  private skipPendingItemId: string | null = null;
+  /**
    * Counts successive same-anchor SKIP_PENDING snapshots.  Reaches
    * SKIP_PENDING_FATAL_THRESHOLD then transitions to FATAL.
    */
@@ -428,6 +464,7 @@ export class PlayerMachine {
     this.primaryRetries = 0;
     this.skipPendingCycles = 0;
     this.skipPendingAnchorMs = null;
+    this.skipPendingItemId = null;
 
     // Re-bind the current item. This increments `bindRevision` in the
     // mobile adapter even if the source URL is unchanged — the BroadcastBuffer
@@ -855,9 +892,12 @@ export class PlayerMachine {
         // needed, rather than silently hammering the media pipeline.
         if (
           this.skipPendingAnchorMs !== null &&
-          server.current.startsAtMs === this.skipPendingAnchorMs
+          (server.current.startsAtMs === this.skipPendingAnchorMs ||
+           server.current.id === this.skipPendingItemId)
         ) {
-          // Same slot anchor still airing — count escape-valve reconnect cycles.
+          // Same broken source — either the anchor is unchanged OR the orchestrator
+          // wrapped the cycle and re-issued the same item with a new startsAtMs
+          // (e.g. single-item queue).  Count escape-valve reconnect cycles.
           // Once SKIP_PENDING_FATAL_THRESHOLD is reached the source is considered
           // permanently unplayable on this client; enter FATAL so the UI shows a
           // clear "stream temporarily unavailable" message with a 30 s auto-retry
@@ -866,6 +906,7 @@ export class PlayerMachine {
           if (this.skipPendingCycles >= SKIP_PENDING_FATAL_THRESHOLD) {
             this.skipPendingCycles = 0;
             this.skipPendingAnchorMs = null;
+            this.skipPendingItemId = null;
             // Increment BEFORE transition("FATAL") so transition() sees the
             // updated count and publishes it in the snapshot immediately.
             // This lets UI surfaces (TV overlay, admin preview) display the
@@ -897,8 +938,9 @@ export class PlayerMachine {
           }
           return;
         }
-        // Fresh anchor (or no anchor recorded) — safe to retry.
+        // Fresh anchor AND different item — safe to retry with a clean budget.
         this.skipPendingAnchorMs = null;
+        this.skipPendingItemId = null;
         this.skipPendingCycles = 0;
         this.primaryRetries = 0;
         this.bindActive(server.current);
@@ -973,6 +1015,7 @@ export class PlayerMachine {
           }
           this.skipPendingCycles = 0;
           this.skipPendingAnchorMs = null;
+          this.skipPendingItemId = null;
           this.primaryRetries = 0;
           this.bindActive(server.current);
           const positionSecs = resolvePositionSecs(
@@ -1075,8 +1118,11 @@ export class PlayerMachine {
       return;
     }
     this.primaryRetries += 1;
-    if (this.primaryRetries === 1) {
-      // Silent reload of the same source.
+    if (this.primaryRetries === 1 || this.primaryRetries === MAX_PRIMARY_RETRIES) {
+      // Silent reload of the same source. Used both on the first error
+      // (give the primary an immediate second chance) and on the final
+      // retry (attempt #MAX_PRIMARY_RETRIES) so a source that recovered
+      // between attempt #2's failover and now still gets to play out.
       this.transition("RECOVERING_PRIMARY");
       const item = bufferId === "A" ? this.snapshot.bufferA : this.snapshot.bufferB;
       if (item) {
@@ -1089,10 +1135,10 @@ export class PlayerMachine {
         const positionSecs = resolvePositionSecs(item as V2Item, startsAtMs, this.clockOffsetMs);
         this.emit({ type: "play", bufferId, positionSecs });
       }
-    } else if (this.primaryRetries === 2) {
-      // Try failover source if one is available; otherwise do one more
-      // silent reload of the primary. A single stall can be a transient
-      // network hiccup — giving the primary a second chance avoids
+    } else if (this.primaryRetries < MAX_PRIMARY_RETRIES) {
+      // Middle retries: try failover source if one is available; otherwise
+      // do another silent reload of the primary. A single stall can be a
+      // transient network hiccup — giving the primary another chance avoids
       // unnecessarily cycling the broadcast queue.
       const item = bufferId === "A" ? this.snapshot.bufferA : this.snapshot.bufferB;
       if (item && "failoverSource" in item && item.failoverSource) {
@@ -1101,7 +1147,7 @@ export class PlayerMachine {
         this.emit({ type: "bind", bufferId, item: fb });
         this.emit({ type: "play", bufferId, positionSecs: 0 });
       } else {
-        // No failover — try primary once more before giving up.
+        // No failover — try primary again before giving up.
         this.transition("RECOVERING_PRIMARY");
         if (item) {
           this.emit({ type: "bind", bufferId, item });
@@ -1116,8 +1162,10 @@ export class PlayerMachine {
       }
     } else {
       // Give up — request server-side skip.
-      // Fires on the 3rd error: after two primary retries (or one primary
-      // retry + one failover attempt), the source is considered unplayable.
+      // Fires on the (MAX_PRIMARY_RETRIES + 1)th error: after a primary
+      // reload, a failover attempt (or extra primary reload), and one final
+      // primary reload have all failed, the source is considered genuinely
+      // unplayable rather than transiently stalled.
       //
       // Record the current item's startsAtMs as the skip-pending anchor so
       // that handleServerSnapshot knows NOT to rebind the same broken source
@@ -1126,6 +1174,13 @@ export class PlayerMachine {
       this.skipPendingAnchorMs =
         srv?.current && "startsAtMs" in srv.current
           ? (srv.current as V2Item).startsAtMs
+          : null;
+      // Also record the item ID so the SKIP_PENDING guard can block rebinds
+      // of the same broken source even when the orchestrator wraps the cycle
+      // and issues a new startsAtMs for the same item (e.g. single-item queue).
+      this.skipPendingItemId =
+        srv?.current && "id" in srv.current
+          ? (srv.current as V2Item).id
           : null;
       this.transition("SKIP_PENDING");
       this.primaryRetries = 0;
@@ -1432,9 +1487,11 @@ export class PlayerMachine {
   }
 
   private onForceSkip(): void {
-    // Operator-triggered skip — clear the anchor so the next server snapshot
-    // is allowed to rebind (the operator explicitly wants to try again or move on).
+    // Operator-triggered skip — clear both anchor and item-ID so the next
+    // server snapshot is allowed to rebind (the operator explicitly wants to
+    // try again or move on, even if it's the same item).
     this.skipPendingAnchorMs = null;
+    this.skipPendingItemId = null;
     this.transition("SKIP_PENDING");
   }
 
