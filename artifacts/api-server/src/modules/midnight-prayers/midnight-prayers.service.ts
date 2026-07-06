@@ -19,7 +19,7 @@
  *   connected clients the moment the window closes at endHour.
  */
 
-import { eq, and, or, isNotNull, sql } from "drizzle-orm";
+import { eq, and, or, isNotNull, isNull, not, inArray, sql } from "drizzle-orm";
 import { db, schema, ensureMidnightPrayersTable } from "../../infrastructure/db.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { logger } from "../../infrastructure/logger.js";
@@ -103,6 +103,19 @@ export interface MidnightPrayersConfigData {
 
 const CHANNEL_ID = "midnight-prayers" as const;
 const VIDEO_RELOAD_INTERVAL_MS = 5 * 60_000;
+/**
+ * Terminal transcoding error codes that permanently block a video from
+ * broadcast rotation. Mirrors the same list in auto-enqueue.service.ts.
+ *
+ *   ASSEMBLY_FAILED  — upload data incomplete; blob never committed.
+ *   CORRUPT_SOURCE   — source file failed integrity checks.
+ *   SOURCE_MISSING   — blob was explicitly deleted / never existed.
+ *
+ * These videos cannot be recovered by a retry and must never appear in
+ * the midnight-prayers rotation — attempting to play them would cause
+ * "Blob not found" storage errors and dead air during the broadcast window.
+ */
+const TERMINAL_ERROR_CODES = ["ASSEMBLY_FAILED", "CORRUPT_SOURCE", "SOURCE_MISSING"] as const;
 const HEARTBEAT_INTERVAL_MS = 25_000;
 const ITEM_WATCH_INTERVAL_MS = 4_000;
 const DEFAULT_DURATION_SECS = 1800;
@@ -184,7 +197,21 @@ class MidnightPrayersService {
     this.startTimers();
 
     adminEventBus.on("videos-library-updated", () => {
-      void this.loadVideos();
+      const previousCount = this.videos.length;
+      void this.loadVideos().then(() => {
+        // When the video list changes (new upload confirmed, video removed),
+        // push a fresh snapshot immediately so all connected SSE/WS clients
+        // see the updated rotation without waiting for the 5-minute reload
+        // timer or the next 4-second item-transition tick.
+        if (this.videos.length !== previousCount && isWindowActive(Date.now(), this.config)) {
+          logger.info(
+            "[midnight-prayers] video count changed %d → %d — broadcasting snapshot to connected clients",
+            previousCount,
+            this.videos.length,
+          );
+          this.broadcastSnapshot();
+        }
+      });
     });
 
     logger.info("[midnight-prayers] service initialised — %d videos loaded, window=%s",
@@ -323,19 +350,50 @@ class MidnightPrayersService {
           youtubeId: schema.videosTable.youtubeId,
           transcodingStatus: schema.videosTable.transcodingStatus,
           videoSource: schema.videosTable.videoSource,
+          s3MirroredAt: schema.videosTable.s3MirroredAt,
         })
         .from(schema.videosTable)
         .where(
           and(
             eq(schema.videosTable.category, CHANNEL_ID),
-            // Playable videos: HLS manifest, any locally-uploaded MP4 (raw or
-            // faststart — both are playable; raw MP4 will get HLS shortly),
-            // or YouTube video.  faststartApplied is no longer a prerequisite:
-            // raw MP4 (moov at EOF) plays fine in modern browsers and the HLS
-            // transcoder will upgrade the source asynchronously.
+            // ── Playable-source admission gates ─────────────────────────────
+            //
+            // A video is eligible for rotation when it has at least one
+            // confirmed, reachable source:
+            //
+            //   1. HLS master URL — always safe; the HLS transcoder writes
+            //      this only after the segments are fully committed.
+            //
+            //   2. Local MP4 — MUST have s3MirroredAt stamped (non-NULL).
+            //      localVideoUrl is set at pre-commit (before the BYTEA
+            //      assembly transaction runs), so a non-NULL localVideoUrl
+            //      does NOT mean the blob is in storage yet.  Admitting a
+            //      video whose blob is still assembling causes
+            //      storage.getObject() → 404 → dead air in the broadcast
+            //      window.  s3MirroredAt is stamped by completeMultipartUpload
+            //      only after the BYTEA assembly transaction commits.
+            //
+            //      Local MP4 videos with terminal error codes are permanently
+            //      broken and must never appear in rotation — the blob was
+            //      never committed (ASSEMBLY_FAILED), the file is corrupt
+            //      (CORRUPT_SOURCE), or the blob was deleted (SOURCE_MISSING).
+            //      Use or(isNull, not(inArray)) — not plain ne() / NOT IN —
+            //      because SQL NULL != 'X' evaluates to NULL, not TRUE.
+            //
+            //   3. YouTube — no blob; s3MirroredAt is irrelevant.
             or(
               isNotNull(schema.videosTable.hlsMasterUrl),
-              isNotNull(schema.videosTable.localVideoUrl),
+              and(
+                isNotNull(schema.videosTable.localVideoUrl),
+                isNotNull(schema.videosTable.s3MirroredAt),
+                or(
+                  isNull(schema.videosTable.transcodingErrorCode),
+                  not(inArray(
+                    schema.videosTable.transcodingErrorCode,
+                    [...TERMINAL_ERROR_CODES],
+                  )),
+                ),
+              ),
               and(
                 isNotNull(schema.videosTable.youtubeId),
                 eq(schema.videosTable.videoSource, "youtube"),
@@ -380,9 +438,11 @@ class MidnightPrayersService {
     config: MidnightPrayersConfigData;
   }> {
     try {
-      const rows = await db
+      // ── Status-count breakdown (local videos only) ─────────────────────────
+      const statusRows = await db
         .select({
           status: schema.videosTable.transcodingStatus,
+          errorCode: schema.videosTable.transcodingErrorCode,
           cnt: sql<number>`count(*)::int`,
         })
         .from(schema.videosTable)
@@ -392,21 +452,65 @@ class MidnightPrayersService {
             eq(schema.videosTable.videoSource, "local"),
           ),
         )
-        .groupBy(schema.videosTable.transcodingStatus);
+        .groupBy(schema.videosTable.transcodingStatus, schema.videosTable.transcodingErrorCode);
 
       const statusCounts: Record<string, number> = {};
       let total = 0;
-      let playable = 0;
-      for (const r of rows) {
+      let failed = 0;
+      for (const r of statusRows) {
         const s = r.status ?? "none";
-        statusCounts[s] = Number(r.cnt);
+        statusCounts[s] = (statusCounts[s] ?? 0) + Number(r.cnt);
         total += Number(r.cnt);
-        if (s === "hls_ready" || s === "ready") playable += Number(r.cnt);
+        // A video is truly failed (unrecoverable) only when it carries a
+        // terminal error code.  HLS-encoding failures on an MP4-only pipeline
+        // are NOT real failures — the video is still playable as raw MP4.
+        if (
+          r.errorCode &&
+          (TERMINAL_ERROR_CODES as ReadonlyArray<string>).includes(r.errorCode)
+        ) {
+          failed += Number(r.cnt);
+        }
       }
 
       const encoding = (statusCounts["encoding"] ?? 0) + (statusCounts["processing"] ?? 0);
       const queued = statusCounts["queued"] ?? 0;
-      const failed = statusCounts["failed"] ?? 0;
+
+      // ── Playable count — matches the loadVideos() admission criteria ────────
+      // A video is "playable" when it has at least one confirmed source:
+      //   • Local MP4 with s3MirroredAt stamped (blob committed) AND no
+      //     terminal error code, OR
+      //   • HLS master URL (transcoded and ready), OR
+      //   • YouTube.
+      // This matches the WHERE clause in loadVideos() exactly so the admin UI
+      // always shows the same count as the running rotation.
+      const playableRows = await db
+        .select({ cnt: sql<number>`count(*)::int` })
+        .from(schema.videosTable)
+        .where(
+          and(
+            eq(schema.videosTable.category, CHANNEL_ID),
+            or(
+              isNotNull(schema.videosTable.hlsMasterUrl),
+              and(
+                isNotNull(schema.videosTable.localVideoUrl),
+                isNotNull(schema.videosTable.s3MirroredAt),
+                or(
+                  isNull(schema.videosTable.transcodingErrorCode),
+                  not(inArray(
+                    schema.videosTable.transcodingErrorCode,
+                    [...TERMINAL_ERROR_CODES],
+                  )),
+                ),
+              ),
+              and(
+                isNotNull(schema.videosTable.youtubeId),
+                eq(schema.videosTable.videoSource, "youtube"),
+              ),
+            ),
+          ),
+        );
+      const playable = Number(playableRows[0]?.cnt ?? 0);
+
       const windowActive = isWindowActive(Date.now(), this.config);
 
       return {
@@ -426,7 +530,7 @@ class MidnightPrayersService {
       const windowActive = isWindowActive(Date.now(), this.config);
       return {
         total: 0,
-        playable: 0,
+        playable: this.videos.length,
         encoding: 0,
         failed: 0,
         queued: 0,
@@ -642,14 +746,26 @@ class MidnightPrayersService {
   // ── Timer loops ───────────────────────────────────────────────────────────
 
   private startTimers(): void {
-    // Periodic video list refresh
+    // Periodic video list refresh — detects videos that became playable since
+    // the last reload (s3MirroredAt stamped, orphaned session recovered, etc.).
+    // Only broadcasts if the video count changed or the window is active and
+    // we haven't sent a snapshot in a while, to avoid flooding clients.
     this.videoReloadTimer = setInterval(() => {
+      const previousCount = this.videos.length;
       void this.loadVideos().then(() => {
-        // Only broadcast if currently inside the window — no point pushing
-        // offline_hold snapshots when we already sent one at window close.
-        if (isWindowActive(Date.now(), this.config)) {
-          this.broadcastSnapshot();
+        if (!isWindowActive(Date.now(), this.config)) return;
+        const countChanged = this.videos.length !== previousCount;
+        if (countChanged) {
+          logger.info(
+            "[midnight-prayers] periodic reload: video count changed %d → %d — broadcasting snapshot",
+            previousCount,
+            this.videos.length,
+          );
         }
+        // Always broadcast on periodic reload when inside the window — this
+        // is a safety-net catch-up for clients that missed an event-driven
+        // push (network hiccup, SSE reconnect, etc.).
+        this.broadcastSnapshot();
       });
     }, VIDEO_RELOAD_INTERVAL_MS);
     this.videoReloadTimer.unref?.();

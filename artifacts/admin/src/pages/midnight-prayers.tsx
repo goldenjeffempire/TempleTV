@@ -54,7 +54,6 @@ import {
   Search,
   Edit2,
   Trash2,
-  RotateCcw,
   Loader2,
   Activity,
   Archive,
@@ -333,10 +332,21 @@ export default function MidnightPrayersPage() {
   // upload or transcode videos, keeping this page's library list in sync.
   useSSEEvent("videos-library-updated", () => {
     void qc.invalidateQueries({ queryKey: ["mp-library"] });
+    void qc.invalidateQueries({ queryKey: ["midnight-prayers/queue"] });
+    void qc.invalidateQueries({ queryKey: ["midnight-prayers/diagnostics"] });
   });
   useSSEEvent("transcoding-update", () => {
     void qc.invalidateQueries({ queryKey: ["mp-library"] });
     void qc.invalidateQueries({ queryKey: ["midnight-prayers/queue"] });
+  });
+  // When upload assembly completes the blob is confirmed in storage — the video
+  // is now playable as raw MP4 and the midnight-prayers service reloads its list.
+  // Invalidate immediately so the library and rotation counts update without
+  // waiting for the 30 s staleTime or the next videos-library-updated event.
+  useSSEEvent("upload-assembly-complete", () => {
+    void qc.invalidateQueries({ queryKey: ["mp-library"] });
+    void qc.invalidateQueries({ queryKey: ["midnight-prayers/queue"] });
+    void qc.invalidateQueries({ queryKey: ["midnight-prayers/diagnostics"] });
   });
 
   // ── Queries ─────────────────────────────────────────────────────────────────
@@ -445,15 +455,6 @@ export default function MidnightPrayersPage() {
     onError: () => toast.error("Operation failed"),
   });
 
-  const retryTranscodeMutation = useMutation({
-    mutationFn: (id: string) => api.post(`/admin/videos/${id}/transcode`),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["mp-library"] });
-      void qc.invalidateQueries({ queryKey: ["midnight-prayers/diagnostics"] });
-      toast.success("Re-queued for encoding", { description: "HLS transcoding will begin shortly." });
-    },
-    onError: () => toast.error("Retry failed"),
-  });
 
   // ── Upload handlers ──────────────────────────────────────────────────────────
 
@@ -519,10 +520,29 @@ export default function MidnightPrayersPage() {
     : 0;
 
   const libVideos = libraryData?.videos ?? [];
-  const playableCount = libVideos.filter(
-    (v) => v.transcodingStatus === "hls_ready" || v.transcodingStatus === "ready",
-  ).length;
-  const failedVideos = libVideos.filter((v) => v.transcodingStatus === "failed");
+
+  // Terminal error codes that permanently block a video from rotation.
+  // Mirrors the server-side TERMINAL_ERROR_CODES in midnight-prayers.service.ts.
+  const TERMINAL_ERROR_CODES = ["ASSEMBLY_FAILED", "CORRUPT_SOURCE", "SOURCE_MISSING"];
+
+  // "Playable" = video has a confirmed source that midnight-prayers can serve.
+  // On the MP4-only pipeline, any video with localVideoUrl set and no terminal
+  // error code is playable as raw MP4 (transcodingStatus may still be "none"
+  // or "failed" for HLS — that's irrelevant for MP4 playback).
+  // For accuracy we use diagnostics.playable (server-computed, matches loadVideos()
+  // WHERE clause exactly) and fall back to a client-side estimate.
+  const playableCount = diagnostics?.playable ??
+    libVideos.filter((v) =>
+      v.hlsMasterUrl != null ||
+      (v.localVideoUrl != null && !TERMINAL_ERROR_CODES.includes(v.transcodingErrorCode ?? "")),
+    ).length;
+
+  // "Truly failed" = permanently unrecoverable (blob never committed / corrupt /
+  // deleted). HLS-encoding failures (transcodingStatus="failed" but localVideoUrl
+  // set) are NOT true failures — the video is still playable as raw MP4.
+  const failedVideos = libVideos.filter(
+    (v) => TERMINAL_ERROR_CODES.includes(v.transcodingErrorCode ?? ""),
+  );
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -693,7 +713,7 @@ export default function MidnightPrayersPage() {
                   <Film className="h-4 w-4 text-indigo-500" />
                   Content Library
                   <span className="text-sm font-normal text-muted-foreground">
-                    ({libraryData?.total ?? 0} videos · {playableCount} playable)
+                    ({libraryData?.total ?? 0} videos · {playableCount} in rotation)
                   </span>
                 </CardTitle>
                 <div className="flex items-center gap-2 shrink-0">
@@ -757,7 +777,6 @@ export default function MidnightPrayersPage() {
                       key={video.id}
                       video={video}
                       index={idx}
-                      isRetrying={retryTranscodeMutation.isPending}
                       onEdit={() => {
                         setEditVideo(video);
                         setEditForm({
@@ -766,7 +785,6 @@ export default function MidnightPrayersPage() {
                           description: video.description,
                         });
                       }}
-                      onRetry={() => retryTranscodeMutation.mutate(video.id)}
                       onRemove={() => setDeleteTarget({ id: video.id, title: video.title })}
                     />
                   ))}
@@ -781,11 +799,12 @@ export default function MidnightPrayersPage() {
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm text-red-700 dark:text-red-400 flex items-center gap-2">
                   <AlertCircle className="h-4 w-4" />
-                  {failedVideos.length} Video{failedVideos.length > 1 ? "s" : ""} Failed Encoding
+                  {failedVideos.length} Video{failedVideos.length > 1 ? "s" : ""} Permanently Failed
                 </CardTitle>
                 <CardDescription className="text-xs text-red-600/80 dark:text-red-400/80">
-                  These videos are excluded from the midnight prayers rotation until encoding succeeds.
-                  Click "Retry" to re-queue each one.
+                  These videos have unrecoverable upload failures (blob not committed or corrupt).
+                  Delete and re-upload to recover. Note: HLS encoding failures alone are NOT shown
+                  here — those videos are still playable as raw MP4 and are already in rotation.
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -794,22 +813,17 @@ export default function MidnightPrayersPage() {
                     <div key={v.id} className="flex items-center justify-between gap-2 p-2 rounded bg-white/60 dark:bg-black/20">
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{v.title}</p>
-                        {v.transcodingErrorMessage && (
-                          <p className="text-xs text-red-600 dark:text-red-400 mt-0.5 truncate">
-                            {v.transcodingErrorMessage}
-                          </p>
-                        )}
+                        <p className="text-xs text-red-600 dark:text-red-400 mt-0.5 truncate">
+                          {v.transcodingErrorMessage ??
+                            (v.transcodingErrorCode === "ASSEMBLY_FAILED"
+                              ? "Upload assembly failed — delete and re-upload"
+                              : v.transcodingErrorCode === "SOURCE_MISSING"
+                              ? "Storage blob deleted — delete and re-upload"
+                              : v.transcodingErrorCode === "CORRUPT_SOURCE"
+                              ? "Source file corrupt — delete and re-upload"
+                              : "Unrecoverable error — delete and re-upload")}
+                        </p>
                       </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 shrink-0"
-                        onClick={() => retryTranscodeMutation.mutate(v.id)}
-                        disabled={retryTranscodeMutation.isPending}
-                      >
-                        <RotateCcw className="h-3 w-3 mr-1" />
-                        Retry
-                      </Button>
                     </div>
                   ))}
                 </div>
@@ -980,32 +994,32 @@ export default function MidnightPrayersPage() {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <StatCard title="Total Videos" value={diagLoading ? "…" : diagnostics?.total ?? 0} icon={Film} />
             <StatCard
-              title="Playable (HLS)"
+              title="Playable"
               value={diagLoading ? "…" : diagnostics?.playable ?? 0}
               icon={Zap}
               color="green"
-              subtitle="In rotation"
+              subtitle="Blob confirmed · in rotation"
             />
             <StatCard
               title="Queued / Encoding"
               value={diagLoading ? "…" : (diagnostics?.queued ?? 0) + (diagnostics?.encoding ?? 0)}
               icon={Loader2}
               color="blue"
-              subtitle="Processing now"
+              subtitle="HLS processing (optional)"
             />
             <StatCard
-              title="Failed"
+              title="Unrecoverable"
               value={diagLoading ? "…" : diagnostics?.failed ?? 0}
               icon={AlertCircle}
               color={(diagnostics?.failed ?? 0) > 0 ? "red" : "default"}
-              subtitle="Need retry"
+              subtitle="Re-upload required"
             />
             <StatCard
-              title="In Service"
+              title="Live in Memory"
               value={diagLoading ? "…" : diagnostics?.inRotation ?? 0}
               icon={Activity}
-              color="green"
-              subtitle="Live in memory"
+              color={(diagnostics?.inRotation ?? 0) > 0 ? "green" : "default"}
+              subtitle="Active rotation"
             />
           </div>
 
@@ -1032,13 +1046,14 @@ export default function MidnightPrayersPage() {
           )}
 
           {(diagnostics?.failed ?? 0) > 0 && !diagnostics?.deadAirRisk && (
-            <div className="flex items-start gap-3 p-4 rounded-lg border border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-950/20 text-yellow-700 dark:text-yellow-400">
+            <div className="flex items-start gap-3 p-4 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-950/20 text-red-700 dark:text-red-400">
               <AlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
               <div>
-                <p className="font-semibold text-sm">{diagnostics!.failed} Encoding Failure{diagnostics!.failed > 1 ? "s" : ""}</p>
+                <p className="font-semibold text-sm">{diagnostics!.failed} Unrecoverable Upload Failure{diagnostics!.failed > 1 ? "s" : ""}</p>
                 <p className="text-xs mt-1">
-                  Some videos failed to transcode and are excluded from rotation.
-                  Go to the Library tab to retry them.
+                  {diagnostics!.failed > 1 ? "These videos have" : "This video has"} permanently failed storage assembly
+                  (blob not committed or corrupt). Delete and re-upload to recover.
+                  Note: HLS encoding failures are NOT shown here — those videos are still playable as raw MP4.
                 </p>
               </div>
             </div>
@@ -1240,21 +1255,26 @@ export default function MidnightPrayersPage() {
 function VideoListRow({
   video,
   index,
-  isRetrying,
   onEdit,
-  onRetry,
   onRemove,
 }: {
   video: VideoRow;
   index: number;
-  isRetrying: boolean;
   onEdit: () => void;
-  onRetry: () => void;
   onRemove: () => void;
 }) {
   const durationSecs = parseDurationSecs(video.duration);
-  const isPlayable = video.transcodingStatus === "hls_ready" || video.transcodingStatus === "ready";
-  const isFailed = video.transcodingStatus === "failed";
+  const TERMINAL = ["ASSEMBLY_FAILED", "CORRUPT_SOURCE", "SOURCE_MISSING"];
+  // A video is truly failed (and needs re-upload) only when it has a terminal
+  // error code — meaning the blob was never committed or is unrecoverable.
+  // HLS transcoding failures (transcodingStatus="failed" but localVideoUrl set)
+  // are NOT real failures; the video is playable as raw MP4.
+  const isTrulyFailed = TERMINAL.includes(video.transcodingErrorCode ?? "");
+  // A video is in-rotation when it has an HLS URL (fully transcoded) OR a
+  // local MP4 URL with no terminal error (raw MP4 is broadcast-eligible).
+  const isInRotation =
+    video.hlsMasterUrl != null ||
+    (video.localVideoUrl != null && !isTrulyFailed);
 
   return (
     <div className="group flex items-center gap-3 p-2.5 rounded-lg hover:bg-muted/50 transition-colors">
@@ -1290,9 +1310,16 @@ function VideoListRow({
           {video.sizeBytes && (
             <span className="text-xs text-muted-foreground">{formatBytes(video.sizeBytes)}</span>
           )}
-          <TranscodingBadge status={video.transcodingStatus} error={video.transcodingErrorMessage} />
-          {isPlayable && video.hlsMasterUrl && (
-            <span className="text-[10px] text-green-600 dark:text-green-400 font-medium">HLS</span>
+          {isTrulyFailed ? (
+            <Badge className="bg-red-500/10 text-red-700 dark:text-red-400 border-red-200 dark:border-red-800 gap-1 shrink-0 text-[10px]">
+              <AlertCircle className="h-2.5 w-2.5" />Re-upload needed
+            </Badge>
+          ) : isInRotation ? (
+            <Badge className="bg-green-500/10 text-green-700 dark:text-green-400 border-green-200 dark:border-green-800 gap-1 shrink-0 text-[10px]">
+              <CheckCircle2 className="h-2.5 w-2.5" />{video.hlsMasterUrl ? "HLS Ready" : "MP4 Ready"}
+            </Badge>
+          ) : (
+            <TranscodingBadge status={video.transcodingStatus} error={video.transcodingErrorMessage} />
           )}
         </div>
       </div>
@@ -1309,19 +1336,7 @@ function VideoListRow({
         >
           <Edit2 className="h-3.5 w-3.5" />
         </Button>
-        {isFailed && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-yellow-600 hover:text-yellow-700 hover:bg-yellow-50 dark:hover:bg-yellow-950/20"
-            title="Retry transcoding"
-            aria-label="Retry transcoding"
-            onClick={onRetry}
-            disabled={isRetrying}
-          >
-            <RotateCcw className={`h-3.5 w-3.5 ${isRetrying ? "animate-spin" : ""}`} />
-          </Button>
-        )}
+        {/* No HLS retry button — MP4 pipeline; raw MP4 is broadcast-eligible */}
         <Button
           variant="ghost"
           size="icon"
