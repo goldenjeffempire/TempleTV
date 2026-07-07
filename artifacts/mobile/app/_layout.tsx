@@ -10,9 +10,9 @@ import {
 import { Feather } from "@expo/vector-icons";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Constants from "expo-constants";
-import { router, Stack } from "expo-router";
+import { router, Stack, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AppState, AppStateStatus, Linking, Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -709,6 +709,13 @@ function RootLayout() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Track the current route segments so the root ErrorBoundary can auto-reset
+  // when the user navigates away from a crashed screen (e.g. dismisses the
+  // player modal). Without this, a crash inside a modal keeps the entire
+  // provider tree in error state until the app is killed and restarted.
+  const segments = useSegments();
+  const segmentKey = useMemo(() => segments.join("/"), [segments]);
+
   if (!fontReady) return null;
 
   return (
@@ -717,6 +724,7 @@ function RootLayout() {
       <NetworkProvider>
       <UpdateProvider>
       <ErrorBoundary
+        resetKey={segmentKey}
         onError={(error, stackTrace) => {
           reportClientError({
             errorName: error.name,
@@ -724,6 +732,7 @@ function RootLayout() {
             stack: error.stack,
             componentStack: stackTrace,
             context: { boundary: "root" },
+            severity: "fatal",
           });
         }}
       >

@@ -2,12 +2,20 @@ import { Platform } from "react-native";
 import Constants from "expo-constants";
 import { getApiBase } from "./apiBase";
 
+export type ErrorSeverity = "fatal" | "error" | "warning";
+
 type ClientErrorPayload = {
   errorMessage: string;
   errorName?: string;
   stack?: string;
   componentStack?: string;
   context?: Record<string, string | number | boolean | null>;
+  /**
+   * Severity level. Defaults to "error".
+   * "fatal" bypasses the per-second throttle so the event always reaches
+   * Sentry and the server even if another error was just reported.
+   */
+  severity?: ErrorSeverity;
 };
 
 function getPlatform(): "ios" | "android" | "web" | "unknown" {
@@ -18,12 +26,23 @@ function getPlatform(): "ios" | "android" | "web" | "unknown" {
 }
 
 let lastReportAt = 0;
-const MIN_INTERVAL_MS = 1000; // simple client-side throttle to avoid floods
+/** Minimum interval between non-fatal reports. Fatal errors bypass this. */
+const MIN_INTERVAL_MS = 1000;
 
 export async function reportClientError(input: ClientErrorPayload): Promise<void> {
+  const isFatal = input.severity === "fatal";
   const now = Date.now();
-  if (now - lastReportAt < MIN_INTERVAL_MS) return;
+  // Fatal errors always fire regardless of throttle — we must never drop a
+  // crash report. For non-fatal errors, rate-limit to one per second so a
+  // rapid error loop doesn't exhaust the Sentry quota or flood the API.
+  if (!isFatal && now - lastReportAt < MIN_INTERVAL_MS) return;
   lastReportAt = now;
+
+  const sentryLevel = input.severity === "fatal"
+    ? "fatal"
+    : input.severity === "warning"
+      ? "warning"
+      : "error";
 
   // ── Sentry (primary — works offline, symbolicated stack traces in prod) ──
   if (process.env.EXPO_PUBLIC_SENTRY_DSN) {
@@ -33,11 +52,17 @@ export async function reportClientError(input: ClientErrorPayload): Promise<void
       err.name = input.errorName ?? "ClientError";
       if (input.stack) err.stack = input.stack;
       Sentry.captureException(err, {
+        level: sentryLevel,
         extra: {
           componentStack: input.componentStack,
           ...input.context,
         },
       });
+      // Flush immediately on fatal errors so the event lands before the
+      // process is terminated. Non-fatal events are batched by default.
+      if (isFatal) {
+        void Sentry.flush(2000);
+      }
     } catch {
       /* never let error reporting throw */
     }
@@ -60,6 +85,7 @@ export async function reportClientError(input: ClientErrorPayload): Promise<void
     stack: input.stack?.slice(0, 8192),
     componentStack: input.componentStack?.slice(0, 8192),
     context: input.context,
+    severity: input.severity ?? "error",
     occurredAt: new Date().toISOString(),
   };
 

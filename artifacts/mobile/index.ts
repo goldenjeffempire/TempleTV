@@ -1,5 +1,5 @@
 import * as Sentry from "@sentry/react-native";
-import { Platform } from "react-native";
+import { Platform, ErrorUtils } from "react-native";
 
 // ── AbortSignal.timeout polyfill ─────────────────────────────────────────────
 // Hermes (React Native's JS engine) only added AbortSignal.timeout in very
@@ -50,8 +50,14 @@ if (sentryDsn) {
     dsn: sentryDsn,
     enabled: !__DEV__,
     environment: (process.env.APP_ENV as string) ?? "production",
-    tracesSampleRate: 0.1,
+    // Crash events are ALWAYS sent at 100% regardless of tracesSampleRate.
+    // This rate controls performance transactions only — raising it gives
+    // richer profiling data while still being well within typical quotas.
+    tracesSampleRate: 0.3,
     attachStacktrace: true,
+    // Attach native thread state to every event so ANR root-causes are
+    // visible in the Sentry UI without symbolication guesswork.
+    attachThreads: true,
     enableAutoSessionTracking: true,
     enableNativeFramesTracking: Platform.OS !== "web",
     // Filter transient noise that would exhaust Sentry quota without
@@ -60,11 +66,97 @@ if (sentryDsn) {
     // and are not indicative of code bugs.
     beforeSend(event) {
       const msg = event.exception?.values?.[0]?.value ?? "";
-      if (/network request failed|load failed|the internet connection appears to be offline|aborted|cancelled|the request timed out|could not connect to the server/i.test(msg)) {
-        return null;
-      }
+      // Only filter if the error is EXCLUSIVELY a network/connectivity message.
+      // Errors that merely CONTAIN those words but have other context (e.g. a
+      // custom error wrapping a network failure) are kept.
+      const isTransientNetworkNoise =
+        /^(network request failed|load failed|the internet connection appears to be offline|the request timed out|could not connect to the server)$/i.test(msg.trim()) ||
+        /^(aborted|cancelled)$/i.test(msg.trim());
+      if (isTransientNetworkNoise) return null;
       return event;
     },
+  });
+}
+
+// ── Global unhandled error handler ───────────────────────────────────────────
+// ErrorUtils.setGlobalHandler is the React Native / Hermes equivalent of
+// window.onerror. It catches ALL uncaught JS exceptions, including:
+//   • Errors thrown inside setTimeout / setInterval callbacks
+//   • Errors thrown in native event callbacks (AppState, NetInfo, etc.)
+//   • Unhandled Promise rejections on older Hermes builds that pre-date
+//     the standard globalThis.unhandledrejection event
+//
+// Without this handler, such errors crash the JS thread silently in
+// production — no red box, no Sentry event, no user-visible recovery.
+//
+// Strategy:
+//   1. Immediately capture to Sentry with isFatal context (synchronous).
+//   2. On fatal errors, flush the Sentry queue (2 s deadline) so the event
+//      lands before the process is killed by the OS.
+//   3. Hand off to the previous handler so DEV red boxes still appear and
+//      PROD crash reporters (Firebase Crashlytics via Sentry native) see it.
+{
+  const previousHandler = typeof ErrorUtils?.getGlobalHandler === "function"
+    ? ErrorUtils.getGlobalHandler()
+    : null;
+
+  if (typeof ErrorUtils?.setGlobalHandler === "function") {
+    ErrorUtils.setGlobalHandler((rawError: Error, isFatal?: boolean) => {
+      if (sentryDsn) {
+        try {
+          const err = rawError instanceof Error
+            ? rawError
+            : Object.assign(new Error(String(rawError)), { name: "UnhandledError" });
+
+          Sentry.captureException(err, {
+            extra: {
+              isFatal: isFatal ?? false,
+              source: "ErrorUtils.globalHandler",
+            },
+            level: isFatal ? "fatal" : "error",
+          });
+
+          if (isFatal) {
+            // Best-effort flush before the OS kills the process.
+            // 2 s is the maximum safe window before Android ANR threshold.
+            void Sentry.flush(2000);
+          }
+        } catch {
+          // Absolutely cannot let the reporter itself crash — that would
+          // swallow the original error AND the recovery path.
+        }
+      }
+      previousHandler?.(rawError, isFatal);
+    });
+  }
+}
+
+// ── Unhandled Promise rejection (web / modern Hermes) ────────────────────────
+// Newer Hermes builds (SDK 54+) and web environments surface unhandled
+// rejections through the standard globalThis 'unhandledrejection' event.
+// Belt-and-suspenders: capture these in Sentry in case they slip past the
+// ErrorUtils global handler above.
+if (typeof (globalThis as { addEventListener?: unknown }).addEventListener === "function") {
+  const g = globalThis as typeof globalThis & {
+    addEventListener: (type: string, listener: (event: { reason: unknown; preventDefault: () => void }) => void) => void;
+  };
+  g.addEventListener("unhandledrejection", (event) => {
+    if (!sentryDsn) return;
+    try {
+      const reason = event.reason;
+      const err = reason instanceof Error
+        ? reason
+        : Object.assign(new Error(String(reason ?? "Unhandled Promise rejection")), {
+            name: "UnhandledRejection",
+          });
+      // Don't capture transient network noise here either.
+      const msg = err.message ?? "";
+      if (/network request failed|load failed|aborted|timed out/i.test(msg)) return;
+      Sentry.captureException(err, {
+        extra: { source: "unhandledrejection" },
+        level: "error",
+      });
+    } catch { /* never block */ }
   });
 }
 

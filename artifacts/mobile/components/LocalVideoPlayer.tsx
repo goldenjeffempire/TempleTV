@@ -420,19 +420,25 @@ export function LocalVideoPlayer({
       playerSeekRef.current = (t: number) => { seekTrackPlayer(t).catch(() => {}); };
     } else {
       playerPlayRef.current = async () => {
-        if (isMountedRef.current && videoRef.current) {
-          await videoRef.current.playAsync?.();
-        }
+        try {
+          if (isMountedRef.current && videoRef.current) {
+            await videoRef.current.playAsync?.();
+          }
+        } catch { /* expo-av threw — caller's try/catch handles recovery */ }
       };
       playerPauseRef.current = async () => {
-        if (isMountedRef.current && videoRef.current) {
-          await videoRef.current.pauseAsync?.();
-        }
+        try {
+          if (isMountedRef.current && videoRef.current) {
+            await videoRef.current.pauseAsync?.();
+          }
+        } catch { /* expo-av threw — swallow to prevent unhandled rejection */ }
       };
       playerSeekRef.current = async (t: number) => {
-        if (isMountedRef.current && videoRef.current) {
-          await videoRef.current.setPositionAsync?.(t * 1000);
-        }
+        try {
+          if (isMountedRef.current && videoRef.current) {
+            await videoRef.current.setPositionAsync?.(t * 1000);
+          }
+        } catch { /* expo-av threw — swallow to prevent unhandled rejection */ }
       };
     }
   }, [isRadioMode, rntp, playerPlayRef, playerPauseRef, playerSeekRef]);
