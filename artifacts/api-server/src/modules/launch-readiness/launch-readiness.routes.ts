@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { and, count, eq, inArray, ne, sql } from "drizzle-orm";
-import { db, schema } from "../../infrastructure/db.js";
+import { sql } from "drizzle-orm";
+import { db } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { env } from "../../config/env.js";
 import { ytShuffleFallback } from "../broadcast-v2/engine/youtube-shuffle-fallback.js";
@@ -25,13 +25,6 @@ import { ytShuffleFallback } from "../broadcast-v2/engine/youtube-shuffle-fallba
  * Overall status = worst of all checks.
  */
 
-const videos = schema.videosTable;
-const broadcast = schema.broadcastQueueTable;
-const scheduleTable = schema.scheduleTable;
-const ingest = schema.liveIngestEndpointsTable;
-const pushTokens = schema.pushTokensTable;
-const webPush = schema.webPushSubscriptionsTable;
-const users = schema.usersTable;
 
 const StatusSchema = z.enum(["ready", "warning", "blocked"]);
 
@@ -100,63 +93,70 @@ export async function launchReadinessRoutes(app: FastifyInstance) {
       },
     },
     async () => {
-      // ── Roll up the counts in a single fan-out ──────────────────────────
-      // Each Promise is a tiny indexed COUNT/SELECT — running them in
-      // parallel keeps the whole endpoint under ~100ms even on cold
-      // pooled connections.
-      const [
-        totalVideosRow,
-        localVideosRow,
-        hlsReadyRow,
-        encodingLocalRow,
-        activeScheduleRow,
-        activeBroadcastRow,
-        broadcastCycleDurationRow,
-        pushTokensRow,
-        webPushRow,
-        failedTranscodesRow,
-        queuedTranscodesRow,
-        adminUsersRow,
-        ingestRows,
-      ] = await Promise.all([
-        db.select({ c: count() }).from(videos),
-        db.select({ c: count() }).from(videos).where(eq(videos.videoSource, "local")),
-        db
-          .select({ c: count() })
-          .from(videos)
-          .where(and(eq(videos.videoSource, "local"), inArray(videos.transcodingStatus, ["hls_ready", "ready"]))),
-        db
-          .select({ c: count() })
-          .from(videos)
-          .where(and(eq(videos.videoSource, "local"), eq(videos.transcodingStatus, "encoding"))),
-        db.select({ c: count() }).from(scheduleTable).where(eq(scheduleTable.isActive, true)),
-        db.select({ c: count() }).from(broadcast).where(eq(broadcast.isActive, true)),
-        db
-          .select({ total: sql<number>`coalesce(sum(${broadcast.durationSecs}), 0)` })
-          .from(broadcast)
-          .where(eq(broadcast.isActive, true)),
-        db.select({ c: count() }).from(pushTokens),
-        db.select({ c: count() }).from(webPush),
-        db.select({ c: count() }).from(videos).where(eq(videos.transcodingStatus, "failed")),
-        db.select({ c: count() }).from(videos).where(eq(videos.transcodingStatus, "queued")),
-        db.select({ c: count() }).from(users).where(ne(users.role, "user")),
-        db.select().from(ingest),
-      ]);
+      // ── Single CTE collects every counter in one DB round-trip ──────────
+      // Replaces 13 parallel Promise.all queries (13 pool slots) with a
+      // single parameterised statement (1 pool slot).  The planner executes
+      // the scalar subqueries concurrently on the server side anyway, so
+      // latency is comparable while connection pressure drops by ~12x.
+      //
+      // ingest_rows uses JSON_AGG so full row objects are returned for
+      // is_primary / health_status inspection.  COALESCE(…, '[]') avoids
+      // NULL when the table is empty.
+      const readinessRows = await db.execute<{
+        total_videos: string;
+        local_videos: string;
+        hls_ready: string;
+        encoding_local: string;
+        active_schedule: string;
+        active_broadcast: string;
+        broadcast_cycle: string;
+        push_tokens: string;
+        web_push: string;
+        failed_transcodes: string;
+        queued_transcodes: string;
+        admin_users: string;
+        ingest_rows: Array<{ is_primary: boolean; health_status: string; name: string; protocol: string }> | null;
+      }>(sql`
+        SELECT
+          (SELECT COUNT(*)::text FROM managed_videos)                                                          AS total_videos,
+          (SELECT COUNT(*)::text FROM managed_videos WHERE video_source = 'local')                             AS local_videos,
+          (SELECT COUNT(*)::text FROM managed_videos WHERE video_source = 'local'
+             AND transcoding_status IN ('hls_ready','ready'))                                                  AS hls_ready,
+          (SELECT COUNT(*)::text FROM managed_videos WHERE video_source = 'local'
+             AND transcoding_status = 'encoding')                                                              AS encoding_local,
+          (SELECT COUNT(*)::text FROM schedule_entries WHERE is_active = true)                                 AS active_schedule,
+          (SELECT COUNT(*)::text FROM broadcast_queue  WHERE is_active = true)                                 AS active_broadcast,
+          (SELECT COALESCE(SUM(duration_secs),0)::text FROM broadcast_queue WHERE is_active = true)           AS broadcast_cycle,
+          (SELECT COUNT(*)::text FROM push_tokens)                                                             AS push_tokens,
+          (SELECT COUNT(*)::text FROM web_push_subscriptions)                                                  AS web_push,
+          (SELECT COUNT(*)::text FROM managed_videos WHERE transcoding_status = 'failed')                      AS failed_transcodes,
+          (SELECT COUNT(*)::text FROM managed_videos WHERE transcoding_status = 'queued')                      AS queued_transcodes,
+          (SELECT COUNT(*)::text FROM users         WHERE role != 'user')                                      AS admin_users,
+          (SELECT COALESCE(json_agg(row_to_json(t)),'[]'::json)
+             FROM (SELECT is_primary, health_status, name, protocol FROM live_ingest_endpoints) t)             AS ingest_rows
+      `);
 
-      const totalVideos = Number(totalVideosRow[0]?.c ?? 0);
-      const localVideos = Number(localVideosRow[0]?.c ?? 0);
-      const hlsReadyLocalVideos = Number(hlsReadyRow[0]?.c ?? 0);
-      const encodingLocalVideos = Number(encodingLocalRow[0]?.c ?? 0);
-      const activeScheduleEntries = Number(activeScheduleRow[0]?.c ?? 0);
-      const activeBroadcastItems = Number(activeBroadcastRow[0]?.c ?? 0);
-      const broadcastCycleSecs = Number(broadcastCycleDurationRow[0]?.total ?? 0);
-      const registeredDevices =
-        Number(pushTokensRow[0]?.c ?? 0) + Number(webPushRow[0]?.c ?? 0);
-      const failedTranscodes = Number(failedTranscodesRow[0]?.c ?? 0);
-      const queuedTranscodes = Number(queuedTranscodesRow[0]?.c ?? 0);
-      const adminUsers = Number(adminUsersRow[0]?.c ?? 0);
-      const primaryIngest = ingestRows.find((row) => row.isPrimary);
-      const healthyIngestCount = ingestRows.filter((row) => row.healthStatus === "healthy").length;
+      // db.execute() on node-postgres returns { rows: T[] }, not a plain array.
+      type RowShape = { total_videos: string; local_videos: string; hls_ready: string; encoding_local: string; active_schedule: string; active_broadcast: string; broadcast_cycle: string; push_tokens: string; web_push: string; failed_transcodes: string; queued_transcodes: string; admin_users: string; ingest_rows: Array<{ is_primary: boolean; health_status: string; name: string; protocol: string }> | null };
+      const _r = readinessRows as unknown as { rows?: RowShape[] };
+      const row: RowShape | undefined = Array.isArray(_r.rows) ? _r.rows[0] : (readinessRows as unknown as RowShape[])[0];
+
+      const totalVideos          = Number(row?.total_videos    ?? 0);
+      const localVideos          = Number(row?.local_videos     ?? 0);
+      const hlsReadyLocalVideos  = Number(row?.hls_ready        ?? 0);
+      const encodingLocalVideos  = Number(row?.encoding_local   ?? 0);
+      const activeScheduleEntries = Number(row?.active_schedule  ?? 0);
+      const activeBroadcastItems = Number(row?.active_broadcast  ?? 0);
+      const broadcastCycleSecs   = Number(row?.broadcast_cycle   ?? 0);
+      const registeredDevices    = Number(row?.push_tokens ?? 0) + Number(row?.web_push ?? 0);
+      const failedTranscodes     = Number(row?.failed_transcodes ?? 0);
+      const queuedTranscodes     = Number(row?.queued_transcodes ?? 0);
+      const adminUsers           = Number(row?.admin_users       ?? 0);
+
+      type IngestRow = { is_primary: boolean; health_status: string; name: string; protocol: string };
+      const ingestRows: IngestRow[] = Array.isArray(row?.ingest_rows) ? (row.ingest_rows as IngestRow[]) : [];
+      const primaryIngest      = ingestRows.find((r) => r.is_primary);
+      const healthyIngestCount = ingestRows.filter((r) => r.health_status === "healthy").length;
 
       // ── Per-check evaluation ────────────────────────────────────────────
       const contentChecks: Check[] = [
@@ -352,9 +352,9 @@ export async function launchReadinessRoutes(app: FastifyInstance) {
           // "unknown" = never probed (fresh endpoint). Only flag as a problem
           // when a probe has run and returned degraded/unhealthy.
           const explicitlyUnhealthy = ingestRows.filter(
-            (r) => r.healthStatus === "unhealthy" || r.healthStatus === "degraded",
+            (r) => r.health_status === "unhealthy" || r.health_status === "degraded",
           );
-          const neverProbed = ingestRows.filter((r) => r.healthStatus === "unknown");
+          const neverProbed = ingestRows.filter((r) => r.health_status === "unknown");
           if (explicitlyUnhealthy.length > 0) {
             return {
               key: "ingest-healthy",

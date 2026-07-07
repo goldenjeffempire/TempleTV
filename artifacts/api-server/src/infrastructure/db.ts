@@ -1541,29 +1541,21 @@ export function scheduleStaleDataCleanup(): void {
       await run("broadcast_event_log_old",
         "DELETE FROM broadcast_event_log WHERE created_at < NOW() - INTERVAL '14 days'");
 
-      // ── rate_limit TRUNCATE — isolated on its own connection ──────────────
-      // TRUNCATE TABLE takes an AccessExclusiveLock.  Running it on the same
-      // connection as the DELETEs above means the lock is held for the entire
-      // cleanup duration, blocking any concurrent rate-limit reads/writes on
-      // that connection.  Isolating it on a short-lived connection keeps the
-      // lock window to just the TRUNCATE statement itself.
+      // ── rate_limit TRUNCATE — same connection, short autocommit statement ──
+      // TRUNCATE takes an AccessExclusiveLock only for the duration of the
+      // statement itself (autocommit mode — no enclosing BEGIN/COMMIT here).
+      // Running it on the same client is equivalent to a second connection
+      // and avoids the extra pool checkout overhead.
       // ignoreMissingTable=true: on fresh DBs or when Redis is configured
       // the rate_limit pg-fallback table may not exist — skip 42P01 silently.
       try {
-        const rlClient = await pool.connect();
-        try {
-          await rlClient.query("TRUNCATE TABLE rate_limit");
-          results["rate_limit"] = 0; // TRUNCATE doesn't return rowCount
-        } catch (err) {
-          const pg = err as { code?: string };
-          if (pg.code !== "42P01") {
-            logger.warn({ err, sweep: "rate_limit" }, "db: stale-data cleanup step 'rate_limit' failed (non-fatal)");
-          }
-        } finally {
-          rlClient.release();
+        await client.query("TRUNCATE TABLE rate_limit");
+        results["rate_limit"] = 0; // TRUNCATE doesn't return rowCount
+      } catch (err) {
+        const pg = err as { code?: string };
+        if (pg.code !== "42P01") {
+          logger.warn({ err, sweep: "rate_limit" }, "db: stale-data cleanup step 'rate_limit' failed (non-fatal)");
         }
-      } catch {
-        /* pool.connect() failed — not fatal, skip truncate this cycle */
       }
 
       // ── Stuck-processing recovery ─────────────────────────────────────
@@ -1651,6 +1643,477 @@ export function scheduleStaleDataCleanup(): void {
     interval.unref?.();
   }, STARTUP_DELAY_MS);
   timer.unref?.();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Consolidated boot sequences
+//
+// Each function below replaces N separate pool.connect()/release() call-pairs
+// with a single checkout.  Grouping sequential DDL/DML onto one client:
+//   • avoids N pool round-trips during the already-congested startup window
+//   • eliminates the brief concurrent bursts caused by fire-and-forget calls
+//     all trying to check out a connection at the same millisecond
+//   • reduces startup peak utilization from ~5 simultaneous clients → 1-2
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Phase-1 boot sequence — runs before buildApp().
+ *
+ * Consolidates onto ONE pool connection (sequential DDL):
+ *   1. ensureRuntimeIndexes
+ *   2. ensureUserSchemaColumns
+ *   3. ensureMemoryHourlySnapshotsTable
+ *   4. ensureMidnightPrayersTable
+ *
+ * Error semantics preserved:
+ *   - ensureRuntimeIndexes   → per-index errors logged, never thrown (non-fatal)
+ *   - ensureUserSchemaColumns → per-column errors logged, never thrown (non-fatal)
+ *   - ensureMemoryHourlySnapshotsTable → errors logged, never thrown (non-fatal)
+ *   - ensureMidnightPrayersTable → errors are thrown so main.ts can log + continue
+ */
+export async function runPreBuildBootSequence(): Promise<void> {
+  const client = await pool.connect();
+  try {
+    // ── 1. Runtime indexes ─────────────────────────────────────────────────
+    // Inline the same helper used by ensureRuntimeIndexes() — share the client.
+    const run = async (name: string, ddl: string): Promise<void> => {
+      try {
+        await client.query(ddl);
+        logger.info({ index: name }, `db: index ensured — ${name}`);
+      } catch (err) {
+        logger.error({ err, index: name }, `db: failed to ensure index ${name} (non-fatal)`);
+      }
+    };
+
+    await run("idx_managed_videos_fts", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_fts
+        ON managed_videos
+        USING GIN (
+          to_tsvector('english',
+            coalesce(title,'') || ' ' ||
+            coalesce(preacher,'') || ' ' ||
+            coalesce(description,'')
+          )
+        )
+    `);
+    await run("idx_scheduled_notifications_dispatch", `
+      CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_dispatch
+        ON scheduled_notifications (scheduled_at ASC)
+        WHERE status = 'pending'
+    `);
+    await run("idx_scheduled_notifications_topic_status", `
+      CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_topic_status
+        ON scheduled_notifications (topic)
+        WHERE status = 'pending' AND topic IS NOT NULL
+    `);
+    await run("idx_managed_videos_category_lower", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_category_lower
+        ON managed_videos (lower(category))
+        WHERE category IS NOT NULL
+    `);
+    await run("idx_managed_videos_transcode_pending", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_transcode_pending
+        ON managed_videos (created_at DESC)
+        WHERE transcoding_status IN ('queued','encoding')
+    `);
+    await run("idx_managed_videos_youtube_id", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_youtube_id
+        ON managed_videos (youtube_id)
+        WHERE youtube_id IS NOT NULL
+    `);
+    await run("idx_managed_videos_source_status", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_source_status
+        ON managed_videos (video_source, transcoding_status)
+    `);
+    await run("idx_managed_videos_hls_url", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_hls_url
+        ON managed_videos (hls_master_url text_pattern_ops)
+        WHERE hls_master_url IS NOT NULL
+    `);
+    await run("idx_managed_videos_object_path", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_object_path
+        ON managed_videos (object_path text_pattern_ops)
+        WHERE object_path IS NOT NULL
+    `);
+    await run("idx_storage_blobs_key", `
+      CREATE INDEX IF NOT EXISTS idx_storage_blobs_key
+        ON storage_blobs (key text_pattern_ops)
+    `);
+    await run("idx_storage_upload_parts_session", `
+      CREATE INDEX IF NOT EXISTS idx_storage_upload_parts_session
+        ON storage_upload_parts (session_id, part_number)
+    `);
+    await run("idx_upload_sessions_status_created", `
+      CREATE INDEX IF NOT EXISTS idx_upload_sessions_status_created
+        ON upload_sessions (status, created_at DESC)
+    `);
+    await run("idx_upload_sessions_video_id", `
+      CREATE INDEX IF NOT EXISTS idx_upload_sessions_video_id
+        ON upload_sessions (video_id)
+        WHERE video_id IS NOT NULL
+    `);
+    await run("idx_broadcast_queue_active_order", `
+      CREATE INDEX IF NOT EXISTS idx_broadcast_queue_active_order
+        ON broadcast_queue (queue_order ASC)
+        WHERE is_active = true
+    `);
+    await run("idx_broadcast_queue_video_id", `
+      CREATE INDEX IF NOT EXISTS idx_broadcast_queue_video_id
+        ON broadcast_queue (video_id)
+        WHERE video_id IS NOT NULL
+    `);
+    await run("idx_managed_videos_local_video_url", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_local_video_url
+        ON managed_videos (local_video_url text_pattern_ops)
+        WHERE local_video_url IS NOT NULL
+    `);
+    await run("idx_managed_videos_local_browse", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_local_browse
+        ON managed_videos (imported_at DESC)
+        WHERE video_source = 'local'
+    `);
+    {
+      const seriesIdCheck = await client.query(`
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'managed_videos' AND column_name = 'series_id'
+        LIMIT 1
+      `).catch(() => ({ rows: [] as unknown[] }));
+      if ((seriesIdCheck as { rows: unknown[] }).rows.length > 0) {
+        await run("idx_managed_videos_series_id", `
+          CREATE INDEX IF NOT EXISTS idx_managed_videos_series_id
+            ON managed_videos (series_id)
+            WHERE series_id IS NOT NULL
+        `);
+      }
+    }
+    await run("idx_managed_videos_category_coalesce_sort", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_category_coalesce_sort
+        ON managed_videos (lower(category), imported_at DESC)
+        WHERE broadcast_only IS DISTINCT FROM true
+    `);
+    await run("idx_cache_entries_expires_at", `
+      CREATE INDEX IF NOT EXISTS idx_cache_entries_expires_at
+        ON cache_entries (expires_at)
+        WHERE expires_at IS NOT NULL
+    `);
+    await run("idx_refresh_tokens_active_expires", `
+      CREATE INDEX IF NOT EXISTS idx_refresh_tokens_active_expires
+        ON refresh_tokens (expires_at)
+        WHERE revoked_at IS NULL
+    `);
+    await run("idx_app_versions_platform_channel_active", `
+      CREATE INDEX IF NOT EXISTS idx_app_versions_platform_channel_active
+        ON app_versions (platform, channel, is_active)
+    `);
+    await run("idx_live_ingest_active_priority", `
+      CREATE INDEX IF NOT EXISTS idx_live_ingest_active_priority
+        ON live_ingest_endpoints (priority)
+        WHERE is_active = true
+    `);
+    await run("idx_playlists_active_created", `
+      CREATE INDEX IF NOT EXISTS idx_playlists_active_created
+        ON playlists (created_at DESC)
+        WHERE is_active = true
+    `);
+    await run("idx_prayer_requests_unread", `
+      CREATE INDEX IF NOT EXISTS idx_prayer_requests_unread
+        ON prayer_requests (created_at DESC)
+        WHERE is_read = false
+    `);
+    await run("idx_user_feedback_unread", `
+      CREATE INDEX IF NOT EXISTS idx_user_feedback_unread
+        ON user_feedback (type, created_at DESC)
+        WHERE is_read = false
+    `);
+    await run("idx_broadcast_event_log_channel_seq", `
+      CREATE INDEX IF NOT EXISTS idx_broadcast_event_log_channel_seq
+        ON broadcast_event_log (channel_id, sequence ASC)
+    `);
+    await run("idx_s3_telemetry_video_event_created", `
+      CREATE INDEX IF NOT EXISTS idx_s3_telemetry_video_event_created
+        ON s3_upload_telemetry (video_id, event, created_at DESC)
+    `);
+    await run("idx_managed_videos_transcoding_error_kind", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_transcoding_error_kind
+        ON managed_videos (transcoding_error_kind)
+        WHERE transcoding_error_kind IS NOT NULL
+    `);
+    // Broadcast admission hot-path index: isPlayableForBroadcast() + auto-enqueue
+    // filter WHERE s3_mirrored_at IS NOT NULL. Without this, every broadcast
+    // reload scans all local managed_videos rows.
+    await run("idx_managed_videos_s3_mirrored_at", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_s3_mirrored_at
+        ON managed_videos (s3_mirrored_at)
+        WHERE s3_mirrored_at IS NOT NULL
+    `);
+    // Validation status index: queue-integrity-validator filters WHERE
+    // validation_status IS NOT NULL and IN ('failed','warn'). Without this,
+    // the validator scans all queue rows on every 2-minute tick.
+    await run("idx_managed_videos_validation_status", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_validation_status
+        ON managed_videos (validation_status)
+        WHERE validation_status IS NOT NULL
+    `);
+    {
+      const aggCheck = await client.query(`
+        SELECT 1 FROM pg_proc p
+        JOIN pg_namespace n ON p.pronamespace = n.oid
+        WHERE p.proname = 'bytea_agg'
+          AND n.nspname = 'public'
+        LIMIT 1
+      `).catch(() => ({ rows: [] as unknown[] }));
+      if (!(aggCheck as { rows: unknown[] }).rows.length) {
+        await run("bytea_agg", `
+          CREATE AGGREGATE bytea_agg(bytea) (
+            SFUNC    = byteacat,
+            STYPE    = bytea,
+            INITCOND = ''
+          )
+        `);
+      } else {
+        logger.info({ index: "bytea_agg" }, "db: index ensured — bytea_agg (already existed)");
+      }
+    }
+    logger.info("db: [phase-1] runtime indexes ensured");
+
+    // ── 2. User/auth schema columns ────────────────────────────────────────
+    const col = async (label: string, ddl: string): Promise<void> => {
+      try {
+        await client.query(ddl);
+      } catch (err) {
+        logger.warn({ err, col: label }, `db: failed to ensure column/default ${label} (non-fatal — route may 500 until present)`);
+      }
+    };
+    await col("users.sessions_valid_after", `ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_valid_after TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+    await col("users.totp_secret",          "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT");
+    await col("users.totp_enabled",         "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN NOT NULL DEFAULT false");
+    await col("users.totp_backup_codes",    "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_backup_codes TEXT");
+    await col("refresh_tokens.last_used_at",    "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ");
+    await col("refresh_tokens.revoked_at",      "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ");
+    await col("refresh_tokens.replaced_by_id",  "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS replaced_by_id TEXT");
+    await col("refresh_tokens.user_agent",      "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS user_agent TEXT");
+    await col("refresh_tokens.ip",              "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS ip TEXT");
+    await col("refresh_tokens.device_name",     "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS device_name TEXT");
+    await col("managed_videos.original_filename",     "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS original_filename TEXT");
+    await col("managed_videos.mime_type",             "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS mime_type TEXT");
+    await col("managed_videos.size_bytes",            "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS size_bytes BIGINT");
+    await col("managed_videos.checksum_sha256",       "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS checksum_sha256 TEXT");
+    await col("managed_videos.object_path",           "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS object_path TEXT");
+    await col("managed_videos.uploaded_by",           "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS uploaded_by TEXT");
+    await col("managed_videos.s3_mirrored_at",        "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS s3_mirrored_at TIMESTAMPTZ");
+    await col("managed_videos.source_cleanup_status", `ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS source_cleanup_status TEXT NOT NULL DEFAULT 'none'`);
+    await col("managed_videos.source_cleanup_after",  "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS source_cleanup_after TIMESTAMPTZ");
+    await col("managed_videos.source_deleted_at",     "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS source_deleted_at TIMESTAMPTZ");
+    await col("managed_videos.source_cleanup_attempts", `ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS source_cleanup_attempts INTEGER NOT NULL DEFAULT 0`);
+    await col("managed_videos.metadata_locked",       `ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS metadata_locked BOOLEAN NOT NULL DEFAULT false`);
+    await col("managed_videos.broadcast_only",        `ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS broadcast_only BOOLEAN NOT NULL DEFAULT false`);
+    await col("managed_videos.transcoding_error_message", "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS transcoding_error_message TEXT");
+    await col("managed_videos.transcoding_error_code",    "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS transcoding_error_code TEXT");
+    await col("managed_videos.updated_at",            `ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+    await col("managed_videos.youtube_live_status",   "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS youtube_live_status TEXT");
+    await col("managed_videos.youtube_live_status_updated_at", "ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS youtube_live_status_updated_at TIMESTAMPTZ");
+    await col("managed_videos.transcoding_error_kind","ALTER TABLE managed_videos ADD COLUMN IF NOT EXISTS transcoding_error_kind TEXT");
+    await col("transcoding_jobs.last_progress_at",    "ALTER TABLE transcoding_jobs ADD COLUMN IF NOT EXISTS last_progress_at TIMESTAMPTZ");
+    await col("transcoding_jobs.max_attempts_default","ALTER TABLE transcoding_jobs ALTER COLUMN max_attempts SET DEFAULT 5");
+    await col("broadcast_queue.hls_master_url",       "ALTER TABLE broadcast_queue ADD COLUMN IF NOT EXISTS hls_master_url TEXT");
+    await col("broadcast_queue.scheduled_at",         "ALTER TABLE broadcast_queue ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ");
+    await col("broadcast_queue.schedule_label",       "ALTER TABLE broadcast_queue ADD COLUMN IF NOT EXISTS schedule_label TEXT");
+    await col("broadcast_queue.validator_deactivated_reason", `ALTER TABLE broadcast_queue ADD COLUMN IF NOT EXISTS validator_deactivated_reason TEXT`);
+    await col("broadcast_queue.duration_secs_selfheal", `
+      UPDATE broadcast_queue bq
+      SET    duration_secs = ROUND(mv.duration::numeric)
+      FROM   managed_videos mv
+      WHERE  bq.video_id    = mv.id
+        AND  bq.duration_secs = 1800
+        AND  mv.duration IS NOT NULL
+        AND  mv.duration <> ''
+        AND  mv.duration ~ '^[0-9]+(\\.[0-9]+)?$'
+        AND  mv.duration::numeric > 10
+    `);
+    logger.info("db: [phase-1] user/auth schema columns ensured");
+
+    // ── 3. memory_hourly_snapshots table ───────────────────────────────────
+    try {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS memory_hourly_snapshots (
+          id                          SERIAL PRIMARY KEY,
+          snapshot_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          rss_mb                      REAL NOT NULL,
+          heap_used_mb                REAL NOT NULL,
+          heap_total_mb               REAL NOT NULL,
+          external_mb                 REAL NOT NULL,
+          heap_used_growth_mb_per_min REAL,
+          external_growth_mb_per_min  REAL,
+          named_stores                JSONB NOT NULL
+        )
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS memory_hourly_snapshots_snapshot_at_idx
+          ON memory_hourly_snapshots (snapshot_at)
+      `);
+      logger.info("db: [phase-1] memory_hourly_snapshots table ensured");
+    } catch (err) {
+      logger.warn({ err }, "db: [phase-1] ensureMemoryHourlySnapshotsTable failed (non-fatal)");
+    }
+
+    // ── 4. midnight_prayers_config table + singleton row ───────────────────
+    // Errors are re-thrown so main.ts can log and decide whether to abort.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS midnight_prayers_config (
+        id          INTEGER     PRIMARY KEY DEFAULT 1,
+        enabled     BOOLEAN     NOT NULL DEFAULT true,
+        start_hour  INTEGER     NOT NULL DEFAULT 0,
+        end_hour    INTEGER     NOT NULL DEFAULT 3,
+        timezone    TEXT        NOT NULL DEFAULT 'Africa/Lagos',
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'midnight_prayers_config_singleton'
+            AND conrelid = 'midnight_prayers_config'::regclass
+        ) THEN
+          ALTER TABLE midnight_prayers_config
+            ADD CONSTRAINT midnight_prayers_config_singleton CHECK (id = 1);
+        END IF;
+      END $$
+    `);
+    await client.query(`
+      INSERT INTO midnight_prayers_config (id, enabled, start_hour, end_hour, timezone, updated_at)
+      VALUES (1, true, 0, 3, 'Africa/Lagos', NOW())
+      ON CONFLICT (id) DO NOTHING
+    `);
+    logger.info("db: [phase-1] midnight_prayers_config table ensured");
+
+    logger.info("db: pre-build boot sequence complete (1 connection used)");
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Phase-2 boot sequence — runs after buildApp() and broadcastEngine.start(),
+ * before ensureBroadcastV2Started().
+ *
+ * Consolidates onto ONE pool connection (sequential DDL + data fixes):
+ *   1. ensureBroadcastV2Tables
+ *   2. resetStuckProcessingVideos
+ *   3. resetStuckEncodingVideos
+ *   4. recoverStaleSyncLogs
+ *
+ * All operations are non-fatal — errors are logged and swallowed so startup
+ * continues regardless.
+ */
+export async function runPostBuildBootSequence(): Promise<void> {
+  const client = await pool.connect();
+  try {
+    // ── 1. Broadcast v2 tables ─────────────────────────────────────────────
+    try {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS broadcast_runtime_state (
+          channel_id        TEXT PRIMARY KEY,
+          mode              TEXT NOT NULL DEFAULT 'queue',
+          current_item_id   TEXT,
+          started_at_ms     BIGINT,
+          offset_ms         INTEGER NOT NULL DEFAULT 0,
+          active_override_id TEXT,
+          sequence          BIGINT NOT NULL DEFAULT 0,
+          updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+      await client.query(`CREATE INDEX IF NOT EXISTS broadcast_runtime_state_mode_idx ON broadcast_runtime_state (mode)`);
+      await client.query(`ALTER TABLE broadcast_runtime_state ADD COLUMN IF NOT EXISTS bad_url_cache JSONB`);
+      await client.query(`ALTER TABLE broadcast_runtime_state ADD COLUMN IF NOT EXISTS failover_active BOOLEAN NOT NULL DEFAULT FALSE`);
+      await client.query(`ALTER TABLE broadcast_runtime_state ADD COLUMN IF NOT EXISTS failover_reason TEXT`);
+      await client.query(`ALTER TABLE broadcast_runtime_state ADD COLUMN IF NOT EXISTS scanner_failure_counts JSONB`);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS broadcast_event_log (
+          id          BIGSERIAL PRIMARY KEY,
+          channel_id  TEXT NOT NULL,
+          sequence    BIGINT NOT NULL,
+          event_type  TEXT NOT NULL,
+          payload     JSONB NOT NULL,
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+      await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS broadcast_event_log_channel_seq_uq ON broadcast_event_log (channel_id, sequence)`);
+      await client.query(`CREATE INDEX IF NOT EXISTS broadcast_event_log_channel_created_idx ON broadcast_event_log (channel_id, created_at)`);
+      await client.query(`CREATE INDEX IF NOT EXISTS broadcast_event_log_event_type_idx ON broadcast_event_log (event_type)`);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS player_position_checkpoint (
+          channel_id    TEXT PRIMARY KEY,
+          item_id       TEXT,
+          position_ms   INTEGER NOT NULL DEFAULT 0,
+          source_health TEXT NOT NULL DEFAULT 'ok',
+          updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `);
+      logger.info("db: [phase-2] broadcast_v2 tables ensured");
+    } catch (err) {
+      logger.error({ err }, "db: [phase-2] ensureBroadcastV2Tables failed (non-fatal)");
+    }
+
+    // ── 2. Reset stuck processing videos ──────────────────────────────────
+    try {
+      const r1 = await client.query(`
+        UPDATE managed_videos
+        SET    transcoding_status = CASE
+                 WHEN local_video_url IS NOT NULL AND local_video_url != '' THEN 'queued'
+                 ELSE 'none'
+               END
+        WHERE  transcoding_status = 'processing'
+      `);
+      const reset1 = (r1 as unknown as { rowCount: number | null }).rowCount ?? 0;
+      if (reset1 > 0) logger.warn({ reset: reset1 }, "db: [phase-2] reset stuck 'processing' videos");
+      else logger.info("db: [phase-2] no stuck processing videos");
+    } catch (err) {
+      logger.warn({ err }, "db: [phase-2] resetStuckProcessingVideos failed (non-fatal)");
+    }
+
+    // ── 3. Reset stuck encoding videos ────────────────────────────────────
+    try {
+      const r2 = await client.query(`
+        UPDATE managed_videos mv
+        SET    transcoding_status = CASE
+                 WHEN mv.local_video_url IS NOT NULL AND mv.local_video_url != '' THEN 'queued'
+                 ELSE 'none'
+               END
+        WHERE  mv.transcoding_status = 'encoding'
+          AND  NOT EXISTS (
+            SELECT 1 FROM transcoding_jobs tj
+            WHERE tj.video_id = mv.id AND tj.status IN ('processing','queued')
+          )
+      `);
+      const reset2 = (r2 as unknown as { rowCount: number | null }).rowCount ?? 0;
+      if (reset2 > 0) logger.warn({ reset: reset2 }, "db: [phase-2] reset stuck 'encoding' videos — no active job; will be re-enqueued");
+      else logger.info("db: [phase-2] no stuck encoding videos");
+    } catch (err) {
+      logger.warn({ err }, "db: [phase-2] resetStuckEncodingVideos failed (non-fatal)");
+    }
+
+    // ── 4. Recover stale sync logs ─────────────────────────────────────────
+    try {
+      const r3 = await client.query(`
+        UPDATE youtube_sync_log
+        SET    status       = 'interrupted',
+               completed_at = NOW(),
+               error_message = COALESCE(error_message, 'Sync interrupted — server restarted before completion')
+        WHERE  status     = 'running'
+          AND  started_at < NOW() - INTERVAL '5 minutes'
+      `);
+      const recovered = (r3 as unknown as { rowCount: number | null }).rowCount ?? 0;
+      if (recovered > 0) logger.warn({ recovered }, "db: [phase-2] marked stale youtube_sync_log rows as 'interrupted'");
+      else logger.info("db: [phase-2] no stale youtube_sync_log rows found");
+    } catch (err) {
+      logger.warn({ err }, "db: [phase-2] recoverStaleSyncLogs failed (non-fatal)");
+    }
+
+    logger.info("db: post-build boot sequence complete (1 connection used)");
+  } finally {
+    client.release();
+  }
 }
 
 /**

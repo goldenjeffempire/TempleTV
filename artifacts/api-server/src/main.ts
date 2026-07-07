@@ -7,7 +7,7 @@ import { logger } from "./infrastructure/logger.js";
 import { broadcastEngine } from "./modules/broadcast/queue.engine.js";
 import { channelRegistry } from "./modules/channels/channel-registry.js";
 import { overrideBus } from "./modules/live-overrides/override-bus.js";
-import { closeDb, db, ensureRuntimeIndexes, ensureBroadcastV2Tables, ensureMidnightPrayersTable, ensureMemoryHourlySnapshotsTable, deactivateUnresolvableQueueRows, resetStuckProcessingVideos, resetStuckEncodingVideos, ensureUserSchemaColumns, scheduleStaleDataCleanup, recoverStaleSyncLogs } from "./infrastructure/db.js";
+import { closeDb, db, deactivateUnresolvableQueueRows, scheduleStaleDataCleanup, runPreBuildBootSequence, runPostBuildBootSequence } from "./infrastructure/db.js";
 import { closeRedis } from "./infrastructure/redis.js";
 import { sseCounter } from "./infrastructure/sse-counter.js";
 import { transcoderDispatcher } from "./modules/transcoder/transcoder.dispatcher.js";
@@ -607,40 +607,18 @@ async function main() {
     logger.warn({ err }, "db pool warmup failed (will retry on first request)");
   }
 
-  // Ensure expression indexes that Drizzle Kit cannot manage in the schema DSL
-  // (GIN FTS, functional lower() indexes, partial indexes, check constraints).
-  // Each index is attempted independently — one failure never skips the rest.
-  // Awaited so we know all indexes are present before the server starts
-  // accepting requests (FTS search and broadcast queue queries depend on them).
-  await ensureRuntimeIndexes();
-
-  // Idempotent schema-heal: adds any columns that were introduced after the
-  // initial production deploy (TOTP/MFA fields on users, ip/user_agent on
-  // refresh_tokens, etc.). Must run BEFORE seedAdminIfConfigured() so the
-  // INSERT has all required columns available.
-  await ensureUserSchemaColumns();
-
-  // Ensure the memory_hourly_snapshots table exists so the memory watchdog
-  // can persist hourly RSS/heap snapshots for the admin diagnostics panel.
-  // Non-fatal: server continues without memory history if this fails.
-  ensureMemoryHourlySnapshotsTable().catch((err) =>
-    logger.warn({ err }, "ensureMemoryHourlySnapshotsTable failed (non-fatal)"),
-  );
-
-  // Ensure the midnight_prayers_config table and singleton row exist.
-  // Must run BEFORE buildApp() because midnightPrayersService.init() fires
-  // inside buildApp() and immediately queries this table.  On production
-  // databases provisioned before the midnight-prayers feature was merged,
-  // the table will be absent if `drizzle-kit push` was not re-run after
-  // the feature was deployed — this self-heal closes that gap permanently.
-  await ensureMidnightPrayersTable().catch((err) => {
+  // Phase-1 boot sequence: run all pre-buildApp DDL + schema self-heals on
+  // ONE shared pool connection instead of 4 separate checkouts.
+  // Covers: runtime indexes, schema-heal columns, memory_hourly_snapshots table,
+  //         midnight_prayers_config table + singleton row.
+  // Error semantics preserved — per-item failures are non-fatal; the
+  // midnight_prayers error is caught below so startup continues.
+  await runPreBuildBootSequence().catch((err) => {
     logger.error(
       { err },
-      "[midnight-prayers] ensureMidnightPrayersTable failed at startup — " +
-        "midnight-prayers routes will fail until the table is present; " +
-        "run `pnpm --filter @workspace/db run push` to create it",
+      "db: runPreBuildBootSequence failed — some schema self-heals may be incomplete; " +
+        "run `pnpm --filter @workspace/db run push` to repair",
     );
-    // Non-fatal: the server can still serve all other routes.
   });
 
   // Auto-seed the admin account on startup (no-op if already exists and
@@ -699,38 +677,15 @@ async function main() {
         "broadcast engine failed to start (server still listening)",
       );
     }
-    // Auto-create broadcast v2 DB tables so the orchestrator never crashes
-    // on a missing-table error even when drizzle-kit push was not run.
-    // Idempotent (CREATE TABLE IF NOT EXISTS). AWAITED — the orchestrator
-    // started below (ensureBroadcastV2Started) strictly depends on these tables
-    // existing, so this must complete first to avoid a fresh-DB race. The
-    // CREATE statements are cheap; under a DB outage the await is bounded by the
-    // pool connectionTimeout and the .catch keeps it non-fatal (the
-    // orchestrator's own hydrate() 42P01 guards still cover residual issues).
-    // app.listen() runs later (below), so this adds only a brief, bounded delay
-    // to startup. Matches the established "await the ensureXxxTable() before its
-    // dependent service starts" pattern used for the midnight-prayers table.
-    await ensureBroadcastV2Tables().catch((err) =>
-      logger.error({ err }, "db: ensureBroadcastV2Tables failed (non-fatal)"),
-    );
-    // Reset videos stuck in transcodingStatus='processing' from a prior
-    // mid-faststart server crash. loadActive() blocks 'processing' items, so
-    // without this reset those queue slots would be silently held forever.
-    resetStuckProcessingVideos().catch((err) =>
-      logger.warn({ err }, "db: resetStuckProcessingVideos failed (non-fatal)"),
-    );
-    // Reset videos stuck in transcodingStatus='encoding' whose transcoding job
-    // is no longer active (server crash or lost job row). These videos would
-    // stay 'encoding' indefinitely and never advance to 'hls_ready' without
-    // this reset. Safe: gated on "no active job" so live encodes are untouched.
-    resetStuckEncodingVideos().catch((err) =>
-      logger.warn({ err }, "db: resetStuckEncodingVideos failed (non-fatal)"),
-    );
-    // Mark youtube_sync_log rows stuck at 'running' as 'interrupted'.
-    // These accumulate when the process is killed mid-sync; without this
-    // cleanup the admin Sync panel shows them as perpetually in-progress.
-    recoverStaleSyncLogs().catch((err) =>
-      logger.warn({ err }, "db: recoverStaleSyncLogs failed (non-fatal)"),
+    // Phase-2 boot sequence: run all post-build DDL + data resets on ONE shared
+    // pool connection instead of 4 separate checkouts.  The orchestrator started
+    // above (ensureBroadcastV2Started below) depends on these tables existing, so
+    // this is awaited.  All operations are non-fatal; errors are logged and
+    // swallowed by the function itself.
+    // Covers: broadcast_v2 tables, stuck-processing reset, stuck-encoding reset,
+    //         stale sync-log recovery.
+    await runPostBuildBootSequence().catch((err) =>
+      logger.error({ err }, "db: runPostBuildBootSequence failed (non-fatal)"),
     );
     // Stale-data GC: expired tokens, stale viewer sessions, old upload sessions,
     // old broadcast event log entries. Runs at 30 s after boot then every 6 h.
