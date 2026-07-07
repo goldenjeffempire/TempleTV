@@ -124,7 +124,7 @@ export default function WatchLaterScreen() {
                 <SermonCard
                   sermon={item}
                   onPress={() => navigateToSermon(item)}
-                  horizontal
+                  variant="horizontal"
                 />
               </View>
               <Pressable

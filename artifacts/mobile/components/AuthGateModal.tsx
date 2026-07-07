@@ -79,7 +79,10 @@ export function AuthGateModal() {
     closeAuthGate();
     if (target) {
       InteractionManager.runAfterInteractions(() => {
-        router.push({ pathname: target.pathname as `/${string}`, params: target.params });
+        // expo-router's Href type encodes all known routes; dynamic pathnames
+        // (stored as plain strings in pendingPlayback) satisfy the runtime
+        // contract but can't be statically narrowed — cast via unknown.
+        router.push({ pathname: target.pathname as unknown as "/", params: target.params });
       });
     }
   };

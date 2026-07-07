@@ -470,12 +470,14 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
         if (cancelled) return;
         const match = text.match(/#EXT-X-TARGETDURATION:(\d+)/);
         if (!match) return;
-        const targetSec = parseInt(match[1], 10);
+        const targetSec = parseInt(match[1] ?? "", 10);
         if (!isFinite(targetSec) || targetSec <= 0) return;
         // Evict oldest entry if cache is full (LRU-lite — evict first inserted).
         if (hlsTargetDurationCache.size >= HLS_MANIFEST_CACHE_MAX) {
           const firstKey = hlsTargetDurationCache.keys().next().value;
-          if (firstKey !== undefined) hlsTargetDurationCache.delete(firstKey);
+          // firstKey is string | undefined from MapIterator; the undefined guard
+          // above narrows it but TS can't prove it through Map.delete — cast it.
+          if (firstKey !== undefined) hlsTargetDurationCache.delete(firstKey as string);
         }
         hlsTargetDurationCache.set(url, targetSec);
         quickFinishThresholdMsRef.current = Math.max(targetSec * 1_000, HLS_QUICK_FINISH_THRESHOLD_MS);
@@ -1084,6 +1086,9 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
       isMuted={effectiveMuted}
       volume={forceMuted ? 0 : 1}
       progressUpdateIntervalMillis={500}
+      // @ts-expect-error allowsExternalPlayback was removed from expo-av
+      // 16.x types but the underlying AVPlayer prop is still valid on iOS
+      // (AirPlay / HDMI output). Keeping it intentionally.
       allowsExternalPlayback={true}
       onLoad={(loadStatus) => {
         // Capture the actual encoded duration from the native media pipeline.
@@ -1528,7 +1533,9 @@ function _getOrCreateMpSingleton(mainBaseUrl: string): _MpSingleton {
 
   const fetchConfig = () => {
     const apiOrigin = mainBaseUrl.replace(/\/api\/broadcast-v2.*/, "");
-    fetch(`${apiOrigin}/api/midnight-prayers/config`)
+    fetch(`${apiOrigin}/api/midnight-prayers/config`, {
+      signal: AbortSignal.timeout(5_000),
+    })
       .then((r) => (r.ok ? (r.json() as Promise<MPScheduleConfig>) : null))
       .then((data) => {
         if (!data) return;

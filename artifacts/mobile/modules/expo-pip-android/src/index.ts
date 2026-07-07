@@ -20,7 +20,18 @@
  *   When provided, shown in the PiP window chrome above the video so viewers
  *   know what is currently playing (same as YouTube's PiP title treatment).
  */
-import { EventEmitter, type EventSubscription, Platform } from "react-native";
+import { type EventSubscription, Platform } from "react-native";
+
+// EventEmitter was removed from the react-native public TS exports in 0.76+.
+// Define a minimal interface matching the subset of the API we actually use so
+// we never need to import from a package whose type diverges from runtime.
+interface NativePipEmitter {
+  addListener(
+    event: string,
+    listener: (event: PipActionEvent) => void,
+  ): EventSubscription;
+  removeAllListeners(event: string): void;
+}
 
 export interface PipActionEvent {
   /** "play" when the user taps Play in the PiP overlay; "pause" for Pause. */
@@ -48,13 +59,22 @@ let NativeModule: {
   cancelPipRestoreNotification(): Promise<void>;
 } | null = null;
 
-let NativeEmitter: EventEmitter | null = null;
+let NativeEmitter: NativePipEmitter | null = null;
 
 if (Platform.OS === "android") {
   try {
-    const { requireNativeModule } = require("expo-modules-core");
+    // requireNativeModule is from expo-modules-core (already a dep of this module).
+    const { requireNativeModule } = require("expo-modules-core") as {
+      requireNativeModule: (name: string) => typeof NativeModule;
+    };
     NativeModule = requireNativeModule("ExpoPipAndroid");
-    NativeEmitter = new EventEmitter(NativeModule as any);
+    // NativeEventEmitter is no longer exported from react-native's public index
+    // (removed in 0.76+) but is still accessible via its internal path — this
+    // is the correct way to bridge native event emission through the JS bridge.
+    const { default: NativeEventEmitter } = require(
+      "react-native/Libraries/EventEmitter/NativeEventEmitter",
+    ) as { default: new (mod: unknown) => NativePipEmitter };
+    NativeEmitter = new NativeEventEmitter(NativeModule);
   } catch {
     NativeModule = null;
     NativeEmitter = null;

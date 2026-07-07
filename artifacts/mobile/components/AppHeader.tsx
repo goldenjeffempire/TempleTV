@@ -55,6 +55,13 @@ export interface AppHeaderProps {
    */
   rightElement?: React.ReactNode;
 
+  /**
+   * Arbitrary leading element for the tab variant.
+   * Rendered to the left of the title. In the stack variant the back button
+   * always occupies the leading slot — this prop is ignored there.
+   */
+  left?: React.ReactNode;
+
   /** Omit the bottom hairline border. */
   borderless?: boolean;
 
@@ -96,6 +103,7 @@ export function AppHeader({
   rightIcon,
   rightLabel,
   rightElement,
+  left,
   borderless = false,
   backgroundColor,
 }: AppHeaderProps) {
@@ -163,6 +171,7 @@ export function AppHeader({
         // the wordmark on every tab header is visual noise that competes with
         // the content hierarchy.
         <>
+          {left != null && <View style={styles.tabLeading}>{left}</View>}
           <Text
             style={[styles.tabTitle, { color: c.foreground }]}
             numberOfLines={1}
@@ -228,6 +237,12 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: -0.6,
     textAlign: "left",
+  },
+  tabLeading: {
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    marginRight: 8,
   },
   tabTrailing: {
     alignItems: "center",

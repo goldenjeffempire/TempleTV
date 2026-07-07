@@ -287,7 +287,10 @@ export function UpdateProvider({ children }: { children: React.ReactNode }) {
     versionPollRef.current = setInterval(() => {
       void runVersionCheck();
     }, 6 * 60 * 60 * 1000);
-    versionPollRef.current?.unref?.();
+    // .unref() is a Node.js-only handle API — React Native setInterval returns
+    // a plain number and has no unref(). Cast to any to safely call it only
+    // in Node environments (e.g. Jest tests) without a TS error.
+    (versionPollRef.current as unknown as { unref?: () => void })?.unref?.();
 
     return () => {
       sub.remove();

@@ -3,6 +3,8 @@ import { AppHeader } from "@/components/AppHeader";
 
 interface ScreenHeaderProps {
   title: string;
+  /** Optional element rendered to the left of the title (e.g. a back button). */
+  left?: React.ReactNode;
 }
 
 /**
@@ -17,7 +19,8 @@ interface ScreenHeaderProps {
  *
  * Usage:
  *   <ScreenHeader title="Library" />
+ *   <ScreenHeader title="Notifications" left={<BackButton />} />
  */
-export function ScreenHeader({ title }: ScreenHeaderProps) {
-  return <AppHeader variant="tab" title={title} />;
+export function ScreenHeader({ title, left }: ScreenHeaderProps) {
+  return <AppHeader variant="tab" title={title} left={left} />;
 }

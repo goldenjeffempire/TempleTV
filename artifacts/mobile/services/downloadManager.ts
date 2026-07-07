@@ -15,7 +15,11 @@
  *   Metadata: AsyncStorage key "@temple_tv/downloads_v1"
  */
 
-import * as FileSystem from "expo-file-system";
+// expo-file-system v19+ moved the classic URI-based API to the /legacy
+// sub-path. Import from there so documentDirectory, DownloadResumable,
+// getInfoAsync, createDownloadResumable, makeDirectoryAsync, deleteAsync,
+// and InfoOptions are all still available without deprecation runtime throws.
+import * as FileSystem from "expo-file-system/legacy";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export type DownloadStatus =
@@ -295,9 +299,11 @@ class DownloadManager {
     for (const item of this.items.values()) {
       if (item.status === "completed" && item.localPath) {
         try {
-          const info = await FileSystem.getInfoAsync(item.localPath, { size: true });
+          // In expo-file-system/legacy, InfoOptions only supports { md5 } —
+          // the size field is always present in FileInfo when the file exists.
+          const info = await FileSystem.getInfoAsync(item.localPath);
           if (info.exists && "size" in info) {
-            total += info.size as number;
+            total += (info as { size: number }).size;
           }
         } catch { /* ignore */ }
       }

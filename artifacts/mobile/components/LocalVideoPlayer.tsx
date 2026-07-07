@@ -1100,6 +1100,9 @@ export function LocalVideoPlayer({
             shouldPlay={autoPlay}
             positionMillis={startPositionMs}
             rate={isBroadcastLive ? 1.0 : rate}
+            // @ts-expect-error allowsExternalPlayback was removed from expo-av
+            // 16.x types but the underlying AVPlayer prop is still valid on iOS
+            // and controls AirPlay / HDMI output. Keeping it intentionally.
             allowsExternalPlayback={true}
             onLoad={(st: AVPlaybackStatus) => {
               if (st.isLoaded) {

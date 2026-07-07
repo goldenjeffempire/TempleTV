@@ -61,7 +61,7 @@ export async function reportClientError(input: ClientErrorPayload): Promise<void
       // Flush immediately on fatal errors so the event lands before the
       // process is terminated. Non-fatal events are batched by default.
       if (isFatal) {
-        void Sentry.flush(2000);
+        void Sentry.flush();
       }
     } catch {
       /* never let error reporting throw */

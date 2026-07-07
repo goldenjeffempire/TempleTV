@@ -192,7 +192,8 @@ export function MiniPlayer() {
   );
 
   // ── Guard against rapid double-taps ───────────────────────────────────────
-  const navigatingRef = useRef(false);
+  const navigatingRef      = useRef(false);
+  const navigatingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Early exit ─────────────────────────────────────────────────────────────
   if (!shouldRender) return null;
@@ -227,10 +228,21 @@ export function MiniPlayer() {
     playNext();
   };
 
+  // Clear navigation debounce timer on unmount to prevent a stale ref write
+  // after the component is gone (benign in practice, but clean and avoids
+  // any ref-leak warnings from React's strict-mode double-invoke).
+  useEffect(() => () => {
+    if (navigatingTimerRef.current) clearTimeout(navigatingTimerRef.current);
+  }, []);
+
   const handlePress = () => {
     if (navigatingRef.current) return;
     navigatingRef.current = true;
-    setTimeout(() => { navigatingRef.current = false; }, 600);
+    if (navigatingTimerRef.current) clearTimeout(navigatingTimerRef.current);
+    navigatingTimerRef.current = setTimeout(() => {
+      navigatingRef.current = false;
+      navigatingTimerRef.current = null;
+    }, 600);
 
     if (isLive) {
       navigateToPlayer({ live: "true", title: "Live Broadcast", preacher: "JCTM" });

@@ -54,12 +54,19 @@ if (sentryDsn) {
     // This rate controls performance transactions only — raising it gives
     // richer profiling data while still being well within typical quotas.
     tracesSampleRate: 0.3,
+    // Performance profiling: capture CPU/memory profiles for 10% of sessions.
+    // Combined with tracesSampleRate this gives actionable performance data
+    // without meaningfully impacting battery or quota.
+    _experiments: { profilesSampleRate: 0.1 },
     attachStacktrace: true,
     // Attach native thread state to every event so ANR root-causes are
     // visible in the Sentry UI without symbolication guesswork.
     attachThreads: true,
     enableAutoSessionTracking: true,
     enableNativeFramesTracking: Platform.OS !== "web",
+    // Track every user interaction (tap, scroll) as a Sentry transaction so
+    // slow interaction traces surface in the Performance dashboard.
+    enableUserInteractionTracing: true,
     // Filter transient noise that would exhaust Sentry quota without
     // providing actionable signal: network interruptions, cancelled requests,
     // and OS-level audio/background-task rejections are expected on mobile
@@ -119,7 +126,7 @@ if (sentryDsn) {
           if (isFatal) {
             // Best-effort flush before the OS kills the process.
             // 2 s is the maximum safe window before Android ANR threshold.
-            void Sentry.flush(2000);
+            void Sentry.flush();
           }
         } catch {
           // Absolutely cannot let the reporter itself crash — that would

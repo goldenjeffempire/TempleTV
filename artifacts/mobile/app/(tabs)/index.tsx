@@ -281,6 +281,9 @@ const HeroSection = React.memo(function HeroSection({
   onMuteToggle,
 }: HeroSectionProps) {
   const c = useColors();
+  // isBroadcastMode comes from the singleton player — used to suppress hero
+  // watchdog events when the full-screen player is open so they don't race.
+  const { isBroadcastMode } = usePlayer();
   const { width } = useWindowDimensions();
   // True 16:9 video area + status-bar region above it = total hero height.
   // This lets the video fill the space that was previously occupied by the
