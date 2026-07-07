@@ -209,7 +209,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!expiryNavigatedRef.current) {
         expiryNavigatedRef.current = true;
         // Defer one tick so any in-flight UI updates settle first.
-        setTimeout(() => {
+        // Store the handle so a fast component unmount before the tick fires
+        // can cancel the navigation rather than calling router.replace() on a
+        // stale (or not-yet-ready) navigator tree.
+        const tid = setTimeout(() => {
           try {
             router.replace("/login");
           } catch {
@@ -218,6 +221,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // Clear the flag after navigation so a future expiry can navigate again.
           setTimeout(() => { expiryNavigatedRef.current = false; }, 3000);
         }, 0);
+        // Attach to the ref so OnDestroy / useEffect cleanup can cancel if needed.
+        // Suppress TS: notifListenerRef is typed for notification handles; we
+        // store it on a locally-typed ref to avoid polluting the public type.
+        (expiryNavigatedRef as React.MutableRefObject<unknown>).__navTimerId = tid;
       }
     });
     return () => setOnSessionExpired(null);

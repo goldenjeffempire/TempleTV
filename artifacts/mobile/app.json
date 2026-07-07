@@ -258,6 +258,7 @@
       "./plugins/with-android-activity-flags.js",
       "./plugins/with-enable-edge-to-edge.js",
       "./plugins/with-edge-to-edge.js",
+      "./plugins/with-predictive-back.js",
       [
         "expo-screen-orientation",
         {

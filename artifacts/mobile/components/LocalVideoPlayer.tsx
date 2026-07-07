@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
-  Image,
   Platform,
   Pressable,
   StyleSheet,
@@ -10,6 +9,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
+import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
@@ -1122,7 +1122,7 @@ export function LocalVideoPlayer({
             style={[styles.overlay, { opacity: transitionOpacity, pointerEvents: "none" }]}
           >
             {thumbnailUrl && (
-              <Image source={{ uri: thumbnailUrl }} style={styles.thumbnail} resizeMode="contain" />
+              <Image source={{ uri: thumbnailUrl }} style={styles.thumbnail} contentFit="contain" />
             )}
             <View style={[styles.loadingCenter, { backgroundColor: "rgba(0,0,0,0.5)" }]}>
               <ActivityIndicator color={c.primary} size="large" />
@@ -1292,7 +1292,7 @@ export function LocalVideoPlayer({
             <Image
               source={{ uri: thumbnailUrl }}
               style={StyleSheet.absoluteFillObject}
-              resizeMode="contain"
+              contentFit="contain"
             />
           )}
           <View style={{

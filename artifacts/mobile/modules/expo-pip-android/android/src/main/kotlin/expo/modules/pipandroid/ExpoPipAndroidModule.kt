@@ -17,8 +17,8 @@ import android.os.Build
 import android.util.Rational
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 class ExpoPipAndroidModule : Module() {
 
@@ -30,7 +30,6 @@ class ExpoPipAndroidModule : Module() {
         private const val CHANNEL_ID            = "pip_controls_channel"
         private const val ACTION_PIP_PLAY       = "expo.modules.pipandroid.ACTION_PLAY"
         private const val ACTION_PIP_PAUSE      = "expo.modules.pipandroid.ACTION_PAUSE"
-        private const val LATCH_TIMEOUT_S       = 5L
     }
 
     private val currentActivity: Activity?
@@ -98,6 +97,14 @@ class ExpoPipAndroidModule : Module() {
         // Enters PiP immediately. Arms media controls (play/pause) and an optional
         // restore button inside the PiP overlay, and sets the window title on
         // Android 12+ (API 31) so viewers know what is playing.
+        //
+        // Uses suspendCancellableCoroutine instead of CountDownLatch to safely
+        // bridge the UI-thread work back to this (background) coroutine without
+        // blocking a thread pool slot. CountDownLatch.await() on the Expo module
+        // dispatcher thread could exhaust the thread pool under concurrent calls
+        // and trigger an ANR if the UI thread is congested during the 5-second
+        // timeout window. suspendCancellableCoroutine suspends — releases the
+        // thread — until runOnUiThread completes and resumes the coroutine.
 
         AsyncFunction("enterPictureInPicture") {
             aspectWidth: Int, aspectHeight: Int,
@@ -107,40 +114,36 @@ class ExpoPipAndroidModule : Module() {
             val act = currentActivity ?: return@AsyncFunction false
             registerPipReceiver()
 
-            var result = false
-            val latch  = CountDownLatch(1)
+            suspendCancellableCoroutine { cont ->
+                act.runOnUiThread {
+                    var result = false
+                    try {
+                        val builder = PictureInPictureParams.Builder()
+                            .setAspectRatio(Rational(
+                                aspectWidth.coerceAtLeast(1),
+                                aspectHeight.coerceAtLeast(1),
+                            ))
 
-            act.runOnUiThread {
-                try {
-                    val builder = PictureInPictureParams.Builder()
-                        .setAspectRatio(Rational(
-                            aspectWidth.coerceAtLeast(1),
-                            aspectHeight.coerceAtLeast(1),
-                        ))
+                        if (Build.VERSION.SDK_INT >= 31) {
+                            // Display the video / broadcast title in the PiP chrome.
+                            val effectiveTitle = title?.takeIf { it.isNotBlank() } ?: "Temple TV"
+                            builder.setTitle(effectiveTitle)
+                            // Smooth video crossfade when the PiP window is resized.
+                            builder.setSeamlessResizeEnabled(true)
+                        }
 
-                    if (Build.VERSION.SDK_INT >= 31) {
-                        // Display the video / broadcast title in the PiP chrome.
-                        val effectiveTitle = title?.takeIf { it.isNotBlank() } ?: "Temple TV"
-                        builder.setTitle(effectiveTitle)
-                        // Smooth video crossfade when the PiP window is resized.
-                        builder.setSeamlessResizeEnabled(true)
+                        val actions = buildPipActions(act, isPlaying, withRestore)
+                        if (actions.isNotEmpty()) builder.setActions(actions)
+
+                        result = act.enterPictureInPictureMode(builder.build())
+
+                        if (result && withRestore) postRestoreNotification(act)
+                    } catch (_: Exception) {
+                        result = false
                     }
-
-                    val actions = buildPipActions(act, isPlaying, withRestore)
-                    if (actions.isNotEmpty()) builder.setActions(actions)
-
-                    result = act.enterPictureInPictureMode(builder.build())
-
-                    if (result && withRestore) postRestoreNotification(act)
-                } catch (_: Exception) {
-                    result = false
-                } finally {
-                    latch.countDown()
+                    if (cont.isActive) cont.resume(result)
                 }
             }
-
-            latch.await(LATCH_TIMEOUT_S, TimeUnit.SECONDS)
-            result
         }
 
         // ── isPictureInPictureSupported ─────────────────────────────────────────
@@ -164,6 +167,9 @@ class ExpoPipAndroidModule : Module() {
         // actions, and title immediately when the user or OS triggers PiP.
         // Also updates the live media controls (play ↔ pause icon) while already
         // in PiP — call this whenever the playback state changes.
+        //
+        // Uses suspendCancellableCoroutine for the same ANR-safety reasons as
+        // enterPictureInPicture above.
 
         AsyncFunction("updatePipParams") {
             aspectWidth: Int, aspectHeight: Int,
@@ -174,34 +180,32 @@ class ExpoPipAndroidModule : Module() {
             val act = currentActivity ?: return@AsyncFunction null
             registerPipReceiver()
 
-            val latch = CountDownLatch(1)
-            act.runOnUiThread {
-                try {
-                    val builder = PictureInPictureParams.Builder()
-                        .setAspectRatio(Rational(
-                            aspectWidth.coerceAtLeast(1),
-                            aspectHeight.coerceAtLeast(1),
-                        ))
+            suspendCancellableCoroutine { cont ->
+                act.runOnUiThread {
+                    try {
+                        val builder = PictureInPictureParams.Builder()
+                            .setAspectRatio(Rational(
+                                aspectWidth.coerceAtLeast(1),
+                                aspectHeight.coerceAtLeast(1),
+                            ))
 
-                    if (Build.VERSION.SDK_INT >= 31) {
-                        val effectiveTitle = title?.takeIf { it.isNotBlank() } ?: "Temple TV"
-                        builder.setTitle(effectiveTitle)
-                        builder.setAutoEnterEnabled(autoEnter)
-                        builder.setSeamlessResizeEnabled(true)
+                        if (Build.VERSION.SDK_INT >= 31) {
+                            val effectiveTitle = title?.takeIf { it.isNotBlank() } ?: "Temple TV"
+                            builder.setTitle(effectiveTitle)
+                            builder.setAutoEnterEnabled(autoEnter)
+                            builder.setSeamlessResizeEnabled(true)
+                        }
+
+                        val actions = buildPipActions(act, isPlaying, withRestore)
+                        if (actions.isNotEmpty()) builder.setActions(actions)
+
+                        act.setPictureInPictureParams(builder.build())
+                    } catch (_: Exception) {
+                        // Non-fatal — params fall back to defaults
                     }
-
-                    val actions = buildPipActions(act, isPlaying, withRestore)
-                    if (actions.isNotEmpty()) builder.setActions(actions)
-
-                    act.setPictureInPictureParams(builder.build())
-                } catch (_: Exception) {
-                    // Non-fatal — params fall back to defaults
-                } finally {
-                    latch.countDown()
+                    if (cont.isActive) cont.resume(Unit)
                 }
             }
-
-            latch.await(LATCH_TIMEOUT_S, TimeUnit.SECONDS)
             null
         }
 

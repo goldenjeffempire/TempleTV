@@ -25,7 +25,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Animated,
   FlatList,
-  Image,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -34,6 +33,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
+import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
 import { router, Stack } from "expo-router";
@@ -415,7 +415,7 @@ const HeroSection = React.memo(function HeroSection({
         <Image
           source={{ uri: thumbUrl }}
           style={[StyleSheet.absoluteFill, { opacity: 0.5 }]}
-          resizeMode="cover"
+          contentFit="cover"
           blurRadius={25}
           accessible={false}
         />
@@ -426,7 +426,7 @@ const HeroSection = React.memo(function HeroSection({
         <Image
           source={{ uri: thumbUrl }}
           style={StyleSheet.absoluteFill}
-          resizeMode="contain"
+          contentFit="contain"
         />
       )}
 
@@ -595,7 +595,7 @@ const HeroSection = React.memo(function HeroSection({
         <Image
           source={require("@/assets/images/temple-tv-logo-full.png")}
           style={styles.heroLogo}
-          resizeMode="contain"
+          contentFit="contain"
           accessible
           accessibilityLabel="App logo"
         />
@@ -745,7 +745,7 @@ const ContinueWatchingRow = React.memo(function ContinueWatchingRow({
                   <Image
                     source={{ uri: item.thumbnailUrl }}
                     style={StyleSheet.absoluteFill}
-                    resizeMode="cover"
+                    contentFit="cover"
                   />
                 ) : (
                   <View style={[StyleSheet.absoluteFill, { backgroundColor: c.muted, alignItems: "center", justifyContent: "center" }]}>
