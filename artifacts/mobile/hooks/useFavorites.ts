@@ -52,8 +52,10 @@ export function useFavorites() {
   const favoritesRef = useRef<Sermon[]>([]);
 
   useEffect(() => {
+    let active = true;
     AsyncStorage.getItem(STORAGE_KEYS.favorites)
       .then((raw) => {
+        if (!active) return;
         if (raw) {
           try {
             const parsed = JSON.parse(raw) as Sermon[];
@@ -77,7 +79,8 @@ export function useFavorites() {
           if (__DEV__) console.error("[useFavorites] Failed to read from storage:", e);
         }
       })
-      .finally(() => setLoaded(true));
+      .finally(() => { if (active) setLoaded(true); });
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {

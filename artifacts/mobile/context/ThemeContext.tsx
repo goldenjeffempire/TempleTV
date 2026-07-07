@@ -34,14 +34,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
+    let active = true;
     AsyncStorage.getItem(THEME_KEY)
       .then((stored) => {
+        if (!active) return;
         if (stored === "light" || stored === "dark" || stored === "system") {
           setThemeState(stored);
         }
       })
       .catch(() => {})
-      .finally(() => setIsLoaded(true));
+      .finally(() => { if (active) setIsLoaded(true); });
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {

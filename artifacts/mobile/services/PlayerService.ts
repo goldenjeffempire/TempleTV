@@ -89,47 +89,57 @@ export async function PlaybackService() {
   const evt = Event;
 
   tp.addEventListener(evt.RemotePlay, async () => {
-    await tp.play();
-    handlers.onPlay?.();
+    try {
+      await tp.play();
+      handlers.onPlay?.();
+    } catch { /* TrackPlayer may not be ready — ignore */ }
   });
 
   tp.addEventListener(evt.RemotePause, async () => {
-    await tp.pause();
-    handlers.onPause?.();
+    try {
+      await tp.pause();
+      handlers.onPause?.();
+    } catch { /* TrackPlayer may not be ready — ignore */ }
   });
 
   tp.addEventListener(evt.RemoteStop, async () => {
-    await tp.stop();
-    handlers.onStop?.();
+    try {
+      await tp.stop();
+      handlers.onStop?.();
+    } catch { /* TrackPlayer may not be ready — ignore */ }
   });
 
   tp.addEventListener(evt.RemoteNext, () => {
     if (broadcastMode) return;
-    handlers.onNext?.();
+    try { handlers.onNext?.(); } catch { /* handler threw — ignore */ }
   });
 
   tp.addEventListener(evt.RemotePrevious, () => {
     if (broadcastMode) return;
-    handlers.onPrevious?.();
+    try { handlers.onPrevious?.(); } catch { /* handler threw — ignore */ }
   });
 
   tp.addEventListener(evt.RemoteSeek, async (rawEvent?: Record<string, unknown>) => {
     if (broadcastMode) return;
     const position = typeof rawEvent?.position === "number" ? rawEvent.position : 0;
-    await tp.seekTo(position);
-    handlers.onSeek?.(position);
+    try {
+      await tp.seekTo(position);
+      handlers.onSeek?.(position);
+    } catch { /* TrackPlayer may not be ready — ignore */ }
   });
 
   tp.addEventListener(evt.RemoteDuck, async (rawEvent?: Record<string, unknown>) => {
     const permanent = rawEvent?.permanent === true;
     const paused = rawEvent?.paused === true;
-    if (permanent) {
-      await tp.pause();
-      handlers.onPause?.();
-    } else if (paused) {
-      await tp.pause();
-    } else {
-      await tp.play();
-    }
+    try {
+      if (permanent) {
+        await tp.pause();
+        handlers.onPause?.();
+      } else if (paused) {
+        await tp.pause();
+      } else {
+        await tp.play();
+      }
+    } catch { /* TrackPlayer may not be ready — ignore */ }
   });
 }

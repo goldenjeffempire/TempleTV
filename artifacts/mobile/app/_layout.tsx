@@ -468,7 +468,13 @@ function RootLayoutNav() {
           const type = data?.type as string | undefined;
           // Small delay so Expo Router's navigation stack has mounted and is
           // ready to receive router.push() calls before we fire them.
-          setTimeout(() => handleNotificationResponse(data, type), 500);
+          // Store in the ref so the effect cleanup can cancel it if the root
+          // layout unmounts before the 500 ms fires (avoids router.push() on
+          // an unmounted navigator → JS crash on killed-app cold-start).
+          notifListenerRef.current = setTimeout(() => {
+            notifListenerRef.current = null;
+            handleNotificationResponse(data, type);
+          }, 500);
         }
       }).catch(() => {/* getLastNotificationResponseAsync can fail on old builds */});
 

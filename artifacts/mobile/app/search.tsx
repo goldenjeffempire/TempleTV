@@ -133,12 +133,17 @@ export default function SearchScreen() {
   });
 
   useEffect(() => {
+    let active = true;
     loadRecent().then((r) => {
+      if (!active) return;
       setRecent(r);
       setRecentLoaded(true);
     });
     const t = setTimeout(() => inputRef.current?.focus(), 150);
-    return () => clearTimeout(t);
+    return () => {
+      active = false;
+      clearTimeout(t);
+    };
   }, []);
 
   const handleSubmit = useCallback(() => {

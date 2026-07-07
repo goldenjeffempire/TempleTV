@@ -179,9 +179,11 @@ export default function SettingsScreen() {
     "Notification" in window;
 
   useEffect(() => {
+    let active = true;
     AsyncStorage.getItem("@temple_tv/limit_cellular_quality_v1")
-      .then((v) => { if (v === "1") setLimitCellular(true); })
+      .then((v) => { if (active && v === "1") setLimitCellular(true); })
       .catch(() => {});
+    return () => { active = false; };
   }, []);
 
   const handleToggleCellular = useCallback(() => {
@@ -194,15 +196,20 @@ export default function SettingsScreen() {
   }, []);
 
   useEffect(() => {
-    getNotificationPermissionStatus().then((status) => {
-      if (Platform.OS !== "web") {
-        setNotifGranted(status === "granted");
-      } else {
-        // On web, status is null when push is unsupported; otherwise the
-        // browser's current Notification.permission value.
-        setWebPushPermission(status);
-      }
-    });
+    let active = true;
+    getNotificationPermissionStatus()
+      .then((status) => {
+        if (!active) return;
+        if (Platform.OS !== "web") {
+          setNotifGranted(status === "granted");
+        } else {
+          // On web, status is null when push is unsupported; otherwise the
+          // browser's current Notification.permission value.
+          setWebPushPermission(status);
+        }
+      })
+      .catch(() => {/* native module may be unavailable — non-fatal */});
+    return () => { active = false; };
   }, []);
 
   const handleToggleNotifs = useCallback(async () => {

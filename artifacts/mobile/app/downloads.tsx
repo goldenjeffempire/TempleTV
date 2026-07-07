@@ -219,7 +219,11 @@ export default function DownloadsScreen() {
   const [totalStorage, setTotalStorage] = useState<number>(0);
 
   useEffect(() => {
-    getTotalStorageBytes().then(setTotalStorage).catch(() => {});
+    let active = true;
+    getTotalStorageBytes()
+      .then((bytes) => { if (active) setTotalStorage(bytes); })
+      .catch(() => {});
+    return () => { active = false; };
   }, [downloads, getTotalStorageBytes]);
 
   const handleClearAll = useCallback(() => {

@@ -46,8 +46,10 @@ export function useWatchLater() {
   const itemsRef = useRef<Sermon[]>([]);
 
   useEffect(() => {
+    let active = true;
     AsyncStorage.getItem(STORAGE_KEYS.watchLater)
       .then((raw) => {
+        if (!active) return;
         if (raw) {
           try {
             const parsed = JSON.parse(raw) as Sermon[];
@@ -60,7 +62,8 @@ export function useWatchLater() {
         }
       })
       .catch(() => {})
-      .finally(() => setLoaded(true));
+      .finally(() => { if (active) setLoaded(true); });
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {

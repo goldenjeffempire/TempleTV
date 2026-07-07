@@ -90,6 +90,10 @@ export class StateSyncService {
 
   start(): void {
     if (this.destroyed) return;
+    // Guard against accidental double-start: if the resync interval already
+    // exists we are already running. Calling start() twice without an
+    // intervening stop() would leak a second WebSocket + resync interval.
+    if (this.resyncInterval !== null) return;
     this.cb.onConnectionChanged("connecting");
 
     if (typeof WebSocket !== "undefined" && this.opts.wsUrl) {

@@ -46,8 +46,10 @@ export function useWatchProgress() {
   const lastSaveRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
+    let active = true;
     AsyncStorage.getItem(STORAGE_KEY)
       .then((raw) => {
+        if (!active) return;
         if (raw) {
           try {
             const parsed = JSON.parse(raw) as WatchProgressMap;
@@ -67,6 +69,7 @@ export function useWatchProgress() {
           if (__DEV__) console.error("[useWatchProgress] Failed to read from storage:", e);
         }
       });
+    return () => { active = false; };
   }, []);
 
   const saveProgress = useCallback(

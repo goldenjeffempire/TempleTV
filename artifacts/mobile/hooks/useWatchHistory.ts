@@ -58,8 +58,10 @@ export function useWatchHistory() {
   useEffect(() => { latestHistoryRef.current = history; }, [history]);
 
   useEffect(() => {
+    let active = true;
     AsyncStorage.getItem(STORAGE_KEYS.watchHistory)
       .then((raw) => {
+        if (!active) return;
         if (raw) {
           try {
             const parsed = JSON.parse(raw) as HistoryEntry[];
@@ -83,7 +85,8 @@ export function useWatchHistory() {
           if (__DEV__) console.error("[useWatchHistory] Failed to read history from storage:", e);
         }
       })
-      .finally(() => setLoaded(true));
+      .finally(() => { if (active) setLoaded(true); });
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
