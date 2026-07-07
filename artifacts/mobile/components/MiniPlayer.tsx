@@ -128,7 +128,9 @@ export function MiniPlayer() {
   // ── Keyboard avoidance (iOS only) ─────────────────────────────────────────
   // On iOS the keyboard overlays content without pushing the layout up.
   // Lifting the mini player above the keyboard keeps it fully visible.
-  // Android uses adjustResize/adjustPan — the layout engine handles it.
+  // Android: softwareKeyboardLayoutMode is "unspecified" (adjustUnspecified)
+  // so react-native-keyboard-controller's WindowInsetsAnimation callbacks
+  // manage insets — the layout engine does not need to resize the window.
   const [keyboardOffset, setKeyboardOffset] = useState(0);
   useEffect(() => {
     if (Platform.OS !== "ios") return;
