@@ -1894,7 +1894,9 @@ export function V2PlayerContainer({
     prevActiveBufferIdRef.current = activeBufferId;
     if (!isInPictureInPictureMode()) return;
     // Refresh Android PiP window to the new active buffer.
-    updatePipParams(16, 9, true).catch(() => {});
+    // Pass null title + true isPlaying — this is a surface-refresh call only,
+    // not a full state sync. The hook's isPlaying effect handles icon accuracy.
+    updatePipParams(16, 9, true, false, null, true).catch(() => {});
   }, [activeBufferId]);
 
   // ── YouTube-override-in-PiP exit ──────────────────────────────────────

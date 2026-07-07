@@ -10,6 +10,12 @@
  *     aspectRatioHeight: 9,
  *     autoEnterOnBackground: true,   // enter PiP when user presses home
  *     showRestoreButton: true,       // add restore button + notification
+ *     title: "Jesus on the Mount of Olives", // shown in PiP chrome (API 31+)
+ *     isPlaying: true,               // controls play/pause button in overlay
+ *     onPlayPause: ({ action }) => { // called when user taps play/pause in PiP
+ *       if (action === "pause") pausePlayback();
+ *       if (action === "play")  resumePlayback();
+ *     },
  *   });
  *
  * PiP mode detection:
@@ -18,8 +24,14 @@
  *   on every AppState change (active ↔ background). This is accurate and
  *   battery-neutral since we poll only on state-change events, not on a timer.
  *
+ * Media controls:
+ *   When the user taps Play or Pause inside the PiP overlay window, the native
+ *   module emits "onPipAction". This hook subscribes to that event and forwards
+ *   it to `onPlayPause`. The media control icon also updates via `updatePipParams`
+ *   whenever `isPlaying` changes, so the button always reflects real playback state.
+ *
  * Restore button (showRestoreButton = true):
- *   • Adds a "fullscreen" icon action to the PiP overlay window itself.
+ *   • Adds a bundled expand-icon action to the PiP overlay window itself.
  *   • Posts a persistent low-priority notification "Playing in mini player —
  *     tap to return to full screen" so the user can restore from anywhere.
  *   • Both are automatically dismissed by the native module when the activity
@@ -36,23 +48,19 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Platform } from "react-native";
 import type { AppStateStatus } from "react-native";
 import {
+  addPipActionListener,
   enterPictureInPicture,
   isPictureInPictureSupported,
   isInPictureInPictureMode,
   cancelPipRestoreNotification,
   updatePipParams,
+  type PipActionEvent,
 } from "../modules/expo-pip-android/src";
 
 export interface UsePictureInPictureOptions {
-  /**
-   * Numerator of the desired PiP window aspect ratio.
-   * Default: 16 (16:9 landscape).
-   */
+  /** Numerator of the desired PiP window aspect ratio. Default: 16 (16:9 landscape). */
   aspectRatioWidth?: number;
-  /**
-   * Denominator of the desired PiP window aspect ratio.
-   * Default: 9 (16:9 landscape).
-   */
+  /** Denominator of the desired PiP window aspect ratio. Default: 9 (16:9 landscape). */
   aspectRatioHeight?: number;
   /**
    * When true, the hook automatically calls enterPictureInPicture() when
@@ -72,6 +80,23 @@ export interface UsePictureInPictureOptions {
    * Default: true on Android (ignored on iOS/web).
    */
   showRestoreButton?: boolean;
+  /**
+   * Video / broadcast title shown in the PiP window chrome on Android 12+ (API 31).
+   * Falls back to "Temple TV" when not provided. Ignored on older Android versions.
+   */
+  title?: string;
+  /**
+   * Current playback state. Controls which media control icon is shown inside
+   * the PiP overlay: Pause button when true, Play button when false.
+   * Default: true.
+   */
+  isPlaying?: boolean;
+  /**
+   * Called when the user taps Play or Pause inside the PiP overlay window.
+   * Use this to pause/resume the actual playback (e.g. call playerPauseRef.current()
+   * or playerPlayRef.current() from the player context).
+   */
+  onPlayPause?: (event: PipActionEvent) => void;
 }
 
 export interface UsePictureInPictureResult {
@@ -94,6 +119,9 @@ export function usePictureInPicture(
     aspectRatioHeight = 9,
     autoEnterOnBackground = false,
     showRestoreButton = true,
+    title,
+    isPlaying = true,
+    onPlayPause,
   } = options;
 
   const [isSupported] = useState<boolean>(() => {
@@ -115,16 +143,33 @@ export function usePictureInPicture(
     }
   });
 
-  // Keep latest options in refs so the AppState handler doesn't stale-close
-  // over them (avoids re-registering the handler on every option change).
-  const aspectRef = useRef({ width: aspectRatioWidth, height: aspectRatioHeight });
-  const autoEnterRef = useRef(autoEnterOnBackground);
+  // Keep latest options in refs so callbacks don't stale-close over them
+  // (avoids re-registering handlers on every option change).
+  const aspectRef      = useRef({ width: aspectRatioWidth, height: aspectRatioHeight });
+  const autoEnterRef   = useRef(autoEnterOnBackground);
   const showRestoreRef = useRef(showRestoreButton);
+  const titleRef       = useRef(title ?? null);
+  const isPlayingRef   = useRef(isPlaying);
+  const onPlayPauseRef = useRef(onPlayPause);
   useEffect(() => {
-    aspectRef.current = { width: aspectRatioWidth, height: aspectRatioHeight };
-    autoEnterRef.current = autoEnterOnBackground;
+    aspectRef.current      = { width: aspectRatioWidth, height: aspectRatioHeight };
+    autoEnterRef.current   = autoEnterOnBackground;
     showRestoreRef.current = showRestoreButton;
-  }, [aspectRatioWidth, aspectRatioHeight, autoEnterOnBackground, showRestoreButton]);
+    titleRef.current       = title ?? null;
+    isPlayingRef.current   = isPlaying;
+    onPlayPauseRef.current = onPlayPause;
+  }, [aspectRatioWidth, aspectRatioHeight, autoEnterOnBackground,
+      showRestoreButton, title, isPlaying, onPlayPause]);
+
+  // ── Media-control event listener ─────────────────────────────────────────
+  // Subscribe to play/pause button taps from inside the PiP overlay window.
+  useEffect(() => {
+    if (!isSupported) return;
+    const sub = addPipActionListener((event) => {
+      onPlayPauseRef.current?.(event);
+    });
+    return () => sub.remove();
+  }, [isSupported]);
 
   const enterPip = useCallback(async (): Promise<boolean> => {
     if (!isSupported) return false;
@@ -132,6 +177,8 @@ export function usePictureInPicture(
       aspectRef.current.width,
       aspectRef.current.height,
       showRestoreRef.current,
+      titleRef.current,
+      isPlayingRef.current,
     );
     // Bug fix: update isInPip immediately when the system accepts the PiP
     // request rather than waiting for the next AppState event. Without this,
@@ -187,6 +234,8 @@ export function usePictureInPicture(
           aspectRef.current.width,
           aspectRef.current.height,
           showRestoreRef.current,
+          titleRef.current,
+          isPlayingRef.current,
         ).then((entered) => {
           if (entered) setIsInPip(true);
         }).catch(() => {});
@@ -197,8 +246,7 @@ export function usePictureInPicture(
     return () => sub.remove();
   }, [isSupported]);
 
-  // Arm modern system-driven automatic PiP (Android 12 / API 31+).
-  //
+  // ── Arm modern system-driven automatic PiP (Android 12 / API 31+) ────────
   // setPictureInPictureParams(setAutoEnterEnabled(true)) lets the OS itself
   // enter PiP the instant the activity is backgrounded while a video plays —
   // the same mechanism YouTube uses. It is far more reliable than the
@@ -206,11 +254,9 @@ export function usePictureInPicture(
   // and is frequently rejected by the system on modern Android. Below API 31
   // this is a native no-op and the AppState fallback handles auto-enter.
   //
-  // We re-arm whenever the aspect ratio or restore-button preference changes so
-  // the system uses the correct window shape, and we DISARM on cleanup so PiP
-  // never triggers from an unrelated screen after this player unmounts. The
-  // AppState fallback remains active and is mutually safe with native auto-enter
-  // because its `!inPip` guard skips manual entry once the system has entered.
+  // We re-arm whenever any PiP param changes so the system always uses the
+  // correct window shape, title, and media control state, and we DISARM on
+  // cleanup so PiP never triggers from an unrelated screen after this unmounts.
   useEffect(() => {
     if (!isSupported || !autoEnterOnBackground) return;
     void updatePipParams(
@@ -218,6 +264,8 @@ export function usePictureInPicture(
       aspectRatioHeight,
       showRestoreButton,
       true,
+      title ?? null,
+      isPlaying,
     );
     return () => {
       void updatePipParams(
@@ -225,6 +273,8 @@ export function usePictureInPicture(
         aspectRatioHeight,
         showRestoreButton,
         false,
+        title ?? null,
+        isPlaying,
       );
     };
   }, [
@@ -233,7 +283,28 @@ export function usePictureInPicture(
     aspectRatioWidth,
     aspectRatioHeight,
     showRestoreButton,
+    title,
+    isPlaying,
   ]);
+
+  // ── Keep PiP media controls in sync with playback state ──────────────────
+  // When the user is already in PiP and playback transitions play ↔ pause,
+  // update the overlay's media control button icon without re-entering PiP.
+  // `updatePipParams` is a no-op when autoEnterOnBackground is true (the
+  // effect above handles it) — this effect covers the manual-entry path.
+  useEffect(() => {
+    if (!isSupported || autoEnterOnBackground) return;
+    if (!isInPictureInPictureMode()) return;
+    void updatePipParams(
+      aspectRatioWidth,
+      aspectRatioHeight,
+      showRestoreButton,
+      false,
+      title ?? null,
+      isPlaying,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying]);
 
   return { isSupported, isInPip, enterPip };
 }

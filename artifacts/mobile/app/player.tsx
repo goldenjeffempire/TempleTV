@@ -424,6 +424,18 @@ export default function PlayerScreen() {
     // without hunting for the app. Both are auto-dismissed when the player
     // returns to the foreground (native ActivityLifecycleCallbacks + JS cleanup).
     showRestoreButton: true,
+    // Pass the live-updating title so the PiP window chrome (Android 12+) shows
+    // what is currently playing — same UX as YouTube's PiP title treatment.
+    title: liveTitle || title,
+    // Mirror the current playback state so the PiP overlay shows the correct
+    // media control button (Pause when playing, Play when paused/buffering).
+    isPlaying,
+    // Forward PiP media control taps to the player context so they actually
+    // pause/resume playback while the app is in the background PiP window.
+    onPlayPause: ({ action }) => {
+      if (action === "pause") playerPauseRef.current?.();
+      if (action === "play")  playerPlayRef.current?.();
+    },
   });
 
   // PiP-aware screen wake lock.
