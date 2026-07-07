@@ -593,7 +593,10 @@ export function BroadcastPreviewV2({ className }: Props) {
       return { kind: "reconnect" as const, label: "Reconnecting…" };
     }
     if (snapshot.state === "FATAL") {
-      return { kind: "fatal" as const, label: "Stream unavailable — auto-retry in 30 s" };
+      // Label previously said "30 s" — the actual forceRebind auto-recovery
+      // timer fires after 8 s (see fatalTimerRef useEffect above). Using a
+      // generic "auto-retrying" label avoids confusion when the timer changes.
+      return { kind: "fatal" as const, label: "Stream unavailable — auto-retrying…" };
     }
     if (server?.failover.active) {
       return { kind: "standby" as const, label: server.failover.reason ?? "On standby" };

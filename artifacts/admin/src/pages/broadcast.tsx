@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { BroadcastPreviewV2 } from "@/playback/BroadcastPreviewV2";
 import { BroadcastUploadPanel } from "@/components/broadcast/BroadcastUploadPanel";
@@ -1551,6 +1551,20 @@ export default function BroadcastPage() {
   // by handleDragEnd (the reorder mutation owns isSyncing from drop on).
   const [isDragging, setIsDragging] = useState(false);
 
+  // ── Reorder debounce refs ─────────────────────────────────────────────────
+  // Prevent rapid drag-and-drop or "move to front" actions from sending
+  // multiple concurrent PUT /reorder requests. React state updates are batched
+  // and isSyncing may not be true yet when a second drag fires immediately
+  // after the first, allowing two overlapping mutations whose server-side
+  // execution order is undefined — the later request wins, not the last drag.
+  //
+  // Fix: capture the latest desired order in a ref and debounce the actual API
+  // call by 200 ms. Any new drag within that window cancels the pending call
+  // and records the newer order. Only one request ever reaches the server per
+  // "burst" of reorder activity.
+  const reorderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingReorderItemsRef = useRef<string[] | null>(null);
+
   // ── Bulk-remove state ─────────────────────────────────────────────────────
   const [bulkMode, setBulkMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -1868,6 +1882,10 @@ export default function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["admin-videos"] });
       void qc.invalidateQueries({ queryKey: ["transcoding-jobs"] });
       void qc.invalidateQueries({ queryKey: ["transcoding-queue"] });
+      // broadcast-v2-state was previously missing here: the "On Air" panel
+      // continued to show the old source kind/URL until the next poll cycle,
+      // potentially misleading operators into thinking faststart had no effect.
+      void qc.invalidateQueries({ queryKey: ["broadcast-v2-state"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-diagnostics"] });
       void qc.invalidateQueries({ queryKey: ["broadcast-v2-remediation-report"] });
@@ -1915,7 +1933,17 @@ export default function BroadcastPage() {
       if (oldIndex === -1 || newIndex === -1) return prev;
       const next = arrayMove(prev, oldIndex, newIndex);
       setIsSyncing(true);
-      reorderMutation.mutate(next.map((i) => i.id));
+      // Debounce: cancel any pending request and record the latest order so
+      // that rapid consecutive drags collapse into a single API call carrying
+      // the settled final order rather than racing with intermediate states.
+      if (reorderTimerRef.current) clearTimeout(reorderTimerRef.current);
+      pendingReorderItemsRef.current = next.map((i) => i.id);
+      reorderTimerRef.current = setTimeout(() => {
+        reorderTimerRef.current = null;
+        const ids = pendingReorderItemsRef.current;
+        pendingReorderItemsRef.current = null;
+        if (ids) reorderMutation.mutate(ids);
+      }, 200);
       return next;
     });
   }
@@ -1974,6 +2002,18 @@ export default function BroadcastPage() {
       next: next ? { id: next.id, title: next.title } : null,
     };
   }, [nowPlaying, v2Snapshot]);
+
+  // ── Reorder timer cleanup ─────────────────────────────────────────────────
+  // Cancel the debounce timer on unmount so a pending reorder doesn't fire
+  // after the component is gone (e.g. the operator navigates away mid-drag).
+  useEffect(() => {
+    return () => {
+      if (reorderTimerRef.current) {
+        clearTimeout(reorderTimerRef.current);
+        reorderTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -2409,7 +2449,18 @@ export default function BroadcastPage() {
                               setItems((prev) => {
                                 const next = arrayMove(prev, idx, 0);
                                 setIsSyncing(true);
-                                reorderMutation.mutate(next.map((i) => i.id));
+                                // Same debounce as handleDragEnd — a "move to
+                                // front" click while a drag reorder is still
+                                // in-flight would otherwise send a second
+                                // concurrent request with a stale order.
+                                if (reorderTimerRef.current) clearTimeout(reorderTimerRef.current);
+                                pendingReorderItemsRef.current = next.map((i) => i.id);
+                                reorderTimerRef.current = setTimeout(() => {
+                                  reorderTimerRef.current = null;
+                                  const ids = pendingReorderItemsRef.current;
+                                  pendingReorderItemsRef.current = null;
+                                  if (ids) reorderMutation.mutate(ids);
+                                }, 200);
                                 return next;
                               });
                             }}
