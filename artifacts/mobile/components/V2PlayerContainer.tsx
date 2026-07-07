@@ -2488,16 +2488,23 @@ export function V2PlayerContainer({
       )}
 
       {/* Source quality badge — shown during active playback only.
-          'hls'           → "HLS"  (adaptive HLS manifest chain)
-          'mp4_faststart' → "MP4"  (direct MP4 streaming, moov at byte-0)
-          'mp4_raw'       → "SD"   (un-optimised MP4, moov may be at EOF)
+          'hls'                      → "HLS"  (adaptive HLS manifest chain)
+          'mp4' / 'mp4_faststart'    → "MP4"  (direct MP4 streaming)
+          'mp4_raw'                  → "SD"   (un-optimised MP4, may buffer slowly)
           Hidden during overlays (tuning/off-air) and in minimal/hero mode.
           Hidden during overrides (youtube / live_override) since those are
-          external sources whose quality the server can't classify. */}
+          external sources whose quality the server can't classify.
+          Note: the API now always emits "mp4" (faststart pipeline removed);
+          "mp4_faststart" / "mp4_raw" kept for backward-compat with older frames. */}
       {videoReady && !overlayContent && !minimal && (() => {
         const sq = server?.sourceQuality;
         if (!sq || sq === "live_override" || sq === "youtube") return null;
-        const label = sq === "hls" ? "HLS" : sq === "mp4_faststart" ? "MP4" : "SD";
+        const label =
+          sq === "hls"
+            ? "HLS"
+            : sq === "mp4" || sq === "mp4_faststart"
+            ? "MP4"
+            : "SD";
         return (
           <View style={styles.qualityBadge} pointerEvents="none">
             <Text style={styles.qualityBadgeText}>{label}</Text>

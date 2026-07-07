@@ -12,7 +12,10 @@ export interface V2Source {
   expiresAtMs: number | null;
 }
 
-export type V2SourceQuality = "hls" | "mp4_faststart" | "mp4_raw";
+// The faststart pipeline was removed — the API now sends a single "mp4" value
+// for all local MP4 sources regardless of moov-atom placement. Keep as a union
+// type so old wire frames with "mp4_faststart"/"mp4_raw" still type-check.
+export type V2SourceQuality = "hls" | "mp4" | "mp4_faststart" | "mp4_raw";
 
 export interface V2Item {
   id: string;
@@ -32,8 +35,9 @@ export interface V2Item {
   /**
    * Source quality classification populated by the orchestrator.
    * 'hls'           — adaptive HLS stream (preferred)
-   * 'mp4_faststart' — moov-at-byte-0 range-seekable MP4
-   * 'mp4_raw'       — sequential-only MP4 (may buffer slowly on seek)
+   * 'mp4'           — raw MP4 (canonical value, faststart pipeline removed)
+   * 'mp4_faststart' — moov-at-byte-0 range-seekable MP4 (legacy alias)
+   * 'mp4_raw'       — sequential-only MP4 (legacy alias)
    * Optional for backward compatibility with older server versions.
    */
   sourceQuality?: V2SourceQuality;
@@ -83,7 +87,8 @@ export interface V2Snapshot {
    * null            — off-air or quality unknown
    * Optional for backward compatibility with older server versions.
    */
-  sourceQuality?: "hls" | "mp4_faststart" | "mp4_raw" | "live_override" | "youtube" | null;
+  // "mp4" is the canonical value; "mp4_faststart" / "mp4_raw" kept for back-compat.
+  sourceQuality?: "hls" | "mp4" | "mp4_faststart" | "mp4_raw" | "live_override" | "youtube" | null;
 }
 
 export type V2EventType =

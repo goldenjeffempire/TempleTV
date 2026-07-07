@@ -319,7 +319,11 @@ function getOrCreateSession(baseUrl: string): NativeSession {
     // firing POST /natural-end and requestSnapshot() indefinitely — one stale
     // setTimeout chain per natural video end that happened while the session
     // was still alive — draining battery and generating server noise on mobile.
-    const naturalEndRetryDelays = [2_000, 4_000, 8_000];
+    // Keep in sync with web react.ts — same retry schedule so item transitions
+    // recover at the same speed on both platforms when the first POST fails.
+    // Previous values [2_000, 4_000, 8_000] (6.7× slower) caused up to 14 s
+    // of black screen between items on mobile with weak network, vs 3.1 s on web.
+    const naturalEndRetryDelays = [300, 800, 2_000];
     const doPost = (attempt: number): void => {
       if (transport.isStopped) return;
       const _nt = authGetterRef.current?.();

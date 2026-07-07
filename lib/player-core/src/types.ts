@@ -12,7 +12,10 @@ export interface V2Source {
   expiresAtMs: number | null;
 }
 
-export type V2SourceQuality = "hls" | "mp4";
+// "mp4" is the canonical value emitted by the current API; "mp4_faststart" and
+// "mp4_raw" are kept for backward compatibility with older wire frames and
+// vendored mobile copies that pre-date the faststart pipeline removal.
+export type V2SourceQuality = "hls" | "mp4" | "mp4_faststart" | "mp4_raw";
 
 export interface V2Item {
   id: string;
@@ -75,13 +78,16 @@ export interface V2Snapshot {
   /**
    * Top-level source quality for the current broadcast state.
    * 'hls'           — adaptive HLS stream (preferred)
-   * 'mp4'           — raw MP4 (byte-range streaming)
+   * 'mp4'           — raw MP4 (byte-range streaming; canonical post-faststart-removal)
+   * 'mp4_faststart' — moov-at-byte-0 range-seekable MP4 (legacy alias)
+   * 'mp4_raw'       — sequential-only MP4 (legacy alias)
    * 'live_override' — operator HLS/RTMP live override
    * 'youtube'       — YouTube live override
    * null            — off-air or quality unknown
    * Optional for backward compatibility with older server versions.
    */
-  sourceQuality?: "hls" | "mp4" | "live_override" | "youtube" | null;
+  // "mp4_faststart" / "mp4_raw" kept for back-compat with older wire frames.
+  sourceQuality?: "hls" | "mp4" | "mp4_faststart" | "mp4_raw" | "live_override" | "youtube" | null;
 }
 
 export type V2EventType =
