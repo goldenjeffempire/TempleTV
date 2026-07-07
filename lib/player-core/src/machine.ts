@@ -770,25 +770,27 @@ export class PlayerMachine {
           this.lastEndedItemStartsAtMs = null;
           this.naturalEndRetries = 0;
           // Fall through to bindActive below.
-        } else if (this.lastEndedAtMs !== null && Date.now() - this.lastEndedAtMs > 5_000) {
+        } else if (this.lastEndedAtMs !== null && Date.now() - this.lastEndedAtMs > 2_000) {
           // TTL safety valve: if the naturalItemEnd POST failed to reach the
           // server (network error, timeout), the server keeps showing this
-          // item as current with endsAtMs far in the future. After 5 s we
+          // item as current with endsAtMs far in the future. After 2 s we
           // assume the signal was lost — extend the guard and retry the POST
-          // so the server can advance. After 3 retries (~15 s total) the
+          // so the server can advance. After 5 retries (~10 s total) the
           // guard is released as a last resort.
           //
-          // Reduced from 30 s → 5 s: a 30 s retry window caused a visible
-          // off-air gap on every item transition whenever the first POST
-          // was dropped (brief WS reconnect, server restart). 5 s is still
-          // long enough to avoid a race with the server's own processing.
+          // Reduced from 30 s → 5 s → 2 s: a 30 s retry window caused a
+          // visible off-air gap on every item transition whenever the first
+          // POST was dropped (brief WS reconnect, server restart). 5 s was
+          // still too long for YouTube-only deploys where the placeholder
+          // durationSecs (1800 s) means the server won't advance on its own
+          // for a long time. 2 s matches the fast transport reconnect window.
           this.naturalEndRetries += 1;
-          if (this.naturalEndRetries <= 3) {
-            this.lastEndedAtMs = Date.now(); // extend guard by another 5 s
+          if (this.naturalEndRetries <= 5) {
+            this.lastEndedAtMs = Date.now(); // extend guard by another 2 s
             this.onNaturalEndCb?.(server.current.id); // retry POST /natural-end
             return;
           }
-          // 3 retries exhausted — give up and let the server state win.
+          // 5 retries exhausted — give up and let the server state win.
           // But only re-bind if the server has confirmed a genuinely NEW
           // item. If server.current still shows the just-ended item the
           // naturalEnd POST hasn't been processed yet — stay dark and wait
@@ -808,7 +810,7 @@ export class PlayerMachine {
           // so the machine sees the advanced anchor as soon as the server
           // processes the naturalItemEnd POST (usually within 1-2 s).
           // requestSnapshot() has an inflight guard so rapid calls are safe.
-          if (this.lastEndedAtMs !== null && Date.now() - this.lastEndedAtMs > 3_000) {
+          if (this.lastEndedAtMs !== null && Date.now() - this.lastEndedAtMs > 1_000) {
             this.onNeedSnapshotCb?.();
           }
           return;

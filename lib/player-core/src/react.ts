@@ -372,7 +372,14 @@ function createSession(baseUrl: string): BroadcastSession {
     // (machine.destroy() + transport.stop()) kept firing POST /natural-end
     // and requestSnapshot() calls indefinitely — one stale setTimeout chain
     // per natural video end that happened while the session was still alive.
-    const naturalEndRetryDelays = [2_000, 4_000, 8_000];
+    // Retry delays reduced from [2 s, 4 s, 8 s] → [300 ms, 800 ms, 2 s].
+    // Rationale: when the POST is dropped (brief WS reconnect, cell-network
+    // blip), the server keeps showing the ended item as `current` until the
+    // signal arrives.  On a YouTube-only deploy with 1800 s placeholders
+    // this drift can persist for the full remaining slot duration. Faster
+    // retries cut the worst-case synchronisation gap from ~14 s to ~3 s
+    // while remaining safe (the endpoint is item-level idempotent).
+    const naturalEndRetryDelays = [300, 800, 2_000];
     const doPost = (attempt: number): void => {
       if (transport.isStopped) return;
       const _nt = authGetterRef.current?.();

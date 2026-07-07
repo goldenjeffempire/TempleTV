@@ -888,7 +888,7 @@ export function LiveBroadcastV2({
     if (!activeVideo) return;
 
     const STALL_SHOW_MS   = 4_000;  // show spinner after 4 s without timeupdate
-    const STALL_REBIND_MS = 30_000; // force-rebind after 30 s — MP4/BYTEA needs
+    const STALL_REBIND_MS = 20_000; // force-rebind after 20 s — MP4/BYTEA needs
     // more time than HLS for initial moov-atom download. The player machine's
     // own watchdog (45 s initial / 25 s rebuffer) runs in parallel; this local
     // guard is a belt-and-suspenders backstop for HLS.js frozen-frame scenarios

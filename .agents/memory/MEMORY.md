@@ -1,3 +1,4 @@
+- [Natural-end retry timing — broadcast pipeline](natural-end-retry-timing.md) — naturalEndRetryDelays [300,800,2000]ms; machine 2s TTL guard + 5 retries + 1s inner poll; STALL_REBIND_MS 20s; mobile vendor must be kept in sync with lib/player-core/src/.
 - [BYTEA MP4 false-positive stall fixes](bytea-mp4-false-positive-stalls.md) — MAX_NOTIFY_ACTIVE_STREAK 40→120, BIND_LOAD_TIMEOUT_MS 20s→40s, markBadUrlWithTtl for /api/v1/uploads/ in /report-stall.
 - [Player primary-retry budget before server-side skip](player-retry-budget.md) — MAX_PRIMARY_RETRIES 2→3 in machine.ts; admitted MP4 bind failures are overwhelmingly transient, so more retries beat skips.
 - [Faststart schema removal — Drizzle query gaps](faststart-schema-removal-gaps.md) — videosTable.faststartApplied is undefined in Drizzle schema; use sql`false`/`NULL::boolean` literals in select/set sites; .set({faststartApplied}) writes must be removed.
