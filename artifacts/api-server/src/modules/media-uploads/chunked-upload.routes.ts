@@ -2853,9 +2853,18 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
 
             // ── Schedule background validation ────────────────────────────────
             // Run the 9-check ffprobe/codec/container validation pipeline
-            // asynchronously. If it concludes 'failed', the queue integrity
-            // validator auto-deactivates the queue row within its next 2-min
-            // cycle, and isPlayableForBroadcast() blocks any future re-enqueue.
+            // asynchronously. Validation is ADVISORY ONLY — it never gates
+            // broadcast admission. The video is already in the broadcast queue
+            // at this point; validation results surface in the admin UI and
+            // validation report for operator awareness but do not deactivate
+            // the queue row or block isPlayableForBroadcast().
+            //
+            // The ONLY check that produces a hard "fail" is FILE_INTEGRITY
+            // (ffprobe cannot parse the container at all) and CODEC_COMPAT
+            // (no video stream present). All other issues — frame-decode
+            // warnings, keyframe intervals, A/V sync drift, moov placement —
+            // are recorded as warnings so the video continues to air.
+            //
             // scheduleVideoValidation() is fully fire-and-forget — it never
             // blocks the finalize path or delays the HTTP response.
             scheduleVideoValidation(videoId, objectKey);

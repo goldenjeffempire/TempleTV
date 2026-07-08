@@ -22,13 +22,23 @@
  *   • Total wall-clock budget: VALIDATION_JOB_TIMEOUT_MS (default 180 s).
  *
  * Status mapping:
- *   'failed'  — any check returned 'fail'
+ *   'failed'  — any check returned 'fail' (FILE_INTEGRITY or CODEC_COMPAT
+ *               no-video-stream only — all other checks were softened to warn)
  *   'warn'    — at least one 'warn', no 'fail'
  *   'passed'  — all 'pass' or 'skip'
  *
  * Broadcast gate:
- *   null/pending/running/passed/warn → allow (backward compat + progressive)
- *   'failed'                         → blocked in isPlayableForBroadcast()
+ *   Validation is ADVISORY ONLY — all statuses allow broadcast admission.
+ *   null/pending/running/passed/warn/failed → broadcast-eligible.
+ *   isPlayableForBroadcast() does NOT gate on validationStatus.
+ *   Validation results surface in the admin UI and validation report so
+ *   operators are informed, but never prevent a video from airing.
+ *
+ *   The two remaining hard-fail checks signal genuinely unplayable files:
+ *     FILE_INTEGRITY  — ffprobe cannot parse the container at all.
+ *     CODEC_COMPAT    — no video stream found (pure-audio container).
+ *   Even these produce validationStatus='failed' for operator visibility
+ *   only — they do not automatically remove the item from the queue.
  */
 
 import { mkdir, rm, open } from "node:fs/promises";
@@ -126,12 +136,22 @@ const LAST_FRAME_MIN_DURATION_SECS = 10;
 const VALIDATION_JOB_TIMEOUT_MS = 180_000;
 
 /**
- * Checks that can still return "fail" (all others were softened to warn/skip
- * in prior hardening passes). A "fail" on any of these is what remediation
- * targets — if the remux repair fixes the underlying container/stream issue,
- * these are the checks re-run to confirm the fix actually worked.
+ * Checks that can still return "fail". After prior hardening passes only
+ * genuinely unplayable conditions produce a hard "fail":
+ *   FILE_INTEGRITY  — ffprobe cannot parse the container at all.
+ *   CODEC_COMPAT    — container has no video stream (pure-audio cannot
+ *                     broadcast to a TV surface).
+ *
+ * All other issues (FIRST_FRAME/LAST_FRAME decode errors, keyframe intervals,
+ * A/V sync drift, moov placement) produce "warn" so the video remains in
+ * broadcast rotation while the operator is notified. The broadcast pipeline
+ * uses HTTP byte-range streaming which is tolerant of quality issues.
+ *
+ * When a "fail" occurs, attemptRemediation tries a stream-copy remux which
+ * can repair minor container ordering issues. Only FILE_INTEGRITY and
+ * CODEC_COMPAT failures trigger remux since the others no longer fail hard.
  */
-const REMEDIABLE_CHECKS = ["FILE_INTEGRITY", "CODEC_COMPAT", "FIRST_FRAME", "LAST_FRAME"] as const;
+const REMEDIABLE_CHECKS = ["FILE_INTEGRITY", "CODEC_COMPAT"] as const;
 
 /**
  * Retry/backoff for transient (infra) failures — download errors, storage
@@ -604,8 +624,13 @@ async function checkFirstFrame(tmpPath: string): Promise<VideoCheckResult> {
     if (!ok) {
       return {
         check: "FIRST_FRAME",
-        status: "fail",
-        message: "First 2 s of video data failed to decode — mdat corruption detected",
+        // Downgraded from "fail" to "warn": a first-frame decode error is a
+        // quality signal, not a hard broadcast gate. The file may still stream
+        // successfully via HTTP byte-range for most of its duration; blocking
+        // it entirely prevents content from airing over a potentially minor
+        // encode issue. Operators are notified via the validation report.
+        status: "warn",
+        message: "First 2 s of video data failed to decode — possible mdat corruption; video may exhibit brief artefacts at playback start",
       };
     }
     return { check: "FIRST_FRAME", status: "pass", message: "First 2 s decoded successfully" };
@@ -652,8 +677,13 @@ async function checkLastFrame(tmpPath: string, durationSecs: number | null): Pro
     const hint = stderr.length > 300 ? stderr.slice(-300) : stderr;
     return {
       check: "LAST_FRAME",
-      status: "fail",
-      message: `Last ${LAST_FRAME_SEEK_SECS} s of video failed to decode — file may be truncated or the tail mdat is corrupt`,
+      // Downgraded from "fail" to "warn": a tail-decode error suggests possible
+      // truncation but the video may still broadcast correctly for the majority
+      // of its runtime. Hard-blocking the entire video over a tail issue would
+      // prevent airing otherwise valid content. Operators are notified via the
+      // validation report and can re-upload if end-of-file artefacts appear.
+      status: "warn",
+      message: `Last ${LAST_FRAME_SEEK_SECS} s of video failed to decode — file may be truncated; content will still air but may freeze or cut off near the end`,
       detail: { exitCode: code, stderrTail: hint },
     };
   }

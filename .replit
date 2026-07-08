@@ -51,7 +51,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "export PATH=\"/home/runner/workspace/node_modules/.bin:$PATH\" && MALLOC_ARENA_MAX=2 MEMORY_WARN_RSS_MB=1500 MEMORY_RESTART_RSS_MB=2200 PORT=8080 RUN_MODE=all TRANSCODER_DISABLE=1 TRANSCODING_AUTO_RETRY_DISABLE=1 node --expose-gc --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
+args = "export PATH=\"/home/runner/workspace/node_modules/.bin:$PATH\" && MALLOC_ARENA_MAX=2 MEMORY_WARN_RSS_MB=1500 MEMORY_RESTART_RSS_MB=2200 PORT=8080 RUN_MODE=all TRANSCODER_DISABLE=1 TRANSCODING_AUTO_RETRY_DISABLE=1 NODE_OPTIONS='--max-old-space-size=768 --max-http-header-size=16384' node --expose-gc --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
 
 [[workflows.workflow]]
 name = "Install and Build"
@@ -63,6 +63,53 @@ outputType = "console"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && pnpm --filter @workspace/db run push-force && NODE_OPTIONS='--max-old-space-size=4096' pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/admin run build && echo 'BUILD COMPLETE'"
+
+[[workflows.workflow]]
+name = "artifacts/tv: web"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && pnpm --filter @workspace/tv run dev"
+waitForPort = 23744
+
+[[workflows.workflow]]
+name = "artifacts/mockup-sandbox: Component Preview Server"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && pnpm --filter @workspace/mockup-sandbox run dev"
+waitForPort = 23877
+
+[[workflows.workflow]]
+name = "artifacts/mobile: expo"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && pnpm --filter @workspace/mobile run dev"
+
+[[workflows.workflow]]
+name = "artifacts/admin: web"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && pnpm --filter @workspace/admin run dev"
+waitForPort = 18115
 
 [agent]
 stack = "BEST_EFFORT_FALLBACK"

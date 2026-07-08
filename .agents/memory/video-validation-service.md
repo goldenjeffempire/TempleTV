@@ -4,44 +4,50 @@ description: Architecture and key constraints for the video-validation.service.t
 ---
 
 ## What it does
-`artifacts/api-server/src/modules/transcoder/video-validation.service.ts` runs 9 checks on every uploaded MP4 (after faststart succeeds):
+`artifacts/api-server/src/modules/transcoder/video-validation.service.ts` runs 9 checks on every uploaded MP4:
 
-1. FILE_INTEGRITY — ffprobe reads container/codec info; fails if no streams
-2. MOOV_PLACEMENT — `ffprobe -v error -show_entries format_tags` checks `major_brand`; faststart-derived streams are trusted
-3. CODEC_COMPAT — video codec must be h264/h265/hevc/vp8/vp9/av1; audio aac/mp3/opus/vorbis/pcm/flac
-4. KEYFRAME_INTERVAL — keyframe_interval_frames from `ffprobe -select_streams v:0 -show_packets -read_intervals "%+#200"`; warn if > 10s or > 300 frames
-5. AV_SYNC — `ffprobe -show_entries stream=start_time,codec_type` checks audio/video start_time delta; warn if > 500ms, fail if > 2000ms
-6. FIRST_FRAME — `ffmpeg -vframes 1 -f null` decode of first frame
-7. LAST_FRAME — `ffmpeg -sseof -5 -vframes 1 -f null` decode of last frame
-8. DURATION_ACCURACY — compares ffprobe duration vs stored DB duration; warns if > 10% deviation when both are reliable
-9. RANGE_SUPPORT — HTTP HEAD + Range: bytes=0-1023 request against the video's own URL; warns if server doesn't return 206
+1. FILE_INTEGRITY — ffprobe reads container/codec info; **fails** if container is unparseable
+2. MOOV_PLACEMENT — returns "warn" for faststartApplied=false; HTTP byte-range works regardless
+3. CODEC_COMPAT — "fail" ONLY when no video stream is found at all; codec issues (HEVC, VP9, etc.) are "warn"
+4. KEYFRAME_INTERVAL — warn if > 10s, warn (not fail) if > 20s
+5. AV_SYNC — warn if > 500ms, warn (not fail) if > 2000ms
+6. FIRST_FRAME — warn (not fail) if first 2s decode fails
+7. LAST_FRAME — warn (not fail) if tail decode fails
+8. DURATION_ACCURACY — warn if > 10% deviation
+9. RANGE_SUPPORT — warn if server doesn't return 206
 
-**Status values:** `null` (never run, backward compat) → `pending` → `running` → `passed` / `warn` / `failed`
+**Status values:** `null` → `pending` → `running` → `passed` / `warn` / `failed`
 
-**Broadcast gate:** `isPlayableForBroadcast()` returns false when `validationStatus === "failed"`. null/passed/warn all allow broadcast.
+## Broadcast gate (ADVISORY ONLY — NOT a hard gate)
+Validation is fully advisory. `isPlayableForBroadcast()` does NOT check `validationStatus`.
+All statuses (null/pending/running/passed/warn/**failed**) are broadcast-eligible.
 
-## DB columns
-`managed_videos.validation_status` (text), `.validation_report` (jsonb), `.validation_completed_at` (timestamptz). All three exist in production DB.
+The two checks that still produce "fail" (FILE_INTEGRITY and CODEC_COMPAT no-video-stream)
+surface in the admin UI for operator awareness but do NOT deactivate queue items.
+
+**Why:** A video with a confirm blob (`s3MirroredAt IS NOT NULL`) broadcasts immediately.
+Quality issues are reported; only genuinely missing blobs or terminal error codes block.
+
+## Places that previously gated on validationStatus (all removed):
+- `isPlayableForBroadcast()` — never checked it (confirmed by code read)
+- `scanLibraryAndEnqueue()` — does not filter on validationStatus
+- `sync-library Phase 3` — was a hard deactivation; converted to advisory count + warn log
+- Library stats query in `/sync-library` — removed `validation_status <> 'failed'` filter
+- Queue integrity validator VALIDATION_FAILED — already advisory warn only (no deactivation)
+
+## Queue integrity validator reverse pass
+The validator re-activates items with `validator_deactivated_reason = 'validation_failed'`
+on every 2-minute cycle, restoring previously gated items to broadcast rotation.
+
+## REMEDIABLE_CHECKS
+After FIRST_FRAME/LAST_FRAME were downgraded to warn, only `["FILE_INTEGRITY", "CODEC_COMPAT"]`
+remain. Note: `attemptRemediation` appears to be dead code in `runVideoValidation` (never called
+from that function); it may be called from a recovery worker or is legacy.
 
 ## Integration points
-- Primary finalize path: `chunked-upload.routes.ts` after faststart succeeds
-- Assembly-retry path: `chunked-upload.routes.ts` after assembly retry succeeds
-- Faststart-recovery worker: `faststart-recovery.ts` after recovery faststart
-- Auto-enqueue gate: `isPlayableForBroadcast()` in `auto-enqueue.service.ts`
-
-## Critical rule: validationStatus in every select
-**ALL** `isPlayableForBroadcast()` call sites must include `validationStatus: videosTable.validationStatus` in their Drizzle select. The function accepts `validationStatus?: string | null` so TypeScript won't catch a missing field at compile time — the field simply evaluates as `undefined` and the `=== "failed"` check silently passes. Two confirmed call sites:
-- `scanLibraryAndEnqueue()` (~line 336) — fixed ✅
-- Primary finalize path select (~line 88) — fixed ✅
-
-**Why:** The field is declared `validationStatus?: string | null` in the function signature so TypeScript treats it as always-optional. A missing select causes undefined → gate bypassed.
+- Primary finalize path: `chunked-upload.routes.ts` after assembly commits blob
+- `scheduleVideoValidation()` is fire-and-forget; runs after enqueueIfMissing
 
 ## Admin endpoints
 - `GET /api/v1/admin/videos/:id/validation` — returns stored report
-- `POST /api/v1/admin/videos/:id/validation/run` — triggers new validation; `?sync=true` blocks until complete (30s timeout)
-
-## Resource safety
-- All FFmpeg/ffprobe spawns: `proc.unref()` + explicit `SIGKILL` via `setTimeout` per-check (30s budget)
-- Total job budget: 180s with outer SIGKILL timer
-- Streaming blob download (no full-file buffer) to temp file; `finally` block deletes temp
-- Orphan kill: module-level `activePids` Set; SIGKILL on process exit signal
+- `POST /api/v1/admin/videos/:id/validation/run` — triggers new validation

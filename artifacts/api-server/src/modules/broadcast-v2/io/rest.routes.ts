@@ -2641,8 +2641,10 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   //   2. Duplicate collapse — when the same videoId has multiple active
   //      queue rows (race condition or manual insert), keep the one with the
   //      lowest sort_order and deactivate the rest.
-  //   3. Failed-validation deactivation — deactivate queue items for videos
-  //      whose validation_status = 'failed' (corrupt/truncated files).
+  //   3. Failed-validation advisory scan — count queue items whose linked video
+  //      has validation_status='failed'. Validation is advisory only; items
+  //      stay in broadcast rotation. The count is surfaced in the response for
+  //      operator awareness only — no deactivation is performed.
   //   4. Sort-order gap compaction — renumber active items sequentially
   //      (×10 spacing) so sort_order is monotonic without gaps after
   //      Phases 1–3 removed rows.
@@ -2773,31 +2775,46 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
       logger.warn({ err }, "[sync-library] Phase 2 (duplicate collapse) failed (non-fatal)");
     }
 
-    // ── Phase 3: Deactivate items for failed-validation videos ────────────
-    // Videos whose comprehensive validation run determined the file is
-    // corrupt, truncated, or unplayable are flagged validation_status='failed'
-    // in managed_videos. Any queue item pointing at such a video must also
-    // be deactivated — it will never resolve to a playable stream.
+    // ── Phase 3: Failed-validation advisory scan ─────────────────────────
+    // Validation is advisory only — videos with validation_status='failed'
+    // remain in broadcast rotation. The only hard-fail checks (FILE_INTEGRITY
+    // = unreadable container; CODEC_COMPAT = no video stream) are quality
+    // signals, not broadcast gates. The broadcast pipeline uses HTTP
+    // byte-range streaming which is tolerant of container-level issues.
+    //
+    // This phase counts how many active queue items are linked to a failed-
+    // validation video and surfaces the count in the API response + logs so
+    // operators are informed. No deactivation is performed.
+    //
+    // Note: the queue-integrity-validator also flags VALIDATION_FAILED as a
+    // warn-severity issue (never error, never auto-deactivation) on its
+    // 2-minute cycle, and its reverse pass reactivates any items that were
+    // previously deactivated by the old gate so they re-enter rotation.
     try {
-      const failedResult = await db.execute<{ id: string }>(sql`
-        UPDATE broadcast_queue
-        SET is_active = false,
-            validator_deactivated_reason = 'VALIDATION_FAILED'
-        WHERE is_active = true
-          AND video_id IS NOT NULL
+      const failedCountResult = await db.execute<{ cnt: string }>(sql`
+        SELECT COUNT(*)::text AS cnt
+        FROM broadcast_queue bq
+        WHERE bq.is_active = true
+          AND bq.video_id IS NOT NULL
           AND EXISTS (
             SELECT 1 FROM managed_videos mv
-            WHERE mv.id = broadcast_queue.video_id
+            WHERE mv.id = bq.video_id
               AND mv.validation_status = 'failed'
           )
-        RETURNING id
       `);
-      failedValidationDeactivated = failedResult.rows?.length ?? (Array.isArray(failedResult) ? failedResult.length : 0);
-      if (failedValidationDeactivated > 0) {
-        logger.info({ failedValidationDeactivated }, "[sync-library] Phase 3: failed-validation items deactivated");
+      const cnt = Number(failedCountResult.rows?.[0]?.cnt ?? 0);
+      // failedValidationDeactivated stays 0 — nothing is deactivated.
+      // Log at warn level if any affected items exist so operators notice.
+      if (cnt > 0) {
+        logger.warn(
+          { failedValidationQueueItems: cnt },
+          "[sync-library] Phase 3: advisory — active queue items linked to validation_status='failed' videos; " +
+          "these items remain in broadcast rotation (validation is advisory only). " +
+          "Re-upload the source files if playback issues are observed.",
+        );
       }
     } catch (err) {
-      logger.warn({ err }, "[sync-library] Phase 3 (failed-validation deactivation) failed (non-fatal)");
+      logger.warn({ err }, "[sync-library] Phase 3 (failed-validation advisory scan) failed (non-fatal)");
     }
 
     // ── Phase 4: Compact sort_order gaps ─────────────────────────────────
@@ -3105,13 +3122,14 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
             -- not "fail"). The admission gates are:
             --   • video_source <> 'youtube'      — YouTube is library-only
             --   • category <> 'midnight-prayers' — restricted window channel
-            --   • validation_status <> 'failed'  — corrupt/truncated file
             --   • (local_video_url + s3_mirrored_at) OR hls_master_url
             --     confirms a real playable asset exists
+            -- NOTE: validation_status='failed' is NOT a gate here. Validation
+            -- is advisory only — all videos with a confirmed blob are counted
+            -- as broadcast-eligible regardless of their validation status.
             COUNT(*) FILTER (
               WHERE video_source <> 'youtube'
                 AND (category IS NULL OR category <> 'midnight-prayers')
-                AND (validation_status IS NULL OR validation_status <> 'failed')
                 AND (
                   (hls_master_url IS NOT NULL AND hls_master_url <> '')
                   OR (local_video_url IS NOT NULL AND local_video_url <> ''
@@ -3125,7 +3143,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
             COUNT(*) FILTER (
               WHERE video_source <> 'youtube'
                 AND (category IS NULL OR category <> 'midnight-prayers')
-                AND (validation_status IS NULL OR validation_status <> 'failed')
                 AND (
                   (hls_master_url IS NOT NULL AND hls_master_url <> '')
                   OR (local_video_url IS NOT NULL AND local_video_url <> ''
