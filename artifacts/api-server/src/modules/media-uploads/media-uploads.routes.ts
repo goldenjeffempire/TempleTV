@@ -411,6 +411,10 @@ export async function mediaUploadsRoutes(app: FastifyInstance) {
         key: body.objectKey,
         uploadId: body.uploadId,
         parts: body.parts,
+        // Correlation context so storage-layer logs can be traced by sessionId.
+        // videoId isn't known yet at this call site — it's assigned after
+        // completeMultipartUpload returns (see below).
+        traceContext: { sessionId: body.sessionId },
       });
 
       // Verify the final object exists and the size matches what the

@@ -430,6 +430,8 @@ async function spawnAssemblyRetry(
           // Re-verify the assembled blob's SHA-256 against the hash the client
           // computed before the upload began. Any mismatch rolls back the transaction.
           expectedSha256: session.expectedFileSha256 ?? undefined,
+          // Correlation context so storage-layer logs can be traced by sessionId/videoId.
+          traceContext: { sessionId, videoId },
         });
       }
 
@@ -2562,6 +2564,8 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
               // Any mismatch causes the transaction to roll back: no corrupt blob is
               // ever committed to storage_blobs.
               expectedSha256: session.expectedFileSha256 ?? undefined,
+              // Correlation context so storage-layer logs can be traced by sessionId/videoId.
+              traceContext: { sessionId, videoId },
             });
             // Blob is now committed in storage_blobs.  Any exception thrown
             // after this point must NOT delete the object.

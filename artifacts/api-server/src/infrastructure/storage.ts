@@ -101,7 +101,7 @@ export interface ObjectStorage {
    *   PostgreSQL and compared.  Any mismatch causes the transaction to roll back
    *   so no corrupt blob is ever committed to storage_blobs.
    */
-  completeMultipartUpload(args: { key: string; uploadId: string; parts: MultipartPart[]; expectedSha256?: string }): Promise<{ key: string; etag: string | null; location: string | null }>;
+  completeMultipartUpload(args: { key: string; uploadId: string; parts: MultipartPart[]; expectedSha256?: string; totalChunks?: number; traceContext?: { sessionId?: string; videoId?: string } }): Promise<{ key: string; etag: string | null; location: string | null }>;
   abortMultipartUpload(args: { key: string; uploadId: string }): Promise<void>;
 }
 
@@ -498,7 +498,13 @@ class PostgresObjectStorage implements ObjectStorage {
     return { etag };
   }
 
-  async completeMultipartUpload({ key, uploadId, expectedSha256, totalChunks }: { key: string; uploadId: string; parts: MultipartPart[]; expectedSha256?: string; totalChunks?: number }): Promise<{ key: string; etag: string | null; location: string | null }> {
+  async completeMultipartUpload({ key, uploadId, expectedSha256, totalChunks, traceContext }: { key: string; uploadId: string; parts: MultipartPart[]; expectedSha256?: string; totalChunks?: number; traceContext?: { sessionId?: string; videoId?: string } }): Promise<{ key: string; etag: string | null; location: string | null }> {
+    // Correlation context merged into every log line below so an operator can
+    // grep a single sessionId or videoId and see the full storage-layer story
+    // for one upload, not just its opaque internal uploadId. Optional so
+    // internal/legacy callers that don't have session/video context yet
+    // (e.g. one-shot small-file uploads) still work unchanged.
+    const trace = { sessionId: traceContext?.sessionId, videoId: traceContext?.videoId };
     if (_shuttingDown) {
       throw Object.assign(new Error("Storage is shutting down — multipart assembly rejected"), { code: "STORAGE_SHUTDOWN" });
     }
@@ -625,7 +631,7 @@ class PostgresObjectStorage implements ObjectStorage {
       finalTotalBytes = totalBytes;
 
       logger.info(
-        { key, uploadId, partCount, totalBytes },
+        { key, uploadId, partCount, totalBytes, ...trace },
         "[storage] completeMultipartUpload: all parts validated — starting transactional assembly",
       );
 
@@ -732,7 +738,7 @@ class PostgresObjectStorage implements ObjectStorage {
           );
         }
         logger.info(
-          { key, uploadId, sha256: actualSha256 },
+          { key, uploadId, sha256: actualSha256, ...trace },
           "[storage] completeMultipartUpload: end-to-end SHA-256 verified ✓",
         );
       }
@@ -748,7 +754,7 @@ class PostgresObjectStorage implements ObjectStorage {
     }); // ← transaction COMMIT; advisory lock auto-released
 
     logger.info(
-      { key, uploadId, parts: finalPartCount, bytes: finalTotalBytes, sha256Verified: !!expectedSha256 },
+      { key, uploadId, parts: finalPartCount, bytes: finalTotalBytes, sha256Verified: !!expectedSha256, ...trace },
       "[storage] completeMultipartUpload done (transactional) ✓",
     );
     return result;

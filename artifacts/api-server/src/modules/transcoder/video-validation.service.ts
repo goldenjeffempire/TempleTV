@@ -61,6 +61,7 @@ async function uploadFromTemp(
   tempPath: string,
   objectKey: string,
   log: typeof logger,
+  videoId?: string,
 ): Promise<void> {
   const s = storage();
   const { uploadId } = await s.createMultipartUpload({ key: objectKey, contentType: "video/mp4" });
@@ -82,8 +83,16 @@ async function uploadFromTemp(
     await fh.close();
   }
 
-  await s.completeMultipartUpload({ key: objectKey, uploadId, parts: [], totalChunks: partNumber - 1 });
-  log.info({ objectKey, sizeBytes: totalBytes, parts: partNumber - 1 }, "[video-validation] repaired blob re-uploaded to storage");
+  await s.completeMultipartUpload({
+    key: objectKey,
+    uploadId,
+    parts: [],
+    totalChunks: partNumber - 1,
+    // Correlation context so this remediation re-assembly is traceable by videoId
+    // alongside normal upload-lifecycle assemblies.
+    traceContext: { videoId },
+  });
+  log.info({ objectKey, sizeBytes: totalBytes, parts: partNumber - 1, videoId }, "[video-validation] repaired blob re-uploaded to storage");
 }
 import { setPipelineStage } from "../media-pipeline/pipeline-stage.js";
 
@@ -949,7 +958,7 @@ async function attemptRemediation(opts: {
   ];
   let newDurationSecs: number | null = null;
   try {
-    await uploadFromTemp(repairedPath, objectKey, logger);
+    await uploadFromTemp(repairedPath, objectKey, logger, videoId);
     const durProbe = await spawnWithTimeout(
       "ffprobe",
       ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", repairedPath],
