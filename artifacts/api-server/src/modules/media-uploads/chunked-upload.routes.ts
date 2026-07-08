@@ -457,9 +457,26 @@ async function spawnAssemblyRetry(
             updatedAt: new Date(),
           })
           .where(eq(sessions.sessionId, sessionId))
-          .catch((err: unknown) =>
-            log.warn({ err, sessionId }, "[assembly-retry] session completed update failed (non-fatal)"),
-          ),
+          .catch((err: unknown) => {
+            log.warn({ err, sessionId }, "[assembly-retry] session completed update failed — scheduling 30 s retry");
+            // Same retry pattern as finalize bg task. The periodic stuck-assembly
+            // scanner and finalize-status endpoint also act as safety nets.
+            void (async () => {
+              try {
+                await new Promise<void>((r) => { const t = setTimeout(r, 30_000); t.unref(); });
+                await db
+                  .update(sessions)
+                  .set({ status: "completed", storageBackend: "db", updatedAt: new Date() })
+                  .where(eq(sessions.sessionId, sessionId));
+                log.info({ sessionId }, "[assembly-retry] session completed update retry succeeded");
+              } catch (retryErr: unknown) {
+                log.warn(
+                  { err: retryErr, sessionId },
+                  "[assembly-retry] session completed update retry failed — stuck-assembly scanner will recover within 5 min",
+                );
+              }
+            })();
+          }),
         db
           .update(videos)
           .set({
@@ -1210,6 +1227,110 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
     // are picked up on the first tick ~5 minutes after boot, which is fine
     // because they are already waiting out a backoff window anyway.
     setInterval(() => { void runAssemblyReconciliation(); }, ASSEMBLY_RECONCILIATION_INTERVAL_MS).unref();
+
+    // ── Stuck-assembly scanner (Case A only) ─────────────────────────────────
+    // Runs every 5 minutes. Repairs sessions stuck in "assembling" status
+    // where the blob was successfully committed but the session status="completed"
+    // write failed transiently (the only case that is safe to act on from a
+    // periodic scanner without a liveness signal).
+    //
+    // The decisive signal: s3MirroredAt IS NOT NULL on the video row.
+    //   • IS NOT NULL  → assembly committed (blob in storage) → the session
+    //     status update simply failed; safe to force-complete any time.
+    //   • IS NULL      → blob may still be assembling (legitimate large-file
+    //     assembly can run for hours); NEVER touch — the in-process watchdog
+    //     timer (ASSEMBLY_WATCHDOG_MS) and the startup-recovery onReady hook
+    //     handle uncommitted-blob cases correctly without false positives.
+    //
+    // Why no wall-clock threshold: a 30-minute threshold would fire during
+    // legitimate large-file assemblies on slow storage, causing false-positive
+    // state mutations (attempt increments, terminal failures) while the
+    // assembler is still actively writing the blob.
+    const runStuckAssemblyScanner = async () => {
+      try {
+        // Query sessions in "assembling" state that have a completedVideoId set.
+        // A completedVideoId means the video row and pre-commit state exist;
+        // we can then check whether the blob stamp was applied.
+        const assemblingSessions = await db
+          .select({
+            sessionId: sessions.sessionId,
+            completedVideoId: sessions.completedVideoId,
+          })
+          .from(sessions)
+          .where(
+            and(
+              eq(sessions.status, "assembling"),
+              isNotNull(sessions.completedVideoId),
+            ),
+          )
+          .limit(20); // safety cap per tick
+
+        if (assemblingSessions.length === 0) return;
+
+        for (const sess of assemblingSessions) {
+          if (!sess.completedVideoId) continue; // type guard — already filtered above
+          try {
+            // Check blob commitment via s3MirroredAt on the video row.
+            // This is the ONLY signal we act on — it proves assembly completed.
+            const [vRow] = await db
+              .select({ s3MirroredAt: videos.s3MirroredAt })
+              .from(videos)
+              .where(eq(videos.id, sess.completedVideoId))
+              .limit(1)
+              .catch(() => [] as Array<{ s3MirroredAt: Date | null }>);
+
+            if (!vRow?.s3MirroredAt) {
+              // Blob not yet committed — assembly may be actively running.
+              // Leave this session entirely to the in-process watchdog timer and
+              // startup-recovery hook; do NOT increment attempts or mutate state.
+              continue;
+            }
+
+            // Case A: blob committed (s3MirroredAt IS NOT NULL) but session is
+            // still "assembling" — the status="completed" write failed. Repair now.
+            const updated = await db
+              .update(sessions)
+              .set({ status: "completed", storageBackend: "db", updatedAt: new Date() })
+              .where(
+                and(
+                  eq(sessions.sessionId, sess.sessionId),
+                  eq(sessions.status, "assembling"), // CAS guard
+                ),
+              )
+              .returning({ sessionId: sessions.sessionId })
+              .catch(() => [] as Array<{ sessionId: string }>);
+
+            if (updated.length > 0) {
+              app.log.info(
+                { sessionId: sess.sessionId, videoId: sess.completedVideoId },
+                "[stuck-assembly-scanner] blob committed but session stuck — force-completed session",
+              );
+              adminEventBus.push("videos-library-updated", {
+                videoId: sess.completedVideoId,
+                reason: "stuck-assembly-scanner-recovered",
+              });
+              // Enqueue for broadcast in case that step was also missed.
+              void enqueueIfMissing({ videoId: sess.completedVideoId, reason: "stuck-assembly-scanner" }).catch(() => {});
+            }
+          } catch (sessErr) {
+            app.log.warn(
+              { err: sessErr, sessionId: sess.sessionId },
+              "[stuck-assembly-scanner] session recovery failed (non-fatal)",
+            );
+          }
+        }
+      } catch (err) {
+        app.log.warn({ err }, "[stuck-assembly-scanner] scan failed (non-fatal)");
+      }
+    };
+
+    // Initial delay: 10 minutes — lets the startup recovery finish and the
+    // system warm up before the scanner makes its first pass.
+    const stuckScannerDelay = setTimeout(() => {
+      void runStuckAssemblyScanner();
+      setInterval(() => { void runStuckAssemblyScanner(); }, ASSEMBLY_RECONCILIATION_INTERVAL_MS).unref();
+    }, 10 * 60_000);
+    stuckScannerDelay.unref();
   });
 
   // ── POST /videos/upload/init ───────────────────────────────────────────────
@@ -2593,9 +2714,32 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 .update(sessions)
                 .set({ status: "completed", storageBackend: "db", updatedAt: new Date() })
                 .where(eq(sessions.sessionId, sessionId))
-                .catch((err: unknown) =>
-                  capturedLog.warn({ err, sessionId }, "[finalize:bg] session completed update failed (non-fatal)"),
-                ),
+                .catch((err: unknown) => {
+                  capturedLog.warn(
+                    { err, sessionId },
+                    "[finalize:bg] session completed update failed — scheduling 30 s retry",
+                  );
+                  // Schedule a self-healing retry. If this also fails, the periodic
+                  // stuck-assembly scanner (running every 5 min) will detect that the
+                  // blob is committed (s3MirroredAt IS NOT NULL) and force-complete the
+                  // session within 5 minutes. The finalize-status endpoint also performs
+                  // the same check synchronously on every poll.
+                  void (async () => {
+                    try {
+                      await new Promise<void>((r) => { const t = setTimeout(r, 30_000); t.unref(); });
+                      await db
+                        .update(sessions)
+                        .set({ status: "completed", storageBackend: "db", updatedAt: new Date() })
+                        .where(eq(sessions.sessionId, sessionId));
+                      capturedLog.info({ sessionId }, "[finalize:bg] session completed update retry succeeded");
+                    } catch (retryErr: unknown) {
+                      capturedLog.warn(
+                        { err: retryErr, sessionId },
+                        "[finalize:bg] session completed update retry failed — stuck-assembly scanner will recover within 5 min",
+                      );
+                    }
+                  })();
+                }),
               db
                 .update(videos)
                 .set({ s3MirroredAt: new Date() })
@@ -3078,6 +3222,29 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         // storage_blobs row is only visible to other connections after COMMIT.
         // There is no intermediate state to query — the client should show an
         // indeterminate progress indicator during assembly.
+
+        // Self-healing: if the blob is confirmed (s3MirroredAt IS NOT NULL) the
+        // assembly completed successfully but the session status update failed
+        // transiently. Force-complete the session now so the client sees the
+        // correct "completed" status without waiting for the periodic scanner.
+        if (session.completedVideoId) {
+          const [vRow] = await db
+            .select({ s3MirroredAt: videos.s3MirroredAt })
+            .from(videos)
+            .where(eq(videos.id, session.completedVideoId))
+            .limit(1)
+            .catch(() => [] as Array<{ s3MirroredAt: Date | null }>);
+          if (vRow?.s3MirroredAt) {
+            // Assembly committed — repair the stuck session status synchronously.
+            void db
+              .update(sessions)
+              .set({ status: "completed", storageBackend: "db", updatedAt: new Date() })
+              .where(and(eq(sessions.sessionId, sessionId), eq(sessions.status, "assembling")))
+              .catch(() => {});
+            return { status: "completed" as const, videoId: session.completedVideoId, assemblyPercent: null };
+          }
+        }
+
         return { status: "assembling" as const, videoId: session.completedVideoId ?? null, assemblyPercent: null };
       }
       return { status: "uploading" as const, videoId: null, assemblyPercent: null };
