@@ -220,6 +220,12 @@ async function scanCorruptBlobs(deadlineMs: number): Promise<number> {
   rows = rows.concat(extractRows<CorruptRow>(phaseAResult));
 
   // ── Phase A-null: null-data blobs (fast metadata scan) ───────────────────
+  // data IS NULL is the EXPECTED shape for chunked=true blobs (their bytes
+  // live in storage_blob_chunks, promoted there row-by-row by
+  // completeMultipartUpload — see storage.ts). Only flag data IS NULL as
+  // corruption when chunked is NOT true; for chunked blobs, corruption is
+  // instead "promised chunk_count doesn't match the actual promoted rows /
+  // bytes", checked separately below.
   if (!isExpired(deadlineMs, "corrupt-blobs-phase-null")) {
     const phaseNullResult = await withTimeout(
       db.execute<{ key: string }>(sql`
@@ -227,6 +233,7 @@ async function scanCorruptBlobs(deadlineMs: number): Promise<number> {
         FROM storage_blobs
         WHERE data IS NULL
           AND size_bytes > 0
+          AND chunked IS NOT TRUE
         LIMIT ${MAX_CORRUPT_BLOBS_PER_PASS}
       `).catch((err) => {
         logger.warn({ err }, "[integrity] corrupt-blob null-data query failed");
@@ -241,6 +248,39 @@ async function scanCorruptBlobs(deadlineMs: number): Promise<number> {
       actual_bytes: "0",
     }));
     rows = rows.concat(nullRows);
+  }
+
+  // ── Phase A-chunked: chunked blobs whose promoted chunks don't match the
+  // manifest (chunk_count mismatch or total bytes mismatch) — the chunked
+  // equivalent of "corrupt/incomplete blob". Cheap: aggregates size_bytes +
+  // COUNT(*) from storage_blob_chunks (metadata only, no full BYTEA reads).
+  if (!isExpired(deadlineMs, "corrupt-blobs-phase-chunked") && rows.length < MAX_CORRUPT_BLOBS_PER_PASS) {
+    const phaseChunkedResult = await withTimeout(
+      db.execute<{ key: string; size_bytes: string; actual_bytes: string }>(sql`
+        SELECT
+          b.key                                       AS key,
+          b.size_bytes::text                           AS size_bytes,
+          COALESCE(c.total_bytes, 0)::text             AS actual_bytes
+        FROM storage_blobs b
+        LEFT JOIN (
+          SELECT blob_key, COUNT(*) AS chunk_count, SUM(size_bytes) AS total_bytes
+          FROM storage_blob_chunks
+          GROUP BY blob_key
+        ) c ON c.blob_key = b.key
+        WHERE b.chunked IS TRUE
+          AND (
+            COALESCE(c.chunk_count, 0) != b.chunk_count
+            OR COALESCE(c.total_bytes, 0) != b.size_bytes
+          )
+        LIMIT ${MAX_CORRUPT_BLOBS_PER_PASS - rows.length}
+      `).catch((err) => {
+        logger.warn({ err }, "[integrity] corrupt-blob chunked-mismatch query failed");
+        return null;
+      }),
+      FAST_QUERY_TIMEOUT_MS,
+      "corrupt-blobs-phase-chunked",
+    );
+    rows = rows.concat(extractRows<CorruptRow>(phaseChunkedResult));
   }
 
   // ── Phase B: size-mismatch detection (reads BYTEA, bounded by stmt timeout) ─
@@ -369,6 +409,11 @@ async function scanCorruptBlobs(deadlineMs: number): Promise<number> {
         // rebuilt blob is written cleanly (completeMultipartUpload also deletes
         // the destination key first, but removing it now eliminates the corrupt
         // 404/partial blob immediately), and reset the video to pending.
+        await withTimeout(
+          db.execute(sql`DELETE FROM storage_blob_chunks WHERE blob_key = ${key}`),
+          REMEDIATION_TIMEOUT_MS,
+          `corrupt-blob-delete-chunks-for-recovery:${key}`,
+        );
         await withTimeout(
           db.execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`),
           REMEDIATION_TIMEOUT_MS,

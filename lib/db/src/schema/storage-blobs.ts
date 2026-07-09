@@ -53,6 +53,17 @@ export const storageBlobsTable = pgTable(
      * All new rows written by PostgresObjectStorage will have data set.
      */
     data: bytea("data"),
+    /**
+     * True when this blob's bytes live in storage_blob_chunks (row-per-chunk)
+     * instead of the `data` column. Chunked storage removes the PostgreSQL
+     * varlena/TOAST single-value ceiling (~1 GiB) that a bytea_agg-assembled
+     * `data` column would hit — chunk rows stay small (one part per row,
+     * typically ≤16 MiB) no matter how large the overall object is.
+     * Small objects (HLS segments, thumbnails) still use `data` directly.
+     */
+    chunked: boolean("chunked").notNull().default(false),
+    /** Number of rows in storage_blob_chunks for this key. NULL/0 when not chunked. */
+    chunkCount: bigint("chunk_count", { mode: "number" }).notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
   },

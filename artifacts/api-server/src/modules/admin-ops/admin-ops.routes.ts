@@ -1857,6 +1857,12 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       if (session.uploadId) {
         const partPrefix = `_parts/${session.uploadId}/`;
         await db
+          .execute(sql`
+            DELETE FROM storage_blob_chunks
+            WHERE blob_key IN (SELECT key FROM storage_blobs WHERE starts_with(key, ${partPrefix}))
+          `)
+          .catch(() => {});
+        await db
           .execute(sql`DELETE FROM storage_blobs WHERE starts_with(key, ${partPrefix})`)
           .catch(() => {});
       }

@@ -1283,14 +1283,12 @@ export default function VideosPage() {
 
   // ── Multi-file upload helpers ──────────────────────────────────────────────
 
-  // HARD limit — must match MAX_UPLOAD_BYTES in
+  // Operational ceiling — must match MAX_UPLOAD_BYTES in
   // artifacts/api-server/src/modules/media-uploads/chunked-upload.routes.ts.
-  // The storage backend assembles an entire file into a single PostgreSQL
-  // bytea value, which PostgreSQL caps at ~1 GiB; files at/above this size
-  // can NEVER be assembled server-side, so reject them here before the user
-  // waits through an entire upload only to see a generic "Validation failed"
-  // error at the end.
-  const MAX_UPLOAD_BYTES = 1_000_000_000; // 1 GB
+  // The storage backend promotes uploaded parts into row-per-chunk permanent
+  // storage (no single-value PostgreSQL size ceiling), so this is just a
+  // sanity check against obviously-bogus file sizes, not a hard format limit.
+  const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024 * 1024; // 5 TB
 
   const addFilesToDialog = useCallback((rawFiles: File[]) => {
     // Empty rawFiles means no files were in the drop (e.g. dragging text/links).
@@ -1309,9 +1307,9 @@ export default function VideosPage() {
     const acceptable = vids.filter((f) => f.size <= MAX_UPLOAD_BYTES);
     if (oversized.length > 0) {
       toast.error(
-        `${oversized.length} file${oversized.length > 1 ? "s" : ""} over 1 GB ` +
-        `${oversized.length > 1 ? "were" : "was"} skipped — the platform's storage backend ` +
-        `cannot assemble files at or above 1 GB. Compress or split into shorter clips: ` +
+        `${oversized.length} file${oversized.length > 1 ? "s" : ""} over 5 TB ` +
+        `${oversized.length > 1 ? "were" : "was"} skipped — that exceeds the platform's ` +
+        `operational upload ceiling: ` +
         oversized.map((f) => f.name).join(", "),
         { duration: 8000 },
       );

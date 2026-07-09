@@ -30,6 +30,7 @@ export * from "./emergency-alerts";
 export * from "./viewer-sessions";
 export * from "./series";
 export * from "./storage-blobs";
+export * from "./storage-blob-chunks";
 export * from "./storage-upload-parts";
 export * from "./youtube-sync";
 export * from "./device-watch-history";

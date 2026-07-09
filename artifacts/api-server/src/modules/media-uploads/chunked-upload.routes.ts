@@ -16,7 +16,8 @@
  *   POST /admin/videos/upload/:sessionId/thumbnail
  *     → accept optional custom thumbnail; store in storage_blobs
  *   POST /admin/videos/upload/:sessionId/finalize
- *     → completeMultipartUpload assembles all parts via bytea_agg in one DB
+ *     → completeMultipartUpload promotes all parts into row-per-chunk
+ *       permanent storage (storage_blob_chunks) in one DB
  *       transaction, inserts managed_videos row, and enqueues for broadcast
  */
 
@@ -130,20 +131,19 @@ const TERMINAL_ASSEMBLY_ERROR_CODES = new Set([
   "ASSEMBLY_EMPTY_PARTS",
 ]);
 
-// PostgreSQL hard-caps any single field value (bytea/text) at 1 GiB - 1 byte
-// (the varlena/TOAST limit). The bytea_agg() assembly step in
-// completeMultipartUpload aggregates every chunk into ONE bytea value, so any
-// upload whose total size crosses that ceiling throws
-// "invalid memory alloc request size ..." (pg error code XX000) and CAN NEVER
-// SUCCEED no matter how many times it is retried. This is a structural limit
-// of storing the whole file as a single BYTEA row, not a transient DB hiccup —
-// treat it as terminal so we fail fast instead of burning the full ~5.5-hour
-// retry backoff schedule on something that will never assemble.
-// Known PostgreSQL error-message signatures for "this value is structurally
-// too large to ever fit" — not just the one exact phrasing observed in
-// production. XX000 (internal_error) is used by several different pg/libpq
-// allocator failure paths, so match on message content rather than relying
-// on a single fixed string.
+// Historical context: PostgreSQL hard-caps any single field value (bytea/
+// text) at 1 GiB - 1 byte (the varlena/TOAST limit). completeMultipartUpload
+// used to assemble every part into ONE bytea value via bytea_agg(), so an
+// upload crossing that ceiling would throw "invalid memory alloc request
+// size ..." and could NEVER succeed regardless of retries.
+//
+// completeMultipartUpload now promotes parts into storage_blob_chunks
+// (row-per-chunk, no aggregation) — see storage.ts — so this structural
+// ceiling no longer applies to overall object size. This pattern list is
+// kept as a defensive fail-fast for the (now unreachable in normal
+// operation) case of some other operation hitting a genuine PostgreSQL
+// allocator limit, so we still fail fast rather than retry something that
+// can never succeed.
 const UNRECOVERABLE_ASSEMBLY_ERROR_PATTERNS: readonly RegExp[] = [
   /invalid memory alloc request size/i,
   /invalid string enlargement/i,
@@ -166,16 +166,16 @@ const ASSEMBLY_RECONCILIATION_INTERVAL_MS = 5 * 60_000; // 5 minutes
 
 // ─── Schema helpers ───────────────────────────────────────────────────────────
 
-// Hard upper limit for a single upload.
+// Upper limit for a single upload.
 //
-// This MUST stay below PostgreSQL's varlena/TOAST ceiling of 1 GiB - 1 byte
-// (1,073,741,823 bytes) for a single field value: completeMultipartUpload's
-// bytea_agg() assembly step aggregates every chunk into ONE bytea column, so
-// any file at or above that ceiling throws "invalid memory alloc request
-// size" and can NEVER be assembled, no matter how many retries run. 1,000
-// binary-clean megabytes (1,000,000,000 bytes) leaves comfortable headroom
-// below the 1,073,741,823-byte hard cap for bytea_agg's aggregation overhead.
-const MAX_UPLOAD_BYTES = 1_000_000_000;
+// completeMultipartUpload() now promotes parts into storage_blob_chunks
+// (row-per-chunk, ≤16 MiB each) instead of concatenating them into one
+// storage_blobs.data column, so the PostgreSQL varlena/TOAST ~1 GiB
+// single-value ceiling no longer applies to the overall object size — see
+// storage.ts. This constant is now a sane operational ceiling (5 TB) rather
+// than a storage-format limit, mainly to reject obviously-bogus client input
+// (e.g. a negative or absurd totalBytes) before an upload session is created.
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024 * 1024; // 5 TB
 
 const InitBodySchema = z.object({
   sessionId: z.string().uuid(),
@@ -199,11 +199,11 @@ const InitBodySchema = z.object({
   totalChunks: z
     .union([z.number().int(), z.string()])
     .transform((v) => Number(v))
-    .pipe(z.number().int().min(1, "totalChunks must be at least 1").max(50_000, "totalChunks must not exceed 50,000")),
+    .pipe(z.number().int().min(1, "totalChunks must be at least 1").max(5_000_000, "totalChunks must not exceed 5,000,000")),
   totalBytes: z
     .union([z.number(), z.string()])
     .transform((v) => Number(v))
-    .pipe(z.number().min(1, "File size must be at least 1 byte").max(MAX_UPLOAD_BYTES, "File size must not exceed 1 GB (PostgreSQL storage backend limit)")),
+    .pipe(z.number().min(1, "File size must be at least 1 byte").max(MAX_UPLOAD_BYTES, "File size must not exceed 5 TB")),
   ext: z.string().max(16).optional().default("mp4"),
   originalFilename: z.string().max(500).optional(),
   mimeType: z.string().max(255).optional(),
@@ -1055,6 +1055,11 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
         // Delete partially-written destination blobs so the next finalize attempt
         // gets a clean objectKey instead of appending to a corrupt partial blob.
         for (const key of trulyOrphanedObjectKeys) {
+          await db
+            .execute(sql`DELETE FROM storage_blob_chunks WHERE blob_key = ${key}`)
+            .catch((err: unknown) =>
+              app.log.warn({ err, key }, "[upload] partial dest blob chunk cleanup failed (non-fatal)"),
+            );
           await db
             .execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`)
             .catch((err: unknown) =>

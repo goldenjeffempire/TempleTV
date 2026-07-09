@@ -46,6 +46,77 @@ import { env } from "../config/env.js";
  *  latency per segment on a local PostgreSQL connection.                  */
 const STORAGE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 
+// ── Permanent chunked storage — streaming helpers ─────────────────────────────
+//
+// These read the row-per-chunk storage_blob_chunks table produced by
+// completeMultipartUpload()'s promotion step (see below). One row is fetched
+// at a time in chunk_index order — peak Node.js memory is bounded by a single
+// chunk's size (≤16 MiB) regardless of how many chunks (and thus how large
+// the overall object) exist. This is what removes the PostgreSQL varlena/
+// TOAST ~1 GiB single-value ceiling from the media pipeline.
+
+async function* readPermanentChunks(blobKey: string, chunkCount: number): AsyncGenerator<Buffer> {
+  for (let idx = 1; idx <= chunkCount; idx++) {
+    if (_shuttingDown) break;
+    type Row = { data: Buffer };
+    const result = await db.execute<Row>(sql`
+      SELECT data FROM storage_blob_chunks
+      WHERE blob_key = ${blobKey} AND chunk_index = ${idx}
+      LIMIT 1
+    `);
+    const row = firstRow<Row>(result);
+    if (!row?.data) {
+      throw Object.assign(
+        new Error(`[storage] readPermanentChunks: chunk ${idx}/${chunkCount} missing for key "${blobKey}"`),
+        { code: "STORAGE_READ_ERROR" },
+      );
+    }
+    yield toBuffer(row.data);
+  }
+}
+
+/**
+ * Stream a byte range [start, end] (inclusive, 0-indexed) from a chunked
+ * object. Reads only the chunk-metadata (index + size, no bytes) to compute
+ * offsets, then fetches and slices only the chunks that overlap the range.
+ */
+async function* readPermanentChunksRange(blobKey: string, start: number, end: number): AsyncGenerator<Buffer> {
+  type MetaRow = { chunk_index: number; size_bytes: number };
+  const metaResult = await db.execute<MetaRow>(sql`
+    SELECT chunk_index, size_bytes FROM storage_blob_chunks
+    WHERE blob_key = ${blobKey}
+    ORDER BY chunk_index ASC
+  `);
+  const metaRows = allRows<MetaRow>(metaResult);
+  let cursor = 0;
+  for (const meta of metaRows) {
+    if (_shuttingDown) break;
+    const chunkStart = cursor;
+    const chunkEnd = cursor + meta.size_bytes - 1; // inclusive
+    cursor += meta.size_bytes;
+    if (chunkEnd < start) continue; // entirely before range
+    if (chunkStart > end) break; // entirely after range — done
+    type DataRow = { data: Buffer };
+    const dataResult = await db.execute<DataRow>(sql`
+      SELECT data FROM storage_blob_chunks
+      WHERE blob_key = ${blobKey} AND chunk_index = ${meta.chunk_index}
+      LIMIT 1
+    `);
+    const row = firstRow<DataRow>(dataResult);
+    if (!row?.data) {
+      throw Object.assign(
+        new Error(`[storage] readPermanentChunksRange: chunk ${meta.chunk_index} missing for key "${blobKey}"`),
+        { code: "STORAGE_READ_ERROR" },
+      );
+    }
+    const buf = toBuffer(row.data);
+    const sliceStart = Math.max(0, start - chunkStart);
+    const sliceEndExclusive = Math.min(buf.length, end - chunkStart + 1);
+    if (sliceStart >= sliceEndExclusive) continue;
+    yield buf.subarray(sliceStart, sliceEndExclusive);
+  }
+}
+
 // ── Active-stream tracking for graceful shutdown ──────────────────────────────
 //
 // getObject and getObjectRange increment this counter when they return a
@@ -235,6 +306,24 @@ class PostgresObjectStorage implements ObjectStorage {
     }
 
     const totalSize = head.contentLength;
+
+    // Capture for async generator closure (avoids stale `this` / parameter ref).
+    const capturedKey = key;
+
+    if (head.chunked) {
+      const body = Readable.from(readPermanentChunks(capturedKey, head.chunkCount ?? 0), { objectMode: false });
+      _activeStreamCount++;
+      let _decChunked = false;
+      const decChunked = (): void => {
+        if (_decChunked) return;
+        _decChunked = true;
+        _activeStreamCount = Math.max(0, _activeStreamCount - 1);
+      };
+      body.once("close", decChunked);
+      body.once("error", decChunked);
+      return { body, contentType: head.contentType, contentLength: totalSize };
+    }
+
     const chunkSize = STORAGE_READ_CHUNK_BYTES;
     const chunkCount = Math.ceil(totalSize / Math.max(1, chunkSize));
 
@@ -242,9 +331,6 @@ class PostgresObjectStorage implements ObjectStorage {
       { key, sizeBytes: totalSize, chunkSize, chunkCount },
       "[storage] getObject: chunked stream start",
     );
-
-    // Capture for async generator closure (avoids stale `this` / parameter ref).
-    const capturedKey = key;
 
     // Async generator — each iteration issues one SUBSTRING query fetching
     // exactly chunkSize bytes.  Only one chunk (~8 MiB) is held in Node.js
@@ -321,6 +407,22 @@ class PostgresObjectStorage implements ObjectStorage {
   async getObjectRange(key: string, start: number, end: number): Promise<{ body: Readable; contentType?: string; contentLength: number } | null> {
     if (_shuttingDown) return null;
     const rangeLength = end - start + 1;
+
+    const head = await this.headObject(key);
+    if (!head.exists) return null;
+    if (head.chunked) {
+      const body = Readable.from(readPermanentChunksRange(key, start, end), { objectMode: false });
+      _activeStreamCount++;
+      let _decChunkedRange = false;
+      const decChunkedRange = (): void => {
+        if (_decChunkedRange) return;
+        _decChunkedRange = true;
+        _activeStreamCount = Math.max(0, _activeStreamCount - 1);
+      };
+      body.once("close", decChunkedRange);
+      body.once("error", decChunkedRange);
+      return { body, contentType: head.contentType, contentLength: rangeLength };
+    }
 
     // Stream the requested byte range in STORAGE_READ_CHUNK_BYTES (8 MiB)
     // sub-ranges, exactly like getObject().
@@ -422,10 +524,10 @@ class PostgresObjectStorage implements ObjectStorage {
     return { body, contentType: resolvedContentType, contentLength: rangeLength };
   }
 
-  async headObject(key: string): Promise<{ exists: boolean; contentLength?: number; contentType?: string }> {
-    type Row = { size_bytes: number; content_type: string };
+  async headObject(key: string): Promise<{ exists: boolean; contentLength?: number; contentType?: string; chunked?: boolean; chunkCount?: number }> {
+    type Row = { size_bytes: number; content_type: string; chunked: boolean; chunk_count: number };
     const result = await db.execute<Row>(sql`
-      SELECT size_bytes, content_type
+      SELECT size_bytes, content_type, chunked, chunk_count
       FROM storage_blobs
       WHERE key = ${key}
       LIMIT 1
@@ -433,14 +535,25 @@ class PostgresObjectStorage implements ObjectStorage {
     if (!result) return { exists: false };
     const row = firstRow<Row>(result);
     if (!row) return { exists: false };
-    return { exists: true, contentLength: Number(row.size_bytes), contentType: row.content_type };
+    return {
+      exists: true,
+      contentLength: Number(row.size_bytes),
+      contentType: row.content_type,
+      chunked: !!row.chunked,
+      chunkCount: Number(row.chunk_count ?? 0),
+    };
   }
 
   async deleteObject(key: string): Promise<void> {
+    await db.execute(sql`DELETE FROM storage_blob_chunks WHERE blob_key = ${key}`);
     await db.execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`);
   }
 
   async deleteByPrefix(prefix: string): Promise<number> {
+    await db.execute(sql`
+      DELETE FROM storage_blob_chunks
+      WHERE blob_key IN (SELECT key FROM storage_blobs WHERE starts_with(key, ${prefix}))
+    `);
     const result = await db.execute(sql`
       DELETE FROM storage_blobs WHERE starts_with(key, ${prefix})
     `);
@@ -635,96 +748,96 @@ class PostgresObjectStorage implements ObjectStorage {
         "[storage] completeMultipartUpload: all parts validated — starting transactional assembly",
       );
 
-      // ── 3. Delete any stale destination blob ──────────────────────────────
+      // ── 3. Delete any stale destination blob/chunks ───────────────────────
       // A previous failed assembly attempt may have left a partial or
-      // zero-byte blob at this key.  Delete it unconditionally so the new
-      // INSERT starts from a clean slate instead of overwriting via
-      // ON CONFLICT (which could corrupt the row if bytea_agg returns NULL).
+      // zero-byte blob (or orphaned chunk rows) at this key.  Delete both
+      // unconditionally so the new INSERT starts from a clean slate.
+      await tx.execute(sql`DELETE FROM storage_blob_chunks WHERE blob_key = ${key}`);
       await tx.execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`);
 
-      // ── 4. Assemble entirely inside PostgreSQL — zero bytes to Node.js ────
-      // Key design: large-file safety.
+      // ── 4. Promote parts into permanent chunked storage ───────────────────
+      // Key design: unlimited file size, zero PostgreSQL varlena/TOAST risk.
       //
-      // For files > ~500 MB the old approach of separate INSERT + SELECT
-      // octet_length + SELECT sha256 caused three full reads of the blob in
-      // rapid succession.  On a 5+ GB file this regularly exceeded the
-      // server-side statement timeout and rolled back the transaction.
+      // The previous implementation used bytea_agg(data ORDER BY part_number)
+      // to concatenate every part into ONE storage_blobs.data value. PostgreSQL
+      // hard-caps a single value at ~1 GiB (varlena/TOAST ceiling) — any file
+      // at or above that size could NEVER assemble, regardless of retries.
       //
-      // Fix — two changes:
-      //   a) SET LOCAL statement_timeout = 0 before the assembly step so the
-      //      DB never kills the query mid-aggregate regardless of file size.
-      //      The advisory lock above already serialises concurrent assemblies;
-      //      the only risk of an unbounded query is resource consumption, which
-      //      is bounded by the file size the client already uploaded.
-      //   b) RETURNING clause on the INSERT folds size + SHA-256 verification
-      //      into the same server round-trip as the bytea_agg aggregate.
-      //      PostgreSQL returns the just-written tuple from its buffer cache —
-      //      no second full scan of the TOAST table.  3 large reads → 1.
-
-      // Disable statement_timeout for the assembly step only.
-      // The transaction is already serialised by the advisory lock so there is
-      // no risk of a stale long-running query holding locks indefinitely.
+      // Fix: promote parts with a row-wise INSERT ... SELECT into
+      // storage_blob_chunks. Each row stays exactly the size the client
+      // uploaded (≤ chunkSize, typically ≤16 MiB) — no single value is ever
+      // larger than one part, so there is no ceiling on the OVERALL object
+      // size. This is still a zero-Node.js-memory operation: PostgreSQL
+      // copies rows server-side, Node.js only sends one INSERT...SELECT and
+      // receives a row count back.
       await tx.execute(sql.raw(`SET LOCAL statement_timeout = 0`));
 
-      type AssemblyRow = { size_bytes: string; actual_length: string; file_sha256: string | null };
-      const assemblyRows = allRows<AssemblyRow>(await tx.execute<AssemblyRow>(sql`
-        INSERT INTO storage_blobs (key, content_type, size_bytes, data, updated_at)
-        SELECT
-          ${key}                                     AS key,
-          ${contentType}                             AS content_type,
-          SUM(octet_length(data))                    AS size_bytes,
-          bytea_agg(data ORDER BY part_number)       AS data,
-          NOW()                                      AS updated_at
+      await tx.execute(sql`
+        INSERT INTO storage_blob_chunks (blob_key, chunk_index, data, size_bytes, created_at)
+        SELECT ${key} AS blob_key, part_number AS chunk_index, data, octet_length(data)::int AS size_bytes, NOW()
         FROM storage_upload_parts
         WHERE upload_id = ${uploadId}
-        RETURNING
-          size_bytes::text                             AS size_bytes,
-          octet_length(data)::text                    AS actual_length,
-          encode(sha256(data), 'hex')                 AS file_sha256
+      `);
+
+      type ChunkCheckRow = { chunk_count: string; total_bytes: string };
+      const chunkCheckRows = allRows<ChunkCheckRow>(await tx.execute<ChunkCheckRow>(sql`
+        SELECT COUNT(*)::text AS chunk_count, COALESCE(SUM(size_bytes), 0)::text AS total_bytes
+        FROM storage_blob_chunks
+        WHERE blob_key = ${key}
       `));
+      const chunkCheck = chunkCheckRows[0];
+      const promotedCount = parseInt(chunkCheck?.chunk_count ?? "0", 10);
+      const promotedBytes = parseInt(chunkCheck?.total_bytes ?? "0", 10);
 
-      // Re-enable the global statement_timeout for the remainder of the
-      // transaction (parts DELETE + advisory lock release are fast queries).
-      await tx.execute(sql.raw(`SET LOCAL statement_timeout = DEFAULT`));
-
-      const assemblyRow = assemblyRows[0];
-
-      // ── 5. Post-assembly integrity validation ─────────────────────────────
-      // Values come from RETURNING — the just-written buffer-cached tuple.
-      // No second full blob scan required.
-      const recordedSize = parseInt(assemblyRow?.size_bytes  ?? "0", 10);
-      const actualLength = parseInt(assemblyRow?.actual_length ?? "0", 10);
-
-      if (recordedSize === 0 || actualLength === 0) {
+      // ── 5. Post-promotion integrity validation ────────────────────────────
+      if (promotedCount === 0 || promotedBytes === 0) {
         throw Object.assign(
           new Error(
-            `completeMultipartUpload: assembled blob is zero bytes ` +
-            `(recorded=${recordedSize}, actual=${actualLength}) for key="${key}" ` +
+            `completeMultipartUpload: promotion produced zero chunks/bytes ` +
+            `(chunks=${promotedCount}, bytes=${promotedBytes}) for key="${key}" ` +
             `uploadId=${uploadId} despite ${partCount} part(s) totaling ${totalBytes} B. ` +
-            `Transaction rolled back — no partial blob committed. ` +
-            `Possible cause: bytea_agg received NULL inputs or aggregate failed silently.`,
+            `Transaction rolled back — no partial blob committed.`,
           ),
           { code: "ASSEMBLY_ZERO_BYTES" },
         );
       }
-
-      if (actualLength !== totalBytes) {
+      if (promotedCount !== partCount || promotedBytes !== totalBytes) {
         throw Object.assign(
           new Error(
-            `Assembly size mismatch for key="${key}" uploadId=${uploadId}: ` +
-            `expected ${totalBytes} B from ${partCount} parts, ` +
-            `actual blob is ${actualLength} B. ` +
+            `Assembly mismatch for key="${key}" uploadId=${uploadId}: ` +
+            `expected ${partCount} parts / ${totalBytes} B, ` +
+            `promoted ${promotedCount} chunks / ${promotedBytes} B. ` +
             `Transaction rolled back — the partial blob was not committed.`,
           ),
           { code: "ASSEMBLY_SIZE_MISMATCH" },
         );
       }
 
-      // ── 6. End-to-end SHA-256 verification ───────────────────────────────
-      // Hash was computed inline by the RETURNING clause above — O(0) extra
-      // round-trips to the DB regardless of blob size.
+      // ── 6. Write the manifest row ──────────────────────────────────────────
+      await tx.execute(sql`
+        INSERT INTO storage_blobs (key, content_type, size_bytes, data, chunked, chunk_count, updated_at)
+        VALUES (${key}, ${contentType}, ${promotedBytes}, NULL, TRUE, ${promotedCount}, NOW())
+      `);
+
+      // ── 7. End-to-end SHA-256 verification (streaming, O(1 chunk) memory) ─
+      // A single sha256(data) call is not possible without concatenating —
+      // exactly what chunked storage avoids. Instead compute the hash
+      // incrementally by reading chunks in order inside this same
+      // transaction: still O(chunk size) Node.js memory (never the whole
+      // file), and any mismatch rolls back the transaction so no corrupt
+      // blob is ever committed.
+      let actualSha256 = "";
       if (expectedSha256) {
-        const actualSha256 = assemblyRow?.file_sha256 ?? "";
+        const hash = createHash("sha256");
+        for (let idx = 1; idx <= promotedCount; idx++) {
+          type DataRow = { data: Buffer };
+          const dataResult = allRows<DataRow>(await tx.execute<DataRow>(sql`
+            SELECT data FROM storage_blob_chunks WHERE blob_key = ${key} AND chunk_index = ${idx} LIMIT 1
+          `));
+          const buf = toBuffer(dataResult[0]?.data);
+          hash.update(buf);
+        }
+        actualSha256 = hash.digest("hex");
         if (actualSha256 !== expectedSha256.toLowerCase()) {
           throw Object.assign(
             new Error(
@@ -743,13 +856,17 @@ class PostgresObjectStorage implements ObjectStorage {
         );
       }
 
-      // ── 7. Delete staging parts — inside the same transaction ────────────
+      // Re-enable the global statement_timeout for the remainder of the
+      // transaction (parts DELETE + advisory lock release are fast queries).
+      await tx.execute(sql.raw(`SET LOCAL statement_timeout = DEFAULT`));
+
+      // ── 8. Delete staging parts — inside the same transaction ────────────
       // Deleting inside the transaction is safe: if any subsequent step
       // fails the entire transaction rolls back, restoring the parts rows
       // so the next assembly attempt can re-read them.
       await tx.execute(sql`DELETE FROM storage_upload_parts WHERE upload_id = ${uploadId}`);
 
-      const etag = `"${uploadId.slice(0, 8)}-${actualLength}"`;
+      const etag = `"${uploadId.slice(0, 8)}-${promotedBytes}"`;
       return { key, etag, location: this.publicUrl(key) };
     }); // ← transaction COMMIT; advisory lock auto-released
 
