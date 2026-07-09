@@ -130,6 +130,35 @@ const TERMINAL_ASSEMBLY_ERROR_CODES = new Set([
   "ASSEMBLY_EMPTY_PARTS",
 ]);
 
+// PostgreSQL hard-caps any single field value (bytea/text) at 1 GiB - 1 byte
+// (the varlena/TOAST limit). The bytea_agg() assembly step in
+// completeMultipartUpload aggregates every chunk into ONE bytea value, so any
+// upload whose total size crosses that ceiling throws
+// "invalid memory alloc request size ..." (pg error code XX000) and CAN NEVER
+// SUCCEED no matter how many times it is retried. This is a structural limit
+// of storing the whole file as a single BYTEA row, not a transient DB hiccup —
+// treat it as terminal so we fail fast instead of burning the full ~5.5-hour
+// retry backoff schedule on something that will never assemble.
+// Known PostgreSQL error-message signatures for "this value is structurally
+// too large to ever fit" — not just the one exact phrasing observed in
+// production. XX000 (internal_error) is used by several different pg/libpq
+// allocator failure paths, so match on message content rather than relying
+// on a single fixed string.
+const UNRECOVERABLE_ASSEMBLY_ERROR_PATTERNS: readonly RegExp[] = [
+  /invalid memory alloc request size/i,
+  /invalid string enlargement/i,
+  /out of memory/i,
+  /value too long for type/i,
+  /requested size .* exceeds .* limit/i,
+];
+
+function isUnrecoverableAssemblyError(err: unknown): boolean {
+  const errCode = (err as { code?: string } | undefined)?.code;
+  if (errCode != null && TERMINAL_ASSEMBLY_ERROR_CODES.has(errCode)) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return UNRECOVERABLE_ASSEMBLY_ERROR_PATTERNS.some((re) => re.test(msg));
+}
+
 // ─── Assembly reconciliation interval ────────────────────────────────────────
 // How often the in-process reconciliation timer scans for sessions whose
 // automatic re-assembly failed transiently and whose backoff window has elapsed.
@@ -137,8 +166,16 @@ const ASSEMBLY_RECONCILIATION_INTERVAL_MS = 5 * 60_000; // 5 minutes
 
 // ─── Schema helpers ───────────────────────────────────────────────────────────
 
-// 100 GiB hard upper limit — signals misconfiguration above this.
-const MAX_UPLOAD_BYTES = 100 * 1024 * 1024 * 1024;
+// Hard upper limit for a single upload.
+//
+// This MUST stay below PostgreSQL's varlena/TOAST ceiling of 1 GiB - 1 byte
+// (1,073,741,823 bytes) for a single field value: completeMultipartUpload's
+// bytea_agg() assembly step aggregates every chunk into ONE bytea column, so
+// any file at or above that ceiling throws "invalid memory alloc request
+// size" and can NEVER be assembled, no matter how many retries run. 1,000
+// binary-clean megabytes (1,000,000,000 bytes) leaves comfortable headroom
+// below the 1,073,741,823-byte hard cap for bytea_agg's aggregation overhead.
+const MAX_UPLOAD_BYTES = 1_000_000_000;
 
 const InitBodySchema = z.object({
   sessionId: z.string().uuid(),
@@ -166,7 +203,7 @@ const InitBodySchema = z.object({
   totalBytes: z
     .union([z.number(), z.string()])
     .transform((v) => Number(v))
-    .pipe(z.number().min(1, "File size must be at least 1 byte").max(MAX_UPLOAD_BYTES, "File size must not exceed 100 GB")),
+    .pipe(z.number().min(1, "File size must be at least 1 byte").max(MAX_UPLOAD_BYTES, "File size must not exceed 1 GB (PostgreSQL storage backend limit)")),
   ext: z.string().max(16).optional().default("mp4"),
   originalFilename: z.string().max(500).optional(),
   mimeType: z.string().max(255).optional(),
@@ -569,7 +606,7 @@ async function spawnAssemblyRetry(
       // immediately mark permanently failed without burning the remaining retry
       // budget. This surfaces the "re-upload required" call-to-action immediately
       // instead of waiting up to ~5.5 hours for all 8 backoff windows to elapse.
-      const isTerminal = errCode != null && TERMINAL_ASSEMBLY_ERROR_CODES.has(errCode);
+      const isTerminal = isUnrecoverableAssemblyError(err);
 
       if (attempts >= MAX_AUTO_ASSEMBLY_ATTEMPTS || isTerminal) {
         // All auto-retry budget exhausted OR data is unrecoverable — mark
@@ -3082,6 +3119,27 @@ export async function chunkedUploadRoutes(app: FastifyInstance) {
                 "assembly_post_step_failed",
                 err instanceof Error ? err.message : "Post-assembly step failed (blob intact)",
               );
+            } else if (isUnrecoverableAssemblyError(err)) {
+              // ── Assembly failed for a structurally unrecoverable reason ────
+              // e.g. the file exceeds PostgreSQL's 1 GiB single-value limit —
+              // bytea_agg() can NEVER succeed for this session no matter how
+              // many times it is retried. Fail permanently right away instead
+              // of resetting to "uploading" and burning the ~5.5-hour backoff
+              // schedule on a session that is guaranteed to fail every time.
+              capturedLog.error(
+                { err, sessionId, videoId, assemblyMs: Date.now() - assemblyStartMs },
+                "[finalize:bg] ASSEMBLY FAILED — unrecoverable error; marking permanently failed",
+              );
+              if (session.objectKey) void storage().deleteObject(session.objectKey).catch(() => {});
+              await _markAssemblyPermanentlyFailed(
+                videoId,
+                sessionId,
+                err instanceof Error ? err.message : String(err),
+                capturedLog,
+                session.assemblyAttempts ?? 0,
+                session.uploadId,
+              );
+              void invalidateVideosCatalogCache();
             } else {
               // ── Assembly itself failed — blob NOT committed ─────────────────
               // completeMultipartUpload threw or rolled back; the blob is absent
