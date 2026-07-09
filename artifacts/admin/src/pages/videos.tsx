@@ -1283,9 +1283,14 @@ export default function VideosPage() {
 
   // ── Multi-file upload helpers ──────────────────────────────────────────────
 
-  // Warn (but don't block) if any file exceeds this size — very large files
-  // take a long time and may hit timeout or memory limits in fallback mode.
-  const LARGE_FILE_WARN_BYTES = 5 * 1024 * 1024 * 1024; // 5 GiB
+  // HARD limit — must match MAX_UPLOAD_BYTES in
+  // artifacts/api-server/src/modules/media-uploads/chunked-upload.routes.ts.
+  // The storage backend assembles an entire file into a single PostgreSQL
+  // bytea value, which PostgreSQL caps at ~1 GiB; files at/above this size
+  // can NEVER be assembled server-side, so reject them here before the user
+  // waits through an entire upload only to see a generic "Validation failed"
+  // error at the end.
+  const MAX_UPLOAD_BYTES = 1_000_000_000; // 1 GB
 
   const addFilesToDialog = useCallback((rawFiles: File[]) => {
     // Empty rawFiles means no files were in the drop (e.g. dragging text/links).
@@ -1300,14 +1305,19 @@ export default function VideosPage() {
     if (rawFiles.length > vids.length) {
       toast.warning(`${rawFiles.length - vids.length} non-video file(s) were skipped`);
     }
-    const largeFiles = vids.filter((f) => f.size > LARGE_FILE_WARN_BYTES);
-    if (largeFiles.length > 0) {
-      toast.warning(
-        `${largeFiles.length} file${largeFiles.length > 1 ? "s are" : " is"} over 5 GB — uploads may take a long time`,
-        { duration: 6000 }
+    const oversized = vids.filter((f) => f.size > MAX_UPLOAD_BYTES);
+    const acceptable = vids.filter((f) => f.size <= MAX_UPLOAD_BYTES);
+    if (oversized.length > 0) {
+      toast.error(
+        `${oversized.length} file${oversized.length > 1 ? "s" : ""} over 1 GB ` +
+        `${oversized.length > 1 ? "were" : "was"} skipped — the platform's storage backend ` +
+        `cannot assemble files at or above 1 GB. Compress or split into shorter clips: ` +
+        oversized.map((f) => f.name).join(", "),
+        { duration: 8000 },
       );
     }
-    const newDialogFiles: DialogFile[] = vids.map((f) => ({
+    if (acceptable.length === 0) return;
+    const newDialogFiles: DialogFile[] = acceptable.map((f) => ({
       id: crypto.randomUUID(), file: f, title: titleFromFilename(f.name), description: "",
     }));
     setDialogFiles((prev) => {

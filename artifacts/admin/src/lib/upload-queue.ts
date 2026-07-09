@@ -1402,10 +1402,17 @@ class UploadQueueEngine {
           );
         }
         const errBody = (await initResp.json().catch(() => ({}))) as Record<string, unknown>;
+        // Prefer the specific field-level validation message (e.g. "File size
+        // must not exceed 1 GB...") over the generic ProblemDetails title
+        // ("Validation failed") so the operator sees *why* it was rejected.
+        const firstFieldError = Array.isArray(errBody.errors)
+          ? (errBody.errors[0] as { message?: string } | undefined)?.message
+          : undefined;
         throw new Error(
           (errBody.message as string) ||
-          (errBody.title as string) ||
+          firstFieldError ||
           (errBody.detail as string) ||
+          (errBody.title as string) ||
           (errBody.error as string) ||
           `Upload init failed (${initResp.status})`,
         );
