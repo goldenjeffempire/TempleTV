@@ -15,6 +15,7 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.functions.Coroutine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
 
@@ -138,10 +139,18 @@ class ExpoInAppUpdatesModule : Module() {
                 mgr.startUpdateFlowForResult(info, currentActivity, options, UPDATE_REQUEST_CODE)
 
                 // Suspend (releasing the coroutine thread) until the activity result
-                // fires or we time out. CancellationException is re-thrown so the
+                // fires or we time out. A timeout is a normal outcome here (the user
+                // never responded to the Play dialog) and must resolve to
+                // RESULT_CANCELED, not reject the JS promise. Only a genuine external
+                // CancellationException (the coroutine scope itself being cancelled,
+                // e.g. module/activity teardown) is re-thrown so the
                 // SuspendFunctionComponent's coroutine scope can clean up properly.
                 try {
                     withTimeout(RESULT_TIMEOUT_MS) { deferred.await() }
+                } catch (e: TimeoutCancellationException) {
+                    pendingResult?.cancel()
+                    pendingResult = null
+                    Activity.RESULT_CANCELED
                 } catch (e: CancellationException) {
                     pendingResult?.cancel()
                     pendingResult = null

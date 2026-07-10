@@ -15,6 +15,18 @@ runButton = "Project"
 
 [[workflows.workflow]]
 name = "Project"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Install and Build"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start Services"
+
+[[workflows.workflow]]
+name = "Start Services"
 mode = "parallel"
 author = "agent"
 
@@ -25,10 +37,6 @@ args = "Start application"
 [[workflows.workflow.tasks]]
 task = "workflow.run"
 args = "Start API"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "Install and Build"
 
 [[workflows.workflow]]
 name = "Start application"
