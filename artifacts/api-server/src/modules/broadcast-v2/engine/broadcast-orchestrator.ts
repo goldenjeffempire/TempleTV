@@ -220,6 +220,17 @@ class BroadcastOrchestrator extends EventEmitter {
    * self-healing guarantees for free instead of a bespoke, less-reliable path.
    */
   private midnightPrayersActive = false;
+  /**
+   * True for the brief async window between preempting ytShuffleFallback and
+   * committing the Midnight Prayers item swap (`midnightPrayersActive = true`).
+   * activateMidnightPrayers() awaits a checkpoint load/save in that window,
+   * during which the 2 s tick loop and self-heal timers keep running — if any
+   * of them observe "mode === queue, items still empty" they will race to
+   * re-activate ytShuffleFallback right back, undoing the preemption before
+   * the prayer rotation is swapped in. Every ytShuffleFallback auto-activation
+   * site is gated on `!midnightPrayersActivating` to close that race.
+   */
+  private midnightPrayersActivating = false;
   /** Main-queue items saved when Midnight Prayers activated, restored on end. */
   private mpSavedItems: CachedQueueItem[] | null = null;
   private mpSavedCycleStartedAtMs: number | null = null;
@@ -899,11 +910,14 @@ class BroadcastOrchestrator extends EventEmitter {
                   !ytShuffleFallback.isActive &&
                   this.mode !== "override" &&
                   !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE &&
-                  this.items.length === 0
+                  this.items.length === 0 &&
+                  !this.midnightPrayersActivating
                   // Race guard: re-check that the queue is still empty before activating.
                   // Between the scan start and this .then() callback, an operator could
                   // have added items (bus bridge fires reloadInner, this.items updates).
                   // Activating over a non-empty queue would evict newly-added content.
+                  // midnightPrayersActivating guard: don't re-activate ytShuffle while
+                  // Midnight Prayers is mid-preemption of that very override.
                 ) {
                   // Library scan returned 0 playable local items and the queue is
                   // still empty — activate the YouTube catalog shuffle fallback so
@@ -985,9 +999,12 @@ class BroadcastOrchestrator extends EventEmitter {
                   !ytShuffleFallback.isActive &&
                   this.mode !== "override" &&
                   !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE &&
-                  this.items.length === 0
+                  this.items.length === 0 &&
+                  !this.midnightPrayersActivating
                   // Race guard: re-check queue state; items could have appeared
                   // via a concurrent bus-bridge reload between scan start and .then()
+                  // midnightPrayersActivating guard: see note at the other
+                  // scan-driven ytShuffleFallback.activate() call site above.
                 ) {
                   // All-blocked scan also returned 0 — activate YouTube shuffle fallback
                   // so viewers see content while all local sources remain unreachable.
@@ -1694,6 +1711,7 @@ class BroadcastOrchestrator extends EventEmitter {
         !ytShuffleFallback.isActive &&
         this.mode !== "override" &&
         !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE &&
+        !this.midnightPrayersActivating &&
         nowMs - this.lastYtShuffleActivateAttemptMs >= 60_000
       ) {
         this.lastYtShuffleActivateAttemptMs = nowMs;
@@ -2992,7 +3010,8 @@ class BroadcastOrchestrator extends EventEmitter {
             this.allBlockedRecoveryCycles >= 2 &&
             !ytShuffleFallback.isActive &&
             this.mode !== "override" &&
-            !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE;
+            !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE &&
+            !this.midnightPrayersActivating;
 
           if (ytShuffleEscalated) {
             logger.warn(
@@ -3297,78 +3316,219 @@ class BroadcastOrchestrator extends EventEmitter {
   }
 
   /**
+   * Last item id proactively preloaded ahead of a Midnight Prayers boundary
+   * transition (activation or deactivation), so preloadMidnightPrayers() is
+   * idempotent across the multiple scheduler polls that occur inside a
+   * single lead window.
+   */
+  private mpPreloadFiredForId: string | null = null;
+
+  /**
+   * Proactively announces the item that will start playing at the next
+   * Midnight Prayers boundary (window open OR close) — called by the
+   * scheduler once it is within the preload lead window, BEFORE the actual
+   * queue swap happens. This gives every connected client the same
+   * PRELOAD_LEAD_MS head start on the transition item that the normal
+   * mid-rotation preload mechanism gives every other item, so the hard cut
+   * at the boundary (main → prayers, or prayers → main) is gapless instead
+   * of a cold-start black frame / buffering spinner.
+   *
+   * Safe to call repeatedly with the same item (idempotent) or with
+   * `item: null` (clears the gate so a later, different item can preload).
+   */
+  preloadMidnightPrayers(item: CachedQueueItem | null): void {
+    if (item === null) {
+      this.mpPreloadFiredForId = null;
+      return;
+    }
+    if (this.mpPreloadFiredForId === item.id) return;
+    this.mpPreloadFiredForId = item.id;
+    const projected = this.projectItem(item, Date.now());
+    if (projected === null) return;
+    logger.info(
+      { itemId: item.id, title: item.title },
+      "[broadcast-v2] midnight-prayers: proactive boundary preload frame emitted",
+    );
+    this.emitFrame({ type: "preload", sequence: this.sequence, item: projected, leadMs: PRELOAD_LEAD_MS });
+  }
+
+  /**
+   * Best-effort peek at the item the main queue will resume on once
+   * Midnight Prayers deactivates — used only to fire a proactive preload
+   * ahead of the close boundary. Not guaranteed to exactly match the item
+   * `resolvePendingMidnightPrayersCheckpoint()` ultimately resumes at (that
+   * is decided by the persisted checkpoint at the moment of deactivation),
+   * but is the correct value in the overwhelming common case (no queue
+   * edits during the window) and a harmless miss otherwise — the actual
+   * resume item still gets a normal (if less proactive) preload via the
+   * regular in-rotation mechanism moments later.
+   */
+  peekMainQueueResumeItem(): CachedQueueItem | null {
+    if (!this.midnightPrayersActive) return null;
+    return this.mpSavedItems && this.mpSavedItems.length > 0 ? this.mpSavedItems[0]! : null;
+  }
+
+  /**
    * Activate the Midnight Prayers window: freezes the main queue and swaps
    * `this.items` to the supplied Midnight Prayers rotation. Idempotent — a
-   * second call while already active is a no-op. Skips activation (logging
-   * and letting the caller retry on the next tick) when an override/failover
-   * is currently on-air, so Midnight Prayers never fights a live operator
-   * override for control of the channel.
+   * second call while already active is a no-op.
+   *
+   * On a real manual/operator override (e.g. an emergency announcement) this
+   * defers — logging and letting the caller retry on the next tick — so
+   * Midnight Prayers never fights a live operator override for control of
+   * the channel.
+   *
+   * CRITICAL: on YouTube-only deployments `ytShuffleFallback` keeps `mode`
+   * permanently at `"override"` (it IS the primary broadcast driver, not a
+   * fallback — see youtube-shuffle-fallback.ts). A naive `mode !== "queue"`
+   * guard here means the prayer window would NEVER activate in production.
+   * We detect that specific case (the active override's id matches
+   * ytShuffleFallback's own tracked override id) and preempt it: stop the
+   * override, drop straight into `mode: "queue"`, and continue activation.
+   * ytShuffleFallback resumes automatically after deactivation via the
+   * existing reloadInner fast-path once the window closes.
    */
   async activateMidnightPrayers(mpItems: CachedQueueItem[]): Promise<void> {
     if (this.midnightPrayersActive) return;
+
+    let preemptedYtShuffle = false;
     if (this.mode !== "queue") {
-      logger.info(
-        { mode: this.mode },
-        "[broadcast-v2] midnight-prayers: skipping activation — mode is not 'queue' (override/failover on-air); will retry next tick",
-      );
-      return;
-    }
-    if (mpItems.length === 0) {
-      logger.warn(
-        "[broadcast-v2] midnight-prayers: no eligible videos found — cannot activate, main broadcast continues uninterrupted",
-      );
-      return;
-    }
+      const isYtShuffleOverride =
+        this.mode === "override" &&
+        this.override !== null &&
+        ytShuffleFallback.isActive &&
+        ytShuffleFallback.activeOverrideId === this.override.id;
 
-    // Do NOT overwrite an existing pending checkpoint row: if the process
-    // crashed mid-window and this is the post-restart re-activation, a row
-    // already holds the ORIGINAL main-queue pause point captured when the
-    // window first opened. Overwriting it here would replace that with the
-    // post-restart queue position, losing the true resume point. Only write
-    // a fresh checkpoint when none is currently pending.
-    let hasExistingCheckpoint = false;
-    try {
-      hasExistingCheckpoint = (await checkpointRepo.load(MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID)) !== null;
-    } catch (err) {
-      logger.warn({ err }, "[broadcast-v2] midnight-prayers: failed to check for existing checkpoint (non-fatal)");
-    }
-
-    if (!hasExistingCheckpoint) {
-      const snap = this.snapshot();
-      const checkpoint = snap.current
-        ? { itemId: snap.current.id, positionMs: Math.max(0, Date.now() - snap.current.startsAtMs) }
-        : null;
-
-      // Persist the resume checkpoint BEFORE swapping in-memory state so a
-      // crash between these two steps still leaves a durable, restorable
-      // pointer back to the exact main-queue item/position.
-      try {
-        await checkpointRepo.save({
-          channelId: MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID,
-          itemId: checkpoint?.itemId ?? null,
-          positionMs: checkpoint?.positionMs ?? 0,
-          sourceHealth: "ok",
-        });
-      } catch (err) {
-        logger.warn(
-          { err },
-          "[broadcast-v2] midnight-prayers: failed to persist pre-activation checkpoint (non-fatal — resume may restart from item 0 after a crash)",
+      if (!isYtShuffleOverride) {
+        logger.info(
+          { mode: this.mode },
+          "[broadcast-v2] midnight-prayers: skipping activation — a manual/operator override or failover is on-air; will retry next tick",
         );
+        return;
+      }
+
+      logger.info(
+        { overrideId: this.override!.id, overrideTitle: this.override!.title },
+        "[broadcast-v2] midnight-prayers: preempting active ytShuffleFallback override so the prayer window can open",
+      );
+      // Set BEFORE the first await: closes the race where the tick loop or a
+      // self-heal timer observes "mode === queue, items still empty" during
+      // the async gap below and races to re-activate ytShuffleFallback right
+      // back, undoing the preemption before the prayer rotation is swapped in.
+      // Wrapped in a SINGLE try/finally spanning every await in this branch
+      // (deactivate() AND the belt-and-suspenders stopOverride()) so a throw
+      // from either can never leave the flag stuck true.
+      this.midnightPrayersActivating = true;
+      try {
+        try {
+          await ytShuffleFallback.deactivate(() => this.stopOverride());
+        } catch (err) {
+          logger.warn(
+            { err },
+            "[broadcast-v2] midnight-prayers: ytShuffleFallback preemption failed — will retry next tick",
+          );
+          return;
+        }
+        // Belt-and-suspenders: stopOverride() sets mode back to "queue", but if
+        // ytShuffleFallback.deactivate() no-op'd for any reason (e.g. its id
+        // check failed to match), force the override off directly so a stuck
+        // override can never permanently block Midnight Prayers.
+        // (Re-read via a freshly-typed local: TS's control-flow narrowing of
+        // `this.mode` from the outer guard is stale after the `await` above,
+        // which may have mutated it via stopOverride().)
+        const modeAfterPreemption = this.mode as unknown as V2Mode;
+        if (modeAfterPreemption !== "queue") {
+          await this.stopOverride();
+        }
+        preemptedYtShuffle = true;
+      } finally {
+        this.midnightPrayersActivating = false;
       }
     }
 
-    this.mpSavedItems = this.items;
-    this.mpSavedCycleStartedAtMs = this.cycleStartedAtMs;
-    this.items = mpItems;
-    this.rebuildItemOffsets();
-    this.cycleStartedAtMs = Date.now();
-    this.midnightPrayersActive = true;
-    this.sequence += 1;
-    logger.info(
-      { itemCount: mpItems.length },
-      "[broadcast-v2] midnight-prayers window ACTIVATED — main queue frozen, Midnight Prayers rotation is now on-air",
-    );
-    this.emitSnapshot();
+    this.midnightPrayersActivating = preemptedYtShuffle;
+    try {
+      if (mpItems.length === 0) {
+        logger.warn(
+          "[broadcast-v2] midnight-prayers: no eligible videos found — cannot activate, main broadcast continues uninterrupted",
+        );
+        return;
+      }
+
+      // Do NOT overwrite an existing pending checkpoint row: if the process
+      // crashed mid-window and this is the post-restart re-activation, a row
+      // already holds the ORIGINAL main-queue pause point captured when the
+      // window first opened. Overwriting it here would replace that with the
+      // post-restart queue position, losing the true resume point. Only write
+      // a fresh checkpoint when none is currently pending.
+      let hasExistingCheckpoint = false;
+      try {
+        hasExistingCheckpoint = (await checkpointRepo.load(MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID)) !== null;
+      } catch (err) {
+        logger.warn({ err }, "[broadcast-v2] midnight-prayers: failed to check for existing checkpoint (non-fatal)");
+      }
+
+      if (!hasExistingCheckpoint) {
+        const snap = this.snapshot();
+        const checkpoint = snap.current
+          ? { itemId: snap.current.id, positionMs: Math.max(0, Date.now() - snap.current.startsAtMs) }
+          : null;
+
+        // Persist the resume checkpoint BEFORE swapping in-memory state so a
+        // crash between these two steps still leaves a durable, restorable
+        // pointer back to the exact main-queue item/position.
+        try {
+          await checkpointRepo.save({
+            channelId: MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID,
+            itemId: checkpoint?.itemId ?? null,
+            positionMs: checkpoint?.positionMs ?? 0,
+            sourceHealth: "ok",
+          });
+        } catch (err) {
+          logger.warn(
+            { err },
+            "[broadcast-v2] midnight-prayers: failed to persist pre-activation checkpoint (non-fatal — resume may restart from item 0 after a crash)",
+          );
+        }
+      }
+
+      // Final race guard: re-validate immediately before committing. If a
+      // concurrent path somehow got an override running again despite the
+      // `midnightPrayersActivating` gate (e.g. a manual operator override
+      // applied mid-transition), abort the swap rather than silently running
+      // Midnight Prayers underneath a live operator override.
+      const modeBeforeCommit = this.mode as unknown as V2Mode;
+      if (modeBeforeCommit !== "queue") {
+        logger.warn(
+          { mode: modeBeforeCommit },
+          "[broadcast-v2] midnight-prayers: override reappeared during activation — aborting swap, will retry next tick",
+        );
+        return;
+      }
+
+      this.mpSavedItems = this.items;
+      this.mpSavedCycleStartedAtMs = this.cycleStartedAtMs;
+      this.items = mpItems;
+      this.rebuildItemOffsets();
+      this.cycleStartedAtMs = Date.now();
+      this.midnightPrayersActive = true;
+      this.mpPreloadFiredForId = null;
+      logger.info(
+        { itemCount: mpItems.length, preemptedYtShuffle },
+        "[broadcast-v2] midnight-prayers window ACTIVATED — main queue frozen, Midnight Prayers rotation is now on-air",
+      );
+      // Structured event: advances the sequence, persists to the event log +
+      // runtime table, records analytics, and pushes a real "event" frame to
+      // every connected SSE/WS client (same lifecycle guarantee override.started
+      // gets) so downstream consumers (admin dashboard, mobile, TV) can react
+      // deterministically instead of only observing an incidental snapshot bump.
+      void this.bump("midnight_prayers.started", { itemCount: mpItems.length, preemptedYtShuffle }).catch(
+        (err: unknown) => logger.warn({ err }, "[broadcast-v2] midnight-prayers: started-event bump failed (non-fatal)"),
+      );
+      this.emitSnapshot();
+    } finally {
+      this.midnightPrayersActivating = false;
+    }
   }
 
   /**
@@ -3389,11 +3549,21 @@ class BroadcastOrchestrator extends EventEmitter {
     // deactivations) are picked up promptly rather than waiting on a
     // coincidental future change.
     this._lastQueueHash = "";
-    this.sequence += 1;
+    this.mpPreloadFiredForId = null;
+    const resumedItemId = this.items.length > 0 ? this.items[0]!.id : null;
     logger.info(
+      { resumedItemId },
       "[broadcast-v2] midnight-prayers window DEACTIVATED — main queue resumed from checkpoint",
     );
+    void this.bump("midnight_prayers.ended", { resumedItemId }).catch((err: unknown) =>
+      logger.warn({ err }, "[broadcast-v2] midnight-prayers: ended-event bump failed (non-fatal)"),
+    );
     this.emitSnapshot();
+    // this.mode is "queue" at this point (deactivateMidnightPrayers never
+    // runs under an operator override — activation always leaves mode as
+    // "queue"). reloadInner() re-resolves the real main queue; if it comes
+    // back empty (YouTube-only deployment), its own fast-path immediately
+    // re-activates ytShuffleFallback — no bespoke resume logic needed here.
     void this.reloadInner().catch((err) =>
       logger.warn({ err }, "[broadcast-v2] midnight-prayers: post-deactivation reload failed (non-fatal)"),
     );

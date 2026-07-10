@@ -154,4 +154,17 @@ export type V2EventType =
    *
    * Payload: { itemId: string; newSource: V2Source; oldKind: V2SourceKind }
    */
-  | "source.upgraded";
+  | "source.upgraded"
+  /**
+   * Emitted when the Midnight Prayers window opens and the orchestrator
+   * swaps `this.items` to the prayer rotation (preempting an active
+   * ytShuffleFallback override when necessary). Payload:
+   * { itemCount: number; preemptedYtShuffle: boolean }
+   */
+  | "midnight_prayers.started"
+  /**
+   * Emitted when the Midnight Prayers window closes and the main queue (or
+   * ytShuffleFallback, on YouTube-only deployments) resumes. Payload:
+   * { resumedItemId: string | null }
+   */
+  | "midnight_prayers.ended";

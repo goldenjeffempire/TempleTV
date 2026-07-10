@@ -88,6 +88,39 @@ export function isWindowActive(
 }
 
 /**
+ * Detects whether `nowMs` is within `leadMs` of the next hour-boundary AND
+ * that boundary will actually flip the window's active/inactive state (the
+ * config is hour-granular, so "approaching a boundary" only matters when it
+ * changes something).
+ *
+ * Used to proactively preload the Midnight Prayers transition item (or the
+ * resume item) a lead window ahead of the hard swap, giving clients the same
+ * head start on the boundary item that the normal mid-rotation preload gives
+ * every other item — eliminating the black-frame/buffering moment that a
+ * cold, no-warning swap would otherwise cause.
+ *
+ * Approximate by design: config granularity is whole hours, so treating the
+ * local minute-of-hour as "seconds into hour" (ignoring seconds) is accurate
+ * to within 60 s, comfortably inside a multi-minute lead window.
+ */
+export function isApproachingTransition(
+  nowMs: number,
+  config: MPWindowConfig,
+  leadMs: number,
+): { approaching: boolean; willActivate: boolean } {
+  if (!config.enabled) return { approaching: false, willActivate: false };
+
+  const minute = getLocalMinute(config.timezone, nowMs);
+  const msIntoHour = minute * 60_000;
+  const msToNextHour = 60 * 60_000 - msIntoHour;
+  if (msToNextHour > leadMs) return { approaching: false, willActivate: false };
+
+  const nowActive = isWindowActive(nowMs, config);
+  const futureActive = isWindowActive(nowMs + msToNextHour + 1000, config);
+  return { approaching: nowActive !== futureActive, willActivate: futureActive };
+}
+
+/**
  * Human-readable description of the window state for log messages.
  */
 export function windowDescription(config: MPWindowConfig): string {

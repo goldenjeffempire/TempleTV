@@ -27,7 +27,16 @@ import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { broadcastOrchestrator } from "./broadcast-orchestrator.js";
 import { queueRepo, type RawQueueRow } from "../repository/queue.repo.js";
 import { midnightPrayersService } from "../../midnight-prayers/midnight-prayers.service.js";
-import { isWindowActive } from "../../midnight-prayers/window-utils.js";
+import { isWindowActive, isApproachingTransition } from "../../midnight-prayers/window-utils.js";
+import { env } from "../../../config/env.js";
+
+/**
+ * How far ahead of a window boundary (open OR close) to send a proactive
+ * preload frame for the transition item. Reuses the same lead time the
+ * primary broadcast uses for its own mid-rotation preloads so Midnight
+ * Prayers boundary transitions get an identical head start.
+ */
+const MP_PRELOAD_LEAD_MS = env.BROADCAST_PRELOAD_LEAD_MS;
 
 const CHANNEL_ID = "midnight-prayers";
 
@@ -136,6 +145,17 @@ export async function midnightPrayersSchedulerScan(): Promise<void> {
       return;
     }
     if (items.length === 0) {
+      // Self-healing / health-monitoring: surface a dead-air-risk ops alert
+      // once the window has been open with zero eligible content for a
+      // sustained period, instead of silently retrying forever with no
+      // observability into why the prayer window never came on-air.
+      adminEventBus.push("midnight-prayers-status", {
+        active: false,
+        itemCount: 0,
+        ts: Date.now(),
+        deadAirRisk: true,
+        reason: "no_eligible_videos",
+      });
       logger.warn(
         "[midnight-prayers] window is open but no eligible videos are available — main broadcast continues, will retry",
       );
@@ -161,5 +181,40 @@ export async function midnightPrayersSchedulerScan(): Promise<void> {
   } else if (!active && broadcastOrchestrator.isMidnightPrayersActive) {
     await broadcastOrchestrator.deactivateMidnightPrayers();
     adminEventBus.push("midnight-prayers-status", { active: false, itemCount: 0, ts: Date.now() });
+  } else if (!broadcastOrchestrator.isMidnightPrayersActive) {
+    // ── Proactive boundary preload (window OPENING soon) ──────────────────
+    // Give clients the same head start on the transition item that every
+    // other rotation item gets, so the main→prayers cut is gapless instead
+    // of a cold, unwarned swap.
+    const { approaching, willActivate } = isApproachingTransition(Date.now(), config, MP_PRELOAD_LEAD_MS);
+    if (approaching && willActivate) {
+      try {
+        const items = await loadEligibleMpItems();
+        if (items.length > 0 && items[0]) {
+          broadcastOrchestrator.preloadMidnightPrayers({
+            id: items[0].id,
+            videoId: items[0].id,
+            title: items[0].title,
+            thumbnailUrl: items[0].thumbnailUrl,
+            durationSecs: items[0].durationSecs,
+            primaryUrl: items[0].source.url,
+            source: items[0].source,
+            failoverSource: items[0].failoverSource as { kind: "mp4"; url: string } | null,
+            sourceQuality: "mp4",
+          });
+        }
+      } catch (err) {
+        logger.warn({ err }, "[midnight-prayers] proactive open-boundary preload failed (non-fatal)");
+      }
+    }
+  } else {
+    // ── Proactive boundary preload (window CLOSING soon) ──────────────────
+    // Announce the item the main queue will resume on so the prayers→main
+    // cut is also gapless.
+    const { approaching, willActivate } = isApproachingTransition(Date.now(), config, MP_PRELOAD_LEAD_MS);
+    if (approaching && !willActivate) {
+      const resumeItem = broadcastOrchestrator.peekMainQueueResumeItem();
+      if (resumeItem) broadcastOrchestrator.preloadMidnightPrayers(resumeItem);
+    }
   }
 }
