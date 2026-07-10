@@ -97,13 +97,24 @@ function checkIdempotency(key: string): boolean {
 // unnecessary DB connections (persistCheckpoint), log noise, and CPU pressure.
 //
 // This dedup map short-circuits the route handler itself: only ONE request per
-// `${itemId}:${cycleAnchor}` passes through to the orchestrator within a 10 s
+// `${itemId}:${cycleAnchor}` passes through to the orchestrator within a 2 s
 // window. The rest return `{ ok: true, advanced: false, reason: "dedup" }`.
-// 10 s covers the typical "all players fire within 2-3 s of each other" window
-// while being short enough that a legitimate second call on the NEXT cycle
-// (same itemId, next loop iteration) is not suppressed.
+//
+// TTL set to 2 s (reduced from 10 s):
+//   • 2 s is more than enough to coalesce the thundering-herd burst — all
+//     clients fire within milliseconds of each other when the video ends.
+//   • 10 s was too conservative: the machine client retries the POST every
+//     2 s via the onSnapshot guard when the server hasn't advanced yet.
+//     With a 10 s dedup window those retries were all blocked, leaving up to
+//     10 s of black-screen dead air on any transient POST failure (network
+//     hiccup, brief WS reconnect).  With a 2 s window the first machine
+//     retry (at t ≈ 2 s) is no longer deduped, cutting the worst-case gap
+//     from 10 s to ≤ 4 s.
+//   • A legitimate NEXT-cycle call for the same item (single-item queue loop)
+//     carries a different cycleAnchor (startsAtMs advanced by naturalItemEnd),
+//     so it is never suppressed regardless of TTL.
 const naturalEndDedup = new Map<string, number>();
-const NATURAL_END_DEDUP_TTL_MS = 10_000;
+const NATURAL_END_DEDUP_TTL_MS = 2_000;
 
 // Scheduled GC: sweep both maps every 10 minutes regardless of traffic
 // so stale entries don't accumulate during quiet periods (e.g. overnight).
