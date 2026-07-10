@@ -12,6 +12,7 @@ import com.google.android.play.core.install.model.UpdateAvailability
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.kotlin.functions.Coroutine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.tasks.await
@@ -20,10 +21,10 @@ import kotlinx.coroutines.withTimeout
 class ExpoInAppUpdatesModule : Module() {
 
     companion object {
-        private const val UPDATE_REQUEST_CODE      = 21_341
-        private const val EVENT_INSTALL_STATE      = "onInstallStateUpdate"
+        private const val UPDATE_REQUEST_CODE = 21_341
+        private const val EVENT_INSTALL_STATE = "onInstallStateUpdate"
         /** Timeout waiting for the Play dialog activity result (2 min). */
-        private const val RESULT_TIMEOUT_MS        = 120_000L
+        private const val RESULT_TIMEOUT_MS   = 120_000L
     }
 
     private var manager: AppUpdateManager? = null
@@ -76,12 +77,16 @@ class ExpoInAppUpdatesModule : Module() {
 
         // ── checkForUpdate ─────────────────────────────────────────────────────
         //
-        // AsyncFunction lambdas run inside a coroutine scope (same as how
-        // ExpoPipAndroidModule uses suspendCancellableCoroutine directly), so
-        // .await() works without runBlocking — no thread is blocked.
+        // AsyncFunction("name") Coroutine { ... } routes through AsyncFunctionBuilder
+        // + SuspendFunctionComponent (expo-modules-core 3.x), which runs the body
+        // inside a proper coroutine scope — so .await() works without runBlocking
+        // and without blocking any thread.
+        //
+        // Note: AsyncFunction("name") { crossinline ... } does NOT support suspend
+        // calls; Coroutine { } is the required syntax for suspend bodies in EMC 3.x.
 
-        AsyncFunction("checkForUpdate") {
-            val mgr = manager ?: return@AsyncFunction noUpdateMap()
+        AsyncFunction("checkForUpdate") Coroutine {
+            val mgr = manager ?: return@Coroutine noUpdateMap()
             try {
                 val info: AppUpdateInfo = mgr.appUpdateInfo.await()
                 val avail = info.updateAvailability()
@@ -113,8 +118,8 @@ class ExpoInAppUpdatesModule : Module() {
         //   -1  = RESULT_CANCELLED (user declined the dialog)
         //    1  = IN_APP_UPDATE_FAILED
 
-        AsyncFunction("startUpdate") { updateType: Int ->
-            val mgr = manager ?: return@AsyncFunction Activity.RESULT_CANCELED
+        AsyncFunction("startUpdate") Coroutine { updateType: Int ->
+            val mgr = manager ?: return@Coroutine Activity.RESULT_CANCELED
             try {
                 attachInstallListener()
 
@@ -128,19 +133,21 @@ class ExpoInAppUpdatesModule : Module() {
                 val deferred = CompletableDeferred<Int>()
                 pendingResult = deferred
 
-                // This starts the Play-managed activity (dialog or full-screen).
+                // Start the Play-managed activity (dialog or full-screen).
                 // The result arrives via OnActivityResult above.
                 mgr.startUpdateFlowForResult(info, currentActivity, options, UPDATE_REQUEST_CODE)
 
-                // Suspend — releasing the coroutine thread — until the activity
-                // result fires or we time out.  runBlocking is intentionally
-                // absent: suspending here is safe and correct.
-                withTimeout(RESULT_TIMEOUT_MS) { deferred.await() }
+                // Suspend (releasing the coroutine thread) until the activity result
+                // fires or we time out. CancellationException is re-thrown so the
+                // SuspendFunctionComponent's coroutine scope can clean up properly.
+                try {
+                    withTimeout(RESULT_TIMEOUT_MS) { deferred.await() }
+                } catch (e: CancellationException) {
+                    pendingResult?.cancel()
+                    pendingResult = null
+                    throw e
+                }
             } catch (e: CancellationException) {
-                // Rethrow CancellationException so the coroutine runtime can
-                // propagate cooperative cancellation (e.g. module teardown) correctly.
-                pendingResult?.cancel()
-                pendingResult = null
                 throw e
             } catch (_: Exception) {
                 pendingResult?.cancel()
@@ -152,7 +159,7 @@ class ExpoInAppUpdatesModule : Module() {
         // ── completeUpdate ─────────────────────────────────────────────────────
         // Triggers an app restart to apply a downloaded flexible update.
 
-        AsyncFunction("completeUpdate") {
+        AsyncFunction("completeUpdate") Coroutine {
             try {
                 manager?.completeUpdate()?.await()
             } catch (_: Exception) { /* non-fatal — app restart handled by Play */ }
@@ -160,6 +167,7 @@ class ExpoInAppUpdatesModule : Module() {
         }
 
         // ── unregisterListener ─────────────────────────────────────────────────
+        // No async work; regular AsyncFunction (crossinline lambda) is fine here.
 
         AsyncFunction("unregisterListener") {
             detachInstallListener()

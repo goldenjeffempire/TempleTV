@@ -1,3 +1,4 @@
+- [expo-modules-core 3.x Coroutine DSL](expo-modules-core-coroutine-dsl.md) — AsyncFunction crossinline lambdas cannot call suspend; use `AsyncFunction("name") Coroutine { ... }` for suspend bodies in EMC 3.x.
 - [Stuck-assembly scanner and session-completed retry](stuck-assembly-scanner.md) — 3 gaps causing "Assembling…" stuck state; fixed with 30s retry + finalize-status s3MirroredAt check + periodic 5-min scanner.
 - [Natural-end retry timing — broadcast pipeline](natural-end-retry-timing.md) — naturalEndRetryDelays [300,800,2000]ms; machine 2s TTL guard + 5 retries + 1s inner poll; STALL_REBIND_MS 20s; mobile vendor must be kept in sync with lib/player-core/src/.
 - [Player-core vendor sync — mobile vendor divergence rules](player-core-vendor-sync.md) — mobile uses artifacts/mobile/vendor/player-core/ (not lib/); every lib edit MUST mirror to vendor; V2SourceQuality + naturalEndRetryDelays both fixed July 2026.

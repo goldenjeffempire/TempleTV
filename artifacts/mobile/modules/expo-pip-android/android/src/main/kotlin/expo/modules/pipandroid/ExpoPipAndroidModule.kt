@@ -15,6 +15,7 @@ import android.content.pm.PackageManager
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.util.Rational
+import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -98,20 +99,18 @@ class ExpoPipAndroidModule : Module() {
         // restore button inside the PiP overlay, and sets the window title on
         // Android 12+ (API 31) so viewers know what is playing.
         //
-        // Uses suspendCancellableCoroutine instead of CountDownLatch to safely
-        // bridge the UI-thread work back to this (background) coroutine without
-        // blocking a thread pool slot. CountDownLatch.await() on the Expo module
-        // dispatcher thread could exhaust the thread pool under concurrent calls
-        // and trigger an ANR if the UI thread is congested during the 5-second
-        // timeout window. suspendCancellableCoroutine suspends — releases the
-        // thread — until runOnUiThread completes and resumes the coroutine.
+        // Uses AsyncFunction("…") Coroutine { … } (expo-modules-core 3.x builder
+        // syntax) + suspendCancellableCoroutine to safely bridge the UI-thread work
+        // back to this coroutine without blocking a thread pool slot.
+        // The AsyncFunction("…") { crossinline … } shorthand does NOT support
+        // suspend calls — Coroutine { } is required for any suspend body in EMC 3.x.
 
-        AsyncFunction("enterPictureInPicture") {
+        AsyncFunction("enterPictureInPicture") Coroutine {
             aspectWidth: Int, aspectHeight: Int,
             withRestore: Boolean, title: String?, isPlaying: Boolean ->
 
-            if (Build.VERSION.SDK_INT < 26) return@AsyncFunction false
-            val act = currentActivity ?: return@AsyncFunction false
+            if (Build.VERSION.SDK_INT < 26) return@Coroutine false
+            val act = currentActivity ?: return@Coroutine false
             registerPipReceiver()
 
             suspendCancellableCoroutine { cont ->
@@ -167,20 +166,17 @@ class ExpoPipAndroidModule : Module() {
         // actions, and title immediately when the user or OS triggers PiP.
         // Also updates the live media controls (play ↔ pause icon) while already
         // in PiP — call this whenever the playback state changes.
-        //
-        // Uses suspendCancellableCoroutine for the same ANR-safety reasons as
-        // enterPictureInPicture above.
 
-        AsyncFunction("updatePipParams") {
+        AsyncFunction("updatePipParams") Coroutine {
             aspectWidth: Int, aspectHeight: Int,
             withRestore: Boolean, autoEnter: Boolean,
             title: String?, isPlaying: Boolean ->
 
-            if (Build.VERSION.SDK_INT < 26) return@AsyncFunction null
-            val act = currentActivity ?: return@AsyncFunction null
+            if (Build.VERSION.SDK_INT < 26) return@Coroutine null
+            val act = currentActivity ?: return@Coroutine null
             registerPipReceiver()
 
-            suspendCancellableCoroutine { cont ->
+            suspendCancellableCoroutine<Unit> { cont ->
                 act.runOnUiThread {
                     try {
                         val builder = PictureInPictureParams.Builder()
@@ -210,6 +206,7 @@ class ExpoPipAndroidModule : Module() {
         }
 
         // ── cancelPipRestoreNotification ────────────────────────────────────────
+        // No suspend work needed — regular AsyncFunction (crossinline) is fine.
 
         AsyncFunction("cancelPipRestoreNotification") {
             val act = currentActivity ?: return@AsyncFunction null
