@@ -29,6 +29,7 @@ import { autohealRoutes } from "./io/autoheal.routes.js";
 import { uploadQueueReconciler } from "../broadcast/upload-queue-reconciler.js";
 import { runDeepRecovery } from "../transcoder/video-recovery.service.js";
 import { scanLibraryAndEnqueue, repairMissingS3MirroredAt } from "../broadcast/auto-enqueue.service.js";
+import { midnightPrayersSchedulerScan } from "./engine/midnight-prayers-scheduler.js";
 
 export { getExhaustionStatus, getAutoRefillStatus, getStorageStats };
 export { getDeadAirStats };
@@ -408,6 +409,22 @@ function startSupervisedWorkers(): void {
     initialDelayMs: 5 * 60_000,
     backoffMs: [30_000, 60_000, 2 * 60_000],
     onCircuitOpen: makeCircuitOpenCallback("queue-self-healing"),
+  });
+
+  // Midnight Prayers Scheduler: server-driven queue-swap engine that freezes
+  // the main queue and airs the Midnight Prayers rotation for the configured
+  // window, reusing the primary broadcast's dual-buffer preload/checkpoint/
+  // self-heal machinery (see midnight-prayers-scheduler.ts). Polled every
+  // 10 s so the window boundary — and newly-eligible videos — are picked up
+  // within seconds in either direction. No initial delay: the window check
+  // itself is cheap (one config read) even before the first queue reload.
+  workerSupervisor.spawn({
+    name: "midnight-prayers-scheduler",
+    fn: () => midnightPrayersSchedulerScan(),
+    intervalMs: 10_000,
+    initialDelayMs: 5_000,
+    backoffMs: [10_000, 30_000, 60_000],
+    onCircuitOpen: makeCircuitOpenCallback("midnight-prayers-scheduler"),
   });
 
   // Upload Queue Reconciler: final safety-net for the upload→queue pipeline.

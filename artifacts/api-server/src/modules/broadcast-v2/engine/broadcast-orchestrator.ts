@@ -141,6 +141,14 @@ const EMPTY_POLLS_BEFORE_ESCALATION = 3;
 const DEAD_AIR_ESCALATION_COOLDOWN_MS = 5 * 60_000;
 
 /**
+ * channelId key used to persist the Midnight Prayers pre-activation resume
+ * checkpoint in `player_position_checkpoint` (the same table/repo used for
+ * the primary channel's own restart-resume checkpoint, under a distinct key
+ * so the two never collide).
+ */
+const MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID = "main:midnight-prayers-pending";
+
+/**
  * Pre-resolved queue item stored in the orchestrator's in-memory items array.
  *
  * Source resolution (resolveSource + allowlist check) runs ONCE per item at
@@ -202,6 +210,19 @@ class BroadcastOrchestrator extends EventEmitter {
   private override: V2Override | null = null;
   /** Position checkpoint of the queue item paused under an override. */
   private queueCheckpoint: { itemId: string; positionMs: number } | null = null;
+  /**
+   * True while the Midnight Prayers window is on-air. While active, `this.items`
+   * holds the Midnight Prayers rotation instead of the normal broadcast queue,
+   * and reloadInner() is a no-op — the main queue is frozen (not mutated) so it
+   * resumes exactly where it left off. Reuses the SAME dual-buffer preload /
+   * checkpoint / self-heal machinery that the primary broadcast already relies
+   * on, so Midnight Prayers gets the identical gapless-transition and
+   * self-healing guarantees for free instead of a bespoke, less-reliable path.
+   */
+  private midnightPrayersActive = false;
+  /** Main-queue items saved when Midnight Prayers activated, restored on end. */
+  private mpSavedItems: CachedQueueItem[] | null = null;
+  private mpSavedCycleStartedAtMs: number | null = null;
   private failover: { active: boolean; reason: string | null } = { active: false, reason: null };
   private sequence = 0;
   private tickTimer: NodeJS.Timeout | null = null;
@@ -1439,6 +1460,21 @@ class BroadcastOrchestrator extends EventEmitter {
   }
 
   private async reloadInner(opts?: { preserveBadUrlCache?: boolean }): Promise<void> {
+    if (this.midnightPrayersActive) {
+      // Midnight Prayers is on-air: `this.items` holds the MP rotation, not
+      // the main broadcast queue. Skip normal-queue reload entirely so the
+      // main queue stays frozen (untouched) and resumes exactly where it
+      // paused when Midnight Prayers ends. Any queue edits made during the
+      // window are picked up by the forced reload that deactivateMidnightPrayers()
+      // fires immediately after restoring the main queue.
+      this.lastReloadAtMs = Date.now();
+      this.lastReloadOk = true;
+      this.lastReloadError = null;
+      logger.debug(
+        "[broadcast-v2] reloadInner: midnight-prayers window active — skipping normal-queue reload",
+      );
+      return;
+    }
     if (this._reloadInProgress) {
       logger.debug("[broadcast-v2] reloadInner: concurrent call suppressed by mutex");
       return;
@@ -2286,6 +2322,7 @@ class BroadcastOrchestrator extends EventEmitter {
       nextYtVideoId: ytShuffleFallback.isActive
         ? (ytShuffleFallback.peekNext()?.youtubeId ?? null)
         : null,
+      programMode: this.midnightPrayersActive ? "midnight-prayers" : "regular",
     };
   }
 
@@ -3251,6 +3288,154 @@ class BroadcastOrchestrator extends EventEmitter {
     this.emitFrame({ type: "takeover", sequence: this.sequence, override: this.override });
     this.emitSnapshot();
     return this.override;
+  }
+
+  // ── Midnight Prayers queue swap ───────────────────────────────────────────
+
+  get isMidnightPrayersActive(): boolean {
+    return this.midnightPrayersActive;
+  }
+
+  /**
+   * Activate the Midnight Prayers window: freezes the main queue and swaps
+   * `this.items` to the supplied Midnight Prayers rotation. Idempotent — a
+   * second call while already active is a no-op. Skips activation (logging
+   * and letting the caller retry on the next tick) when an override/failover
+   * is currently on-air, so Midnight Prayers never fights a live operator
+   * override for control of the channel.
+   */
+  async activateMidnightPrayers(mpItems: CachedQueueItem[]): Promise<void> {
+    if (this.midnightPrayersActive) return;
+    if (this.mode !== "queue") {
+      logger.info(
+        { mode: this.mode },
+        "[broadcast-v2] midnight-prayers: skipping activation — mode is not 'queue' (override/failover on-air); will retry next tick",
+      );
+      return;
+    }
+    if (mpItems.length === 0) {
+      logger.warn(
+        "[broadcast-v2] midnight-prayers: no eligible videos found — cannot activate, main broadcast continues uninterrupted",
+      );
+      return;
+    }
+
+    // Do NOT overwrite an existing pending checkpoint row: if the process
+    // crashed mid-window and this is the post-restart re-activation, a row
+    // already holds the ORIGINAL main-queue pause point captured when the
+    // window first opened. Overwriting it here would replace that with the
+    // post-restart queue position, losing the true resume point. Only write
+    // a fresh checkpoint when none is currently pending.
+    let hasExistingCheckpoint = false;
+    try {
+      hasExistingCheckpoint = (await checkpointRepo.load(MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID)) !== null;
+    } catch (err) {
+      logger.warn({ err }, "[broadcast-v2] midnight-prayers: failed to check for existing checkpoint (non-fatal)");
+    }
+
+    if (!hasExistingCheckpoint) {
+      const snap = this.snapshot();
+      const checkpoint = snap.current
+        ? { itemId: snap.current.id, positionMs: Math.max(0, Date.now() - snap.current.startsAtMs) }
+        : null;
+
+      // Persist the resume checkpoint BEFORE swapping in-memory state so a
+      // crash between these two steps still leaves a durable, restorable
+      // pointer back to the exact main-queue item/position.
+      try {
+        await checkpointRepo.save({
+          channelId: MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID,
+          itemId: checkpoint?.itemId ?? null,
+          positionMs: checkpoint?.positionMs ?? 0,
+          sourceHealth: "ok",
+        });
+      } catch (err) {
+        logger.warn(
+          { err },
+          "[broadcast-v2] midnight-prayers: failed to persist pre-activation checkpoint (non-fatal — resume may restart from item 0 after a crash)",
+        );
+      }
+    }
+
+    this.mpSavedItems = this.items;
+    this.mpSavedCycleStartedAtMs = this.cycleStartedAtMs;
+    this.items = mpItems;
+    this.rebuildItemOffsets();
+    this.cycleStartedAtMs = Date.now();
+    this.midnightPrayersActive = true;
+    this.sequence += 1;
+    logger.info(
+      { itemCount: mpItems.length },
+      "[broadcast-v2] midnight-prayers window ACTIVATED — main queue frozen, Midnight Prayers rotation is now on-air",
+    );
+    this.emitSnapshot();
+  }
+
+  /**
+   * End the Midnight Prayers window: restores the frozen main queue and
+   * resumes it at the exact item/position it was paused at (via the
+   * persisted checkpoint, which also survives a mid-window process
+   * restart). Idempotent — a call while inactive is a no-op.
+   */
+  async deactivateMidnightPrayers(): Promise<void> {
+    if (!this.midnightPrayersActive) return;
+    this.midnightPrayersActive = false;
+    this.items = this.mpSavedItems ?? this.items;
+    this.mpSavedItems = null;
+    this.rebuildItemOffsets();
+    await this.resolvePendingMidnightPrayersCheckpoint();
+    // Force the next reload to be a full re-resolution (not a hash-skip) so
+    // any queue edits made while Midnight Prayers was on-air (new uploads,
+    // deactivations) are picked up promptly rather than waiting on a
+    // coincidental future change.
+    this._lastQueueHash = "";
+    this.sequence += 1;
+    logger.info(
+      "[broadcast-v2] midnight-prayers window DEACTIVATED — main queue resumed from checkpoint",
+    );
+    this.emitSnapshot();
+    void this.reloadInner().catch((err) =>
+      logger.warn({ err }, "[broadcast-v2] midnight-prayers: post-deactivation reload failed (non-fatal)"),
+    );
+  }
+
+  /**
+   * Applies the persisted Midnight Prayers resume checkpoint (if any) to the
+   * current `this.items` and clears it. Used both by deactivateMidnightPrayers()
+   * (normal end-of-window path) and by boot-time reconciliation (the process
+   * crashed/restarted while a checkpoint was pending — e.g. the window ended
+   * while the server was down). Safe to call with no pending checkpoint.
+   */
+  async resolvePendingMidnightPrayersCheckpoint(): Promise<void> {
+    let checkpoint: { itemId: string | null; positionMs: number } | null = null;
+    try {
+      checkpoint = await checkpointRepo.load(MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID);
+    } catch (err) {
+      logger.warn(
+        { err },
+        "[broadcast-v2] midnight-prayers: failed to load resume checkpoint (non-fatal — will resume from item 0)",
+      );
+    }
+    if (checkpoint?.itemId && this.items.length > 0) {
+      const idx = this.items.findIndex((i) => i.id === checkpoint!.itemId);
+      if (idx !== -1) {
+        let offsetMs = 0;
+        for (let i = 0; i < idx; i++) offsetMs += this.items[i]!.durationSecs * 1000;
+        this.cycleStartedAtMs = Date.now() - offsetMs - checkpoint.positionMs;
+      } else {
+        // Checkpointed item no longer in the active queue (removed/deactivated
+        // while Midnight Prayers was on-air) — start the restored queue fresh.
+        this.cycleStartedAtMs = Date.now();
+      }
+    } else {
+      this.cycleStartedAtMs = this.mpSavedCycleStartedAtMs ?? Date.now();
+    }
+    this.mpSavedCycleStartedAtMs = null;
+    try {
+      await checkpointRepo.clear(MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID);
+    } catch (err) {
+      logger.warn({ err }, "[broadcast-v2] midnight-prayers: failed to clear resume checkpoint (non-fatal)");
+    }
   }
 
   async stopOverride(): Promise<void> {

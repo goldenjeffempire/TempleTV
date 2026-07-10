@@ -38,80 +38,20 @@ function formatDuration(totalSecs: number): string {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-// ── Midnight Prayers channel switching ───────────────────────────────────────
-
-interface MPScheduleConfig {
-  enabled: boolean;
-  startHour: number;
-  endHour: number;
-  timezone?: string;
-}
-
-/**
- * Returns the local hour (0–23) in the given IANA timezone using
- * Intl.DateTimeFormat. Falls back to device local time on unsupported TZ.
- */
-function getLocalHourInTz(tz: string): number {
-  try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: tz,
-      hour: "2-digit",
-      hour12: false,
-    }).formatToParts(new Date());
-    return parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10) % 24;
-  } catch {
-    return new Date().getHours();
-  }
-}
-
-/**
- * Returns true when the current station-local time falls within the
- * midnight prayer window [startHour, endHour).
- *
- * Uses the server-configured IANA timezone (cfg.timezone) so that all
- * viewers worldwide see the switch at the same moment regardless of their
- * device's local timezone. Falls back to device local time when the server
- * hasn't sent a timezone yet.
- */
-function isInMpWindow(cfg: MPScheduleConfig): boolean {
-  if (!cfg.enabled) return false;
-  const tz = cfg.timezone ?? "Africa/Lagos";
-  const h = getLocalHourInTz(tz);
-  return cfg.endHour > cfg.startHour
-    ? h >= cfg.startHour && h < cfg.endHour
-    : h >= cfg.startHour || h < cfg.endHour;
-}
-
-/**
- * Fetches the Midnight Prayers schedule config once and then polls the local
- * clock every 60 s to decide which broadcast channel to subscribe to.
- * Returns the baseUrl the player should use for the current moment.
- */
-function useMidnightPrayersSwitch(mainBaseUrl: string): string {
-  const [cfg, setCfg] = useState<MPScheduleConfig | null>(null);
-  const [inWindow, setInWindow] = useState(false);
-
-  useEffect(() => {
-    const ctrl = new AbortController();
-    const apiOrigin = resolveApiOrigin();
-    fetch(`${apiOrigin}/api/midnight-prayers/config`, { signal: ctrl.signal })
-      .then((r) => (r.ok ? (r.json() as Promise<MPScheduleConfig>) : null))
-      .then((data) => { if (data) setCfg(data); })
-      .catch(() => { /* ignore — stay on main channel */ });
-    return () => ctrl.abort();
-  }, []);
-
-  useEffect(() => {
-    if (!cfg) return;
-    const check = () => setInWindow(isInMpWindow(cfg));
-    check();
-    const t = setInterval(check, 60_000);
-    return () => clearInterval(t);
-  }, [cfg]);
-
-  if (!cfg || !inWindow) return mainBaseUrl;
-  return `${resolveApiOrigin()}/api/midnight-prayers`;
-}
+// ── Midnight Prayers ──────────────────────────────────────────────────────────
+//
+// Midnight Prayers used to be a separate client-side "shadow engine": this
+// component polled /api/midnight-prayers/config on a local clock and swapped
+// its baseUrl between /api/broadcast-v2 and /api/midnight-prayers. That path
+// bypassed the orchestrator's dual-buffer preload/checkpoint system entirely
+// and was the root cause of blank screens/reloads at the window boundary.
+//
+// Midnight Prayers is now a server-side queue swap inside the broadcast-v2
+// orchestrator (see api-server midnight-prayers-scheduler.ts): the server
+// freezes the main queue and airs the Midnight Prayers rotation for the
+// configured window, so this component stays on /api/broadcast-v2
+// continuously and simply renders whatever `current` the server projects —
+// getting the exact same gapless preload and self-healing as any other item.
 
 interface Props {
   /**
@@ -459,8 +399,7 @@ export function LiveBroadcastV2({
   variant = "player",
 }: Props) {
   void _channelId;
-  const mainBaseUrl = baseUrl ?? `${resolveApiOrigin()}/api/broadcast-v2`;
-  const effectiveBaseUrl = useMidnightPrayersSwitch(mainBaseUrl);
+  const effectiveBaseUrl = baseUrl ?? `${resolveApiOrigin()}/api/broadcast-v2`;
 
   // YouTube sources (kind="youtube") must not be loaded natively — the
   // <video> element cannot play them and would fire `error` → buffer-error →

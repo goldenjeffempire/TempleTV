@@ -75,4 +75,15 @@ export const checkpointRepo = {
       client.release();
     }
   },
+
+  /**
+   * Delete a checkpoint row entirely. Used by the Midnight Prayers
+   * queue-swap engine to clear its pending-resume checkpoint once the
+   * main queue has been successfully restored — an absent row (vs. one
+   * with itemId=null) is the unambiguous "nothing pending" signal used
+   * by boot-time reconciliation.
+   */
+  async clear(channelId: string): Promise<void> {
+    await db.delete(t).where(eq(t.channelId, channelId));
+  },
 };

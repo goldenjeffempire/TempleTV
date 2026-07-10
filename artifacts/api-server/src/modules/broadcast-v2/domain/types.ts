@@ -89,6 +89,15 @@ export interface V2Snapshot {
    * null            — off-air
    */
   sourceQuality: V2SourceQuality | "live_override" | "youtube" | null;
+  /**
+   * "midnight-prayers" when the Midnight Prayers window is on-air (the main
+   * queue is frozen and `current`/`next`/`nextNext` are drawn from the
+   * Midnight Prayers rotation instead). "regular" otherwise. Additive,
+   * optional field — older clients that don't read it simply render
+   * `current` as normal, since Midnight Prayers content is a first-class
+   * queue item indistinguishable in shape from any other.
+   */
+  programMode?: "regular" | "midnight-prayers";
 }
 
 /** Server → client WebSocket / SSE frames. */
