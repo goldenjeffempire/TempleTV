@@ -285,6 +285,22 @@ export default function PlayerScreen() {
     ? (v2Override?.title ?? v2Current?.title ?? title)
     : title;
 
+  // When the V2 broadcast engine is serving a YouTube shuffle override,
+  // extract the video ID so we can play it in-app via YoutubePlayer instead
+  // of rendering V2PlayerContainer which would show a "Watch on YouTube"
+  // external-link overlay (expo-av cannot play YouTube URLs).
+  //
+  // Reactive — this memo recomputes the moment a V2 snapshot arrives
+  // (~100 ms after player mount), so the player surface swaps automatically
+  // from BroadcastHlsPlayer → YoutubePlayer without a navigation round-trip.
+  //
+  // Handles both youtube.com/watch?v= and youtu.be/ URL formats.
+  const v2YouTubeOverrideVideoId = useMemo(() => {
+    if (v2Override?.kind !== "youtube" || !v2Override.url) return null;
+    const m = v2Override.url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+    return m?.[1] ?? null;
+  }, [v2Override?.kind, v2Override?.url]);
+
   // Sync PlayerContext.isBroadcastMode with whether the V2 broadcast engine
   // is active. Without this, the MiniPlayer and any context consumer that
   // reads isBroadcastMode would never know the broadcast channel is playing —
