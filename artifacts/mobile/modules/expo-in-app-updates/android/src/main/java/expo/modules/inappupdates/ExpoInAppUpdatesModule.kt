@@ -86,7 +86,9 @@ class ExpoInAppUpdatesModule : Module() {
         // Note: AsyncFunction("name") { crossinline ... } does NOT support suspend
         // calls; Coroutine { } is the required syntax for suspend bodies in EMC 3.x.
 
-        AsyncFunction("checkForUpdate") Coroutine {
+        // Explicit type arg disambiguates the 0-param vs 1-param Coroutine overload
+        // (Kotlin 2.1 overload resolution ambiguity with reified R vs reified R, P0).
+        AsyncFunction("checkForUpdate").Coroutine<Map<String, Any?>> {
             val mgr = manager ?: return@Coroutine noUpdateMap()
             try {
                 val info: AppUpdateInfo = mgr.appUpdateInfo.await()
@@ -168,11 +170,10 @@ class ExpoInAppUpdatesModule : Module() {
         // ── completeUpdate ─────────────────────────────────────────────────────
         // Triggers an app restart to apply a downloaded flexible update.
 
-        AsyncFunction("completeUpdate") Coroutine {
+        AsyncFunction("completeUpdate").Coroutine<Unit> {
             try {
                 manager?.completeUpdate()?.await()
             } catch (_: Exception) { /* non-fatal — app restart handled by Play */ }
-            null
         }
 
         // ── unregisterListener ─────────────────────────────────────────────────
