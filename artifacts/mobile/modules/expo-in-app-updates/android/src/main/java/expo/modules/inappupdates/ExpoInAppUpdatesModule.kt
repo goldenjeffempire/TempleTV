@@ -12,8 +12,8 @@ import com.google.android.play.core.install.model.UpdateAvailability
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeout
 
@@ -75,30 +75,32 @@ class ExpoInAppUpdatesModule : Module() {
         }
 
         // ── checkForUpdate ─────────────────────────────────────────────────────
+        //
+        // AsyncFunction lambdas run inside a coroutine scope (same as how
+        // ExpoPipAndroidModule uses suspendCancellableCoroutine directly), so
+        // .await() works without runBlocking — no thread is blocked.
 
         AsyncFunction("checkForUpdate") {
             val mgr = manager ?: return@AsyncFunction noUpdateMap()
-            runBlocking {
-                try {
-                    val info: AppUpdateInfo = mgr.appUpdateInfo.await()
-                    val avail = info.updateAvailability()
+            try {
+                val info: AppUpdateInfo = mgr.appUpdateInfo.await()
+                val avail = info.updateAvailability()
 
-                    val isAvailable = avail == UpdateAvailability.UPDATE_AVAILABLE ||
-                        avail == UpdateAvailability.DEVELOPER_TRIGGERED_UPDATE_IN_PROGRESS
-                    val isAlreadyDownloaded = info.installStatus() == InstallStatus.DOWNLOADED
+                val isAvailable = avail == UpdateAvailability.UPDATE_AVAILABLE ||
+                    avail == UpdateAvailability.DEVELOPER_TRIGGERED_UPDATE_IN_PROGRESS
+                val isAlreadyDownloaded = info.installStatus() == InstallStatus.DOWNLOADED
 
-                    mapOf(
-                        "isAvailable"          to isAvailable,
-                        "isAlreadyDownloaded"  to isAlreadyDownloaded,
-                        "allowsFlexible"       to (isAvailable && info.isUpdateTypeAllowed(AppUpdateType.FLEXIBLE)),
-                        "allowsImmediate"      to (isAvailable && info.isUpdateTypeAllowed(AppUpdateType.IMMEDIATE)),
-                        "staleDays"            to info.clientVersionStalenessDays(),
-                        "availableVersionCode" to if (isAvailable || isAlreadyDownloaded)
-                                                    info.availableVersionCode() else null,
-                    )
-                } catch (_: Exception) {
-                    noUpdateMap()
-                }
+                mapOf(
+                    "isAvailable"          to isAvailable,
+                    "isAlreadyDownloaded"  to isAlreadyDownloaded,
+                    "allowsFlexible"       to (isAvailable && info.isUpdateTypeAllowed(AppUpdateType.FLEXIBLE)),
+                    "allowsImmediate"      to (isAvailable && info.isUpdateTypeAllowed(AppUpdateType.IMMEDIATE)),
+                    "staleDays"            to info.clientVersionStalenessDays(),
+                    "availableVersionCode" to if (isAvailable || isAlreadyDownloaded)
+                                                info.availableVersionCode() else null,
+                )
+            } catch (_: Exception) {
+                noUpdateMap()
             }
         }
 
@@ -113,31 +115,37 @@ class ExpoInAppUpdatesModule : Module() {
 
         AsyncFunction("startUpdate") { updateType: Int ->
             val mgr = manager ?: return@AsyncFunction Activity.RESULT_CANCELED
-            runBlocking {
-                try {
-                    attachInstallListener()
+            try {
+                attachInstallListener()
 
-                    val info: AppUpdateInfo = mgr.appUpdateInfo.await()
-                    val type    = if (updateType == UpdateType.IMMEDIATE) AppUpdateType.IMMEDIATE
-                                  else AppUpdateType.FLEXIBLE
-                    val options = AppUpdateOptions.newBuilder(type).build()
+                val info: AppUpdateInfo = mgr.appUpdateInfo.await()
+                val type    = if (updateType == UpdateType.IMMEDIATE) AppUpdateType.IMMEDIATE
+                              else AppUpdateType.FLEXIBLE
+                val options = AppUpdateOptions.newBuilder(type).build()
 
-                    // Discard any stale deferred from a previous, non-completed call.
-                    pendingResult?.cancel()
-                    val deferred = CompletableDeferred<Int>()
-                    pendingResult = deferred
+                // Discard any stale deferred from a previous, non-completed call.
+                pendingResult?.cancel()
+                val deferred = CompletableDeferred<Int>()
+                pendingResult = deferred
 
-                    // This starts the Play-managed activity (dialog or full-screen).
-                    // The result arrives via OnActivityResult above.
-                    mgr.startUpdateFlowForResult(info, currentActivity, options, UPDATE_REQUEST_CODE)
+                // This starts the Play-managed activity (dialog or full-screen).
+                // The result arrives via OnActivityResult above.
+                mgr.startUpdateFlowForResult(info, currentActivity, options, UPDATE_REQUEST_CODE)
 
-                    // Suspend until the activity result fires or we time out.
-                    withTimeout(RESULT_TIMEOUT_MS) { deferred.await() }
-                } catch (_: Exception) {
-                    pendingResult?.cancel()
-                    pendingResult = null
-                    Activity.RESULT_CANCELED
-                }
+                // Suspend — releasing the coroutine thread — until the activity
+                // result fires or we time out.  runBlocking is intentionally
+                // absent: suspending here is safe and correct.
+                withTimeout(RESULT_TIMEOUT_MS) { deferred.await() }
+            } catch (e: CancellationException) {
+                // Rethrow CancellationException so the coroutine runtime can
+                // propagate cooperative cancellation (e.g. module teardown) correctly.
+                pendingResult?.cancel()
+                pendingResult = null
+                throw e
+            } catch (_: Exception) {
+                pendingResult?.cancel()
+                pendingResult = null
+                Activity.RESULT_CANCELED
             }
         }
 
@@ -145,19 +153,17 @@ class ExpoInAppUpdatesModule : Module() {
         // Triggers an app restart to apply a downloaded flexible update.
 
         AsyncFunction("completeUpdate") {
-            runBlocking {
-                try {
-                    manager?.completeUpdate()?.await()
-                } catch (_: Exception) { /* non-fatal — app restart handled by Play */ }
-            }
-            return@AsyncFunction null
+            try {
+                manager?.completeUpdate()?.await()
+            } catch (_: Exception) { /* non-fatal — app restart handled by Play */ }
+            null
         }
 
         // ── unregisterListener ─────────────────────────────────────────────────
 
         AsyncFunction("unregisterListener") {
             detachInstallListener()
-            return@AsyncFunction null
+            null
         }
     }
 
