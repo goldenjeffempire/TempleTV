@@ -740,8 +740,10 @@ export default function PlayerScreen() {
       const isGoingToBackground = nextState === "background" || nextState === "inactive";
 
       if (isGoingToBackground && isFullscreen) {
-        if (isPipSupported && !isYoutube) {
+        if (isPipSupported && !isYoutube && !v2YouTubeOverrideVideoId) {
           // Keep the fullscreen Modal open — the video fills the PiP window.
+          // YouTube overrides are excluded from PiP (same reason as isYoutube:
+          // the native player handles its own PiP; our overlay would conflict).
           // If the system rejects the PiP request (locked screen, display off,
           // TV device, etc.) fall back to restoring portrait orientation.
           enterPip().then((entered) => {
@@ -762,8 +764,10 @@ export default function PlayerScreen() {
             ScreenOrientation.OrientationLock.PORTRAIT_UP,
           ).catch(() => {});
         }
-      } else if (isGoingToBackground && !isFullscreen && isPipSupported && !isYoutube && isBroadcastV2) {
+      } else if (isGoingToBackground && !isFullscreen && isPipSupported && !isYoutube && !v2YouTubeOverrideVideoId && isBroadcastV2) {
         // Auto-enter PiP from portrait mode for live broadcasts.
+        // YouTube overrides excluded (same as isYoutube): they control their
+        // own PiP surface; our overlay would produce a black/conflicted window.
         // The Activity shrinks to a PiP window showing the player screen.
         // The V2PlayerContainer's own AppState effect handles forceReconnect
         // when the app resumes from PiP. No orientation lock needed since we
@@ -772,7 +776,7 @@ export default function PlayerScreen() {
       }
     });
     return () => sub.remove();
-  }, [isFullscreen, isPipSupported, isYoutube, isBroadcastV2, enterPip]);
+  }, [isFullscreen, isPipSupported, isYoutube, v2YouTubeOverrideVideoId, isBroadcastV2, enterPip]);
 
   // Restore portrait lock whenever the player screen is torn down, regardless
   // of how navigation happened (deep-link push, OS back gesture that bypasses
@@ -1018,7 +1022,27 @@ export default function PlayerScreen() {
       >
         {/* ── 16:9 Player Shell ─────────────────────────────────────────── */}
         <View style={[styles.playerShell, { height: playerHeight }]}>
-          {isLive && isHls ? (
+          {isBroadcastV2 && v2YouTubeOverrideVideoId ? (
+            /* V2 YouTube override — swaps inline to YoutubePlayer the moment
+               the server snapshot arrives with override.kind="youtube" (e.g.
+               the YouTube shuffle fallback). This eliminates the "Watch on
+               YouTube" external-link overlay that V2PlayerContainer shows for
+               YouTube sources, giving users a fully embedded experience. The
+               memo is reactive: it recomputes ~100 ms after mount when the
+               first server frame arrives, swapping the surface automatically
+               without a navigation round-trip. */
+            <YoutubePlayer
+              videoId={v2YouTubeOverrideVideoId}
+              thumbnailUrl={undefined}
+              title={v2Override?.title ?? liveTitle}
+              autoPlay
+              startPositionSecs={0}
+              playerHeight={playerHeight}
+              isBroadcastLive={true}
+              onEnd={() => { /* live YouTube override — no autoplay countdown */ }}
+              onProgress={handleProgress}
+            />
+          ) : isLive && isHls ? (
             <BroadcastHlsPlayer
               initialUrl={hlsUrl}
               initialPositionMs={livePositionMs}
@@ -1085,8 +1109,9 @@ export default function PlayerScreen() {
             />
           )}
 
-          {/* Fullscreen expand — hidden for YouTube (has its own native button) */}
-          {!isYoutube && (
+          {/* Fullscreen expand — hidden for YouTube and YouTube overrides (both
+              have their own native YouTube controls; our overlay would conflict) */}
+          {!isYoutube && !v2YouTubeOverrideVideoId && (
             <Pressable
               onPress={enterFullscreen}
               style={styles.fullscreenBtn}
@@ -1538,7 +1563,22 @@ export default function PlayerScreen() {
 
           {/* Player fills the entire modal */}
           <View style={styles.fsPlayerWrap}>
-            {isLive && isHls ? (
+            {isBroadcastV2 && v2YouTubeOverrideVideoId ? (
+              /* YouTube override — same inline swap as the inline player shell:
+                 embed the YouTube video directly rather than showing the
+                 "Watch on YouTube" external-link overlay from V2PlayerContainer. */
+              <YoutubePlayer
+                videoId={v2YouTubeOverrideVideoId}
+                thumbnailUrl={undefined}
+                title={v2Override?.title ?? liveTitle}
+                autoPlay
+                startPositionSecs={0}
+                playerHeight={height}
+                isBroadcastLive={true}
+                onEnd={() => { /* live YouTube override — no autoplay countdown */ }}
+                onProgress={handleProgress}
+              />
+            ) : isLive && isHls ? (
               <BroadcastHlsPlayer
                 initialUrl={hlsUrl}
                 initialPositionMs={livePositionMs}
