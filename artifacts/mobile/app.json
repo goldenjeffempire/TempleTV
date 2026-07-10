@@ -144,7 +144,6 @@
           ]
         }
       ],
-      "softwareKeyboardLayoutMode": "unspecified",
       "userInterfaceStyle": "light",
       "blockedPermissions": [
         "android.permission.RECORD_AUDIO",
