@@ -10,6 +10,33 @@ import { channelRegistry } from "./channel-registry.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { snapshotToCurrentResult } from "../broadcast/broadcast.routes.js";
 import { overrideBus } from "../live-overrides/override-bus.js";
+import { broadcastOrchestrator } from "../broadcast-v2/engine/broadcast-orchestrator.js";
+import { ytShuffleFallback } from "../broadcast-v2/engine/youtube-shuffle-fallback.js";
+
+/**
+ * True liveness for the PRIMARY channel.
+ *
+ * The legacy v1 `broadcastEngine.isRunning()` only reflects whether the old
+ * schedule-chain timer is armed — it says nothing about whether the actual
+ * on-air path (broadcast-v2 orchestrator, which may itself be driven by the
+ * YouTube shuffle fallback) is playing anything. In a YouTube-only or
+ * v2-HLS deployment, v1 sits idle with an empty queue while v2 is genuinely
+ * live, so `broadcastEngine.isRunning()` cannot be trusted as the mobile/web
+ * "is the station on air" signal. Ask v2 directly: something is on air when
+ * there is a current item, an active override (HLS/RTMP/YouTube operator
+ * override), or the YouTube shuffle fallback is actively driving playback.
+ */
+function isPrimaryChannelLive(): boolean {
+  try {
+    const snap = broadcastOrchestrator.snapshot();
+    return snap.current !== null || snap.override !== null || ytShuffleFallback.isActive;
+  } catch {
+    // If v2 snapshot throws for any reason, fall back to the legacy signal
+    // rather than reporting a hard false (which would incorrectly show the
+    // primary channel as offline).
+    return broadcastEngine.isRunning();
+  }
+}
 
 const ChannelBodySchema = z.object({
   name: z.string().min(1).max(80),
@@ -89,13 +116,14 @@ export async function channelsRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      // Channel list is nearly static — it changes only when an operator
-      // adds or removes a channel in the admin panel. A 15-second public
-      // cache dramatically reduces DB round-trips on mobile clients that
-      // poll this every 15 s for the viewer count / isRunning badge.
-      // `stale-while-revalidate=30` lets CDN/edge serve the cached body
-      // instantly while refreshing in the background.
-      reply.header("Cache-Control", "public, max-age=15, s-maxage=15, stale-while-revalidate=30, stale-if-error=300");
+      // Channel list itself is nearly static (it changes only when an
+      // operator adds/removes a channel), but `isRunning`/`viewerCount` are
+      // live signals that must never be stale for longer than a beat — a
+      // 15 s cache previously meant a channel that just went live/offline
+      // could show the wrong state for up to 15-45 s (with SWR). Cache only
+      // the shape, not the liveness: keep a short cache but do not let it
+      // mask real-time on/off-air transitions for the primary channel.
+      reply.header("Cache-Control", "public, max-age=5, s-maxage=5, stale-while-revalidate=10, stale-if-error=60");
       const rows = await db
         .select()
         .from(schema.channelsTable)
@@ -113,7 +141,7 @@ export async function channelsRoutes(app: FastifyInstance) {
             isPrimary: ch.isPrimary,
             sortOrder: ch.sortOrder,
             viewerCount: broadcastEngine.getViewerCount(),
-            isRunning: broadcastEngine.isRunning(),
+            isRunning: isPrimaryChannelLive(),
           };
         }
         const engine = channelRegistry.get(ch.id);

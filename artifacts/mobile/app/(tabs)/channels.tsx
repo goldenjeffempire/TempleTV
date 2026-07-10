@@ -560,6 +560,7 @@ export default function ChannelsTab() {
   const { channels, loading, error, isRetrying, refetch } = useChannels();
   const { items: scheduleItems, loading: scheduleLoading, engineMode } = useBroadcastSchedule();
   const [tuningId, setTuningId] = useState<string | null>(null);
+  const tuningReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Reset the tuning spinner whenever this screen comes back into focus
   // (e.g. user presses back from the player). Without this, setTuningId
@@ -568,8 +569,18 @@ export default function ChannelsTab() {
   useFocusEffect(
     useCallback(() => {
       setTuningId(null);
+      if (tuningReleaseTimerRef.current) {
+        clearTimeout(tuningReleaseTimerRef.current);
+        tuningReleaseTimerRef.current = null;
+      }
     }, []),
   );
+
+  useEffect(() => {
+    return () => {
+      if (tuningReleaseTimerRef.current) clearTimeout(tuningReleaseTimerRef.current);
+    };
+  }, []);
 
   const handleChannelPress = useCallback((channel: ApiChannel) => {
     if (tuningId) return;
@@ -606,6 +617,15 @@ export default function ChannelsTab() {
         },
       });
     });
+    // Safety-net release: normally `useFocusEffect` clears `tuningId` when
+    // the user returns from the player. But if `router.push` above is ever
+    // silently clobbered (e.g. by another effect issuing a competing
+    // navigation in the same tick) this screen never loses focus, so
+    // `tuningId` would stay set forever and `if (tuningId) return;` would
+    // permanently block every future channel tap until app restart. Release
+    // the latch on a timer regardless of what navigation actually happened.
+    if (tuningReleaseTimerRef.current) clearTimeout(tuningReleaseTimerRef.current);
+    tuningReleaseTimerRef.current = setTimeout(() => setTuningId(null), 4_000);
   }, [tuningId]);
 
   // ── Channels section content ───────────────────────────────────────────────

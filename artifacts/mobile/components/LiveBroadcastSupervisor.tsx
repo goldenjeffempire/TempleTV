@@ -129,21 +129,53 @@ export function LiveBroadcastSupervisor() {
           return;
         }
 
-        const data = (await res.json()) as { mode?: string; sequence?: number };
+        // The REST payload nests the snapshot under `state` (see
+        // broadcast-v2/io/rest.routes.ts GET /state → `{ state: snapshot }`).
+        // V2Snapshot itself has no PLAYING/IDLE "mode" enum matching this
+        // code's expectations — its `mode` field is "queue" | "override" |
+        // "failover" | "offline_hold". This poller's real question is
+        // "is something on air right now", which is answered by
+        // `current !== null` (queue item playing) or `override !== null`
+        // (operator/YouTube override active) — NOT by comparing against a
+        // "PLAYING" string that never appears in the payload. Reading
+        // `data.mode` directly (one level too shallow, and the wrong enum)
+        // meant `mode` was always "UNKNOWN" and this transition-detector
+        // never fired, silently disabling the auto-navigate-to-player safety
+        // net for the V2 broadcast path.
+        const data = (await res.json()) as {
+          state?: { current?: unknown; override?: unknown; mode?: string };
+        };
         if (cancelled) return;
 
         // Success — reset failure streak
         v2FailStreak.current = 0;
 
-        const mode = data.mode ?? "UNKNOWN";
+        const snap = data.state;
+        const isOnAir = !!snap && (snap.current != null || snap.override != null);
+        const mode = isOnAir ? "PLAYING" : (snap ? "IDLE" : "UNKNOWN");
         const prev = prevV2ModeRef.current;
 
         // Persist the new mode before any early-return so subsequent checks
         // always compare against the latest known state.
         prevV2ModeRef.current = mode;
 
-        // First poll: establish baseline without triggering navigation.
-        if (prev === null) return;
+        // First poll: establish baseline. If the broadcast is ALREADY live
+        // when the app cold-starts, navigate immediately instead of staying
+        // silent until the next transition (previously this branch never
+        // navigated on cold start even when already on-air).
+        if (prev === null) {
+          if (mode === "PLAYING" && !onPlayer()) {
+            router.push({
+              pathname: "/player",
+              params: {
+                isLive: "true",
+                title: BROADCAST_TITLE,
+                preacher: BROADCAST_PREACHER,
+              },
+            });
+          }
+          return;
+        }
 
         // Transition into PLAYING from a non-playing state.
         if (mode === "PLAYING" && prev !== "PLAYING") {

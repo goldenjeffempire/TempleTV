@@ -2,7 +2,7 @@ import { BlurView } from "expo-blur";
 import { Tabs, router } from "expo-router";
 import { SymbolView } from "expo-symbols";
 import { Feather } from "@expo/vector-icons";
-import React, { useLayoutEffect, useRef } from "react";
+import React, { useLayoutEffect } from "react";
 import {
   Platform,
   StyleSheet,
@@ -42,16 +42,24 @@ import { MiniPlayer } from "@/components/MiniPlayer";
 // the require() call is deferred to first render so all native modules are
 // fully initialized before this code runs.
 //
-// The `hasRedirectedRef` guard ensures the redirect fires exactly once across
-// the layout's lifetime. Without it, any internal remount (e.g. hot reload or
-// a React StrictMode double-invoke in dev) could reset the active tab to
-// /channels, overriding the user's current navigation state.
+// The `hasRedirectedModuleRef` guard ensures the redirect fires exactly once
+// per APP SESSION — not once per component instance. It is intentionally a
+// module-level flag (not a useRef inside the component) because a per-instance
+// ref is reset every time this component remounts. On iOS 18+, the (tabs)
+// group can remount (e.g. a parent Stack re-render, or navigating away to
+// /player and the OS momentarily tearing down and recreating the tab
+// navigator) — each remount re-armed the old per-instance ref and re-fired
+// `router.replace("/channels")`, which could win a race against an in-flight
+// `router.push("/player")` and silently bounce the user back to Channels
+// right after they tapped "Open Player" / "Temple TV Live". A module-level
+// flag persists across remounts within the same app session, so the initial
+// tab redirect only ever happens once, and can never clobber a later
+// navigation to another screen.
+let hasRedirectedToDefaultTab = false;
 function NativeTabLayout() {
-  const hasRedirectedRef = useRef(false);
-
   useLayoutEffect(() => {
-    if (hasRedirectedRef.current) return;
-    hasRedirectedRef.current = true;
+    if (hasRedirectedToDefaultTab) return;
+    hasRedirectedToDefaultTab = true;
     router.replace("/channels");
   }, []);
 
