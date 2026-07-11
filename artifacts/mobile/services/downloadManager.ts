@@ -54,7 +54,24 @@ export interface DownloadItem {
 const STORAGE_KEY = "@temple_tv/downloads_v1";
 const DOWNLOADS_DIR = FileSystem.documentDirectory + "temple_tv_downloads/";
 const MAX_CONCURRENT = 2;
-const MAX_RETRIES = 3;
+// Permanent failures (bad request, not found, forbidden) will never succeed
+// on retry — fail fast instead of burning the user's time/battery.
+const MAX_PERMANENT_RETRIES = 0;
+// Transient failures (network drops, timeouts, 5xx, momentary disk hiccups)
+// are overwhelmingly recoverable — give them a much higher ceiling than a
+// permanent error before asking the user to intervene manually.
+const MAX_TRANSIENT_RETRIES = 8;
+const MAX_RETRY_BACKOFF_MS = 30_000;
+
+/** True for a client-error HTTP status that will never succeed by re-requesting the same URL. */
+function isPermanentDownloadError(message: string): boolean {
+  const m = /Server returned status (\d+)/.exec(message);
+  if (!m || !m[1]) return false;
+  const status = parseInt(m[1], 10);
+  // 401/403/404/410 etc — the resource is gone or access is denied; 408/429
+  // and 5xx are excluded since those are transient by nature.
+  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
 
 type Listener = (downloads: DownloadItem[]) => void;
 
@@ -64,6 +81,12 @@ class DownloadManager {
   private listeners: Set<Listener> = new Set();
   private initialized = false;
   private initPromise: Promise<void> | null = null;
+  // Whether the downloads directory could be created/verified on this device.
+  // When false, new downloads must fail fast with a clear message instead of
+  // sitting in "queued" forever — startDownload would otherwise throw on
+  // every write and silently retry against a storage target that can never
+  // succeed.
+  private dirReady = false;
 
   async init(): Promise<void> {
     if (this.initialized) return;
@@ -78,8 +101,16 @@ class DownloadManager {
       if (!dirInfo.exists) {
         await FileSystem.makeDirectoryAsync(DOWNLOADS_DIR, { intermediates: true });
       }
+      // Re-verify: some devices report makeDirectoryAsync as resolved even
+      // when the underlying write failed (e.g. storage full, permission
+      // revoked mid-call). Only trust it once existence is confirmed.
+      this.dirReady = (await FileSystem.getInfoAsync(DOWNLOADS_DIR)).exists;
     } catch {
-      // Non-critical
+      // Directory could not be created — device storage is likely full or
+      // permission was denied. Leave dirReady=false so addDownload()/
+      // startDownload() fail fast with a clear message instead of leaving
+      // items stuck in "queued" indefinitely with no explanation.
+      this.dirReady = false;
     }
 
     try {
@@ -164,19 +195,24 @@ class DownloadManager {
     const item: DownloadItem = {
       ...video,
       localPath: null,
-      status: "queued",
+      // Fail fast and visibly when this device's downloads directory could
+      // not be created (storage full / permission denied) — previously this
+      // silently sat as "queued" forever with no explanation.
+      status: this.dirReady ? "queued" : "failed",
       progress: 0,
       totalBytes: null,
       downloadedBytes: 0,
       createdAt: new Date().toISOString(),
       completedAt: null,
       retryCount: 0,
-      error: null,
+      error: this.dirReady
+        ? null
+        : "Couldn't access device storage for downloads. Check available space and storage permissions, then tap retry.",
     };
     this.items.set(video.videoId, item);
     await this.persist();
     this.notify();
-    void this.processQueue();
+    if (this.dirReady) void this.processQueue();
   }
 
   async pauseDownload(videoId: string): Promise<void> {
@@ -248,11 +284,25 @@ class DownloadManager {
     await this.init();
     const item = this.items.get(videoId);
     if (!item) return;
+    if (!this.dirReady) {
+      this.items.set(videoId, {
+        ...item,
+        status: "failed",
+        error: "Couldn't access device storage for downloads. Check available space and storage permissions, then tap retry.",
+      });
+      await this.persist();
+      this.notify();
+      return;
+    }
     this.items.set(videoId, {
       ...item,
       status: "queued",
       progress: 0,
       downloadedBytes: 0,
+      // A manual retry is an explicit new attempt from the user — reset the
+      // automatic-retry counter so it isn't already exhausted by prior
+      // background retries and fail after just one more transient hiccup.
+      retryCount: 0,
       error: null,
     });
     await this.persist();
@@ -332,6 +382,17 @@ class DownloadManager {
     const item = this.items.get(videoId);
     if (!item) return;
 
+    if (!this.dirReady) {
+      this.items.set(videoId, {
+        ...item,
+        status: "failed",
+        error: "Couldn't access device storage for downloads. Check available space and storage permissions, then tap retry.",
+      });
+      await this.persist();
+      this.notify();
+      return;
+    }
+
     const localPath = DOWNLOADS_DIR + videoId + ".mp4";
     this.items.set(videoId, { ...item, status: "downloading", localPath, error: null });
     await this.persist();
@@ -400,9 +461,12 @@ class DownloadManager {
 
       const message = err instanceof Error ? err.message : "Download failed";
       const retryCount = (current.retryCount ?? 0) + 1;
+      const permanent = isPermanentDownloadError(message);
+      const retryCeiling = permanent ? MAX_PERMANENT_RETRIES : MAX_TRANSIENT_RETRIES;
 
-      if (retryCount < MAX_RETRIES) {
-        // Auto-retry with brief delay
+      if (retryCount <= retryCeiling) {
+        // Auto-retry with brief exponential delay, capped so a long string of
+        // transient failures doesn't back off indefinitely.
         this.items.set(videoId, {
           ...current,
           status: "queued",
@@ -411,7 +475,8 @@ class DownloadManager {
         });
         await this.persist();
         this.notify();
-        await new Promise<void>((r) => setTimeout(r, 2000 * retryCount));
+        const delay = Math.min(2000 * retryCount, MAX_RETRY_BACKOFF_MS);
+        await new Promise<void>((r) => setTimeout(r, delay));
         void this.processQueue();
         return;
       }
@@ -420,7 +485,9 @@ class DownloadManager {
         ...current,
         status: "failed",
         retryCount,
-        error: message,
+        error: permanent
+          ? `${message} — this video is no longer available for download.`
+          : `${message} — retried ${retryCount} times. Tap retry once your connection improves.`,
       });
       this.resumables.delete(videoId);
     }

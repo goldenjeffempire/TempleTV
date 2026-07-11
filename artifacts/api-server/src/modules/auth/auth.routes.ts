@@ -247,12 +247,20 @@ export async function authRoutes(app: FastifyInstance) {
         // local session is cleared. When the token IS provided it is revoked
         // server-side immediately, preventing replay for the remaining 30-day
         // window.
-        body: z.object({ refreshToken: z.string().min(10) }).nullish(),
+        body: z
+          .object({
+            refreshToken: z.string().min(10),
+            // When true, revoke every active refresh token for this user
+            // (all devices), not just the one presented. Mobile's "everywhere"
+            // param was previously accepted but silently ignored server-side.
+            everywhere: z.boolean().optional(),
+          })
+          .nullish(),
         response: { 204: z.null(), 429: z.object({ error: z.string() }) },
       },
     },
     async (req, reply) => {
-      await authService.logout(req.body?.refreshToken);
+      await authService.logout(req.body?.refreshToken, { everywhere: req.body?.everywhere });
       reply.code(204);
       return null;
     },

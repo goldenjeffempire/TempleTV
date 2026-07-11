@@ -94,6 +94,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Tracks whether we've already navigated to /login for the current
   // session-expiry event, to avoid stacking navigations.
   const expiryNavigatedRef = useRef(false);
+  // Handle for the deferred router.replace("/login") timer fired from the
+  // session-expiry handler below. Tracked separately (not stashed as a
+  // property on expiryNavigatedRef) so it can be reliably cleared on
+  // unmount — a bare setTimeout with no handle would otherwise keep firing
+  // router.replace() after the provider (and navigator) tears down.
+  const navTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const navResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const restore = async () => {
@@ -212,22 +219,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Store the handle so a fast component unmount before the tick fires
         // can cancel the navigation rather than calling router.replace() on a
         // stale (or not-yet-ready) navigator tree.
-        const tid = setTimeout(() => {
+        navTimerRef.current = setTimeout(() => {
+          navTimerRef.current = null;
           try {
             router.replace("/login");
           } catch {
             /* router not ready — restore handler will pick up on next mount */
           }
           // Clear the flag after navigation so a future expiry can navigate again.
-          setTimeout(() => { expiryNavigatedRef.current = false; }, 3000);
+          navResetTimerRef.current = setTimeout(() => {
+            navResetTimerRef.current = null;
+            expiryNavigatedRef.current = false;
+          }, 3000);
         }, 0);
-        // Attach to the ref so OnDestroy / useEffect cleanup can cancel if needed.
-        // Suppress TS: notifListenerRef is typed for notification handles; we
-        // store it on a locally-typed ref to avoid polluting the public type.
-        (expiryNavigatedRef as React.MutableRefObject<unknown>).__navTimerId = tid;
       }
     });
-    return () => setOnSessionExpired(null);
+    return () => {
+      setOnSessionExpired(null);
+      // Cancel any pending navigation timers so a provider unmount (e.g. hot
+      // reload, or an unlikely remount) never fires router.replace() against
+      // a torn-down navigator.
+      if (navTimerRef.current) {
+        clearTimeout(navTimerRef.current);
+        navTimerRef.current = null;
+      }
+      if (navResetTimerRef.current) {
+        clearTimeout(navResetTimerRef.current);
+        navResetTimerRef.current = null;
+      }
+    };
   }, [clearLocal]);
 
   // Re-check token freshness whenever the app comes back to the foreground.

@@ -498,12 +498,40 @@ export async function apiGetHistory(): Promise<CloudHistoryEntry[]> {
   return data.history ?? [];
 }
 
-export async function apiChangePassword(currentPassword: string, newPassword: string): Promise<void> {
+/**
+ * Thrown by apiChangePassword when the account has MFA enabled and no (or an
+ * invalid) TOTP code was supplied. The UI catches this to prompt for the
+ * 6-digit code and retry, rather than surfacing a dead-end generic error.
+ */
+export class ChangePasswordMfaRequiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ChangePasswordMfaRequiredError";
+  }
+}
+
+export async function apiChangePassword(
+  currentPassword: string,
+  newPassword: string,
+  totpCode?: string,
+): Promise<void> {
+  const body: Record<string, unknown> = { currentPassword, newPassword };
+  if (totpCode) body.totpCode = totpCode;
   const res = await authFetch("/api/auth/password", {
     method: "PATCH",
-    body: JSON.stringify({ currentPassword, newPassword }),
+    body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await extractApiError(res, "Failed to change password"));
+  if (!res.ok) {
+    const message = await extractApiError(res, "Failed to change password");
+    // Server signals the MFA-enabled case with a 401 and this exact message —
+    // matched here so the UI can distinguish "wrong current password" (also a
+    // 401) from "need a TOTP code" and prompt accordingly instead of just
+    // failing.
+    if (res.status === 401 && /totp code/i.test(message)) {
+      throw new ChangePasswordMfaRequiredError(message);
+    }
+    throw new Error(message);
+  }
 }
 
 /**

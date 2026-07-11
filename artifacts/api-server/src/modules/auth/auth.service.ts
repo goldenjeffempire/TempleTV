@@ -310,14 +310,25 @@ export const authService = {
     };
   },
 
-  async logout(refreshToken?: string): Promise<void> {
+  async logout(refreshToken?: string, opts?: { everywhere?: boolean }): Promise<void> {
     if (!refreshToken) return;
     try {
       const decoded = await verifyRefreshToken(refreshToken);
-      await db
-        .update(refreshTokensTable)
-        .set({ revokedAt: new Date() })
-        .where(eq(refreshTokensTable.id, decoded.jti));
+      if (opts?.everywhere) {
+        // Revoke every active refresh token for this user (all devices), not
+        // just the one presented — matches the mobile "log out everywhere"
+        // contract, which previously sent this flag but the server silently
+        // ignored it, only ever revoking the single presented token.
+        await db
+          .update(refreshTokensTable)
+          .set({ revokedAt: new Date() })
+          .where(and(eq(refreshTokensTable.userId, decoded.sub), isNull(refreshTokensTable.revokedAt)));
+      } else {
+        await db
+          .update(refreshTokensTable)
+          .set({ revokedAt: new Date() })
+          .where(eq(refreshTokensTable.id, decoded.jti));
+      }
     } catch {
       /* idempotent */
     }
