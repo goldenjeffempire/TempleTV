@@ -2379,6 +2379,7 @@ interface V2Snapshot {
   override: {
     id: string; title: string; kind: string; url: string;
     startedAtMs: number; endsAtMs: number | null; resumeQueueOnEnd: boolean;
+    resumeSeconds?: number;
   } | null;
   failover: { active: boolean; reason: string | null };
   offAirReason: "empty" | "all_blocked" | null;

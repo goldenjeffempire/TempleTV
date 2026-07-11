@@ -31,6 +31,16 @@ export const broadcastRuntimeStateTable = pgTable(
     // transient PG connection issue). Eliminates the /tmp filesystem dependency.
     // Shape: { channelId: string; savedAt: number; items: CachedQueueItem[] }
     queueBackup: jsonb("queue_backup"),
+    // Persisted YouTube shuffle-fallback state (shuffled playlist, current
+    // index/video, and when the current video started airing). Restored on
+    // boot so a server restart during YouTube-only broadcast resumes the SAME
+    // video at its correct elapsed position instead of re-shuffling the
+    // catalog and starting a random video from 0:00.
+    // Shape: { playlist: {youtubeId,title,duration}[], playlistIndex: number,
+    //          currentVideoId: string | null, currentVideoTitle: string | null,
+    //          currentVideoStartedAtMs: number | null, activatedAtMs: number | null,
+    //          savedAtMs: number }
+    ytShuffleState: jsonb("yt_shuffle_state"),
     // $onUpdateFn ensures the column is refreshed on every Drizzle-driven UPDATE,
     // not just on INSERT (defaultNow() only fires at INSERT time).
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdateFn(() => new Date()),

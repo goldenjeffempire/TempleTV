@@ -439,6 +439,14 @@ export function LiveBroadcastV2({
     slotA: string | null;
     slotB: string | null;
     activeSlot: "A" | "B" | null;
+    /**
+     * Elapsed seconds to seek to on first load — only ever set on the very
+     * first activation after this component mounts, and only when the server
+     * is resuming a YouTube shuffle-fallback video after a restart (rather
+     * than starting a fresh video, which always begins at 0:00). Consumed
+     * once by the initial iframe src and never reused for later swaps.
+     */
+    initialStartSecs?: number;
   }>({ slotA: null, slotB: null, activeSlot: null });
 
   // ── Stable combined ref callbacks ───────────────────────────────────────────
@@ -595,7 +603,15 @@ export function LiveBroadcastV2({
         lastOverrideId: overrideId,
       };
       ytStateRef.current = next;
-      setYtRender({ slotA: next.slotA, slotB: next.slotB, activeSlot: next.activeSlot });
+      // resumeSeconds is only ever populated by the server when it just
+      // resumed this exact video after a restart (see
+      // youtube-shuffle-fallback.ts tryResumeFromHydratedState) — a normal
+      // fresh video start has no resumeSeconds and plays from 0:00 as before.
+      const resumeSecs = snapshot.lastServerSnapshot?.override?.resumeSeconds;
+      setYtRender({
+        slotA: next.slotA, slotB: next.slotB, activeSlot: next.activeSlot,
+        initialStartSecs: resumeSecs && resumeSecs > 0 ? resumeSecs : undefined,
+      });
       // Player variant: unmute the newly-active slot.
       // 100 ms is enough for the iframe to register the postMessage;
       // shorter than the previous 500 ms which caused an audible silence gap.
@@ -1105,8 +1121,10 @@ export function LiveBroadcastV2({
         const ytDisableKb = isPlayer ? "" : "&disablekb=1";
         // Always mute=1 in the src URL. The active slot (player variant) is
         // unmuted via postMessage without changing the src (which would reload).
-        const buildSlotSrc = (ytId: string) =>
-          `https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&mute=1&controls=${ytControls}&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3${ytDisableKb}&enablejsapi=1`;
+        const buildSlotSrc = (ytId: string, startSecs?: number) => {
+          const startParam = startSecs && startSecs > 0 ? `&start=${Math.floor(startSecs)}` : "";
+          return `https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&mute=1&controls=${ytControls}&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3${ytDisableKb}&enablejsapi=1${startParam}`;
+        };
         const slotAActive = ytRender.activeSlot === "A";
         const slotBActive = ytRender.activeSlot === "B";
         return (
@@ -1114,7 +1132,7 @@ export function LiveBroadcastV2({
             <iframe
               ref={ytSlotARef}
               key="yt-slot-a"
-              src={buildSlotSrc(ytRender.slotA)}
+              src={buildSlotSrc(ytRender.slotA, ytRender.initialStartSecs)}
               allow="autoplay; encrypted-media; fullscreen"
               allowFullScreen
               style={{
@@ -1168,10 +1186,12 @@ export function LiveBroadcastV2({
         const ytDisableKb = isPlayer ? "" : "&disablekb=1";
         if (overrideKind === "youtube" && overrideUrl) {
           const ytId = extractYouTubeId(overrideUrl);
+          const resumeSecs = server?.override?.resumeSeconds;
+          const startParam = resumeSecs && resumeSecs > 0 ? `&start=${Math.floor(resumeSecs)}` : "";
           if (ytId) return (
             <iframe
               key={`override-${ytId}-${variant}`}
-              src={`https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&mute=${ytMute}&controls=${ytControls}&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3${ytDisableKb}&enablejsapi=1`}
+              src={`https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&mute=${ytMute}&controls=${ytControls}&rel=0&modestbranding=1&playsinline=1&iv_load_policy=3${ytDisableKb}&enablejsapi=1${startParam}`}
               allow="autoplay; encrypted-media; fullscreen"
               allowFullScreen
               style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: "none", zIndex: 5 }}

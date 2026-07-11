@@ -49,6 +49,13 @@ export interface V2Override {
   startedAtMs: number;
   endsAtMs: number | null;
   resumeQueueOnEnd: boolean;
+  /**
+   * Elapsed seconds into the video/stream playback should start at. Only
+   * populated when resuming a YouTube shuffle-fallback video after a server
+   * restart, so the same video continues from its last known position
+   * instead of restarting at 0:00. Undefined for a normal fresh start.
+   */
+  resumeSeconds?: number;
 }
 
 export interface V2Snapshot {

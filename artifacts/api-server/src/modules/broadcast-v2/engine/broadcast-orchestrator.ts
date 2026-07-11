@@ -1259,6 +1259,13 @@ class BroadcastOrchestrator extends EventEmitter {
         logger.warn({ err }, "[broadcast-v2] hydrate: failed to persist override correction (non-fatal)"),
       );
     }
+
+    // 5. Load any persisted YouTube shuffle-fallback session (video + playlist +
+    // elapsed position) so a restart during YouTube-only broadcast resumes the
+    // SAME video instead of re-shuffling the catalog and starting a random
+    // video from 0:00. The self-heal-empty timer's next activate() call (a few
+    // seconds after boot) consumes this state.
+    await ytShuffleFallback.hydrate();
   }
 
   // ── Queue management ───────────────────────────────────────────────────
@@ -3298,7 +3305,7 @@ class BroadcastOrchestrator extends EventEmitter {
 
   // ── Commands ───────────────────────────────────────────────────────────
 
-  async startOverride(input: { kind: V2Override["kind"]; url: string; title: string; endsAtMs: number | null; resumeQueueOnEnd: boolean }): Promise<V2Override> {
+  async startOverride(input: { kind: V2Override["kind"]; url: string; title: string; endsAtMs: number | null; resumeQueueOnEnd: boolean; resumeSeconds?: number }): Promise<V2Override> {
     // Checkpoint the current queue item if we're playing one.
     const snap = this.snapshot();
     if (this.mode === "queue" && snap.current) {
@@ -3315,6 +3322,7 @@ class BroadcastOrchestrator extends EventEmitter {
       startedAtMs: Date.now(),
       endsAtMs: input.endsAtMs,
       resumeQueueOnEnd: input.resumeQueueOnEnd,
+      resumeSeconds: input.resumeSeconds,
     };
     this.mode = "override";
     // Arm the precision override-end timer for finite YouTube shuffle overrides.

@@ -49,6 +49,13 @@ export interface V2Override {
   endsAtMs: number | null;
   /** When true, the orchestrator restores the queue position when override ends. */
   resumeQueueOnEnd: boolean;
+  /**
+   * Elapsed seconds into the video/stream that playback should start at.
+   * Populated only when resuming a YouTube shuffle-fallback video after a
+   * server restart (so the same video continues from where it left off
+   * instead of restarting at 0:00). Undefined/0 for a normal fresh start.
+   */
+  resumeSeconds?: number;
 }
 
 export interface V2Snapshot {

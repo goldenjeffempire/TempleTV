@@ -36,7 +36,11 @@ import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { env } from "../../../config/env.js";
+import { runtimeRepo, type PersistedYtShuffleState } from "../repository/runtime.repo.js";
 import type { V2Override } from "../domain/types.js";
+
+/** Channel this singleton drives — always the main broadcast channel. */
+const CHANNEL_ID = "main";
 
 /**
  * Parse a managed_videos.duration text value (seconds as a string, e.g. "3600")
@@ -73,6 +77,7 @@ type StartOverrideFn = (opts: {
   title: string;
   endsAtMs: number | null;
   resumeQueueOnEnd: boolean;
+  resumeSeconds?: number;
 }) => Promise<V2Override>;
 
 type StopOverrideFn = () => Promise<void>;
@@ -155,7 +160,158 @@ class YtShuffleFallback {
   /** Current index in the shuffled playlist. */
   private _playlistIndex = 0;
 
+  /**
+   * Persisted state loaded by hydrate() at boot. Consumed exactly once by the
+   * first activate() call after a restart — either it produces a successful
+   * resume (same video, correct elapsed position) or it is discarded and a
+   * normal fresh activation proceeds.
+   */
+  private _hydratedState: PersistedYtShuffleState | null = null;
+  private _hydrateAttempted = false;
+
   get isActive(): boolean { return this._active; }
+
+  /**
+   * Load the persisted shuffle-fallback state from the DB. Called once during
+   * orchestrator boot, before the first activate(). Never throws — a failed
+   * load just means the next activate() starts a fresh shuffle, which is the
+   * pre-existing (safe) behaviour.
+   */
+  async hydrate(): Promise<void> {
+    if (this._hydrateAttempted) return;
+    this._hydrateAttempted = true;
+    try {
+      const state = await runtimeRepo.loadYtShuffleState(CHANNEL_ID);
+      if (state && state.currentVideoId && state.playlist.length > 0 && state.currentVideoStartedAtMs != null) {
+        this._hydratedState = state;
+        logger.info(
+          {
+            videoId: state.currentVideoId,
+            playlistIndex: state.playlistIndex,
+            catalogSize: state.playlist.length,
+            ageMs: Date.now() - state.savedAtMs,
+          },
+          "[yt-shuffle] hydrate: loaded persisted shuffle state — will attempt resume on next activation",
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, "[yt-shuffle] hydrate: failed to load persisted state (non-fatal)");
+    }
+  }
+
+  /**
+   * Persist the current shuffle-fallback state so a restart can resume the
+   * same video at the correct elapsed position. Fire-and-forget; failures are
+   * logged but never block playback.
+   */
+  private persistState(): void {
+    const state: PersistedYtShuffleState = {
+      playlist: this._shuffledPlaylist,
+      playlistIndex: this._playlistIndex,
+      currentVideoId: this._currentVideoId,
+      currentVideoTitle: this._currentVideoTitle,
+      currentVideoStartedAtMs: this._currentVideoStartedAtMs,
+      activatedAtMs: this._activatedAtMs,
+      savedAtMs: Date.now(),
+    };
+    void runtimeRepo.saveYtShuffleState(CHANNEL_ID, state).catch((err: unknown) =>
+      logger.warn({ err }, "[yt-shuffle] failed to persist shuffle state (non-fatal)"),
+    );
+  }
+
+  /**
+   * Attempt to resume the exact video + elapsed position from a previous
+   * process's persisted state (loaded by hydrate()). One-shot: the hydrated
+   * state is consumed (cleared) on the first call regardless of outcome, so a
+   * failed/stale resume always falls through to a normal fresh activation.
+   *
+   * Returns true when the resume succeeded and the caller (activate()) should
+   * return immediately; false when the caller should proceed with a fresh
+   * catalog query + shuffle.
+   */
+  private async tryResumeFromHydratedState(startOverride: StartOverrideFn): Promise<boolean> {
+    const state = this._hydratedState;
+    this._hydratedState = null;
+    if (!state || !state.currentVideoId || state.playlist.length === 0 || state.currentVideoStartedAtMs == null) {
+      return false;
+    }
+    try {
+      const entry = state.playlist.find((p) => p.youtubeId === state.currentVideoId);
+      if (!entry) return false;
+
+      // Re-verify embeddability — it may have flipped since the state was saved.
+      const videosTable = schema.videosTable;
+      const embRow = await db
+        .select({ isEmbeddable: videosTable.isEmbeddable })
+        .from(videosTable)
+        .where(eq(videosTable.youtubeId, entry.youtubeId))
+        .limit(1);
+      if (embRow[0]?.isEmbeddable === false) return false;
+
+      const slotMs = computeSlotMs(entry.duration);
+      const elapsedMs = Date.now() - state.currentVideoStartedAtMs;
+      // Staleness guard: only resume if the video would still be meaningfully
+      // playing right now (at least 5 s of runway left). A long server outage
+      // or a save from an unusually short slot should fall through to a fresh
+      // activation rather than resuming a video that has already ended.
+      const MIN_REMAINING_MS = 5_000;
+      if (elapsedMs < 0 || elapsedMs >= slotMs - MIN_REMAINING_MS) return false;
+
+      this._shuffledPlaylist = state.playlist.slice();
+      this._playlistIndex = state.playlistIndex;
+      const resumeSeconds = Math.floor(elapsedMs / 1000);
+
+      const override = await startOverride({
+        kind: "youtube",
+        url: buildYouTubeUrl(entry.youtubeId),
+        title: entry.title,
+        endsAtMs: state.currentVideoStartedAtMs + slotMs,
+        resumeQueueOnEnd: true,
+        resumeSeconds,
+      });
+
+      this._active = true;
+      this._activeOverrideId = override.id;
+      this._currentVideoId = entry.youtubeId;
+      this._currentVideoTitle = entry.title;
+      this._activatedAtMs = state.activatedAtMs ?? Date.now();
+      this._currentVideoStartedAtMs = state.currentVideoStartedAtMs;
+      this._activateCount += 1;
+      this._lastError = null;
+
+      logger.warn(
+        {
+          videoId: entry.youtubeId,
+          title: entry.title,
+          resumeSeconds,
+          overrideId: override.id,
+          playlistIndex: this._playlistIndex,
+          catalogSize: this._shuffledPlaylist.length,
+        },
+        "[yt-shuffle] RESUMED after restart — same video continues from its last known position (not restarted from 0:00)",
+      );
+
+      adminEventBus.push("broadcast-dead-air-fallback", {
+        kind: "youtube-shuffle",
+        videoId: entry.youtubeId,
+        title: entry.title,
+        catalogSize: this._shuffledPlaylist.length,
+        playlistIndex: this._playlistIndex,
+        activatedAtMs: this._activatedAtMs,
+        resumed: true,
+        resumeSeconds,
+      });
+
+      this.persistState();
+      return true;
+    } catch (err) {
+      logger.warn(
+        { err },
+        "[yt-shuffle] resume-from-hydrated-state failed (non-fatal) — falling back to fresh activation",
+      );
+      return false;
+    }
+  }
 
   /** Override ID applied by this module — used by the orchestrator to check before stopping. */
   get activeOverrideId(): string | null { return this._activeOverrideId; }
@@ -176,6 +332,19 @@ class YtShuffleFallback {
   async activate(startOverride: StartOverrideFn): Promise<void> {
     if (this._active || this._activating) return;
     if (env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE) return;
+
+    // Restart-resume path: if hydrate() loaded a persisted session, try to
+    // resume the exact same video at its correct elapsed position before
+    // falling back to a fresh catalog query + shuffle. One-shot per process.
+    if (this._hydratedState) {
+      this._activating = true;
+      try {
+        const resumed = await this.tryResumeFromHydratedState(startOverride);
+        if (resumed) return;
+      } finally {
+        this._activating = false;
+      }
+    }
 
     // Backoff: skip the DB query if the catalog was recently found empty.
     if (
@@ -271,6 +440,8 @@ class YtShuffleFallback {
         playlistIndex: 0,
         activatedAtMs: this._activatedAtMs,
       });
+
+      this.persistState();
     } catch (err) {
       this._lastError = err instanceof Error ? err.message : String(err);
       logger.warn({ err }, "[yt-shuffle] failed to activate YouTube shuffle fallback (non-fatal)");
@@ -385,6 +556,8 @@ class YtShuffleFallback {
         playlistIndex: this._playlistIndex,
         activatedAtMs: this._activatedAtMs,
       });
+
+      this.persistState();
     } catch (err) {
       this._lastError = err instanceof Error ? err.message : String(err);
       logger.warn({ err }, "[yt-shuffle] advance() failed to start next YouTube video (non-fatal)");
@@ -413,6 +586,12 @@ class YtShuffleFallback {
     this._playlistIndex = 0;
     this._lastDeactivatedAtMs = Date.now();
     this._deactivateCount += 1;
+
+    // Clear the persisted session — local content is back, so a future
+    // restart should not resume a stale YouTube video.
+    void runtimeRepo
+      .clearYtShuffleState(CHANNEL_ID)
+      .catch((err: unknown) => logger.warn({ err }, "[yt-shuffle] failed to clear persisted shuffle state (non-fatal)"));
 
     try {
       await stopOverride();

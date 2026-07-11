@@ -23,6 +23,18 @@ export interface PersistedBadUrlState {
   skipCounts: Record<string, number>;
 }
 
+export interface PersistedYtShuffleState {
+  playlist: { youtubeId: string; title: string; duration: string }[];
+  playlistIndex: number;
+  currentVideoId: string | null;
+  currentVideoTitle: string | null;
+  /** Wall-clock ms when the current video started airing. */
+  currentVideoStartedAtMs: number | null;
+  activatedAtMs: number | null;
+  /** Wall-clock ms when this state was written — used for staleness checks. */
+  savedAtMs: number;
+}
+
 export const runtimeRepo = {
   async load(channelId: string): Promise<RuntimeStateRecord | null> {
     const [row] = await db.select().from(t).where(eq(t.channelId, channelId)).limit(1);
@@ -173,5 +185,46 @@ export const runtimeRepo = {
     const backup = row.queueBackup as unknown as { channelId: string; savedAt: number; items: unknown[] };
     if (!Array.isArray(backup.items) || backup.items.length === 0) return null;
     return backup;
+  },
+
+  /**
+   * Persist the YouTube shuffle-fallback state (shuffled playlist, current
+   * playlist index/video, and when the current video started airing) so a
+   * restart resumes the SAME video at the correct elapsed position instead
+   * of re-shuffling the catalog and starting a random video from 0:00.
+   * Non-throwing; callers fire-and-forget.
+   */
+  async saveYtShuffleState(channelId: string, state: PersistedYtShuffleState): Promise<void> {
+    await db
+      .update(t)
+      .set({ ytShuffleState: state as unknown as Record<string, unknown>, updatedAt: new Date() })
+      .where(eq(t.channelId, channelId));
+  },
+
+  /**
+   * Load the persisted YouTube shuffle-fallback state. Returns null when no
+   * row exists or the column is NULL (first boot, column just added, or the
+   * shuffle was never active before the last shutdown).
+   */
+  async loadYtShuffleState(channelId: string): Promise<PersistedYtShuffleState | null> {
+    const [row] = await db
+      .select({ ytShuffleState: t.ytShuffleState })
+      .from(t)
+      .where(eq(t.channelId, channelId))
+      .limit(1);
+    if (!row?.ytShuffleState) return null;
+    return row.ytShuffleState as unknown as PersistedYtShuffleState;
+  },
+
+  /**
+   * Clear the persisted YouTube shuffle-fallback state. Called on deactivate()
+   * so a stale "resume video X" record doesn't linger after the shuffle
+   * fallback is intentionally stopped (e.g. local content became available).
+   */
+  async clearYtShuffleState(channelId: string): Promise<void> {
+    await db
+      .update(t)
+      .set({ ytShuffleState: null, updatedAt: new Date() })
+      .where(eq(t.channelId, channelId));
   },
 };
