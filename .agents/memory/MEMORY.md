@@ -1,3 +1,4 @@
+- [Phantom Channels navigation root causes and permanent fixes](nav-phantom-channels-fix.md) — `segments` in Supervisor effect deps + wrong initialRouteName + cold-start auto-nav were all 4 root causes; fixed with segmentsRef pattern.
 - [expo-modules-core 3.x Coroutine DSL](expo-modules-core-coroutine-dsl.md) — AsyncFunction crossinline lambdas cannot call suspend; use `AsyncFunction("name") Coroutine { ... }` for suspend bodies in EMC 3.x.
 - [Stuck-assembly scanner and session-completed retry](stuck-assembly-scanner.md) — 3 gaps causing "Assembling…" stuck state; fixed with 30s retry + finalize-status s3MirroredAt check + periodic 5-min scanner.
 - [Natural-end retry timing — broadcast pipeline](natural-end-retry-timing.md) — naturalEndRetryDelays [300,800,2000]ms; machine 2s TTL guard + 5 retries + 1s inner poll; STALL_REBIND_MS 20s; mobile vendor must be kept in sync with lib/player-core/src/.

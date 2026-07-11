@@ -42,25 +42,29 @@ import { MiniPlayer } from "@/components/MiniPlayer";
 // the require() call is deferred to first render so all native modules are
 // fully initialized before this code runs.
 //
-// The `hasRedirectedModuleRef` guard ensures the redirect fires exactly once
+// The `hasRedirectedToDefaultTab` guard ensures the redirect fires exactly once
 // per APP SESSION — not once per component instance. It is intentionally a
 // module-level flag (not a useRef inside the component) because a per-instance
 // ref is reset every time this component remounts. On iOS 18+, the (tabs)
 // group can remount (e.g. a parent Stack re-render, or navigating away to
 // /player and the OS momentarily tearing down and recreating the tab
 // navigator) — each remount re-armed the old per-instance ref and re-fired
-// `router.replace("/channels")`, which could win a race against an in-flight
-// `router.push("/player")` and silently bounce the user back to Channels
-// right after they tapped "Open Player" / "Temple TV Live". A module-level
-// flag persists across remounts within the same app session, so the initial
-// tab redirect only ever happens once, and can never clobber a later
-// navigation to another screen.
+// the redirect, which could win a race against an in-flight `router.push`
+// and silently bounce the user away from where they were navigating. A
+// module-level flag persists across remounts within the same app session, so
+// the initial tab redirect only ever happens once and never clobbers a later
+// navigation.
+//
+// DEFAULT TAB: index (Watch/Home). The app always opens to the Watch screen.
+// Channels is the centre hub but is NOT the launch screen — users are taken
+// there only by an explicit tap on the Channels tab button.
 let hasRedirectedToDefaultTab = false;
 function NativeTabLayout() {
   useLayoutEffect(() => {
     if (hasRedirectedToDefaultTab) return;
     hasRedirectedToDefaultTab = true;
-    router.replace("/channels");
+    // Navigate to the Watch / Home tab ("/" resolves to (tabs)/index).
+    router.replace("/");
   }, []);
 
   // Lazy require — only runs on iOS 18+ when this component is rendered.
@@ -128,7 +132,7 @@ function ClassicTabLayout() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <Tabs
-        initialRouteName="channels"
+        initialRouteName="index"
         screenOptions={{
           tabBarActiveTintColor: colors.primary,
           tabBarInactiveTintColor: colors.mutedForeground,

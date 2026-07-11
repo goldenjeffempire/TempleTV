@@ -17,46 +17,103 @@ import { BROADCAST_TITLE, BROADCAST_PREACHER } from "@/lib/broadcastIdentity";
  *     YouTube and the admin activates the YouTube override.
  *
  *  2. V2 HLS broadcast mode (via /api/broadcast-v2/state) — when the V2
- *     orchestrator enters PLAYING state for the first time in a session
- *     (i.e. transitions from IDLE/LOADING to PLAYING). This covers the
- *     primary broadcast path where the admin queues HLS content.
+ *     orchestrator transitions into PLAYING state while the app is open.
  *
- * Both paths guard against ejecting users already on the player screen
- * and collapse rapid SSE bursts with a 1.5 s throttle.
+ * ─── Critical design rules ───────────────────────────────────────────────────
  *
- * Adaptive polling:
- *   V2 state polling interval is adaptive — faster (10 s) when the last
- *   known mode is not PLAYING (we want to detect transitions quickly), and
- *   slower (60 s) when the broadcast is already PLAYING (stable, SSE
- *   handles real-time updates on web; WS transport handles it on native).
+ * RULE 1 — segments via ref, NOT in effect deps.
+ *   The `segments` array from useSegments() must be read through `segmentsRef`
+ *   inside the effect, NOT listed as a dep. Listing `segments` in the dep
+ *   array caused the entire effect (all timers, subscriptions, SSE connections)
+ *   to be TORN DOWN AND RE-CREATED on every tab switch or navigation event.
+ *   On re-creation, `checkForLive()` and `checkV2Broadcast()` fired immediately,
+ *   which could trigger `router.push("/player")` on every tab change — even
+ *   when the user had no intention of watching anything.
  *
- * Network-aware restart:
- *   AppState "active" events reset the throttle window so the very first
- *   foreground check is immediate. A consecutive-failure counter backs off
- *   V2 polls after 3 failures (API unreachable) and resets on success to
- *   avoid hammering a temporarily unreachable server.
+ * RULE 2 — cold start = baseline only (no auto-navigate).
+ *   The first V2 poll establishes what "currently playing" means; it NEVER
+ *   triggers auto-navigation. Navigation fires only on the TRANSITION from
+ *   non-playing → playing while the app is already open. If the broadcast was
+ *   already running before the user opened the app, they should be able to
+ *   choose where to go — they are not automatically ejected to the player.
+ *
+ * RULE 3 — navigation debounce.
+ *   A `lastNavAtRef` prevents duplicate `router.push("/player")` calls within
+ *   NAV_DEBOUNCE_MS (3 s). SSE events arrive in bursts; without this guard
+ *   multiple near-simultaneous signals could stack navigation calls on the
+ *   Expo Router queue and loop the player screen.
+ *
+ * Other behaviours:
+ *   - Both paths guard against ejecting users already on the player screen.
+ *   - YouTube checks collapse rapid SSE bursts with a 1.5 s throttle.
+ *   - V2 polling is adaptive: 10 s when not-PLAYING, 60 s when PLAYING.
+ *   - After 3 consecutive V2 failures, the interval doubles (max 120 s).
+ *   - AppState "active" resets throttles and fires an immediate check.
  */
 export function LiveBroadcastSupervisor() {
   const { isLive, playLive, isBroadcastMode } = usePlayer();
   const segments = useSegments();
-  const lastLiveVideoRef = useRef<string | null>(null);
+
+  // ── Refs for values the effect closure reads without re-running the effect ──
+  const segmentsRef = useRef(segments);
   const isLiveRef = useRef(isLive);
   const isBroadcastModeRef = useRef(isBroadcastMode);
-  const lastCheckRef = useRef(0);
-  const prevV2ModeRef = useRef<string | null>(null);
 
-  // Adaptive-polling state
-  const v2FailStreak = useRef(0);
-  const v2IntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
+  // Update refs on every render so the effect always reads the latest values.
+  segmentsRef.current = segments;
   isLiveRef.current = isLive;
   isBroadcastModeRef.current = isBroadcastMode;
+
+  // ── YouTube live tracking ──────────────────────────────────────────────────
+  const lastLiveVideoRef = useRef<string | null>(null);
+  const lastCheckRef = useRef(0);
+
+  // ── V2 state tracking ─────────────────────────────────────────────────────
+  const prevV2ModeRef = useRef<string | null>(null);
+
+  // ── Navigation debounce ───────────────────────────────────────────────────
+  // Prevents stacked router.push("/player") calls from SSE bursts or rapid
+  // successive checks. Any two navigations within NAV_DEBOUNCE_MS are collapsed.
+  const NAV_DEBOUNCE_MS = 3_000;
+  const lastNavAtRef = useRef(0);
+
+  // ── Adaptive V2 polling ───────────────────────────────────────────────────
+  const v2FailStreak = useRef(0);
+  const v2IntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
     // ── Helper: is the user already on the player screen? ────────────────────
-    const onPlayer = () => segments.includes("player" as never);
+    const onPlayer = () => segmentsRef.current.includes("player" as never);
+
+    // ── Helper: navigate to live player (debounced) ───────────────────────────
+    const navigateToPlayer = (params?: Record<string, string>) => {
+      const now = Date.now();
+      if (now - lastNavAtRef.current < NAV_DEBOUNCE_MS) {
+        // Duplicate navigation suppressed — a recent push already handled this.
+        if (__DEV__) {
+          console.log(
+            `[LiveBroadcastSupervisor] nav debounced (${now - lastNavAtRef.current}ms since last nav)`,
+          );
+        }
+        return;
+      }
+      if (onPlayer()) {
+        // User is already on the player — do not push again.
+        return;
+      }
+      lastNavAtRef.current = now;
+      router.push({
+        pathname: "/player",
+        params: {
+          isLive: "true",
+          title: BROADCAST_TITLE,
+          preacher: BROADCAST_PREACHER,
+          ...params,
+        },
+      });
+    };
 
     // ── 1. YouTube live detection ─────────────────────────────────────────────
     //
@@ -80,42 +137,37 @@ export function LiveBroadcastSupervisor() {
         if (!isLiveRef.current || liveVideoChanged) {
           lastLiveVideoRef.current = liveStatus.videoId ?? lastLiveVideoRef.current;
 
-          if (onPlayer() && (isLiveRef.current || isBroadcastModeRef.current) && !liveVideoChanged) return;
+          // Already on player watching a live/broadcast — skip unless the video changed.
+          if (
+            onPlayer() &&
+            (isLiveRef.current || isBroadcastModeRef.current) &&
+            !liveVideoChanged
+          ) return;
 
           playLive();
-          router.push({
-            pathname: "/player",
-            params: {
-              isLive: "true",
-              title: BROADCAST_TITLE,
-              preacher: BROADCAST_PREACHER,
-              ...(liveStatus.videoId ? { videoId: liveStatus.videoId } : {}),
-            },
-          });
+          navigateToPlayer(liveStatus.videoId ? { videoId: liveStatus.videoId } : undefined);
         }
       } catch {}
     };
 
     // ── 2. V2 HLS broadcast mode detection ───────────────────────────────────
     //
-    // Polls /api/broadcast-v2/state and navigates to the player the first time
-    // the orchestrator transitions into PLAYING mode within this app session.
+    // Polls /api/broadcast-v2/state and navigates to the player when the
+    // orchestrator TRANSITIONS into PLAYING mode while the app is open.
     //
     // Guards:
-    //   - prevV2ModeRef starts as null → first successful poll stores the mode
-    //     WITHOUT navigating (avoids cold-start ejection when the broadcast was
-    //     already running before the app opened).
-    //   - Only fires on the null→PLAYING or non-PLAYING→PLAYING transition.
+    //   - prevV2ModeRef starts as null → first successful poll records the
+    //     baseline mode WITHOUT navigating (cold-start rule — see RULE 2 above).
+    //   - Navigation fires only on the non-PLAYING → PLAYING transition.
     //   - Skips navigation if the user is already on the player.
+    //   - Subject to the NAV_DEBOUNCE_MS guard (see RULE 3 above).
     //
     // Adaptive interval:
-    //   Reschedules itself via v2IntervalRef after each poll so the interval
-    //   can be changed dynamically:
-    //     • 10 s when mode is not PLAYING (fast — want to catch transitions)
-    //     • 60 s when PLAYING (stable — WS transport handles real-time)
-    //     • 30 s when mode unknown / first boot
-    //   After 3 consecutive failures, we double the interval (up to 120 s)
-    //   to avoid hammering a temporarily unreachable server.
+    //   Reschedules itself via v2IntervalRef after each poll:
+    //     • 10 s when mode is not PLAYING (fast — catch transitions quickly)
+    //     • 60 s when PLAYING (stable — WS transport handles real-time updates)
+    //     • 15 s when mode unknown / first boot
+    //   After 3 consecutive failures, doubles the interval (up to 120 s).
     const checkV2Broadcast = async () => {
       try {
         const base = getApiBase();
@@ -129,65 +181,54 @@ export function LiveBroadcastSupervisor() {
           return;
         }
 
-        // The REST payload nests the snapshot under `state` (see
-        // broadcast-v2/io/rest.routes.ts GET /state → `{ state: snapshot }`).
-        // V2Snapshot itself has no PLAYING/IDLE "mode" enum matching this
-        // code's expectations — its `mode` field is "queue" | "override" |
-        // "failover" | "offline_hold". This poller's real question is
-        // "is something on air right now", which is answered by
-        // `current !== null` (queue item playing) or `override !== null`
-        // (operator/YouTube override active) — NOT by comparing against a
-        // "PLAYING" string that never appears in the payload. Reading
-        // `data.mode` directly (one level too shallow, and the wrong enum)
-        // meant `mode` was always "UNKNOWN" and this transition-detector
-        // never fired, silently disabling the auto-navigate-to-player safety
-        // net for the V2 broadcast path.
+        // The REST payload nests the snapshot under `state`:
+        //   { state: { current, override, mode } }
+        // "Is something on air" = current !== null (queue item) OR
+        //   override !== null (operator/YouTube override).
         const data = (await res.json()) as {
           state?: { current?: unknown; override?: unknown; mode?: string };
         };
         if (cancelled) return;
 
-        // Success — reset failure streak
-        v2FailStreak.current = 0;
+        v2FailStreak.current = 0; // reset failure streak on success
 
         const snap = data.state;
         const isOnAir = !!snap && (snap.current != null || snap.override != null);
         const mode = isOnAir ? "PLAYING" : (snap ? "IDLE" : "UNKNOWN");
         const prev = prevV2ModeRef.current;
 
-        // Persist the new mode before any early-return so subsequent checks
-        // always compare against the latest known state.
+        // Always persist the new mode before any early-return.
         prevV2ModeRef.current = mode;
 
-        // First poll: establish baseline. If the broadcast is ALREADY live
-        // when the app cold-starts, navigate immediately instead of staying
-        // silent until the next transition (previously this branch never
-        // navigated on cold start even when already on-air).
+        if (__DEV__) {
+          console.log(
+            `[LiveBroadcastSupervisor] V2 mode: ${prev} → ${mode}`,
+          );
+        }
+
+        // ── RULE 2: first poll = establish baseline, never navigate ───────────
+        // If the broadcast was already live when the app opened, the user
+        // lands on their default screen (Watch/Home) and chooses to navigate.
+        // Auto-navigation fires only on a TRANSITION that happens while the
+        // app is already running.
         if (prev === null) {
-          if (mode === "PLAYING" && !onPlayer()) {
-            router.push({
-              pathname: "/player",
-              params: {
-                isLive: "true",
-                title: BROADCAST_TITLE,
-                preacher: BROADCAST_PREACHER,
-              },
-            });
+          if (__DEV__ && mode === "PLAYING") {
+            console.log(
+              "[LiveBroadcastSupervisor] Cold-start baseline: broadcast already PLAYING. " +
+              "Not auto-navigating — user should choose where to go.",
+            );
           }
           return;
         }
 
         // Transition into PLAYING from a non-playing state.
         if (mode === "PLAYING" && prev !== "PLAYING") {
-          if (onPlayer()) return;
-          router.push({
-            pathname: "/player",
-            params: {
-              isLive: "true",
-              title: BROADCAST_TITLE,
-              preacher: BROADCAST_PREACHER,
-            },
-          });
+          if (__DEV__) {
+            console.log(
+              `[LiveBroadcastSupervisor] V2 transition ${prev} → PLAYING — navigating to player`,
+            );
+          }
+          navigateToPlayer();
         }
       } catch {
         v2FailStreak.current++;
@@ -288,7 +329,13 @@ export function LiveBroadcastSupervisor() {
       subscription?.close();
       appStateSub.remove();
     };
-  }, [playLive, segments]);
+    // ── IMPORTANT: `segments` is intentionally NOT in the dep array ───────────
+    // Read RULE 1 at the top of this file before adding it. `segments` is
+    // accessed via segmentsRef.current inside the effect closure, which always
+    // holds the latest value without causing the effect to re-run on navigation.
+    // `playLive` is useCallback([]) — stable — so this effect runs once per mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playLive]);
 
   return null;
 }

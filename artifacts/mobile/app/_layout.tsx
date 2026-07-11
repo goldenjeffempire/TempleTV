@@ -228,8 +228,10 @@ function NotificationOptInGate() {
  * Known app paths — any incoming deep-link whose pathname starts with one
  * of these is a valid app route. Everything else is a web-only path that
  * happened to open the app via the broad `pathPrefix "/"` intent filter.
- * Unrecognised paths are redirected to channels so the user never sees a
- * 404 screen, even before +not-found.tsx has had a chance to mount.
+ * Unrecognised paths are redirected to the Watch/Home screen ("/") so the
+ * user never sees a 404, even before +not-found.tsx has had a chance to mount.
+ * NOTE: Do NOT redirect to Channels here — that would make every unhandled
+ * deep-link appear as a phantom Channels navigation to the user.
  */
 const KNOWN_APP_PATH_PREFIXES = [
   "/channels",
@@ -290,12 +292,12 @@ function RootLayoutNav() {
         const parsed = new URL(url);
         const path = parsed.pathname ?? "/";
         if (!isKnownAppPath(path)) {
-          // Unknown path — redirect to the safe home screen immediately.
-          router.replace("/(tabs)/channels");
+          // Unknown path — redirect to Watch/Home (the app's default screen).
+          router.replace("/");
         }
       } catch {
-        // Malformed URL — navigate to safe home.
-        router.replace("/(tabs)/channels");
+        // Malformed URL — navigate to Watch/Home.
+        router.replace("/");
       }
     }).catch(() => {
       // getInitialURL failure is non-fatal — the route resolver handles it.
@@ -308,9 +310,9 @@ function RootLayoutNav() {
         const parsed = new URL(incomingUrl);
         const path = parsed.pathname ?? "/";
         if (!isKnownAppPath(path)) {
-          // Unknown external path — redirect to home so the user is never
-          // stranded on a 404 by a stale web link or Play Store referral URL.
-          router.replace("/(tabs)/channels");
+          // Unknown external path — redirect to Watch/Home so the user is
+          // never stranded on a 404 by a stale web link or Play Store referral.
+          router.replace("/");
         }
         // Known paths fall through — Expo Router's built-in handler processes them.
       } catch { /* ignore malformed URLs */ }

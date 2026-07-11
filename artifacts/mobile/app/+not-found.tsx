@@ -7,8 +7,9 @@
  * path, Play Store referral URL, etc.) Expo Router may route here before the
  * app has had a chance to resolve the correct initial screen.  We therefore:
  *
- *   1. Redirect to /(tabs)/channels immediately on mount (synchronous replace
- *      queued in a useEffect that fires before the first paint is committed).
+ *   1. Redirect to "/" (Watch/Home tab) immediately on mount — the configured
+ *      default screen. Never redirect to Channels here: that would make every
+ *      404 appear as a phantom Channels navigation to the user.
  *   2. Show a branded splash-like loading indicator so that even in the
  *      unlikely event that the redirect takes a frame or two, the user sees
  *      the Temple TV brand — not a raw "404" error screen.
@@ -29,7 +30,8 @@ export default function NotFoundScreen() {
   useEffect(() => {
     // Replace immediately — this runs before the first committed paint on
     // most devices, so users never see this screen at all.
-    router.replace("/(tabs)/channels");
+    // "/" resolves to (tabs)/index (Watch/Home) — the app's default screen.
+    router.replace("/");
   }, []);
 
   // Render a minimal branded loading indicator in case the redirect takes
