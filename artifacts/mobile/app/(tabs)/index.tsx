@@ -360,6 +360,25 @@ const HeroSection = React.memo(function HeroSection({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [v2Server]);
 
+  // Safety-net: if the WS connection never delivers a snapshot (no API URL,
+  // network issue, etc.) dismiss the skeleton after 8 s so the hero still
+  // renders the fallback sermon poster / gradient instead of staying blank.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (showSkeletonLayer) {
+        Animated.timing(skeletonOpacity, {
+          toValue: 0,
+          duration: 450,
+          useNativeDriver: true,
+        }).start(({ finished }) => {
+          if (finished) setShowSkeletonLayer(false);
+        });
+      }
+    }, 8_000);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Live viewer count + OMEGA emergency signal from the v1 broadcast sync heartbeat.
   // V2Snapshot (player-core) does not carry viewer counts or OMEGA signals — those
   // are pushed by the v1 WS gateway and surfaced via useBroadcastSync.

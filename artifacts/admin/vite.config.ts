@@ -1,8 +1,81 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import { createRequire } from "module";
+
+// ── lucide-react icon stub plugin ───────────────────────────────────────────
+// lucide-react@0.545.0 has two icon files missing from its ESM dist but still
+// referenced in the barrel (square-dashed-kanban.js, square-dashed-mouse-
+// pointer.js).  Rolldown (Vite 8) treats unresolvable re-exports as hard
+// build errors.  This plugin intercepts those missing paths and serves the
+// correct SVG data inline, making the fix resilient to `pnpm install` runs.
+function lucideIconStubs(): Plugin {
+  const KANBAN_ICON = [
+    ["path", { d: "M8 7v7", key: "1x2jlm" }],
+    ["path", { d: "M12 7v4", key: "xawao1" }],
+    ["path", { d: "M16 7v9", key: "1hp2iy" }],
+    ["path", { d: "M5 3a2 2 0 0 0-2 2", key: "y57alp" }],
+    ["path", { d: "M9 3h1", key: "1yesri" }],
+    ["path", { d: "M14 3h1", key: "1ec4yj" }],
+    ["path", { d: "M19 3a2 2 0 0 1 2 2", key: "18rm91" }],
+    ["path", { d: "M21 9v1", key: "mxsmne" }],
+    ["path", { d: "M21 14v1", key: "169vum" }],
+    ["path", { d: "M21 19a2 2 0 0 1-2 2", key: "1j7049" }],
+    ["path", { d: "M14 21h1", key: "v9vybs" }],
+    ["path", { d: "M9 21h1", key: "15o7lz" }],
+    ["path", { d: "M5 21a2 2 0 0 1-2-2", key: "sbafld" }],
+    ["path", { d: "M3 14v1", key: "vnatye" }],
+    ["path", { d: "M3 9v1", key: "1r0deq" }],
+  ];
+  const MOUSE_ICON = [
+    ["path", { d: "M12.034 12.681a.498.498 0 0 1 .647-.647l9 3.5a.5.5 0 0 1-.033.943l-3.444 1.068a1 1 0 0 0-.66.66l-1.067 3.443a.5.5 0 0 1-.943.033z", key: "xwnzip" }],
+    ["path", { d: "M5 3a2 2 0 0 0-2 2", key: "y57alp" }],
+    ["path", { d: "M19 3a2 2 0 0 1 2 2", key: "18rm91" }],
+    ["path", { d: "M5 21a2 2 0 0 1-2-2", key: "sbafld" }],
+    ["path", { d: "M9 3h1", key: "1yesri" }],
+    ["path", { d: "M9 21h2", key: "1qve2z" }],
+    ["path", { d: "M14 3h1", key: "1ec4yj" }],
+    ["path", { d: "M3 9v1", key: "1r0deq" }],
+    ["path", { d: "M21 9v2", key: "p14lih" }],
+    ["path", { d: "M3 14v1", key: "vnatye" }],
+  ];
+
+  const makeIconCode = (name: string, nodes: unknown[]) => `
+import createLucideIcon from '../createLucideIcon.js';
+const __iconNode = ${JSON.stringify(nodes)};
+const Icon = createLucideIcon(${JSON.stringify(name)}, __iconNode);
+export { __iconNode, Icon as default };
+`;
+
+  const STUBS: Record<string, string> = {
+    "square-dashed-kanban.js": makeIconCode("square-dashed-kanban", KANBAN_ICON),
+    "square-dashed-mouse-pointer.js": makeIconCode("square-dashed-mouse-pointer", MOUSE_ICON),
+  };
+
+  // Absolute paths to the stub files already written to node_modules.
+  // Resolving to real paths means Vite reads the files directly, so their
+  // own relative imports (../createLucideIcon.js) resolve correctly.
+  const LUCIDE_ICONS_DIR = path.resolve(
+    import.meta.dirname,
+    "../../node_modules/.pnpm/lucide-react@0.545.0_react@19.1.0/node_modules/lucide-react/dist/esm/icons"
+  );
+
+  return {
+    name: "lucide-react-icon-stubs",
+    enforce: "pre",
+    resolveId(id, importer) {
+      for (const stub of Object.keys(STUBS)) {
+        if (
+          id.endsWith(`/icons/${stub}`) ||
+          (importer?.includes("lucide-react") && id === `./icons/${stub}`)
+        ) {
+          return path.join(LUCIDE_ICONS_DIR, stub);
+        }
+      }
+    },
+  };
+}
 
 // Resolve d3-format to its pre-built CJS/UMD bundle so Vite/Rolldown can
 // consume it without needing to rewrite the package's ESM export map.
@@ -30,6 +103,7 @@ const basePath = process.env.BASE_PATH ?? "/";
 export default defineConfig({
   base: basePath,
   plugins: [
+    lucideIconStubs(),
     react(),
     tailwindcss(),
   ],
