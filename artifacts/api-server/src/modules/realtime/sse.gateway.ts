@@ -1,11 +1,16 @@
 import type { FastifyInstance } from "fastify";
+import { randomUUID } from "node:crypto";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import type { BroadcastEvent } from "../broadcast/queue.engine.js";
 import { overrideBus } from "../live-overrides/override-bus.js";
-import { bumpSseViewers } from "./viewer-tracker.js";
+import { viewerTrackingService } from "../viewer-tracking/viewer-tracking.service.js";
 import { env } from "../../config/env.js";
 import { sseCounter } from "../../infrastructure/sse-counter.js";
 import { sseCorsHeaders } from "../../lib/sse-cors.js";
+
+// Must stay comfortably under the viewer-tracking session TTL (25 s default)
+// so a session never expires between refreshes for a live connection.
+const VIEWER_HEARTBEAT_INTERVAL_MS = 10_000;
 
 /**
  * Server-Sent Events stream for the live channel.
@@ -81,7 +86,16 @@ export async function sseRoutes(app: FastifyInstance) {
       return;
     }
 
-    bumpSseViewers(+1);
+    const viewerSessionId = randomUUID();
+    void viewerTrackingService
+      .heartbeat({ sessionId: viewerSessionId, streamId: broadcastEngine.channelId })
+      .catch(() => undefined);
+    const viewerHeartbeat = setInterval(() => {
+      void viewerTrackingService
+        .heartbeat({ sessionId: viewerSessionId, streamId: broadcastEngine.channelId })
+        .catch(() => undefined);
+    }, VIEWER_HEARTBEAT_INTERVAL_MS);
+    viewerHeartbeat.unref?.();
     sseCounter.inc();
 
     reply.raw.socket?.setNoDelay(true);
@@ -153,9 +167,10 @@ export async function sseRoutes(app: FastifyInstance) {
       openRealtimeSseCleanups.delete(cleanup);
       clearInterval(heartbeat);
       clearInterval(zombieCheck);
+      clearInterval(viewerHeartbeat);
       broadcastEngine.off("event", onEvent);
       overrideBus.off("change", onOverrideChange);
-      bumpSseViewers(-1);
+      void viewerTrackingService.leave(viewerSessionId, broadcastEngine.channelId).catch(() => undefined);
       sseDecrement(ip);
       sseCounter.dec();
       try {

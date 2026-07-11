@@ -149,9 +149,21 @@ export default function PlayerScreen() {
   // routed back to the playback session and isn't muted by the system's
   // last-known interruption state. Errors are swallowed — a failure here
   // is non-fatal (audio still plays, just with default routing).
+  // Serializes every Audio.setAudioModeAsync() call made by this screen so
+  // the mount-time re-assert and the AppState-foreground re-assert (below)
+  // never race each other. Racing calls is what produces the "audio session
+  // already active" failure on iOS — both effects can fire within the same
+  // tick on cold-start deep links or a fast foreground bounce.
+  const audioSessionOpRef = useRef<Promise<void>>(Promise.resolve());
+  const withSerializedAudioSession = useCallback((op: () => Promise<void>): Promise<void> => {
+    const next = audioSessionOpRef.current.catch(() => undefined).then(op);
+    audioSessionOpRef.current = next.catch(() => undefined);
+    return next;
+  }, []);
+
   useEffect(() => {
     let mounted = true;
-    void (async () => {
+    void withSerializedAudioSession(async () => {
       try {
         // Wait for the root layout's setupAudioSession() to finish before
         // re-asserting exclusive mode. On cold-start deep-links React runs
@@ -205,7 +217,7 @@ export default function PlayerScreen() {
           }).catch(() => {});
         }, 500);
       }
-    })();
+    });
     // Restore the global audio policy when this screen unmounts. The root
     // layout (setupAudioSession) establishes shouldDuckAndroid: true so OS
     // sounds (navigation prompts, notifications) and in-app radio can duck
@@ -235,18 +247,25 @@ export default function PlayerScreen() {
     if (Platform.OS === "web") return undefined;
     const sub = AppState.addEventListener("change", (nextState: AppStateStatus) => {
       if (nextState === "active") {
-        Audio.setAudioModeAsync({
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: true,
-          interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-          interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-          shouldDuckAndroid: false,
-          playThroughEarpieceAndroid: false,
-        }).catch(() => {});
+        // Routed through the same serialization queue as the mount-time
+        // re-assert above — a fast background/foreground bounce can fire
+        // this listener while the mount effect's own setAudioModeAsync call
+        // is still in flight, and racing the two is what throws "Audio
+        // session already active" on iOS.
+        void withSerializedAudioSession(async () => {
+          await Audio.setAudioModeAsync({
+            playsInSilentModeIOS: true,
+            staysActiveInBackground: true,
+            interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+            interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+            shouldDuckAndroid: false,
+            playThroughEarpieceAndroid: false,
+          }).catch(() => {});
+        });
       }
     });
     return () => sub.remove();
-  }, []);
+  }, [withSerializedAudioSession]);
 
   const { setIsBroadcastMode, isPlaying, playerPlayRef, playerPauseRef, playerSeekRef } = usePlayer();
 
@@ -324,6 +343,11 @@ export default function PlayerScreen() {
 
   const isYoutube = !!youtubeId && !hlsUrl;
   const isHls     = !!hlsUrl;
+  // No playable source at all: not live, no YouTube id, no HLS/MP4 url.
+  // Previously this silently rendered a static thumbnail/placeholder with
+  // no message and no way to recover — indistinguishable from a stuck
+  // loading screen. Now it surfaces an explicit error with a retry path.
+  const hasNoSource = !isLive && !isYoutube && !isHls;
 
   // ── Library Prev/Next + autoplay countdown ───────────────────────────────
   // VOD-only feature. Live broadcasts always own their own queue (driven by
@@ -895,6 +919,21 @@ export default function PlayerScreen() {
   // queue pointer and skip an item — Next #2 would derive from
   // nextSermon's neighbour instead of the intended immediate next.
   const navInFlightRef = useRef(false);
+  // Safety-valve timer for navInFlightRef. router.replace() is expected to
+  // change `videoId`, which clears the latch via the effect below. But if
+  // navigation silently no-ops (e.g. an upstream auth/nav guard swallows the
+  // replace(), or expo-router dedupes an identical-looking transition), the
+  // latch would otherwise stay stuck forever and permanently block Prev/Next.
+  // This timer force-clears it after a generous window so a stuck navigation
+  // degrades to "tap again" instead of "dead forever".
+  const navInFlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armNavInFlightSafety = useCallback(() => {
+    if (navInFlightTimerRef.current) clearTimeout(navInFlightTimerRef.current);
+    navInFlightTimerRef.current = setTimeout(() => {
+      navInFlightRef.current = false;
+      navInFlightTimerRef.current = null;
+    }, 4000);
+  }, []);
 
   const stopCountdown = useCallback(() => {
     if (countdownTimerRef.current) {
@@ -912,17 +951,19 @@ export default function PlayerScreen() {
     if (navInFlightRef.current) return;
     if (!nextSermon) return;
     navInFlightRef.current = true;
+    armNavInFlightSafety();
     stopCountdown();
     navigateToRelated(nextSermon);
-  }, [nextSermon, stopCountdown, navigateToRelated]);
+  }, [nextSermon, stopCountdown, navigateToRelated, armNavInFlightSafety]);
 
   const goToPrev = useCallback(() => {
     if (navInFlightRef.current) return;
     if (!prevSermon) return;
     navInFlightRef.current = true;
+    armNavInFlightSafety();
     stopCountdown();
     navigateToRelated(prevSermon);
-  }, [prevSermon, stopCountdown, navigateToRelated]);
+  }, [prevSermon, stopCountdown, navigateToRelated, armNavInFlightSafety]);
 
   const startCountdown = useCallback(() => {
     // Self-guarded: silently no-ops for live broadcasts or end-of-queue,
@@ -972,6 +1013,10 @@ export default function PlayerScreen() {
       // the screen re-activates, all Prev/Next taps would be silently blocked
       // until a videoId change resets it via the videoId effect below.
       navInFlightRef.current = false;
+      if (navInFlightTimerRef.current) {
+        clearTimeout(navInFlightTimerRef.current);
+        navInFlightTimerRef.current = null;
+      }
     };
   }, []);
   useEffect(() => {
@@ -979,6 +1024,10 @@ export default function PlayerScreen() {
     // user can immediately tap Prev/Next again, and cancel any countdown
     // that was racing the transition.
     navInFlightRef.current = false;
+    if (navInFlightTimerRef.current) {
+      clearTimeout(navInFlightTimerRef.current);
+      navInFlightTimerRef.current = null;
+    }
     stopCountdown();
   }, [videoId, stopCountdown]);
 
@@ -1101,6 +1150,27 @@ export default function PlayerScreen() {
               suppressEvents={isFullscreen}
               isInPip={isInPip}
             />
+          ) : hasNoSource ? (
+            <View style={[StyleSheet.absoluteFill, styles.noSourceContainer]}>
+              <Image
+                source={thumbnailUrl ? { uri: thumbnailUrl } : PLACEHOLDER}
+                style={[StyleSheet.absoluteFill, { opacity: 0.35 }]}
+                resizeMode="contain"
+              />
+              <Feather name="alert-triangle" size={28} color="#fff" style={{ marginBottom: 10 }} />
+              <Text style={styles.noSourceText}>This video is unavailable</Text>
+              <Text style={styles.noSourceSubtext}>
+                It may have been removed or the source link is broken.
+              </Text>
+              <Pressable
+                onPress={() => (router.canGoBack() ? router.back() : router.replace("/"))}
+                style={styles.noSourceButton}
+                accessibilityRole="button"
+                accessibilityLabel="Go back"
+              >
+                <Text style={styles.noSourceButtonText}>Go Back</Text>
+              </Pressable>
+            </View>
           ) : (
             <Image
               source={thumbnailUrl ? { uri: thumbnailUrl } : PLACEHOLDER}
@@ -1628,6 +1698,27 @@ export default function PlayerScreen() {
                 onProgress={handleProgress}
                 isInPip={isInPip}
               />
+            ) : hasNoSource ? (
+              <View style={[StyleSheet.absoluteFill, styles.noSourceContainer]}>
+                <Image
+                  source={thumbnailUrl ? { uri: thumbnailUrl } : PLACEHOLDER}
+                  style={[StyleSheet.absoluteFill, { opacity: 0.35 }]}
+                  resizeMode="contain"
+                />
+                <Feather name="alert-triangle" size={28} color="#fff" style={{ marginBottom: 10 }} />
+                <Text style={styles.noSourceText}>This video is unavailable</Text>
+                <Text style={styles.noSourceSubtext}>
+                  It may have been removed or the source link is broken.
+                </Text>
+                <Pressable
+                  onPress={exitFullscreen}
+                  style={styles.noSourceButton}
+                  accessibilityRole="button"
+                  accessibilityLabel="Exit fullscreen"
+                >
+                  <Text style={styles.noSourceButtonText}>Close</Text>
+                </Pressable>
+              </View>
             ) : (
               <Image
                 source={thumbnailUrl ? { uri: thumbnailUrl } : PLACEHOLDER}
@@ -1871,6 +1962,11 @@ const styles = StyleSheet.create({
   },
 
   playerShell: { width: "100%", backgroundColor: "#000", position: "relative", overflow: "hidden" },
+  noSourceContainer: { alignItems: "center", justifyContent: "center", backgroundColor: "#000", paddingHorizontal: 24 },
+  noSourceText: { color: "#fff", fontSize: 16, fontWeight: "700", textAlign: "center", marginBottom: 4 },
+  noSourceSubtext: { color: "rgba(255,255,255,0.7)", fontSize: 13, textAlign: "center", marginBottom: 16 },
+  noSourceButton: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.15)", borderWidth: 1, borderColor: "rgba(255,255,255,0.3)" },
+  noSourceButtonText: { color: "#fff", fontSize: 14, fontWeight: "600" },
   backBtn: { position: "absolute", left: 12, zIndex: 20, width: 38, height: 38, borderRadius: 19, backgroundColor: "rgba(0,0,0,0.50)", alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.4, shadowRadius: 4, elevation: 5 },
   liveBadgePos: { position: "absolute", right: 12, zIndex: 20 },
   fullscreenBtn: { position: "absolute", right: 12, bottom: 12, zIndex: 20, width: 34, height: 34, borderRadius: 17, backgroundColor: "rgba(0,0,0,0.50)", alignItems: "center", justifyContent: "center", shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.4, shadowRadius: 4, elevation: 5 },

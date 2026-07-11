@@ -34,6 +34,7 @@ import { createRedisSubscriberClient, INSTANCE_ID } from "../../infrastructure/r
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
+import { broadcastEngine } from "../broadcast/queue.engine.js";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 const SESSION_TTL_S = env.VIEWER_TRACKING_SESSION_TTL_S;   // 25 s default
@@ -173,6 +174,36 @@ class ViewerTrackingService extends EventEmitter {
       return this._redisStats(streamId);
     }
     return this._fallbackStats(streamId);
+  }
+
+  // ── Explicit leave (fast-path disconnect) ───────────────────────────────
+  // Heartbeats naturally expire after SESSION_TTL_S with no action needed —
+  // this is the safety net for zombie/crashed connections. But a clean
+  // disconnect (gateway "close"/"error" event) can remove the session
+  // immediately so the visible count drops in real time instead of waiting
+  // up to SESSION_TTL_S for the TTL sweep.
+  async leave(sessionId: string, streamId: string): Promise<void> {
+    const now = Date.now();
+    if (this.redis) {
+      const r = this.redis;
+      const activeKey = KEY_ACTIVE(streamId);
+      const pipeline = r.pipeline();
+      pipeline.zrem(activeKey, sessionId);
+      pipeline.del(KEY_SESSION(sessionId));
+      pipeline.zremrangebyscore(activeKey, 0, now);
+      pipeline.zcard(activeKey);
+      const results = await pipeline.exec().catch(() => null);
+      const count = (results?.[3]?.[1] as number | null) ?? 0;
+      const msg: PubSubMsg = { instanceId: INSTANCE_ID, streamId, count, delta: "leave" };
+      r.publish(PUBSUB_CHANNEL, JSON.stringify(msg)).catch(() => undefined);
+      this._maybeNotifyAdmin(streamId, count, now);
+    } else {
+      const existing = this.fallbackSessions.get(sessionId);
+      if (existing) this.fallbackSessions.delete(sessionId);
+      const count = this._fallbackCount(streamId);
+      this._maybeNotifyAdmin(streamId, count, now);
+    }
+    this.emit("leave", { sessionId, streamId });
   }
 
   // ── Redis implementation ─────────────────────────────────────────────────
@@ -434,6 +465,17 @@ class ViewerTrackingService extends EventEmitter {
   // ── Admin SSE notification ────────────────────────────────────────────────
 
   private _maybeNotifyAdmin(streamId: string, count: number, now: number): void {
+    // Bridge into the broadcast engine unconditionally (not debounced) so
+    // every consumer of broadcastEngine.getViewerCount() — the "viewer-count"
+    // SSE/WS event, admin-ops routes, health routes, network routes — reads
+    // the same deduplicated, TTL-based count that this service computes.
+    // This is the single source of truth for the primary channel; the old
+    // raw-socket counter (realtime/viewer-tracker.ts) has been retired so
+    // there is no longer a second writer racing this one.
+    if (streamId === broadcastEngine.channelId) {
+      broadcastEngine.setViewerCount(count);
+    }
+
     const prev      = this.lastCount.get(streamId);
     const lastPush  = this.lastSsePush.get(streamId) ?? 0;
     const elapsed   = now - lastPush;

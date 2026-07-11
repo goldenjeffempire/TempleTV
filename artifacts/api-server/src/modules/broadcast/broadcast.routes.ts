@@ -16,7 +16,8 @@ import { broadcastEngine } from "./queue.engine.js";
 import type { BroadcastEvent, BroadcastItem, BroadcastSnapshot } from "./queue.engine.js";
 import { streamHealthAggregator } from "./stream-health.js";
 import { requireAuth } from "../../middleware/auth.js";
-import { bumpSseViewers } from "../realtime/viewer-tracker.js";
+import { randomUUID } from "node:crypto";
+import { viewerTrackingService } from "../viewer-tracking/viewer-tracking.service.js";
 import { overrideBus } from "../live-overrides/override-bus.js";
 import type { ActiveOverrideEntry } from "../live-overrides/override-bus.js";
 import { signalBus, type OmegaSignal } from "../network/signal-bus.js";
@@ -840,9 +841,21 @@ export async function broadcastRoutes(app: FastifyInstance) {
           .send({ error: "Too many SSE connections from this address", max: MAX_SSE_PER_IP });
       }
 
-      // Count this SSE viewer in the combined broadcast viewer count.
-      // WS connections are counted in ws.gateway.ts via bumpWsViewers().
-      bumpSseViewers(+1);
+      // Register this viewer with the Redis-backed heartbeat tracker — the
+      // single source of truth for the broadcast engine's viewer count.
+      const viewerSessionId = randomUUID();
+      const viewerPlatform = req.query.platform === "tv" || req.query.platform === "mobile" || req.query.platform === "web"
+        ? req.query.platform
+        : undefined;
+      void viewerTrackingService
+        .heartbeat({ sessionId: viewerSessionId, streamId: broadcastEngine.channelId, platform: viewerPlatform })
+        .catch(() => undefined);
+      const viewerHeartbeat = setInterval(() => {
+        void viewerTrackingService
+          .heartbeat({ sessionId: viewerSessionId, streamId: broadcastEngine.channelId, platform: viewerPlatform })
+          .catch(() => undefined);
+      }, 10_000);
+      viewerHeartbeat.unref?.();
       sseCounter.inc();
 
       reply.raw.writeHead(200, {
@@ -962,7 +975,8 @@ export async function broadcastRoutes(app: FastifyInstance) {
         reactionBus.off("live-reaction", onReaction);
         signalBus.off("signal", onSignal);
         adminEventBus.off("admin-event", onAdminEvent);
-        bumpSseViewers(-1);
+        clearInterval(viewerHeartbeat);
+        void viewerTrackingService.leave(viewerSessionId, broadcastEngine.channelId).catch(() => undefined);
         sseDecrement(ip);
         sseCounter.dec();
         try { reply.raw.end(); } catch { /* ignore */ }
