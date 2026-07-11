@@ -339,6 +339,88 @@ async function stopWorkers() {
   }
 }
 
+/**
+ * Bootstrap the broadcast-only daemon process (RUN_MODE=broadcast).
+ *
+ * Runs a minimal Fastify server on PORT hosting ONLY the broadcast-v2
+ * engine routes. Designed as a separate long-lived process that never
+ * gets restarted during API deployments — the API server proxies all
+ * SSE / WebSocket / REST traffic to it instead. Returns a
+ * never-resolving promise; process.exit() is called on SIGTERM/SIGINT.
+ */
+async function runBroadcastDaemon(): Promise<never> {
+  logger.info({ port: env.PORT }, "[broadcast-daemon] booting broadcast-only daemon");
+
+  // DB schema self-heals + broadcast_v2 table creation (same as API).
+  await runPreBuildBootSequence().catch((err) =>
+    logger.error({ err }, "[broadcast-daemon] pre-build boot failed (non-fatal)"),
+  );
+  await runPostBuildBootSequence().catch((err) =>
+    logger.error({ err }, "[broadcast-daemon] post-build boot failed (non-fatal)"),
+  );
+
+  const { default: Fastify } = await import("fastify");
+  const { default: wsPlugin } = await import("@fastify/websocket");
+  const { default: sensiblePlugin } = await import("@fastify/sensible");
+
+  const daemonApp = Fastify({ disableRequestLogging: true });
+  await daemonApp.register(sensiblePlugin);
+  await daemonApp.register(wsPlugin);
+
+  // Zod validator + serialiser so route schemas are validated at runtime.
+  const { serializerCompiler, validatorCompiler } = await import("fastify-type-provider-zod");
+  daemonApp.setValidatorCompiler(validatorCompiler);
+  daemonApp.setSerializerCompiler(serializerCompiler);
+
+  // ── Health endpoints ──────────────────────────────────────────────────────
+  daemonApp.get("/healthz", async () => ({ status: "ok", mode: "broadcast", ts: Date.now() }));
+  daemonApp.get("/readyz",  async () => ({ status: "ok", mode: "broadcast", ts: Date.now() }));
+
+  // ── Broadcast-v2 routes ───────────────────────────────────────────────────
+  // Mount under both /api/v1 (preferred) and /api (legacy alias) so existing
+  // client URLs work without change — mirrors the dual-prefix in the main API.
+  const { broadcastV2Routes, ensureBroadcastV2Started, stopBroadcastV2 } = await import(
+    "./modules/broadcast-v2/index.js"
+  );
+  const mountBroadcast = async (scope: Awaited<ReturnType<typeof Fastify>>) => {
+    await scope.register(broadcastV2Routes, { prefix: "/broadcast-v2" });
+  };
+  await daemonApp.register(mountBroadcast, { prefix: "/api/v1" });
+  await daemonApp.register(mountBroadcast, { prefix: "/api" });
+
+  // ── Start broadcast engine + memory watchdog ──────────────────────────────
+  await ensureBroadcastV2Started();
+  startMemoryWatchdog();
+
+  // ── Listen ────────────────────────────────────────────────────────────────
+  await daemonApp.listen({ port: env.PORT, host: "0.0.0.0" });
+  logger.info(
+    { port: env.PORT },
+    "[broadcast-daemon] up — broadcast engine live; API should set BROADCAST_DAEMON_URL to proxy here",
+  );
+  markStartupComplete();
+
+  // ── Graceful shutdown ──────────────────────────────────────────────────────
+  let daemonShuttingDown = false;
+  const daemonShutdown = async (signal: string): Promise<void> => {
+    if (daemonShuttingDown) return;
+    daemonShuttingDown = true;
+    markShuttingDown();
+    logger.info({ signal }, "[broadcast-daemon] graceful shutdown starting");
+    stopMemoryWatchdog();
+    try { await stopBroadcastV2(); } catch (err) { logger.warn({ err }, "[broadcast-daemon] stopBroadcastV2 failed"); }
+    try { await daemonApp.close(); } catch (err) { logger.warn({ err }, "[broadcast-daemon] app.close failed"); }
+    await closeDb().catch((err) => logger.warn({ err }, "[broadcast-daemon] closeDb failed"));
+    logger.info("[broadcast-daemon] shutdown complete");
+    process.exit(0);
+  };
+  process.on("SIGTERM", () => void daemonShutdown("SIGTERM"));
+  process.on("SIGINT",  () => void daemonShutdown("SIGINT"));
+
+  // Never resolves — daemon runs indefinitely until SIGTERM/SIGINT.
+  return new Promise<never>(() => {});
+}
+
 async function main() {
   const mode = env.RUN_MODE;
 
@@ -385,6 +467,19 @@ async function main() {
   await sweepStaleTempDirs({ maxAgeMs: 2 * 60 * 60_000 });
 
   logger.info({ runMode: mode }, "process starting");
+
+  // ── Broadcast daemon mode — early return ──────────────────────────────────
+  // RUN_MODE=broadcast starts a minimal persistent process that owns the
+  // broadcast engine and never gets restarted during API deployments. The main
+  // API server (RUN_MODE=api or all with BROADCAST_DAEMON_URL set) proxies
+  // all SSE/WS/REST broadcast traffic to this process instead.
+  if (mode === "broadcast") {
+    await runBroadcastDaemon();
+    // runBroadcastDaemon returns a never-resolving promise.
+    // process.exit() is called inside on SIGTERM/SIGINT. This line never runs.
+    return;
+  }
+
   // Log the effective V8 heap limit immediately so production operators can
   // confirm --max-old-space-size is active without having to parse Node flags.
   // heap_size_limit == 0 means V8 hasn't committed to a limit yet; any non-zero
@@ -692,11 +787,20 @@ async function main() {
     scheduleStaleDataCleanup();
 
     // Broadcast v2 orchestrator (rebuild — coexists with v1 until cut-over).
-    try {
-      const { ensureBroadcastV2Started } = await import("./modules/broadcast-v2/index.js");
-      await ensureBroadcastV2Started();
-    } catch (err) {
-      logger.error({ err }, "[broadcast-v2] orchestrator failed to start (non-fatal)");
+    // Skip when BROADCAST_DAEMON_URL is configured: the broadcast engine runs
+    // in the standalone daemon process and the API is a proxy-only client.
+    if (!env.BROADCAST_DAEMON_URL) {
+      try {
+        const { ensureBroadcastV2Started } = await import("./modules/broadcast-v2/index.js");
+        await ensureBroadcastV2Started();
+      } catch (err) {
+        logger.error({ err }, "[broadcast-v2] orchestrator failed to start (non-fatal)");
+      }
+    } else {
+      logger.info(
+        { daemonUrl: env.BROADCAST_DAEMON_URL },
+        "[broadcast-v2] proxy mode — local engine skipped; SSE/WS/REST forwarded to broadcast daemon",
+      );
     }
 
     // Viewer tracking service: Redis TTL-based heartbeat store, sorted-set

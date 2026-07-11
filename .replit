@@ -16,6 +16,7 @@ runButton = "Project"
 [[workflows.workflow]]
 name = "Project"
 author = "agent"
+mode = "parallel"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
@@ -24,6 +25,14 @@ args = "Install and Build"
 [[workflows.workflow.tasks]]
 task = "workflow.run"
 args = "Start Services"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Broadcast Daemon"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start API"
 
 [[workflows.workflow]]
 name = "Start Services"
@@ -59,7 +68,8 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "export PATH=\"/home/runner/workspace/node_modules/.bin:$PATH\" && MALLOC_ARENA_MAX=2 MEMORY_WARN_RSS_MB=1500 MEMORY_RESTART_RSS_MB=2200 PORT=8080 RUN_MODE=all TRANSCODER_DISABLE=1 TRANSCODING_AUTO_RETRY_DISABLE=1 NODE_OPTIONS='--max-old-space-size=768 --max-http-header-size=16384' node --expose-gc --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
+args = "export PATH=\"/home/runner/workspace/node_modules/.bin:$PATH\" && MALLOC_ARENA_MAX=2 MEMORY_WARN_RSS_MB=1500 MEMORY_RESTART_RSS_MB=2200 PORT=8080 RUN_MODE=all BROADCAST_DAEMON_URL=http://127.0.0.1:9000 TRANSCODER_DISABLE=1 TRANSCODING_AUTO_RETRY_DISABLE=1 NODE_OPTIONS='--max-old-space-size=768 --max-http-header-size=16384' node --expose-gc --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
+waitForPort = 8080
 
 [[workflows.workflow]]
 name = "Install and Build"
@@ -118,6 +128,17 @@ outputType = "webview"
 task = "shell.exec"
 args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && pnpm --filter @workspace/admin run dev"
 waitForPort = 18115
+
+[[workflows.workflow]]
+name = "Broadcast Daemon"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "export PATH=\"/home/runner/workspace/node_modules/.bin:$PATH\" && MALLOC_ARENA_MAX=2 MEMORY_WARN_RSS_MB=800 MEMORY_RESTART_RSS_MB=1200 PORT=9000 RUN_MODE=broadcast TRANSCODER_DISABLE=1 TRANSCODING_AUTO_RETRY_DISABLE=1 NODE_OPTIONS='--max-old-space-size=512 --max-http-header-size=16384' node --expose-gc --enable-source-maps --import ./artifacts/api-server/dist/instrument.mjs ./artifacts/api-server/dist/index.mjs"
 
 [agent]
 stack = "BEST_EFFORT_FALLBACK"

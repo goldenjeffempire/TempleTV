@@ -34,7 +34,7 @@ import { adminRoutes } from "./modules/admin/admin.routes.js";
 import { adminOpsRoutes } from "./modules/admin-ops/admin-ops.routes.js";
 import { telemetryRoutes } from "./modules/telemetry/telemetry.routes.js";
 import { playbackRoutes } from "./modules/playback/playback.routes.js";
-import { broadcastV2Routes } from "./modules/broadcast-v2/index.js";
+import { broadcastV2Routes, broadcastDaemonProxyRoutes } from "./modules/broadcast-v2/index.js";
 import { midnightPrayersRoutes, midnightPrayersService } from "./modules/midnight-prayers/index.js";
 import { youtubeLiveRoutes } from "./modules/youtube-live/youtube-live.routes.js";
 import { youtubeChannelRoutes } from "./modules/youtube-channel/youtube-channel.routes.js";
@@ -803,7 +803,15 @@ export async function buildApp(): Promise<FastifyInstance> {
     //   POST /broadcast-v2/skip
     //   POST /broadcast-v2/override/start|stop
     //   POST /broadcast-v2/force-failover|clear-failover|reload
-    await instance.register(broadcastV2Routes, { prefix: "/broadcast-v2" });
+    // When BROADCAST_DAEMON_URL is set, proxy all broadcast-v2 traffic to the
+    // standalone daemon instead of handling it in-process. The daemon keeps
+    // running while the API is restarted so broadcasts are never interrupted.
+    // WebSocket (/ws) is handled separately via a raw TCP upgrade proxy added
+    // to app.server at the bottom of buildApp().
+    await instance.register(
+      env.BROADCAST_DAEMON_URL ? broadcastDaemonProxyRoutes : broadcastV2Routes,
+      { prefix: "/broadcast-v2" },
+    );
     // Midnight Prayers — dedicated channel that auto-cycles prayer content
     // between the configured hours (default 12 AM – 3 AM) based on each
     // viewer's local clock.  V2Transport-compatible endpoints: /state, /events, /ws.
@@ -1192,6 +1200,56 @@ export async function buildApp(): Promise<FastifyInstance> {
       startWebhookAutoRenewal(baseUrl);
     }
   });
+
+  // ── Broadcast daemon WebSocket upgrade proxy ──────────────────────────────
+  // When BROADCAST_DAEMON_URL is set, splice raw WebSocket upgrade requests for
+  // /broadcast-v2/ws directly to the daemon via a TCP-level proxy. This runs
+  // BEFORE @fastify/websocket's upgrade handler (prependListener) so the daemon
+  // owns the socket exclusively. The daemon's WS handler then sends frames as
+  // normal. WS clients experience zero interruption during API restarts because
+  // the daemon never stops.
+  if (env.BROADCAST_DAEMON_URL) {
+    const { default: net } = await import("node:net");
+    const daemonParsed = new URL(env.BROADCAST_DAEMON_URL);
+    const daemonHost = daemonParsed.hostname;
+    const daemonPort = Number(daemonParsed.port) || 80;
+
+    app.server.prependListener("upgrade", (req, socket, head) => {
+      const url = req.url ?? "";
+      if (!url.includes("/broadcast-v2/ws")) return; // let others handle non-broadcast WS
+
+      const upstream = net.createConnection({ host: daemonHost, port: daemonPort }, () => {
+        // Re-send the HTTP upgrade handshake to the daemon so it can perform
+        // the WebSocket 101 Switching Protocols negotiation.
+        const lines: string[] = [
+          `GET ${url} HTTP/1.1`,
+          `Host: ${daemonHost}:${daemonPort}`,
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          `Sec-WebSocket-Version: ${req.headers["sec-websocket-version"] ?? "13"}`,
+          `Sec-WebSocket-Key: ${req.headers["sec-websocket-key"] ?? ""}`,
+        ];
+        const auth = req.headers["authorization"];
+        if (auth) lines.push(`Authorization: ${auth}`);
+        const proto = req.headers["sec-websocket-protocol"];
+        if (proto) lines.push(`Sec-WebSocket-Protocol: ${proto}`);
+        upstream.write(lines.join("\r\n") + "\r\n\r\n");
+        // Any bytes already buffered before the upgrade event (head buffer)
+        if (head && head.length > 0) upstream.write(head);
+        // Bidirectional pipe — frames now flow directly between client ↔ daemon
+        socket.pipe(upstream);
+        upstream.pipe(socket);
+      });
+
+      upstream.on("error", (err) => {
+        logger.debug({ err }, "[broadcast-daemon-proxy] WS upstream error");
+        try { socket.destroy(); } catch { /* noop */ }
+      });
+      socket.on("error", () => { try { upstream.destroy(); } catch { /* noop */ } });
+      socket.on("close", () => { try { upstream.destroy(); } catch { /* noop */ } });
+      upstream.on("close", () => { try { socket.destroy(); } catch { /* noop */ } });
+    });
+  }
 
   return app;
 }

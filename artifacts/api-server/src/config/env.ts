@@ -225,7 +225,26 @@ const Env = z.object({
   //   api    → Fastify HTTP server only (no in-process dispatchers)
   //   worker → background dispatchers only (no HTTP listener)
   //   all    → both, useful in dev and small single-instance deploys
-  RUN_MODE: z.enum(["api", "worker", "all"]).default("all"),
+  /**
+   * Process role:
+   *   api       → Fastify HTTP listener + broadcast engine (in-process)
+   *   worker    → background dispatchers only (no HTTP listener)
+   *   all       → everything in one process (default; ideal for dev/single-instance prod)
+   *   broadcast → long-lived broadcast daemon only — minimal HTTP on a separate port
+   *               (never restarted during API deployments; API proxies SSE/WS/REST to it)
+   */
+  RUN_MODE: z.enum(["api", "worker", "all", "broadcast"]).default("all"),
+  /**
+   * When set, the API server proxies all broadcast-v2 SSE, WebSocket, and REST
+   * traffic to this URL instead of running the broadcast engine in-process.
+   * Enables zero-downtime API deployments: the daemon never restarts while the
+   * API is restarted, so broadcasts continue uninterrupted.
+   *
+   * Example: http://127.0.0.1:9000
+   *
+   * Leave unset to run the broadcast engine in-process (legacy behaviour).
+   */
+  BROADCAST_DAEMON_URL: z.string().url().optional(),
 
   // Scheduled-notification dispatcher cadence. Only consulted when
   // RUN_MODE is `worker` or `all`. The dispatcher polls

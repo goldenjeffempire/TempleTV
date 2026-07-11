@@ -53,6 +53,17 @@ export async function broadcastV2Routes(app: FastifyInstance) {
   await app.register(autohealRoutes);
 }
 
+/**
+ * Proxy variant of broadcastV2Routes.
+ *
+ * Used by the API server when BROADCAST_DAEMON_URL is set: instead of running
+ * the broadcast engine in-process, every request is forwarded to the external
+ * daemon. SSE connections are streamed through, REST calls are proxied with
+ * fetch(). WebSocket is handled at the raw server upgrade-event level in
+ * app.ts (TCP proxy) and is deliberately excluded here.
+ */
+export { broadcastDaemonProxyRoutes } from "./io/daemon-proxy.js";
+
 let bootInFlight: Promise<void> | null = null;
 let busBridgeInstalled = false;
 let startAttempts = 0;

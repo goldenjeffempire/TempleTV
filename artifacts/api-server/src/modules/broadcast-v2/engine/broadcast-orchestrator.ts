@@ -3964,6 +3964,25 @@ class BroadcastOrchestrator extends EventEmitter {
     }
 
     this.emitFrame({ type: "event", sequence: seq, eventType, payload });
+
+    // ── Event-driven checkpoint ───────────────────────────────────────────
+    // On significant broadcast transitions (item advance, queue change,
+    // override start/end) persist position immediately rather than waiting
+    // up to CHECKPOINT_INTERVAL_MS (15 s). This tightens the worst-case
+    // position loss on crash from 15 s to < 1 s for these key events.
+    // The concurrency guard in persistCheckpoint() (checkpointWriting flag)
+    // prevents stacking with the interval-based timer write.
+    if (
+      eventType === "item.advanced" ||
+      eventType === "item.skipped" ||
+      eventType === "queue.changed" ||
+      eventType === "override.started" ||
+      eventType === "override.ended"
+    ) {
+      void this.persistCheckpoint().catch((err: unknown) =>
+        logger.warn({ err }, "[broadcast-v2] event-driven checkpoint failed (non-fatal)"),
+      );
+    }
   }
 
   private emitFrame(frame: V2ServerFrame): void {
