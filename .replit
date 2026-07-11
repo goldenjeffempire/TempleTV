@@ -1,5 +1,33 @@
 modules = ["nodejs-20", "bash", "web"]
 
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 8080
+externalPort = 8080
+
+[[ports]]
+localPort = 8081
+externalPort = 8081
+
+[[ports]]
+localPort = 9000
+externalPort = 9000
+
+[[ports]]
+localPort = 18115
+externalPort = 3000
+
+[[ports]]
+localPort = 23744
+externalPort = 3001
+
+[[ports]]
+localPort = 23876
+externalPort = 3002
+
 [deployment]
 router = "application"
 deploymentTarget = "vm"
@@ -148,34 +176,6 @@ integrations = ["javascript_object_storage:2.0.0"]
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 180000
-
-[[ports]]
-localPort = 5000
-externalPort = 80
-
-[[ports]]
-localPort = 8080
-externalPort = 8080
-
-[[ports]]
-localPort = 18115
-externalPort = 3002
-
-[[ports]]
-localPort = 23744
-externalPort = 3001
-
-[[ports]]
-localPort = 23745
-externalPort = 5000
-
-[[ports]]
-localPort = 23876
-externalPort = 3003
-
-[[ports]]
-localPort = 23877
-externalPort = 6800
 
 [nix]
 channel = "stable-25_05"
