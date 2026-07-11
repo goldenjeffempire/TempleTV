@@ -625,7 +625,27 @@ export function LiveBroadcastV2({
       const prevActiveSlot = st.activeSlot;
       const inactiveSlot   = prevActiveSlot === "A" ? "B" : "A";
       const inactiveContent = inactiveSlot === "A" ? st.slotA : st.slotB;
+      const activeContent  = prevActiveSlot === "A" ? st.slotA : st.slotB;
       const newLastId = overrideId;
+
+      // Same video already on screen — the server re-issued the override
+      // under a new id with the same YouTube video (e.g. the broadcast
+      // daemon restarted and youtube-shuffle-fallback re-created the
+      // override with a fresh id + resumeSeconds so playback resumes at
+      // the correct position — see tryResumeFromHydratedState()). The
+      // client stayed connected throughout and the iframe never stopped
+      // playing, so there is nothing to swap or reload here. Without this
+      // guard the code below would fall into the non-gapless branch and
+      // force a fresh iframe load of a video that is already playing,
+      // causing a visible reload/buffering flash for connected viewers on
+      // every server restart even though playback never actually paused.
+      if (activeContent === ytId) {
+        ytStateRef.current = { ...st, lastOverrideId: newLastId };
+        console.debug("[yt-slot] override id changed but same video already active — no-op", {
+          ytId, overrideId, ts: Date.now(),
+        });
+        return;
+      }
 
       if (inactiveContent === ytId) {
         // GAPLESS: preloaded slot already has this video — CSS swap only, no remount!

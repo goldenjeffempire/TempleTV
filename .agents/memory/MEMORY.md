@@ -127,3 +127,4 @@
 - [Player no-source error UI and nav-latch safety valve](player-no-source-and-nav-latch-safety.md) — explicit "unavailable" state replaces silent blank placeholder; navInFlightRef gets a 4s timeout escape hatch so a swallowed navigation can't strand Prev/Next forever.
 - [Broadcast daemon architecture](broadcast-daemon-architecture.md) — daemon owns broadcast engine (port 9000); API proxies to it; never restart daemon during API deployments.
 - [Broadcast deployment resilience](broadcast-deployment-resilience.md) — 3 gaps closed: restart-log table+repo+admin card; daemon liveness monitor (_started flag not pollTimer); resilient SSE proxy with 30 s retry window.
+- [YouTube override restart reload-flash bug](yt-override-restart-reload-flash.md) — engine resumes same video with correct position but a NEW override.id after a restart; client must compare by video id, not override.id, or it reloads/flashes an already-playing iframe.
