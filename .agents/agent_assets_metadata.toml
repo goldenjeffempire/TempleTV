@@ -221,3 +221,9 @@ id = "VbRuD9wc-WZNEtWLXYtre"
 uri = "file://screenshots/icon-suite-preview.png"
 type = "image"
 title = "Temple TV — Production Icon Suite"
+
+[[outputs]]
+id = "nHGp8TlsIC4HsDpUYUoJq"
+uri = "file://artifacts/mobile/build-output/temple-tv-mobile-v1.0.43-102.aab"
+type = "unspecified"
+title = "Temple TV v1.0.43 (versionCode 102) — production .aab"
