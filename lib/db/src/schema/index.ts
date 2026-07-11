@@ -44,3 +44,4 @@ export * from "./pending-storage-cleanup";
 export * from "./media-audit-log";
 export * from "./queue-asset-health";
 export * from "./user-watch-later";
+export * from "./broadcast-daemon-restarts";

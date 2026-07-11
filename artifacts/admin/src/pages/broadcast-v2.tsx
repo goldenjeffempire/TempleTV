@@ -1902,6 +1902,20 @@ interface IncidentsReport {
   onAirPct: number | null;
 }
 
+interface RestartHistoryEntry {
+  id: number;
+  restartedAt: string; // ISO timestamp
+  resumeSource: "checkpoint" | "disk_backup" | "cold_start";
+  resumeItemId: string | null;
+  resumePositionMs: number;
+  resumeSequence: number;
+}
+
+interface RestartHistoryResponse {
+  channelId: string;
+  records: RestartHistoryEntry[];
+}
+
 /**
  * Autonomy Status card — shows the platform's self-healing score and the
  * health of all critical background workers that keep 24/7 broadcast running.
@@ -2546,6 +2560,15 @@ function BroadcastV2PageInner() {
     queryFn: () => api.get<DiagnosticsReport>("/broadcast-v2/diagnostics"),
     refetchInterval: sseGated120s,
     staleTime: 25_000,
+  });
+
+  // Daemon restart history — last 20 boots with resume source and position.
+  // Polls every 5 min; changes only when the daemon restarts.
+  const { data: restartHistory } = useQuery({
+    queryKey: ["broadcast-v2-restart-history"],
+    queryFn: () => api.get<RestartHistoryResponse>("/broadcast-v2/restart-history"),
+    refetchInterval: 5 * 60_000,
+    staleTime: 4 * 60_000,
   });
 
   // Queue health remediation report — surfaced from the last validator cycle.
@@ -5144,6 +5167,8 @@ function BroadcastV2PageInner() {
 
       <ProjectedScheduleCard slots={projectedSchedule} totalActiveItems={totalActiveItems} />
 
+      <RestartHistoryCard data={restartHistory} />
+
       <AirHistoryCard history={engineHealth?.airingHistory} />
 
       <StreamHealthHistoryChart history={healthHistory} />
@@ -6639,6 +6664,88 @@ function SnapshotSlot({
 }
 
 // ── Air History Card ─────────────────────────────────────────────────────────
+
+// ─── RestartHistoryCard ───────────────────────────────────────────────────────
+// Shows the last 20 daemon boot records — when the daemon restarted, what
+// state it resumed from, and which position it restored. This proves that
+// broadcast state survives crashes, deployments, and planned restarts.
+
+function RestartHistoryCard({ data }: { data?: RestartHistoryResponse }) {
+  if (!data || data.records.length === 0) return null;
+
+  const sourceLabel: Record<string, string> = {
+    checkpoint: "DB checkpoint",
+    disk_backup: "Disk backup",
+    cold_start: "Cold start",
+  };
+  const sourceBadgeVariant = (source: string): "default" | "secondary" | "destructive" | "outline" => {
+    if (source === "checkpoint") return "default";
+    if (source === "disk_backup") return "secondary";
+    return "outline";
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <RefreshCw className="h-4 w-4 text-muted-foreground" />
+          Daemon Restart History
+          <Badge variant="secondary" className="ml-auto text-[10px]">
+            {data.records.length} boot{data.records.length !== 1 ? "s" : ""}
+          </Badge>
+        </CardTitle>
+        <p className="text-xs text-muted-foreground leading-tight pt-0.5">
+          State is preserved across every restart — DB checkpoint, disk backup, or cold start.
+        </p>
+      </CardHeader>
+      <CardContent className="p-0">
+        <div className="divide-y text-xs">
+          {data.records.map((entry, i) => {
+            const restartedAt = new Date(entry.restartedAt).getTime();
+            const positionSec = Math.round(entry.resumePositionMs / 1000);
+            return (
+              <div key={entry.id} className="flex items-start gap-3 px-4 py-2.5">
+                <div className="flex-1 min-w-0 space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {i === 0 && (
+                      <Badge variant="default" className="h-4 px-1.5 text-[9px] font-bold shrink-0">
+                        LATEST
+                      </Badge>
+                    )}
+                    <Badge variant={sourceBadgeVariant(entry.resumeSource)} className="h-4 px-1.5 text-[9px] shrink-0">
+                      {sourceLabel[entry.resumeSource] ?? entry.resumeSource}
+                    </Badge>
+                    {entry.resumeSequence > 0 && (
+                      <span className="text-muted-foreground">seq #{entry.resumeSequence}</span>
+                    )}
+                  </div>
+                  {entry.resumeItemId && (
+                    <div className="flex items-center gap-1 text-muted-foreground">
+                      <span>Resumed from</span>
+                      <span className="font-mono text-[10px] truncate max-w-[200px]">{entry.resumeItemId}</span>
+                      {positionSec > 0 && <span>@ {positionSec}s</span>}
+                    </div>
+                  )}
+                  {!entry.resumeItemId && (
+                    <div className="text-muted-foreground">
+                      {entry.resumeSource === "cold_start" ? "No prior state — started fresh" : "Position unknown"}
+                    </div>
+                  )}
+                </div>
+                <div className="shrink-0 text-right text-muted-foreground tabular-nums">
+                  <div className="text-[10px]">{formatAgo(restartedAt)}</div>
+                  <div className="text-[10px] opacity-70">
+                    {new Date(entry.restartedAt).toLocaleTimeString()}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 function AirHistoryCard({ history }: { history?: AiringEntry[] }) {
   if (!history || history.length === 0) return null;

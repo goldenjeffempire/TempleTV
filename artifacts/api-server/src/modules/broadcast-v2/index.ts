@@ -30,6 +30,7 @@ import { uploadQueueReconciler } from "../broadcast/upload-queue-reconciler.js";
 import { runDeepRecovery } from "../transcoder/video-recovery.service.js";
 import { scanLibraryAndEnqueue, repairMissingS3MirroredAt } from "../broadcast/auto-enqueue.service.js";
 import { midnightPrayersSchedulerScan } from "./engine/midnight-prayers-scheduler.js";
+import { stopDaemonLivenessMonitor } from "./engine/daemon-liveness-monitor.js";
 
 export { getExhaustionStatus, getAutoRefillStatus, getStorageStats };
 export { getDeadAirStats };
@@ -695,6 +696,9 @@ export async function stopBroadcastV2(): Promise<void> {
     .catch((err) =>
       logger.warn({ err }, "[broadcast-v2] YouTube live poller stop failed (non-fatal)"),
     );
+
+  // 6c. Stop daemon liveness monitor (no-op in daemon mode or if never started).
+  stopDaemonLivenessMonitor();
 
   // 7. Close Redis fan-out subscriber and leader renewal timer.
   await broadcastFanout.close().catch((err) =>

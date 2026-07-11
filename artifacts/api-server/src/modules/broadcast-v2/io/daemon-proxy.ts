@@ -21,6 +21,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
+import { startDaemonLivenessMonitor, stopDaemonLivenessMonitor } from "../engine/daemon-liveness-monitor.js";
 
 /** Build the full daemon URL for a given absolute path. */
 function daemonUrl(path: string): string {
@@ -39,14 +40,34 @@ function proxyRequestHeaders(req: FastifyRequest): Record<string, string> {
 
 // ── SSE Proxy ────────────────────────────────────────────────────────────────
 
+const SSE_HEADERS = {
+  "Content-Type": "text/event-stream; charset=utf-8",
+  "Cache-Control": "no-cache, no-transform",
+  "Connection": "keep-alive",
+  "X-Accel-Buffering": "no",
+  "Content-Encoding": "identity",
+} as const;
+
+// How long to retry a daemon connection before giving up (daemon restart window)
+const SSE_RETRY_MAX_MS = 30_000;
+// Interval between retry attempts
+const SSE_RETRY_INTERVAL_MS = 2_000;
+// Per-probe connect timeout
+const SSE_PROBE_TIMEOUT_MS = 5_000;
+
 /**
- * Stream-proxy an SSE connection to the daemon.
+ * Stream-proxy an SSE connection to the daemon, with resilient retry.
  *
- * Opens a fetch() to the daemon's /events endpoint, then pipes the response
- * body (a ReadableStream of SSE chunks) directly to the client response.
- * The Last-Event-ID and lastSequence query-param are forwarded so the daemon
- * can replay missed frames on reconnect, giving clients seamless continuity
- * across API restarts.
+ * When the daemon is temporarily unreachable (crash, restart, rolling deploy):
+ *   1. Commit SSE headers immediately to keep the client connection alive.
+ *   2. Send `:keepalive` SSE comments every 2 s while retrying.
+ *   3. Retry the daemon connection for up to 30 s (covers typical restart time).
+ *   4. If the daemon recovers within the window, pipe the new stream transparently.
+ *   5. If still unavailable after 30 s, send a `reconnect` frame and close.
+ *
+ * This makes daemon restarts invisible to viewers in most cases — no blank
+ * screen, no loading spinner — instead of the immediate 502 that the naive
+ * passthrough would return.
  */
 async function sseDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const qs = req.query as Record<string, string>;
@@ -58,42 +79,96 @@ async function sseDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promise
   );
 
   const headers = proxyRequestHeaders(req);
-  const abort = new AbortController();
-  const onClose = () => abort.abort();
-  req.raw.on("close", onClose);
-  req.raw.on("error", onClose);
 
-  let upstreamRes: Response;
-  try {
-    upstreamRes = await fetch(targetUrl, { headers, signal: abort.signal });
-  } catch (err) {
-    req.raw.off("close", onClose);
-    req.raw.off("error", onClose);
-    if ((err as { name?: string }).name !== "AbortError") {
-      logger.warn({ err, targetUrl }, "[broadcast-daemon-proxy] SSE connect failed");
+  // clientAbort fires when the client disconnects — aborts all pending retries
+  const clientAbort = new AbortController();
+  const onClientClose = () => clientAbort.abort();
+  req.raw.on("close", onClientClose);
+  req.raw.on("error", onClientClose);
+
+  const retryDeadline = Date.now() + SSE_RETRY_MAX_MS;
+  let headersWritten = false;
+  let upstreamRes: Response | null = null;
+
+  // Commit SSE response headers exactly once. Returns false if the write fails
+  // (client gone), in which case the caller should bail out immediately.
+  function ensureHeaders(): boolean {
+    if (headersWritten) return true;
+    headersWritten = true;
+    try {
+      reply.raw.writeHead(200, SSE_HEADERS);
+      return true;
+    } catch {
+      return false;
     }
-    if (!reply.sent) reply.code(502).send({ error: "broadcast daemon unavailable" });
+  }
+
+  // Try to connect to the daemon, retrying until connected or deadline reached.
+  while (!clientAbort.signal.aborted) {
+    // Each probe has its own short timeout, linked to the client abort signal.
+    const probeAbort = new AbortController();
+    const probeTimeout = setTimeout(() => probeAbort.abort(), SSE_PROBE_TIMEOUT_MS);
+    const onClientAbort = () => probeAbort.abort();
+    clientAbort.signal.addEventListener("abort", onClientAbort, { once: true });
+
+    try {
+      upstreamRes = await fetch(targetUrl, { headers, signal: probeAbort.signal });
+    } catch {
+      upstreamRes = null;
+    } finally {
+      clearTimeout(probeTimeout);
+      clientAbort.signal.removeEventListener("abort", onClientAbort);
+    }
+
+    if (upstreamRes?.ok && upstreamRes.body) break; // Connected!
+    upstreamRes = null;
+
+    if (clientAbort.signal.aborted) break;
+    if (Date.now() >= retryDeadline) break;
+
+    // First failure: commit SSE headers so the client connection stays open.
+    if (!ensureHeaders()) break;
+
+    // Send an SSE comment to prevent proxy/browser keepalive timeout.
+    try {
+      reply.raw.write(": daemon reconnecting\n\n");
+    } catch {
+      break; // Client disconnected during write
+    }
+
+    // Wait before the next retry, interruptible by client disconnect.
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, SSE_RETRY_INTERVAL_MS);
+      clientAbort.signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+    });
+  }
+
+  // Unregister client-close listeners before piping or closing.
+  req.raw.off("close", onClientClose);
+  req.raw.off("error", onClientClose);
+
+  if (!upstreamRes || !upstreamRes.body) {
+    // Daemon still unavailable after retry window.
+    if (headersWritten) {
+      // Tell connected clients to reconnect after a short delay.
+      try {
+        reply.raw.write(`data: ${JSON.stringify({ type: "reconnect", retryAfterMs: 5_000 })}\n\n`);
+        reply.raw.end();
+      } catch { /* noop */ }
+    } else if (!reply.sent) {
+      logger.warn({ targetUrl }, "[broadcast-daemon-proxy] SSE daemon unavailable after retry");
+      reply.code(502).send({ error: "broadcast daemon unavailable" });
+    }
     return;
   }
 
-  if (!upstreamRes.ok || !upstreamRes.body) {
-    req.raw.off("close", onClose);
-    req.raw.off("error", onClose);
-    const status = upstreamRes.status;
-    logger.warn({ status, targetUrl }, "[broadcast-daemon-proxy] SSE upstream returned error");
-    if (!reply.sent) reply.code(502).send({ error: "broadcast daemon SSE error" });
+  // Successfully connected — commit SSE headers if not already done.
+  if (!ensureHeaders()) {
+    try { upstreamRes.body.cancel(); } catch { /* noop */ }
     return;
   }
 
-  // Commit SSE response headers before streaming — must happen before any write.
-  reply.raw.writeHead(200, {
-    "Content-Type": "text/event-stream; charset=utf-8",
-    "Cache-Control": "no-cache, no-transform",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no",
-    "Content-Encoding": "identity",
-  });
-
+  // Pipe the daemon's SSE stream directly to the client.
   const reader = upstreamRes.body.getReader();
   try {
     for (;;) {
@@ -108,8 +183,6 @@ async function sseDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promise
     }
   } finally {
     try { reader.cancel(); } catch { /* noop */ }
-    req.raw.off("close", onClose);
-    req.raw.off("error", onClose);
     try { reply.raw.end(); } catch { /* noop */ }
   }
 }
@@ -172,7 +245,12 @@ async function httpDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promis
  * clients will see a connection error and retry (normal WS reconnect behaviour).
  */
 export async function broadcastDaemonProxyRoutes(app: FastifyInstance): Promise<void> {
-  // SSE — streaming passthrough (must be registered before wildcard)
+  // Start daemon liveness monitor when the server is ready; stop on close.
+  // Safe if BROADCAST_DAEMON_URL is not set (no-op).
+  app.addHook("onReady", async () => { startDaemonLivenessMonitor(); });
+  app.addHook("onClose", async () => { stopDaemonLivenessMonitor(); });
+
+  // SSE — resilient streaming proxy with 30 s retry window (must be before wildcard)
   app.get("/events", sseDaemonProxy);
 
   // REST catch-all — handles /state, /rehydrate, /skip, /override/*, /reload,

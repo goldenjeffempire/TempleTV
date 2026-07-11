@@ -11,6 +11,7 @@ import { checkpointRepo } from "../repository/checkpoint.repo.js";
 import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, getBadUrlCacheSize, getBadUrlStats, markUrlBadBySource, getUrlConfidenceState, markSourceApproved, isSourceApproved, clearSourceApproval, clearAllSourceApprovals, type RawQueueRow } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { saveDiskBackup, loadDiskBackup } from "../repository/disk-state-backup.js";
+import { restartLogRepo } from "../repository/restart-log.repo.js";
 import { storagePaths } from "../../../infrastructure/storage-paths.js";
 import { ytShuffleFallback } from "./youtube-shuffle-fallback.js";
 import { playbackAnalytics } from "./playback-analytics.js";
@@ -383,6 +384,14 @@ class BroadcastOrchestrator extends EventEmitter {
   private lastCpPositionMs: number | null = null;
   private lastCpWallMs: number | null = null;
   /**
+   * What the most recent hydrate() call resumed from.
+   * Written during hydrate(); read in start() to record the restart log entry.
+   * "checkpoint"  = resumed from DB runtime_state or player_position_checkpoint
+   * "disk_backup" = DB was empty/unavailable; fell back to /tmp disk snapshot
+   * "cold_start"  = no persisted state found; started fresh from sequence 0
+   */
+  private hydrateSource: "checkpoint" | "disk_backup" | "cold_start" = "cold_start";
+  /**
    * Concurrency guard: prevents overlapping persistCheckpoint() calls when
    * the DB write takes longer than CHECKPOINT_INTERVAL_MS.  Without this,
    * slow writes stack up and can produce out-of-order checkpoints.
@@ -714,6 +723,17 @@ class BroadcastOrchestrator extends EventEmitter {
     // This is the ONLY place this.started becomes true.
     this.started = true;
     this.startedAtWallMs = Date.now();
+
+    // Record this boot in the restart log so operators can see restart history
+    // and verify that state was preserved across crashes/deployments.
+    // Fire-and-forget — must never block or throw during startup.
+    void restartLogRepo.write({
+      channelId: this.channelId,
+      resumeSource: this.hydrateSource,
+      resumeItemId: this.queueCheckpoint?.itemId ?? null,
+      resumePositionMs: this.queueCheckpoint?.positionMs ?? 0,
+      resumeSequence: this.sequence,
+    });
 
     // ── Boot-time dead-air auto-revalidation (with up to 3 retries) ──────
     // After a server restart the bad-URL cache is hydrated from the DB (above).
@@ -1137,6 +1157,7 @@ class BroadcastOrchestrator extends EventEmitter {
     try {
       const runtime = await runtimeRepo.load(this.channelId);
       if (runtime) {
+        this.hydrateSource = "checkpoint";
         this.mode = runtime.mode;
         this.sequence = runtime.sequence;
         // PRIMARY restart-persistence: restore the cycle epoch so reloadInner()
@@ -1187,6 +1208,7 @@ class BroadcastOrchestrator extends EventEmitter {
       if (cp?.itemId) {
         this.queueCheckpoint = { itemId: cp.itemId, positionMs: cp.positionMs };
         this.checkpointSavedAtMs = cp.savedAtMs ?? null;
+        if (this.hydrateSource === "cold_start") this.hydrateSource = "checkpoint";
       }
     } catch (err) {
       logger.warn({ err }, "[broadcast-v2] hydrate: checkpoint read failed (non-fatal)");
@@ -1206,6 +1228,7 @@ class BroadcastOrchestrator extends EventEmitter {
         if (diskSnap.failoverActive && !this.failover.active) {
           this.failover = { active: true, reason: diskSnap.failoverReason ?? null };
         }
+        this.hydrateSource = "disk_backup";
         logger.warn(
           { channelId: this.channelId, diskSnap },
           "[broadcast-v2] hydrate: restored from disk backup (DB was unavailable or empty)",

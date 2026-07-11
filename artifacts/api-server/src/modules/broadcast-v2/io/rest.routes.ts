@@ -30,6 +30,7 @@ import { probeUploadedDuration } from "../../transcoder/transcoder.service.js";
 import { enqueueTranscode } from "../../transcoder/transcoder.queue.js";
 import { transcoderDispatcher } from "../../transcoder/transcoder.dispatcher.js";
 import { logger } from "../../../infrastructure/logger.js";
+import { restartLogRepo } from "../repository/restart-log.repo.js";
 import { mediaIntegrityScanner } from "../engine/media-integrity-scanner.js";
 import { queueIntegrityValidator } from "../engine/queue-integrity-validator.js";
 import { workerSupervisor } from "../engine/worker-supervisor.js";
@@ -680,6 +681,30 @@ export async function restRoutes(app: FastifyInstance) {
         })(),
       },
     };
+  });
+
+  // ── Admin: Daemon restart history ────────────────────────────────────
+  // Returns the last 20 daemon boot records including what state each boot
+  // resumed from. Lets operators verify state was preserved across crashes
+  // and planned restarts. Auth-guarded (editor+). Rate-limited: 10 req/min.
+  app.get("/restart-history", {
+    ...adminGuard,
+    schema: { response: { 429: _429err } },
+    config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+  }, async (_req, reply) => {
+    reply.header("Cache-Control", "no-store, max-age=0");
+    const records = await restartLogRepo.load(broadcastOrchestrator.channelId, 20);
+    return reply.send({
+      channelId: broadcastOrchestrator.channelId,
+      records: records.map((r) => ({
+        id: r.id,
+        restartedAt: r.restartedAt.toISOString(),
+        resumeSource: r.resumeSource,
+        resumeItemId: r.resumeItemId,
+        resumePositionMs: r.resumePositionMs,
+        resumeSequence: r.resumeSequence,
+      })),
+    });
   });
 
   // ── Public: Electronic Program Guide (EPG) ───────────────────────────
