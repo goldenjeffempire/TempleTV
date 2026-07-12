@@ -271,6 +271,9 @@ function getOrCreateSession(baseUrl: string): NativeSession {
   }
 
   // Forward-declare so the machine's IntentHandler closure can reference it.
+  // Must stay `let` (TS forbids a definite-assignment assertion on `const`);
+  // it is assigned exactly once below, so `prefer-const` is a false positive.
+  // eslint-disable-next-line prefer-const
   let session!: NativeSession;
 
   const machine = new PlayerMachine((intent) => session.adapter.apply(intent));

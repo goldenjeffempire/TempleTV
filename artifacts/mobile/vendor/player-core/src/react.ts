@@ -324,6 +324,9 @@ function startJanitor(): void {
 function createSession(baseUrl: string): BroadcastSession {
   // `session` is declared with `let` so the machine's IntentHandler closure
   // can reference it before the object literal is fully constructed.
+  // Must stay `let` (TS forbids a definite-assignment assertion on `const`);
+  // it is assigned exactly once below, so `prefer-const` is a false positive.
+  // eslint-disable-next-line prefer-const
   let session!: BroadcastSession;
 
   const machine = new PlayerMachine((intent) => {

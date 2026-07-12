@@ -25,8 +25,8 @@ function isNativeRNTPCapable(): boolean {
       env === "standalone" || env === "bare" || ownership === "standalone";
     if (!isNativeBuild) return false;
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { NativeModules } = require("react-native");
-    return Boolean(NativeModules?.TrackPlayerModule);
+    const { isTrackPlayerNativeModuleLinked } = require("./trackPlayerNativeModule");
+    return isTrackPlayerNativeModuleLinked();
   } catch {
     return false;
   }

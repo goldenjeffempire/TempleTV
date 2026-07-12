@@ -196,9 +196,11 @@ if (Platform.OS !== "web") {
 
     if (isNativeBuild) {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { NativeModules } = require("react-native");
+      const { isTrackPlayerNativeModuleLinked } = require("./services/trackPlayerNativeModule");
       // Final safety check: the native module must actually be registered.
-      if (NativeModules?.TrackPlayerModule) {
+      // Uses TurboModuleRegistry (New Architecture-sanctioned) rather than
+      // direct NativeModules bridge access — see trackPlayerNativeModule.ts.
+      if (isTrackPlayerNativeModuleLinked()) {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const TrackPlayerModule = require("react-native-track-player");
         const TrackPlayer = TrackPlayerModule?.default ?? TrackPlayerModule;
