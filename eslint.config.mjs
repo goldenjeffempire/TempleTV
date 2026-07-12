@@ -141,9 +141,28 @@ export default tseslint.config(
     },
   },
 
-  // ── Config / root-level JS/MJS files ─────────────────────────────────────
+  // ── Service worker files — run in the ServiceWorkerGlobalScope, not Node ─
   {
-    files: ["*.mjs", "*.cjs", "*.js"],
+    files: ["**/sw*.js", "**/service-worker*.js"],
+    languageOptions: {
+      globals: {
+        ...globals.serviceworker,
+      },
+    },
+    rules: {
+      "no-console": "off",
+    },
+  },
+
+  // ── Config / build-tooling JS/MJS/CJS files (any directory depth) ─────────
+  // Covers Gradle config-plugins, Metro/Babel config, build scripts, etc.
+  // Bare "*.js" only matches files at the eslint root — "**/*.js" is required
+  // to reach nested files like artifacts/mobile/plugins/*.js or
+  // artifacts/mobile/metro.config.js, which were previously linted with the
+  // TS/browser globals (missing `require`, `module`, `process`, `console`,
+  // `__dirname`) and produced hundreds of false-positive no-undef errors.
+  {
+    files: ["**/*.mjs", "**/*.cjs", "**/*.js"],
     languageOptions: {
       globals: {
         ...globals.node,
