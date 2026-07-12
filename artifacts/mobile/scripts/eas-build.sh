@@ -61,16 +61,23 @@ fi
 
 echo ""
 
-# ── 2. Replit sandbox workaround ─────────────────────────────────────────────
+# ── 2. Replit sandbox workarounds ────────────────────────────────────────────
 #
+# Workaround A — git index lock:
 # EAS CLI needs to write to the git index while archiving project files for
 # upload. The Replit sandbox blocks writes to .git/index.lock (the default
 # path), causing the upload step to fail with a "could not lock index" error.
-#
-# Redirecting GIT_INDEX_FILE to /tmp lets git use a writable path for the
-# lock file so EAS can proceed normally. This variable has no effect outside
-# of the Replit sandbox (git ignores it when it can write .git/index.lock).
+# Redirecting GIT_INDEX_FILE to /tmp lets git use a writable path.
+cp "$REPO_ROOT/.git/index" /tmp/eas-build-index 2>/dev/null || true
 export GIT_INDEX_FILE=/tmp/eas-build-index
+
+# Workaround B — dotslash rmdir restriction:
+# EAS CLI 14.x bundles a dotslash binary that extracts into a temp dir and
+# then tries to rmdir it. Replit's sandbox blocks that rmdir with EACCES.
+# We inject a Node.js preload shim that silences EACCES on dotslash/shallow-
+# clone paths so EAS can proceed normally.
+SHIM_PATH="$SCRIPT_DIR/eas-rmdir-shim.cjs"
+export NODE_OPTIONS="${NODE_OPTIONS:-} --require $SHIM_PATH"
 
 # ── 3. eas build (all arguments forwarded) ───────────────────────────────────
 echo "=== Starting EAS build ==="
