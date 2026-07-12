@@ -350,7 +350,9 @@ export default function PlayerScreen() {
   //
   // Handles both youtube.com/watch?v= and youtu.be/ URL formats.
   const v2YouTubeOverrideVideoId = useMemo(() => {
-    if (v2Override?.kind !== "youtube" || !v2Override.url) return null;
+    if (v2Override?.kind !== "youtube" || typeof v2Override.url !== "string" || !v2Override.url) {
+      return null;
+    }
     const m = v2Override.url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
     return m?.[1] ?? null;
   }, [v2Override?.kind, v2Override?.url]);
