@@ -521,11 +521,14 @@ export default function PlayerScreen() {
   // re-activate automatically when PiP exits (isInPip → false).
   useEffect(() => {
     if (isInPip) {
-      deactivateKeepAwake();
+      try { deactivateKeepAwake(); } catch { /* expo-keep-awake unavailable — non-fatal */ }
       return;
     }
-    void activateKeepAwakeAsync();
-    return () => { deactivateKeepAwake(); };
+    // expo-keep-awake may throw NoClassDefFoundError on Android when
+    // KeepAwakeManager is missing from the classpath (R8 missing-class gap in
+    // expo-modules-core 57). Catching here prevents a hard app crash.
+    activateKeepAwakeAsync().catch(() => {});
+    return () => { try { deactivateKeepAwake(); } catch { /* non-fatal */ } };
   }, [isInPip]);
 
   // Last-known playback position (ms). Written by handleProgressWithPosition
