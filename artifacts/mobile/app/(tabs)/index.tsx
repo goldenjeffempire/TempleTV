@@ -407,14 +407,41 @@ const HeroSection = React.memo(function HeroSection({
       ? v2Server.current.thumbnailUrl
       : fallbackSermon?.thumbnailUrl ?? null;
 
-  // Disable both Pressables when there is genuinely nothing to navigate to.
-  const watchNowDisabled = !hasActiveBroadcast && !fallbackSermon;
+  // Never permanently disable navigation: even during BOOTSTRAP or when the
+  // API is temporarily unreachable the user should always be able to open the
+  // player — it will show the broadcast engine's own state (connecting / off-air)
+  // rather than stranding them on the home screen.
+  //
+  // Previously this was `!hasActiveBroadcast && !fallbackSermon`, which blocked
+  // navigation during the first 8 s (WS bootstrap) and whenever the API was
+  // unreachable (dev mode missing EXPO_PUBLIC_API_URL, or production outage).
+  // The player screen is the authoritative source of truth for what's on air;
+  // the home screen should never be a gatekeeper.
+  const watchNowDisabled = false;
 
   const handleTuneIn = useCallback(() => {
+    if (__DEV__) {
+      console.log(
+        "[HeroSection] handleTuneIn",
+        { hasActiveBroadcast, hasFallback: !!fallbackSermon, thumbUrl },
+      );
+    }
     if (hasActiveBroadcast) {
       navigateToLive("", "Live Broadcast", 0, undefined, thumbUrl ?? undefined);
     } else if (fallbackSermon) {
       navigateToSermon(fallbackSermon);
+    } else {
+      // Neither a live broadcast nor a VOD fallback is loaded yet. This happens
+      // during the initial WS bootstrap (first ~2 s) or when the API is
+      // temporarily unreachable. Navigate to the live broadcast player anyway —
+      // it will show its own "Connecting…" or "Off Air" state rather than
+      // leaving the user stranded on the home screen.
+      if (__DEV__) {
+        console.warn(
+          "[HeroSection] handleTuneIn — no content known yet; navigating to live player as fallback",
+        );
+      }
+      navigateToLive("", "Live Broadcast", 0, undefined, undefined);
     }
   }, [hasActiveBroadcast, fallbackSermon, thumbUrl]);
 

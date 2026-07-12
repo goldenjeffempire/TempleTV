@@ -183,9 +183,10 @@ function _breadcrumb(
   data?: Record<string, unknown>,
 ): void {
   try {
+    // require is available via Metro's CommonJS shim; the lib tsconfig does not
+    // include @types/node but TypeScript no longer flags it as an error in RN
+    // 0.81+ — the @ts-expect-error directive was intentionally removed.
     // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any
-    // @ts-expect-error — require is available in both RN (native) and the
-    // Metro bundler's CommonJS shim; lib tsconfig doesn't include @types/node.
     const S = (require as (id: string) => unknown)("@sentry/react-native") as {
       addBreadcrumb: (b: { category: string; message: string; level: string; data?: Record<string, unknown> }) => void;
     };

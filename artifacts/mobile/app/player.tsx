@@ -289,6 +289,41 @@ export default function PlayerScreen() {
   // which already calls playLive() and sets PlayerContext.isLive=true.
   const isBroadcastV2 = isLive && !( !!( params.youtubeId ?? params.videoId ) && !hlsUrl );
 
+  // ── Dev-mode routing diagnostics ─────────────────────────────────────────
+  // Logs the routing decision on every player mount so it's trivial to verify
+  // which surface will be rendered (BroadcastHlsPlayer / YoutubePlayer /
+  // LocalVideoPlayer / no-source error) without reading source code.
+  // Runs once on mount because params / apiBase are stable after navigation.
+  useEffect(() => {
+    if (!__DEV__) return;
+    const isYoutubeLocal    = !!youtubeId && !hlsUrl;
+    const isHlsLocal        = !!hlsUrl;
+    const hasNoSourceLocal  = !isLive && !isYoutubeLocal && !isHlsLocal;
+    let surface: string;
+    if (isBroadcastV2)         surface = "BroadcastHlsPlayer (V2 engine)";
+    else if (isYoutubeLocal)   surface = "YoutubePlayer";
+    else if (isHlsLocal)       surface = "LocalVideoPlayer";
+    else if (hasNoSourceLocal) surface = "no-source error";
+    else                       surface = "placeholder";
+
+    console.log(
+      "[player.tsx] routing decision",
+      {
+        surface,
+        isLive,
+        isBroadcastV2,
+        isYoutube: isYoutubeLocal,
+        isHls: isHlsLocal,
+        hasNoSource: hasNoSourceLocal,
+        hlsUrl: hlsUrl || "(empty)",
+        youtubeId: youtubeId || "(empty)",
+        videoId,
+        apiBase: apiBase || "(empty — set EXPO_PUBLIC_API_URL!)",
+      },
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Derived V2 live metadata — conditional on isBroadcastV2 so VOD screens
   // never read stale broadcast state.
   const v2ServerSnap    = isBroadcastV2 ? (v2Snapshot.lastServerSnapshot ?? null) : null;

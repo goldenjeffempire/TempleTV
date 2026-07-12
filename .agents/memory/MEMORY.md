@@ -1,3 +1,4 @@
+- [Mobile player/watch page root causes and permanent fixes](mobile-player-open-fixes.md) — watchNowDisabled gate + missing EXPO_PUBLIC_API_URL were the two blockers; relative baseUrl silently breaks WS on native.
 - [Expo SDK ladder upgrade gotchas (54→57)](expo-sdk-upgrade-gotchas.md) — catalog-hardcoding, TS6 baseUrl, absoluteFillObject removal, app.json schema changes, native-module EventEmitter modernization.
 - [lucide-react stale pnpm peer-hash path](lucide-react-stale-pnpm-hash.md) — hardcoded `node_modules/.pnpm/pkg@v_react@v/...` workaround path breaks on every React version bump; looks identical to store corruption.
 - [Phantom Channels navigation root causes and permanent fixes](nav-phantom-channels-fix.md) — `segments` in Supervisor effect deps + wrong initialRouteName + cold-start auto-nav were all 4 root causes; fixed with segmentsRef pattern.

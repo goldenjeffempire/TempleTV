@@ -42,6 +42,25 @@ export interface BroadcastHlsPlayerProps {
 export function BroadcastHlsPlayer({ muted, suppressEvents, isInPip, ...rest }: BroadcastHlsPlayerProps) {
   void rest;
   const apiBase = getApiBase() ?? "";
+
+  // ── Dev-mode guard: warn if apiBase is missing or relative ─────────────────
+  // A missing or relative baseUrl causes the WS transport to construct an
+  // invalid URL (e.g. ws:///api/broadcast-v2/ws on native) and silently fail
+  // at connection time — the FSM stays in BOOTSTRAP forever and the player
+  // shows "Connecting…" indefinitely. The fix is EXPO_PUBLIC_API_URL in
+  // .env.local (dev) / .env.production (prod). This log makes the root cause
+  // immediately obvious in the Expo console instead of requiring a trace.
+  if (__DEV__ && (!apiBase || apiBase.startsWith("/"))) {
+    console.error(
+      "[BroadcastHlsPlayer] apiBase is missing or relative:",
+      JSON.stringify(apiBase),
+      "— set EXPO_PUBLIC_API_URL in artifacts/mobile/.env.local for dev builds.",
+      "WS transport will fail to connect; player will stay at BOOTSTRAP.",
+    );
+  } else if (__DEV__) {
+    console.log("[BroadcastHlsPlayer] mounting, baseUrl:", `${apiBase}/api/broadcast-v2`);
+  }
+
   const handleFatal = useCallback(() => {
     if (isInPictureInPictureMode()) {
       cancelPipRestoreNotification().catch(() => {});

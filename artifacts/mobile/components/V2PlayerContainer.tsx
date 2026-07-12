@@ -1671,6 +1671,26 @@ export function V2PlayerContainer({
   useEffect(() => {
     const prevState = prevSnapshotStateRef.current;
     prevSnapshotStateRef.current = snapshot.state;
+
+    // ── Dev-mode FSM state transition logging ─────────────────────────────────
+    // Logs every state transition in development so the player pipeline is
+    // fully observable in the Expo console without any extra tooling.
+    // Format: [V2PlayerContainer] FSM: BOOTSTRAP → SYNCING (main)
+    if (__DEV__ && prevState !== snapshot.state) {
+      const label = minimal ? "hero" : suppressEvents ? "inline/suppressed" : "primary";
+      console.log(
+        `[V2PlayerContainer] FSM: ${prevState ?? "—"} → ${snapshot.state}`,
+        `(${label}, connected=${connected}, baseUrl=${baseUrl})`,
+      );
+      if (snapshot.state === "FATAL") {
+        console.error(
+          "[V2PlayerContainer] FSM entered FATAL",
+          `attempts=${snapshot.fatalAttemptCount ?? 0}`,
+          `firedOnFatal=${!suppressEvents && !minimal}`,
+        );
+      }
+    }
+
     if (snapshot.state === "FATAL" && prevState !== "FATAL" && !fatalFiredRef.current) {
       fatalFiredRef.current = true;
       // Only the PRIMARY driver fires onFatal.  Suppressed instances (inline
@@ -1683,7 +1703,7 @@ export function V2PlayerContainer({
       if (!suppressEvents && !minimal) onFatal?.();
     }
     if (snapshot.state !== "FATAL") fatalFiredRef.current = false;
-  }, [snapshot.state, onFatal, suppressEvents, minimal]);
+  }, [snapshot.state, onFatal, suppressEvents, minimal, connected, baseUrl]);
 
   // RN AppState bridge: when the app returns to foreground, force a fresh
   // WS handshake. iOS/Android suspend the JS runtime when backgrounded,
