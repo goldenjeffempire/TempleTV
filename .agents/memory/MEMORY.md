@@ -132,3 +132,4 @@
 - [Broadcast daemon architecture](broadcast-daemon-architecture.md) — daemon owns broadcast engine (port 9000); API proxies to it; never restart daemon during API deployments.
 - [Broadcast deployment resilience](broadcast-deployment-resilience.md) — 3 gaps closed: restart-log table+repo+admin card; daemon liveness monitor (_started flag not pollTimer); resilient SSE proxy with 30 s retry window.
 - [YouTube override restart reload-flash bug](yt-override-restart-reload-flash.md) — engine resumes same video with correct position but a NEW override.id after a restart; client must compare by video id, not override.id, or it reloads/flashes an already-playing iframe.
+- [EAS build dotslash .cache tarball break](eas-build-dotslash-cache-tarball.md) — project-root .cache/dotslash/ (RN DevTools binary, read-only files) breaks local `eas build` tarball packing with EACCES; must be in .easignore too, not just .gitignore.

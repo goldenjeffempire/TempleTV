@@ -227,3 +227,9 @@ id = "nHGp8TlsIC4HsDpUYUoJq"
 uri = "file://artifacts/mobile/build-output/temple-tv-mobile-v1.0.43-102.aab"
 type = "unspecified"
 title = "Temple TV v1.0.43 (versionCode 102) — production .aab"
+
+[[outputs]]
+id = "y8wdVrrobGMvOV3ogz-33"
+uri = "file://attached_assets/temple-tv-v1.0.45-105.aab"
+type = "unspecified"
+title = "Temple TV v1.0.45 (105) — production Android .aab"
