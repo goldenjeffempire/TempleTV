@@ -1,3 +1,4 @@
+- [Mobile @expo/cli version drift breaks config plugins](mobile-expo-cli-sdk-mismatch.md) — stale @expo/cli behind SDK causes pnpm to skip hoisting @expo/config-plugins, breaking Sentry's plugin at prebuild/EAS-build time; expo-doctor won't catch it.
 - [Mobile player/watch page root causes and permanent fixes](mobile-player-open-fixes.md) — watchNowDisabled gate + missing EXPO_PUBLIC_API_URL were the two blockers; relative baseUrl silently breaks WS on native.
 - [Expo SDK ladder upgrade gotchas (54→57)](expo-sdk-upgrade-gotchas.md) — catalog-hardcoding, TS6 baseUrl, absoluteFillObject removal, app.json schema changes, native-module EventEmitter modernization.
 - [lucide-react stale pnpm peer-hash path](lucide-react-stale-pnpm-hash.md) — hardcoded `node_modules/.pnpm/pkg@v_react@v/...` workaround path breaks on every React version bump; looks identical to store corruption.

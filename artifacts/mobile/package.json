@@ -33,7 +33,7 @@
   "devDependencies": {
     "@babel/core": "^7.25.2",
     "@expo-google-fonts/inter": "^0.4.0",
-    "@expo/cli": "54.0.23",
+    "@expo/cli": "57.0.6",
     "@expo/ngrok": "^4.1.0",
     "@expo/vector-icons": "^15.0.3",
     "@react-native-async-storage/async-storage": "2.2.0",
@@ -42,7 +42,7 @@
     "@tanstack/react-query": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
-    "@ungap/structured-clone": "^1.3.1",
+    "@ungap/structured-clone": "^1.3.3",
     "@workspace/api-client-react": "file:./vendor/api-client-react",
     "@workspace/broadcast-sync": "file:./vendor/broadcast-sync",
     "@workspace/broadcast-types": "file:./vendor/broadcast-types",
