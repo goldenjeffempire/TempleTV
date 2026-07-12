@@ -1201,55 +1201,14 @@ export async function buildApp(): Promise<FastifyInstance> {
     }
   });
 
-  // ── Broadcast daemon WebSocket upgrade proxy ──────────────────────────────
-  // When BROADCAST_DAEMON_URL is set, splice raw WebSocket upgrade requests for
-  // /broadcast-v2/ws directly to the daemon via a TCP-level proxy. This runs
-  // BEFORE @fastify/websocket's upgrade handler (prependListener) so the daemon
-  // owns the socket exclusively. The daemon's WS handler then sends frames as
-  // normal. WS clients experience zero interruption during API restarts because
-  // the daemon never stops.
-  if (env.BROADCAST_DAEMON_URL) {
-    const { default: net } = await import("node:net");
-    const daemonParsed = new URL(env.BROADCAST_DAEMON_URL);
-    const daemonHost = daemonParsed.hostname;
-    const daemonPort = Number(daemonParsed.port) || 80;
-
-    app.server.prependListener("upgrade", (req, socket, head) => {
-      const url = req.url ?? "";
-      if (!url.includes("/broadcast-v2/ws")) return; // let others handle non-broadcast WS
-
-      const upstream = net.createConnection({ host: daemonHost, port: daemonPort }, () => {
-        // Re-send the HTTP upgrade handshake to the daemon so it can perform
-        // the WebSocket 101 Switching Protocols negotiation.
-        const lines: string[] = [
-          `GET ${url} HTTP/1.1`,
-          `Host: ${daemonHost}:${daemonPort}`,
-          "Upgrade: websocket",
-          "Connection: Upgrade",
-          `Sec-WebSocket-Version: ${req.headers["sec-websocket-version"] ?? "13"}`,
-          `Sec-WebSocket-Key: ${req.headers["sec-websocket-key"] ?? ""}`,
-        ];
-        const auth = req.headers["authorization"];
-        if (auth) lines.push(`Authorization: ${auth}`);
-        const proto = req.headers["sec-websocket-protocol"];
-        if (proto) lines.push(`Sec-WebSocket-Protocol: ${proto}`);
-        upstream.write(lines.join("\r\n") + "\r\n\r\n");
-        // Any bytes already buffered before the upgrade event (head buffer)
-        if (head && head.length > 0) upstream.write(head);
-        // Bidirectional pipe — frames now flow directly between client ↔ daemon
-        socket.pipe(upstream);
-        upstream.pipe(socket);
-      });
-
-      upstream.on("error", (err) => {
-        logger.debug({ err }, "[broadcast-daemon-proxy] WS upstream error");
-        try { socket.destroy(); } catch { /* noop */ }
-      });
-      socket.on("error", () => { try { upstream.destroy(); } catch { /* noop */ } });
-      socket.on("close", () => { try { upstream.destroy(); } catch { /* noop */ } });
-      upstream.on("close", () => { try { socket.destroy(); } catch { /* noop */ } });
-    });
-  }
+  // NOTE: the /broadcast-v2/ws → daemon proxy is handled entirely inside
+  // broadcastDaemonProxyRoutes (a real `{ websocket: true }` Fastify route)
+  // — see modules/broadcast-v2/io/daemon-proxy.ts for why a raw TCP-level
+  // `net.createConnection` splice on the server's "upgrade" event must NOT
+  // be used here: @fastify/websocket also listens on "upgrade" and, because
+  // every registered listener runs regardless of what earlier ones did with
+  // the socket, its own handshake-and-noHandle-close would race the raw
+  // splice and kill the connection on (almost) every attempt.
 
   return app;
 }

@@ -19,6 +19,8 @@
  */
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import WebSocket from "ws";
+import type { RawData } from "ws";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
 import { startDaemonLivenessMonitor, stopDaemonLivenessMonitor } from "../engine/daemon-liveness-monitor.js";
@@ -227,6 +229,72 @@ async function httpDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promis
   reply.send(body);
 }
 
+// ── WebSocket Proxy ──────────────────────────────────────────────────────────
+
+/**
+ * Application-level WebSocket proxy: bridges the client's Fastify-managed
+ * `ws` socket to a real outbound `ws` client connection to the daemon.
+ *
+ * IMPORTANT: this must be a genuine `{ websocket: true }` Fastify route, not
+ * a raw `net.Socket`/TCP-level splice. @fastify/websocket installs its own
+ * `upgrade` listener on the shared HTTP server and — because Node's
+ * EventEmitter invokes every registered `upgrade` listener for a given
+ * request regardless of what earlier listeners did with the socket — any
+ * unmatched or non-websocket-marked route on this same Fastify instance
+ * causes @fastify/websocket's `noHandle()` to complete the handshake and
+ * immediately close the socket out from under a competing raw TCP proxy.
+ * That race made every /broadcast-v2/ws connection get killed on arrival
+ * (see git history: raw `net.createConnection` splice in app.ts). Routing
+ * the proxy entirely through Fastify's own websocket machinery — as a real
+ * matched `{ websocket: true }` route — eliminates the second listener
+ * entirely, so there is no race.
+ */
+function wsDaemonProxyHandler(clientSocket: WebSocket, request: FastifyRequest): void {
+  const daemonWsUrl = daemonUrl(request.raw.url ?? "/ws").replace(/^http/, "ws");
+  const headers = proxyRequestHeaders(request);
+  const upstream = new WebSocket(daemonWsUrl, { headers });
+
+  let upstreamOpen = false;
+  let closed = false;
+  const pending: RawData[] = [];
+
+  const closeBoth = (code?: number, reason?: string) => {
+    if (closed) return;
+    closed = true;
+    try { clientSocket.close(code, reason); } catch { /* already closed */ }
+    try { upstream.close(); } catch { /* already closed */ }
+  };
+
+  upstream.on("open", () => {
+    upstreamOpen = true;
+    for (const msg of pending.splice(0)) {
+      try { upstream.send(msg); } catch { /* upstream gone */ }
+    }
+  });
+
+  clientSocket.on("message", (data: RawData) => {
+    if (upstreamOpen) {
+      try { upstream.send(data); } catch { /* upstream gone */ }
+    } else {
+      pending.push(data);
+    }
+  });
+
+  upstream.on("message", (data: RawData) => {
+    if (clientSocket.readyState === WebSocket.OPEN) {
+      try { clientSocket.send(data); } catch { /* client gone */ }
+    }
+  });
+
+  upstream.on("error", (err) => {
+    logger.debug({ err, daemonWsUrl }, "[broadcast-daemon-proxy] WS upstream error");
+    closeBoth(1011, "broadcast daemon unavailable");
+  });
+  upstream.on("close", () => closeBoth());
+  clientSocket.on("error", () => closeBoth());
+  clientSocket.on("close", () => closeBoth());
+}
+
 // ── Fastify Plugin ────────────────────────────────────────────────────────────
 
 /**
@@ -236,19 +304,21 @@ async function httpDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promis
  *
  *   await instance.register(broadcastDaemonProxyRoutes, { prefix: "/broadcast-v2" });
  *
- * Route priority (Fastify evaluates in registration order):
- *   1. GET /events  → SSE streaming proxy
- *   2. GET|POST|… /* → generic HTTP proxy (catch-all wildcard)
- *
- * WebSocket (/ws) is NOT registered here — it is handled by the raw server
- * upgrade-event TCP proxy installed in app.ts. If the daemon is down, WS
- * clients will see a connection error and retry (normal WS reconnect behaviour).
+ * Route priority (Fastify evaluates static/exact routes before wildcards
+ * regardless of registration order, but /ws is listed first for clarity):
+ *   1. GET /ws      → WebSocket proxy (real `ws` client to the daemon)
+ *   2. GET /events  → SSE streaming proxy
+ *   3. GET|POST|… /* → generic HTTP proxy (catch-all wildcard)
  */
 export async function broadcastDaemonProxyRoutes(app: FastifyInstance): Promise<void> {
   // Start daemon liveness monitor when the server is ready; stop on close.
   // Safe if BROADCAST_DAEMON_URL is not set (no-op).
   app.addHook("onReady", async () => { startDaemonLivenessMonitor(); });
   app.addHook("onClose", async () => { stopDaemonLivenessMonitor(); });
+
+  // WebSocket — real Fastify-managed proxy (must be registered as an actual
+  // `{ websocket: true }` route; see wsDaemonProxyHandler doc comment above).
+  app.get("/ws", { websocket: true }, wsDaemonProxyHandler);
 
   // SSE — resilient streaming proxy with 30 s retry window (must be before wildcard)
   app.get("/events", sseDaemonProxy);

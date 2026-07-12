@@ -5,7 +5,7 @@
   "packageManager": "pnpm@10.26.1",
   "main": "./index.ts",
   "scripts": {
-    "dev": "CI=1 NODE_OPTIONS=--max-old-space-size=8192 EXPO_BASE_URL=/mobile pnpm exec expo start --port 18115",
+    "dev": "NODE_ENV=development CI=1 NODE_OPTIONS=--max-old-space-size=8192 EXPO_BASE_URL=/mobile pnpm exec expo start --port 18115",
     "build": "node scripts/build.js",
     "build:web": "NODE_OPTIONS=--max-old-space-size=8192 expo export --platform web --output-dir web-dist",
     "export:embed:android": "NODE_OPTIONS=--max-old-space-size=8192 expo export:embed --eager --platform android --dev false",
