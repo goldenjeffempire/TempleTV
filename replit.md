@@ -131,6 +131,7 @@ Dev API can mirror prod's queue into its own DB so engineers see what's airing w
 - Chunked server-relay only (`/admin/videos/upload/init` → `/chunk` → `/finalize`). All uploads broken into 8 MiB chunks with SHA-256.
 - `completeMultipartUpload` assembles parts via iterative PostgreSQL `UPDATE`. Peak Node memory is O(1) regardless of file size.
 - **Faststart safe re-upload**: `faststart.service.ts` uses `createMultipartUpload → uploadPart → completeMultipartUpload` instead of `delete + readFile + put`. On failure, `transcodingStatus` is restored to its pre-faststart value.
+- **Admin lucide-react icon stub resolves dynamically.** `artifacts/admin/vite.config.ts`'s `lucideIconStubs()` plugin (workaround for two icons missing from the lucide-react ESM dist) locates the package via `require.resolve("lucide-react/...")` rather than a hardcoded pnpm store path — the peer-hash suffix (e.g. `_react@19.2.0`) shifts whenever the workspace React version bumps, which silently broke every admin build until fixed.
 
 ## Release Pipeline
 

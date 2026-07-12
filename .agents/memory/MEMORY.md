@@ -1,4 +1,5 @@
 - [Expo SDK ladder upgrade gotchas (54→57)](expo-sdk-upgrade-gotchas.md) — catalog-hardcoding, TS6 baseUrl, absoluteFillObject removal, app.json schema changes, native-module EventEmitter modernization.
+- [lucide-react stale pnpm peer-hash path](lucide-react-stale-pnpm-hash.md) — hardcoded `node_modules/.pnpm/pkg@v_react@v/...` workaround path breaks on every React version bump; looks identical to store corruption.
 - [Phantom Channels navigation root causes and permanent fixes](nav-phantom-channels-fix.md) — `segments` in Supervisor effect deps + wrong initialRouteName + cold-start auto-nav were all 4 root causes; fixed with segmentsRef pattern.
 - [expo-modules-core 3.x Coroutine DSL](expo-modules-core-coroutine-dsl.md) — AsyncFunction crossinline lambdas cannot call suspend; use `AsyncFunction("name") Coroutine { ... }` for suspend bodies in EMC 3.x.
 - [Stuck-assembly scanner and session-completed retry](stuck-assembly-scanner.md) — 3 gaps causing "Assembling…" stuck state; fixed with 30s retry + finalize-status s3MirroredAt check + periodic 5-min scanner.

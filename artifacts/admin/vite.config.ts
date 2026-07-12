@@ -56,10 +56,14 @@ export { __iconNode, Icon as default };
   // Absolute paths to the stub files already written to node_modules.
   // Resolving to real paths means Vite reads the files directly, so their
   // own relative imports (../createLucideIcon.js) resolve correctly.
-  const LUCIDE_ICONS_DIR = path.resolve(
-    import.meta.dirname,
-    "../../node_modules/.pnpm/lucide-react@0.545.0_react@19.1.0/node_modules/lucide-react/dist/esm/icons"
-  );
+  //
+  // The on-disk pnpm store directory name for lucide-react is suffixed with
+  // whichever React version it was resolved against (e.g.
+  // `lucide-react@0.545.0_react@19.2.0`). That suffix shifts whenever the
+  // workspace's React version bumps, so hard-coding it goes stale silently.
+  // Resolve it dynamically via the package's own entry point instead.
+  const lucideEsmEntry = _require.resolve("lucide-react/dist/esm/lucide-react.js");
+  const LUCIDE_ICONS_DIR = path.resolve(path.dirname(lucideEsmEntry), "icons");
 
   return {
     name: "lucide-react-icon-stubs",
