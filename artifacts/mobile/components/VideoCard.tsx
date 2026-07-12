@@ -306,7 +306,7 @@ const styles = StyleSheet.create({
   },
   cardThumb: { width: "100%", height: "100%" },
   playOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: "center",
     justifyContent: "center",
   },

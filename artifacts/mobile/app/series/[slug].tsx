@@ -316,7 +316,7 @@ const styles = StyleSheet.create({
     paddingBottom: 20,
   },
   heroOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "rgba(0,0,0,0.55)",
   },
   heroContent: {

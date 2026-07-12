@@ -91,7 +91,7 @@ const styles = StyleSheet.create({
     zIndex: 30,
   },
   scrim: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "rgba(0,0,0,0.65)",
   },
   card: {

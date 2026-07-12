@@ -20,11 +20,14 @@
  *   When provided, shown in the PiP window chrome above the video so viewers
  *   know what is currently playing (same as YouTube's PiP title treatment).
  */
-import { type EventSubscription, Platform } from "react-native";
+import { Platform } from "react-native";
+import type { EventSubscription } from "expo-modules-core";
 
-// EventEmitter was removed from the react-native public TS exports in 0.76+.
-// Define a minimal interface matching the subset of the API we actually use so
-// we never need to import from a package whose type diverges from runtime.
+// As of Expo SDK 52+, the object returned by requireNativeModule() is already
+// an EventEmitter (native modules extend it directly in C++) — there is no
+// need to wrap it in react-native's NativeEventEmitter (whose internal path
+// is deprecated/unstable across RN versions). Define a minimal interface
+// matching the subset of the API we actually use.
 interface NativePipEmitter {
   addListener(
     event: string,
@@ -68,13 +71,10 @@ if (Platform.OS === "android") {
       requireNativeModule: (name: string) => typeof NativeModule;
     };
     NativeModule = requireNativeModule("ExpoPipAndroid");
-    // NativeEventEmitter is no longer exported from react-native's public index
-    // (removed in 0.76+) but is still accessible via its internal path — this
-    // is the correct way to bridge native event emission through the JS bridge.
-    const { default: NativeEventEmitter } = require(
-      "react-native/Libraries/EventEmitter/NativeEventEmitter",
-    ) as { default: new (mod: unknown) => NativePipEmitter };
-    NativeEmitter = new NativeEventEmitter(NativeModule);
+    // The native module returned by requireNativeModule() is itself an
+    // EventEmitter (Expo Modules Core wires this up in C++), so it can be
+    // used directly as the emitter without any additional wrapping.
+    NativeEmitter = NativeModule as unknown as NativePipEmitter;
   } catch {
     NativeModule = null;
     NativeEmitter = null;

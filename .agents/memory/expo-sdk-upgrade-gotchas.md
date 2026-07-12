@@ -1,0 +1,15 @@
+---
+name: Expo SDK ladder upgrade gotchas (54→57)
+description: Non-obvious fixes required when climbing Expo SDK majors one at a time in this monorepo; check before any future SDK bump.
+---
+
+- `expo install --fix` hardcodes `react`/`react-dom` to exact versions in the package's `package.json`, breaking the workspace's shared pnpm `catalog:` convention. After every `--fix` run, check if react/react-dom got hardcoded; if so, bump `pnpm-workspace.yaml`'s `catalog:` entry to match and restore `"catalog:"` in the package's `package.json`.
+  **Why:** `verify:catalog-callsites` fails the build if any catalog-managed package is hardcoded instead of using the `"catalog:"` token.
+- TypeScript major bumps forced by `expo install --fix` (e.g. TS 6.x) can trigger a peer warning from an internal expo-cli sub-tool (`@expo/require-utils` wanting `^5.0.0`). Trust `expo install --check`'s own guidance over that transitive peer warning — it's an internal tool, not the app runtime/build path.
+- TS 6.0 deprecates `tsconfig.json`'s `baseUrl` (used alongside `paths`) but still honors it; add `"ignoreDeprecations": "6.0"` to silence cleanly rather than restructuring `paths` (removal isn't until TS 7.0).
+- RN 0.85+ removed `StyleSheet.absoluteFillObject` (both value and type) — only `StyleSheet.absoluteFill` remains. It has identical shape/semantics (frozen only in `__DEV__`, spreading still works), so it's a pure find-and-replace across the app.
+- Expo SDK 57 requires `ios.deploymentTarget` ≥ 16.4 in `expo-build-properties`; older values (e.g. 15.1) throw at prebuild/config-plugin time, not silently ignored.
+- Expo SDK 57's app.json schema removes `newArchEnabled` (New Architecture is now mandatory, not optional) and `jsEngine` (Hermes-only) as top-level keys, and drops the legacy top-level `notification` config block (icon/color already belong in the `expo-notifications` plugin config; `androidMode`/`androidCollapsedTitle` have no modern equivalent and can be dropped).
+- SDK 57 wants `metro.config.js` to import `getDefaultConfig` from `"expo/metro-config"` (the package's own sub-export), not a directly-installed `@expo/metro-config` — `expo-doctor` flags direct installation of internal expo-* tooling packages as invalid even when peers force it in as a transitive.
+- Local/custom native Expo modules built with `requireNativeModule()`: as of Expo Modules Core SDK 52+, the returned native module object is *already* an EventEmitter (wired in C++). Do NOT wrap it in `new EventEmitter(mod)` (deprecated) or reach into React Native's internal `NativeEventEmitter` path (`react-native/Libraries/EventEmitter/NativeEventEmitter`, unstable/deprecated) — just cast/use the native module object directly as the emitter.
+- After an SDK bump, a workspace-level "Install and Build" workflow that was previously FAILED (stale, from before the bump) can resolve cleanly on its own once package versions/lockfile settle — worth a fresh retry rather than assuming it reflects a bug introduced by the upgrade.

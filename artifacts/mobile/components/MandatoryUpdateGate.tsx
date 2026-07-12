@@ -165,7 +165,7 @@ export function MandatoryUpdateGate() {
 
 const styles = StyleSheet.create({
   overlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     zIndex:          99999,
     alignItems:      "center",
     justifyContent:  "center",

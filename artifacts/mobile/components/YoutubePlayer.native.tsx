@@ -673,8 +673,8 @@ const styles = StyleSheet.create({
   audioModeWrapper: { flex: 1, backgroundColor: "#0a0a0a", minHeight: 240 },
   hiddenPlayer: { height: 1, overflow: "hidden" },
   container: { flex: 1, backgroundColor: "#0a0a0a", position: "relative" },
-  thumbnail: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
-  overlay: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 10 },
+  thumbnail: { ...StyleSheet.absoluteFill, width: "100%", height: "100%" },
+  overlay: { ...StyleSheet.absoluteFill, alignItems: "center", justifyContent: "center", gap: 10 },
   playButton: {
     width: 72,
     height: 72,
@@ -690,7 +690,7 @@ const styles = StyleSheet.create({
   },
   tapHint: { color: "rgba(255,255,255,0.5)", fontSize: 12, fontFamily: "Inter_400Regular" },
   transitionOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     zIndex: 10,
     alignItems: "center",
     justifyContent: "center",

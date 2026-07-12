@@ -141,7 +141,7 @@ function PulseRing({ color }: { color: string }) {
   return (
     <Animated.View
       style={[
-        StyleSheet.absoluteFillObject,
+        StyleSheet.absoluteFill,
         styles.pulseRing,
         {
           borderColor: color,

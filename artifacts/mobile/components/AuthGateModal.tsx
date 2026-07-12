@@ -260,7 +260,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     overflow: "hidden",
   },
-  heroGradient: { ...StyleSheet.absoluteFillObject },
+  heroGradient: { ...StyleSheet.absoluteFill },
   logo: { width: 130, height: 56 },
   closeBtn: {
     position: "absolute",

@@ -298,7 +298,7 @@ function ReconnectingIcon({ color }: { color: string }) {
 
 const styles = StyleSheet.create({
   overlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: "center",
     justifyContent: "center",
     gap: SPACING.md,

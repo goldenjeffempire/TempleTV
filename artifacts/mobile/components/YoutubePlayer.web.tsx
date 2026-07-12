@@ -789,7 +789,7 @@ export function YoutubePlayer({
 
       {/* Audio mode card — full-size overlay shown when radio mode is active */}
       {isRadioMode && (
-        <View style={[StyleSheet.absoluteFillObject, { zIndex: 10 }]}>
+        <View style={[StyleSheet.absoluteFill, { zIndex: 10 }]}>
           <WebAudioModeCard
             videoId={videoId}
             thumbnailUrl={thumbnailUrl}
@@ -892,7 +892,7 @@ const styles = StyleSheet.create({
     pointerEvents: "none" as const,
   },
   loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "#050505",
     alignItems: "center",
     justifyContent: "center",
@@ -915,7 +915,7 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   errorOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "#070707",
     alignItems: "center",
     justifyContent: "center",

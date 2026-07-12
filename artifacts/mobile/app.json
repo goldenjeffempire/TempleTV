@@ -7,8 +7,6 @@
     "icon": "./assets/images/icon.png",
     "scheme": "templetv",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
-    "jsEngine": "hermes",
     "description": "Stream live worship, sermons, and teachings from Temple TV JCTM Broadcasting — Jesus Christ Temple Ministry.",
     "owner": "templemob",
     "primaryColor": "#6A0DAD",
@@ -160,12 +158,6 @@
       "favicon": "./assets/images/favicon.png",
       "bundler": "metro"
     },
-    "notification": {
-      "icon": "./assets/images/notification-icon.png",
-      "color": "#6A0DAD",
-      "androidMode": "collapse",
-      "androidCollapsedTitle": "Temple TV"
-    },
     "plugins": [
       [
         "expo-router",
@@ -246,7 +238,7 @@
             "enableMinifyInReleaseBuilds": true
           },
           "ios": {
-            "deploymentTarget": "15.1",
+            "deploymentTarget": "16.4",
             "useFrameworks": "static"
           }
         }

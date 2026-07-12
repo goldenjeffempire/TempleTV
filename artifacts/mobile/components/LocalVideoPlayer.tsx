@@ -1095,7 +1095,7 @@ export function LocalVideoPlayer({
           <VideoComponent
             ref={videoRef}
             source={{ uri: effectiveUrl }}
-            style={StyleSheet.absoluteFillObject}
+            style={StyleSheet.absoluteFill}
             resizeMode={(coverMode ? (ResizeMode?.COVER ?? "cover") : (ResizeMode?.CONTAIN ?? "contain")) as ExpoResizeMode}
             shouldPlay={autoPlay}
             positionMillis={startPositionMs}
@@ -1280,7 +1280,7 @@ export function LocalVideoPlayer({
       {loading && !webNeedsPlayGesture && (
         <View
           style={{
-            ...StyleSheet.absoluteFillObject,
+            ...StyleSheet.absoluteFill,
             pointerEvents: "none",
             zIndex: 9,
             alignItems: "center",
@@ -1291,7 +1291,7 @@ export function LocalVideoPlayer({
           {!!thumbnailUrl && (
             <Image
               source={{ uri: thumbnailUrl }}
-              style={StyleSheet.absoluteFillObject}
+              style={StyleSheet.absoluteFill}
               contentFit="contain"
             />
           )}
@@ -1380,9 +1380,9 @@ const styles = StyleSheet.create({
   // #15131A so the video element sits inside a single continuous TV-screen
   // surround, no harsh seam between wrapper and inner element.
   container: { flex: 1, backgroundColor: "#15131A", position: "relative", overflow: "hidden" },
-  thumbnail: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
+  thumbnail: { ...StyleSheet.absoluteFill, width: "100%", height: "100%" },
   overlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     zIndex: 10,
     alignItems: "center",
     justifyContent: "center",
@@ -1391,7 +1391,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#15131A",
   },
   overlayCenter: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: "center",
     justifyContent: "center",
     gap: 10,

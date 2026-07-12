@@ -351,7 +351,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: "center",
     justifyContent: "center",
     gap: 12,

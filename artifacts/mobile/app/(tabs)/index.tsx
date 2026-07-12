@@ -1354,7 +1354,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(128,128,128,0.12)",
   },
   cwPlayOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     alignItems: "center",
     justifyContent: "center",
   },

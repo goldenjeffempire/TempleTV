@@ -80,14 +80,16 @@ function init() {
   if (_initialized || Platform.OS !== "android") return;
   _initialized = true;
   try {
-    const { requireNativeModule, EventEmitter } = require("expo-modules-core") as {
+    const { requireNativeModule } = require("expo-modules-core") as {
       requireNativeModule: (name: string) => typeof NativeModule;
-      EventEmitter: new (module: unknown) => typeof NativeEventEmitter;
     };
     const mod = requireNativeModule("ExpoInAppUpdates");
     if (!mod) return;
     NativeModule = mod as typeof NativeModule;
-    NativeEventEmitter = new EventEmitter(mod) as typeof NativeEventEmitter;
+    // As of Expo SDK 52+, the object returned by requireNativeModule() is
+    // already an EventEmitter (native modules extend it directly in C++),
+    // so it can be used directly rather than wrapping it in a new instance.
+    NativeEventEmitter = mod as unknown as typeof NativeEventEmitter;
   } catch {
     NativeModule = null;
     NativeEventEmitter = null;
