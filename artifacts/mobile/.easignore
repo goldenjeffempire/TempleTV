@@ -26,6 +26,7 @@ ios/
 *.jks
 *.p8
 *.p12
+!release.keystore.p12
 *.key
 *.mobileprovision
 

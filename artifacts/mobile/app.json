@@ -8,7 +8,7 @@
     "scheme": "templetv",
     "userInterfaceStyle": "light",
     "description": "Stream live worship, sermons, and teachings from Temple TV JCTM Broadcasting — Jesus Christ Temple Ministry.",
-    "owner": "templemob",
+    "owner": "templemobileapps-team",
     "primaryColor": "#6A0DAD",
     "assetBundlePatterns": [
       "assets/**/*"
@@ -262,7 +262,7 @@
         "origin": "https://templetv.org.ng"
       },
       "eas": {
-        "projectId": "ca2c7c50-8f15-4832-9a89-99a4f43e421e"
+        "projectId": "bb33d476-f39b-487b-b80c-8fb5b24854ee"
       }
     },
     "experiments": {

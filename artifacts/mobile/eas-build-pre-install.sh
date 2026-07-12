@@ -70,7 +70,7 @@ if [ -n "${GOOGLE_SERVICES_JSON_BASE64:-}" ]; then
   echo "[pre-install] Writing real google-services.json from EAS secret"
   echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > "$SCRIPT_DIR/google-services.json" 2>/dev/null && \
     echo "[pre-install] google-services.json written" || \
-    echo "[pre-install] Failed to write real google-services.json — placeholder remains (non-fatal)"
+    echo "[pre-install] Failed to write google-services.json (non-fatal)"
 else
   echo "[pre-install] GOOGLE_SERVICES_JSON_BASE64 not set — placeholder google-services.json will be used (push notifications require the real file)"
 fi
@@ -83,6 +83,34 @@ if [ -n "${GOOGLE_SERVICE_INFO_PLIST_BASE64:-}" ]; then
 else
   echo "[pre-install] GOOGLE_SERVICE_INFO_PLIST_BASE64 not set (non-fatal)"
 fi
+
+# ── 4. Inject Android signing keystore (non-fatal) ────────────────────────────
+echo "[pre-install] Injecting Android keystore"
+
+if [ -n "${KEYSTORE_BASE64:-}" ]; then
+  echo "[pre-install] Writing release.keystore.p12 from EAS secret"
+  echo "$KEYSTORE_BASE64" | base64 --decode > "$SCRIPT_DIR/release.keystore.p12" 2>/dev/null && \
+    echo "[pre-install] release.keystore.p12 written" || \
+    echo "[pre-install] Failed to write release.keystore.p12 (non-fatal)"
+else
+  echo "[pre-install] KEYSTORE_BASE64 not set (non-fatal)"
+fi
+
+# ── 5. Write credentials.json for local keystore signing ─────────────────────
+echo "[pre-install] Writing credentials.json"
+cat > "$SCRIPT_DIR/credentials.json" <<'CREDS'
+{
+  "android": {
+    "keystore": {
+      "keystorePath": "./release.keystore.p12",
+      "keystorePassword": "Temple124@",
+      "keyAlias": "temple-tv-key",
+      "keyPassword": "Temple124@"
+    }
+  }
+}
+CREDS
+echo "[pre-install] credentials.json written"
 
 echo "[pre-install] === Done. Exiting with 0 ==="
 exit 0
