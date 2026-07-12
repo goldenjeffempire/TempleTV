@@ -33,6 +33,11 @@ ios/
 # Metro
 .metro-health-check*
 
+# dotslash-downloaded dev tool binaries (e.g. React Native DevTools) — these
+# land in a project-root .cache/ dir with read-only permissions on some
+# files, which breaks EAS's tarball packing (EACCES on rmdir cleanup).
+.cache/
+
 # debug
 npm-debug.*
 yarn-debug.*
