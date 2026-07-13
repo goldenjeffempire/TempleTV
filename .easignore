@@ -15,6 +15,11 @@ dist/
 .DS_Store
 *.log
 
+# dotslash-downloaded dev tool binaries (e.g. React Native DevTools) land in
+# a project-root .cache/ dir with read-only files on some entries, which
+# breaks EAS's tarball packing (EACCES on rmdir cleanup during archiving).
+.cache/
+
 # ── Server / API — keep package.json, exclude heavy source ─────────────────
 artifacts/api-server/src/
 artifacts/api-server/dist/
