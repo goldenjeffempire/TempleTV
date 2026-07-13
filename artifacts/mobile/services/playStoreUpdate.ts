@@ -50,6 +50,7 @@ type StateListener = (state: PlayUpdateState) => void;
 
 const FLEXIBLE_SNOOZE_PREFIX    = "@temple_tv/play_update_snooze_v:";
 const FLEXIBLE_SNOOZE_DURATION  = 7 * 24 * 60 * 60 * 1000;  // 7 days
+const STALENESS_IMMEDIATE_DAYS  = 21;  // treat as important (not mandatory — let server decide mandatory)
 const MAX_CHECKS_PER_SESSION    = 3;
 const CHECK_RETRY_DELAYS        = [2_000, 8_000, 30_000];
 const FETCH_TIMEOUT_MS          = 12_000;

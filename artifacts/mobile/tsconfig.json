@@ -20,11 +20,6 @@
     "expo-env.d.ts",
     "global.d.ts"
   ],
-  "exclude": [
-    "node_modules",
-    "vendor/player-core/tests",
-    "vendor/player-core/vitest.config.ts"
-  ],
   "references": [
     {
       "path": "../../lib/api-client-react"

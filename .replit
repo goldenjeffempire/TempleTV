@@ -1,4 +1,4 @@
-modules = ["nodejs-20", "bash", "web"]
+modules = ["bash", "nodejs-20", "web"]
 
 [deployment]
 router = "application"
@@ -191,3 +191,27 @@ PROD_SYNC_API_URL = "https://api.templetv.org.ng"
 
 [userenv.production]
 SHUTDOWN_PRECLOSE_DELAY_MS = "5000"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 8080
+externalPort = 8080
+
+[[ports]]
+localPort = 8081
+externalPort = 8081
+
+[[ports]]
+localPort = 9000
+externalPort = 9000
+
+[[ports]]
+localPort = 23744
+externalPort = 3000
+
+[[ports]]
+localPort = 23876
+externalPort = 3001
