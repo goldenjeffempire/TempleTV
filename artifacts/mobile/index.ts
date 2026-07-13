@@ -10,37 +10,51 @@ import { Platform, ErrorUtils } from "react-native";
 // far safer than editing every site.
 if (typeof (globalThis as { AbortSignal?: typeof AbortSignal }).AbortSignal !== "undefined") {
   const AS = (globalThis as { AbortSignal: typeof AbortSignal & { timeout?: (ms: number) => AbortSignal } }).AbortSignal;
-  if (typeof AS.timeout !== "function") {
-    AS.timeout = (ms: number): AbortSignal => {
-      const controller = new AbortController();
-      const id = setTimeout(() => {
-        // Hermes does NOT reliably expose `DOMException` as a global — earlier
-        // versions of this polyfill assumed it did and crashed with
-        // "ReferenceError: Property 'DOMException' doesn't exist". We now
-        // always abort with a plain Error shaped like a TimeoutError so
-        // userland `.name === "TimeoutError"` checks still match.
-        //
-        // We also deliberately avoid the no-arg `controller.abort()`
-        // fallback: on some Hermes builds, AbortController internally
-        // constructs `new DOMException(...)` to fill in a default reason,
-        // re-triggering the same ReferenceError from inside the engine —
-        // which is uncatchable from JS userland.
-        const reason = Object.assign(new Error("The operation timed out."), {
-          name: "TimeoutError",
-        });
-        try {
-          controller.abort(reason);
-        } catch {
-          // Swallow — if abort itself throws, the signal will simply
-          // never fire and downstream fetches will use their own timeouts.
+  // Defensive: assigning a static method can throw (TypeError: Cannot assign
+  // to read only property) on engines/polyfill combos where AbortSignal is
+  // frozen or `timeout` is defined as a non-writable accessor. This runs
+  // BEFORE Sentry.init() below, so an uncaught throw here would crash the
+  // app on boot with zero error reporting. Wrap defensively — worst case we
+  // silently skip the polyfill and individual fetch call sites fall back to
+  // their own timeout handling.
+  try {
+    if (typeof AS.timeout !== "function") {
+      AS.timeout = (ms: number): AbortSignal => {
+        const controller = new AbortController();
+        const id = setTimeout(() => {
+          // Hermes does NOT reliably expose `DOMException` as a global — earlier
+          // versions of this polyfill assumed it did and crashed with
+          // "ReferenceError: Property 'DOMException' doesn't exist". We now
+          // always abort with a plain Error shaped like a TimeoutError so
+          // userland `.name === "TimeoutError"` checks still match.
+          //
+          // We also deliberately avoid the no-arg `controller.abort()`
+          // fallback: on some Hermes builds, AbortController internally
+          // constructs `new DOMException(...)` to fill in a default reason,
+          // re-triggering the same ReferenceError from inside the engine —
+          // which is uncatchable from JS userland.
+          const reason = Object.assign(new Error("The operation timed out."), {
+            name: "TimeoutError",
+          });
+          try {
+            controller.abort(reason);
+          } catch {
+            // Swallow — if abort itself throws, the signal will simply
+            // never fire and downstream fetches will use their own timeouts.
+          }
+        }, ms);
+        // Don't keep the JS runtime awake just for the timeout.
+        if (typeof (id as unknown as { unref?: () => void })?.unref === "function") {
+          (id as unknown as { unref: () => void }).unref();
         }
-      }, ms);
-      // Don't keep the JS runtime awake just for the timeout.
-      if (typeof (id as unknown as { unref?: () => void })?.unref === "function") {
-        (id as unknown as { unref: () => void }).unref();
-      }
-      return controller.signal;
-    };
+        return controller.signal;
+      };
+    }
+  } catch {
+    // Assignment threw (frozen/read-only AbortSignal.timeout on this engine).
+    // Skip the polyfill silently — call sites using AbortSignal.timeout() will
+    // throw at their own call site instead, which is caught by their existing
+    // try/catch, rather than crashing the app during module init.
   }
 }
 
