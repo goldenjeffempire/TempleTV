@@ -239,3 +239,9 @@ id = "1yTCi2NGKvAguQci2KFYa"
 uri = "file://build-output/temple-tv-v1.0.45-105.aab"
 type = "unspecified"
 title = "Temple TV v1.0.45 (105) — Android App Bundle"
+
+[[outputs]]
+id = "Y2QeLcYo50sy-d2RKvH7J"
+uri = "file://build-output/temple-tv-v1.0.46-106.aab"
+type = "unspecified"
+title = "Temple TV v1.0.46 (versionCode 106) — Android App Bundle"
