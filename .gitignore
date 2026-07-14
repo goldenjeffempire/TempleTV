@@ -92,3 +92,7 @@ artifacts/mobile/GoogleService-Info.plist
 # Docker override local configs
 docker-compose.local.yml
 docker-compose.override.yml
+
+# Mobile build artifacts (.aab/.apk) - regenerate via EAS build, never commit to git/LFS
+build-output/
+artifacts/mobile/build-output/
