@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, type AppStateStatus } from "react-native";
+import { markStartupPhase } from "@/lib/startupLifecycle";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router } from "expo-router";
 import { secureStorage } from "@/lib/secureStorage";
@@ -104,6 +105,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const restore = async () => {
+      markStartupPhase("auth_restore_start");
       try {
         // Migration: legacy AsyncStorage token → SecureStore (one-time).
         const legacyToken = await AsyncStorage.getItem(STORAGE_KEYS.authToken);
@@ -189,6 +191,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch {
         /* ignore restore errors — stay logged out */
       } finally {
+        markStartupPhase("auth_restore_done");
         setIsLoading(false);
       }
     };

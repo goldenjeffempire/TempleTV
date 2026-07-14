@@ -27,6 +27,10 @@ import { setupMobileBroadcastStorage } from "@/lib/mobileBroadcastStorage";
 // variable in transport.ts); AsyncStorage hydration is kicked off async in the
 // background and completes well within the splash-screen window on real devices.
 setupMobileBroadcastStorage();
+// Record that the layout module has been evaluated. Any crash between
+// 'rntp_register' (index.ts) and this point happened during module-level
+// imports/side-effects (e.g. setupMobileBroadcastStorage).
+markStartupPhase("layout_module_load");
 
 // ── Sentry crash reporting ────────────────────────────────────────────────────
 // Sentry.init() is performed exactly once in `index.ts` (the true entry point)
@@ -149,6 +153,7 @@ const queryClient = new QueryClient({
 });
 
 import { setAudioSessionPromise } from "@/lib/audio-session";
+import { markStartupPhase } from "@/lib/startupLifecycle";
 
 async function setupAudioSession() {
   if (Platform.OS === "web") return;
@@ -638,6 +643,12 @@ const _fontMap = {
 };
 
 function RootLayout() {
+  // Record that the root layout component has mounted. Any crash between
+  // 'layout_module_load' and this line happened at the React tree initialization
+  // stage (QueryClient construction, context setup, etc.) rather than inside
+  // the component body.
+  markStartupPhase("layout_mount");
+
   const [fontsLoaded, fontError] = useFonts(_fontMap);
 
   // ── Font-load timeout ───────────────────────────────────────────────────────
@@ -660,11 +671,17 @@ function RootLayout() {
 
   useEffect(() => {
     if (fontReady) {
+      markStartupPhase("fonts_loaded");
       clearTimeout(_splashSafetyTimer);
       SplashScreen.hideAsync().catch(() => {});
-      setAudioSessionPromise(setupAudioSession());
+      markStartupPhase("splash_hidden");
+      const audioSessionPromise = setupAudioSession();
+      setAudioSessionPromise(audioSessionPromise);
+      audioSessionPromise.then(() => markStartupPhase("audio_session")).catch(() => markStartupPhase("audio_session"));
       if (Platform.OS !== "web") {
-        setupTrackPlayer().catch(() => {});
+        setupTrackPlayer()
+          .then(() => markStartupPhase("track_player_setup"))
+          .catch(() => markStartupPhase("track_player_setup"));
         // Android notification channels need to exist before any notification
         // can be delivered. We set them up here (non-blocking) instead of at
         // registration time so that server-sent push notifications that arrive

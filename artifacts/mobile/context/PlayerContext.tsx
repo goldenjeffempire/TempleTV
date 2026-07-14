@@ -440,7 +440,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const setQueue = useCallback((sermons: Sermon[]) => {
     setQueueState(sermons);
     if (shuffleRef.current) {
-      const rebuilt = buildShuffledQueue(sermons, currentSermonRef.current?.youtubeId);
+      // Use sermon.id (UUID), not youtubeId, as the pin key. buildShuffledQueue
+      // searches by s.id — passing youtubeId (which may be "" for local/MP4
+      // uploads) would silently fail to pin the current video at position 0.
+      const rebuilt = buildShuffledQueue(sermons, currentSermonRef.current?.id);
       setShuffledQueue(rebuilt);
       setShufflePosition(0);
     }

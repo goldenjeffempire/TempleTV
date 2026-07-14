@@ -1,5 +1,6 @@
 import * as Sentry from "@sentry/react-native";
 import { Platform, ErrorUtils } from "react-native";
+import { markStartupPhase } from "@/lib/startupLifecycle";
 
 // ── AbortSignal.timeout polyfill ─────────────────────────────────────────────
 // Hermes (React Native's JS engine) only added AbortSignal.timeout in very
@@ -58,6 +59,11 @@ if (typeof (globalThis as { AbortSignal?: typeof AbortSignal }).AbortSignal !== 
   }
 }
 
+// Record that the JS engine is up and polyfills are applied.
+// This is the first breadcrumb visible in Sentry — any crash after here
+// but before 'sentry_init' happened during Sentry.init() itself.
+markStartupPhase("global_error_handler");
+
 const sentryDsn = process.env.EXPO_PUBLIC_SENTRY_DSN;
 if (sentryDsn) {
   Sentry.init({
@@ -98,6 +104,8 @@ if (sentryDsn) {
     },
   });
 }
+
+markStartupPhase("sentry_init");
 
 // ── Global unhandled error handler ───────────────────────────────────────────
 // ErrorUtils.setGlobalHandler is the React Native / Hermes equivalent of
@@ -227,5 +235,6 @@ if (Platform.OS !== "web") {
     // TrackPlayer not available — graceful degradation
   }
 }
+markStartupPhase("rntp_register");
 
 import "expo-router/entry";
