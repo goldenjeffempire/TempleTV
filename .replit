@@ -34,6 +34,18 @@ args = "Broadcast Daemon"
 task = "workflow.run"
 args = "Start API"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "artifacts/tv: web"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "artifacts/mockup-sandbox: Component Preview Server"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "artifacts/admin: web"
+
 [[workflows.workflow]]
 name = "Start Services"
 mode = "parallel"
@@ -91,7 +103,7 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && pnpm --filter @workspace/tv run dev"
+args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && PORT=23744 pnpm --filter @workspace/tv run dev"
 waitForPort = 23744
 
 [[workflows.workflow]]
@@ -103,7 +115,7 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && pnpm --filter @workspace/mockup-sandbox run dev"
+args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && PORT=23877 pnpm --filter @workspace/mockup-sandbox run dev"
 waitForPort = 23877
 
 [[workflows.workflow]]
@@ -126,8 +138,8 @@ outputType = "webview"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && pnpm --filter @workspace/admin run dev"
-waitForPort = 18115
+args = "COREPACK_ENABLE_STRICT=0 COREPACK_ENABLE_AUTO_PIN=0 pnpm install --ignore-scripts && PORT=18116 pnpm --filter @workspace/admin run dev"
+waitForPort = 18116
 
 [[workflows.workflow]]
 name = "Broadcast Daemon"
