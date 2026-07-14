@@ -1,3 +1,4 @@
+- [Broadcast continuity — all fixes applied](broadcast-continuity-fixes.md) — 6-layer fix; boot dead-air 75s→9ms; video resumes exact timestamp; see before touching daemon-proxy, orchestrator, or yt-shuffle.
 - [Mobile startup lifecycle deep-audit conclusion (Jul 2026)](mobile-startup-audit-conclusion.md) — full cold-start path re-audited, no new gaps found; see file before re-auditing from scratch.
 - [Mobile @expo/cli version drift breaks config plugins](mobile-expo-cli-sdk-mismatch.md) — stale @expo/cli behind SDK causes pnpm to skip hoisting @expo/config-plugins, breaking Sentry's plugin at prebuild/EAS-build time; expo-doctor won't catch it.
 - [Mobile player/watch page root causes and permanent fixes](mobile-player-open-fixes.md) — watchNowDisabled gate + missing EXPO_PUBLIC_API_URL were the two blockers; relative baseUrl silently breaks WS on native.

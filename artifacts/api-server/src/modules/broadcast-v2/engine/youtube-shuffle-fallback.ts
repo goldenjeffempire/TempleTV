@@ -172,6 +172,15 @@ class YtShuffleFallback {
   get isActive(): boolean { return this._active; }
 
   /**
+   * True when hydrate() loaded valid persisted shuffle state that has not yet
+   * been consumed by activate(). The orchestrator uses this at boot to decide
+   * whether to fast-path into yt-shuffle activation immediately (skipping the
+   * 30-75 s empty-poll accumulation cycle) so a YouTube-only deployment resumes
+   * broadcasting within milliseconds of daemon restart instead of going dark.
+   */
+  get hasHydratedState(): boolean { return this._hydratedState !== null; }
+
+  /**
    * Load the persisted shuffle-fallback state from the DB. Called once during
    * orchestrator boot, before the first activate(). Never throws — a failed
    * load just means the next activate() starts a fresh shuffle, which is the

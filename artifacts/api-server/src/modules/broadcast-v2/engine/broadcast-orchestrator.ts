@@ -112,7 +112,7 @@ const SELF_HEAL_STALE_MS  = 30_000;
  * failed (DB blip, code regression, operator import via an unhooked path),
  * the broadcast still self-heals back on-air within ~60 s.
  */
-const EMPTY_POLLS_BEFORE_LIBRARY_SCAN = 6;
+const EMPTY_POLLS_BEFORE_LIBRARY_SCAN = 2;
 
 /**
  * After this many consecutive empty-queue polls (10 s × 3 = 30 s default),
@@ -1106,6 +1106,42 @@ class BroadcastOrchestrator extends EventEmitter {
         checkpointMs: CHECKPOINT_INTERVAL_MS, keepAliveMs: 15_000 },
       "[broadcast-v2] orchestrator started",
     );
+
+    // ── Boot-time YouTube shuffle fast-path ───────────────────────────────
+    // On YouTube-only deployments, the local broadcast queue is always empty
+    // at boot.  Without this fast-path the daemon sits OFF_AIR for up to
+    // EMPTY_POLLS_BEFORE_LIBRARY_SCAN × SELF_HEAL_EMPTY_MS (≈10 s reduced
+    // from ≈30 s) while the empty-poll counter accumulates, then waits for a
+    // library scan to return 0 results before finally calling activate().
+    //
+    // When ytShuffleFallback loaded a persisted session at boot (hasHydratedState),
+    // activate() → tryResumeFromHydratedState() immediately restores the exact
+    // video + timestamp from before the restart — seamless resume, no black screen.
+    //
+    // When there is no persisted session (first-ever boot or after a deactivate),
+    // activate() runs the normal fresh-catalog path. This is safe because:
+    //   - activate() is idempotent (no-ops if already active or activating)
+    //   - If a non-empty local queue is added seconds later, reloadInner() calls
+    //     ytShuffleFallback.deactivate() to hand control back to local content
+    //   - The normal selfHealEmptyTimer would have called activate() anyway;
+    //     this just collapses the 10–30 s wait into 500 ms
+    if (this.items.length === 0 && !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE) {
+      const hasPersistedSession = ytShuffleFallback.hasHydratedState;
+      const delayMs = hasPersistedSession ? 250 : 500; // faster on warm restart
+      const t = setTimeout(() => {
+        if (!this.started) return; // guard: stop() was called before timer fired
+        logger.info(
+          { hasPersistedSession, delayMs },
+          "[broadcast-v2] boot: empty queue — fast-pathing YouTube shuffle activation",
+        );
+        void ytShuffleFallback
+          .activate((opts) => this.startOverride(opts))
+          .catch((err: unknown) =>
+            logger.warn({ err }, "[broadcast-v2] boot: yt-shuffle fast-path activate failed (non-fatal)"),
+          );
+      }, delayMs);
+      t.unref?.();
+    }
   }
 
   stop(): void {
