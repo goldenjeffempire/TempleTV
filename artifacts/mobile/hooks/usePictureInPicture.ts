@@ -124,6 +124,16 @@ export function usePictureInPicture(
     onPlayPause,
   } = options;
 
+  // Track mounted state so async PiP responses (.then callbacks, AppState
+  // handlers) don't call setIsInPip after the hook's consumer unmounts.
+  // React 18 silently ignores post-unmount setState, but the explicit guard
+  // prevents ghost state updates from clobbering state in a remounted screen.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   const [isSupported] = useState<boolean>(() => {
     if (Platform.OS !== "android") return false;
     return isPictureInPictureSupported();
@@ -185,7 +195,8 @@ export function usePictureInPicture(
     // isInPip stays false until AppState fires, leaving PiP-hidden elements
     // (controls, countdown overlay, chat) briefly visible inside the PiP
     // window — a jarring flash on every manual PiP entry.
-    if (entered) setIsInPip(true);
+    // Guard with mountedRef so this never fires after the player screen unmounts.
+    if (entered && mountedRef.current) setIsInPip(true);
     return entered;
   }, [isSupported]);
 
@@ -237,7 +248,10 @@ export function usePictureInPicture(
           titleRef.current,
           isPlayingRef.current,
         ).then((entered) => {
-          if (entered) setIsInPip(true);
+          // mountedRef guard: the AppState listener is removed on cleanup, but
+          // this .then() can still resolve after unmount if enterPictureInPicture
+          // was already in-flight when the screen unmounted.
+          if (entered && mountedRef.current) setIsInPip(true);
         }).catch(() => {});
       }
     };

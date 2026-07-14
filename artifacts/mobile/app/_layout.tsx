@@ -642,12 +642,41 @@ const _fontMap = {
   ..._featherFont,
 };
 
+// ── ProvidersReadyMarker ──────────────────────────────────────────────────────
+// Zero-render-output component placed as the innermost child of the provider
+// stack. When it mounts, every context provider above it (Auth, Player, Radio,
+// Download, Network, Updates, QueryClient) has completed its synchronous setup
+// and mounted its own effects, so this is the earliest moment a child screen
+// can safely read from any context.
+//
+// Records the 'providers_ready' startup phase once per JS bundle lifetime
+// (module-level guard prevents Strict Mode double-invoke and hot-reload
+// duplicates). The elapsed ms from this breadcrumb to 'auth_restore_done'
+// captures the token-restore latency visible to the user as the splash screen
+// or loading spinner duration.
+let _providersReadyRecorded = false;
+function ProvidersReadyMarker(): null {
+  if (!_providersReadyRecorded) {
+    _providersReadyRecorded = true;
+    markStartupPhase("providers_ready");
+  }
+  return null;
+}
+
+// Module-level guard so 'layout_mount' is recorded exactly once per JS bundle
+// lifetime — component re-renders (hot reload, navigation) must not re-fire it.
+let _layoutMountRecorded = false;
+
 function RootLayout() {
-  // Record that the root layout component has mounted. Any crash between
-  // 'layout_module_load' and this line happened at the React tree initialization
-  // stage (QueryClient construction, context setup, etc.) rather than inside
-  // the component body.
-  markStartupPhase("layout_mount");
+  // Record that the root layout component has mounted. Guarded by a module-level
+  // boolean so React's Strict Mode double-invoke and hot-reload re-renders don't
+  // generate duplicate breadcrumbs. Any crash between 'layout_module_load' and
+  // this line happened at the React tree initialization stage (QueryClient
+  // construction, context setup, etc.) rather than inside the component body.
+  if (!_layoutMountRecorded) {
+    _layoutMountRecorded = true;
+    markStartupPhase("layout_mount");
+  }
 
   const [fontsLoaded, fontError] = useFonts(_fontMap);
 
@@ -782,6 +811,7 @@ function RootLayout() {
               <GestureHandlerRootView style={{ flex: 1 }}>
                 <SafeKeyboardProvider>
                   <StatusBar style="auto" />
+                  <ProvidersReadyMarker />
                   <RootLayoutNav />
                   <PersistentAudioPlayer />
                   {/*
