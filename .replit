@@ -185,6 +185,8 @@ API_ORIGIN = "https://api.templetv.org.ng"
 QUEUE_MIN_ITEMS = "10"
 CLEANUP_RETENTION_HOURS = "24"
 ANDROID_APP_SIGNING_FINGERPRINTS = "E5:AF:AD:EB:60:28:31:E2:43:A9:26:C2:CB:F3:0F:71:0F:C8:96:CB:4A:3C:33:2B:27:37:C9:1B:E5:6A:2A:EE"
+JWT_ACCESS_SECRET = "tVd4kVNmbRlhX6dKphMBGLcoNYHej/UarxjdGq5Q0tR+0lsTDjN5XbCc9t9eLeSi"
+JWT_REFRESH_SECRET = "mRpvIkKHVjcJMhzgzaLMsaCqu5Qee+xvdiXCvjwLxhyJBDSes/rq//d9dq0EQ71u"
 
 [userenv.development]
 PROD_SYNC_API_URL = "https://api.templetv.org.ng"
