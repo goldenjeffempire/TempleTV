@@ -679,23 +679,28 @@ const TranscodingQueueSchema = z.object({
   transcoderDisabled: z.boolean(),
 });
 
+// NOTE: MP4-only pipeline — transcoder.queue.ts's listJobs()/getJob() are
+// permanent no-op stubs (TRANSCODER_DISABLE=1) that only ever return the
+// minimal `TranscodingJobWithVideo` shape ([] / null in practice). This
+// projector's parameter type intentionally matches that stub shape, not a
+// legacy richer job record, so every optional field defaults sensibly.
 function projectTranscodingJob(j: {
   id: string;
   videoId: string | null;
-  videoPath: string;
+  videoPath?: string;
   status: string;
   stage?: string | null;
   stageProgress?: number | null;
   leasedBy?: string | null;
   leaseExpiresAt?: Date | null;
   priority: number;
-  progress: number;
-  attempts: number;
-  maxAttempts: number;
-  errorMessage: string | null;
-  nextRetryAt: Date | null;
-  startedAt: Date | null;
-  completedAt: Date | null;
+  progress?: number;
+  attempts?: number;
+  maxAttempts?: number;
+  errorMessage?: string | null;
+  nextRetryAt?: Date | null;
+  startedAt?: Date | null;
+  completedAt?: Date | null;
   createdAt: Date;
   lastProgressAt?: Date | null;
   // F24: optional — populated when listJobs() does the LEFT JOIN
@@ -706,17 +711,17 @@ function projectTranscodingJob(j: {
   return {
     id: j.id,
     videoId: j.videoId ?? "",
-    videoPath: j.videoPath,
+    videoPath: j.videoPath ?? "",
     status: j.status,
     stage: j.stage ?? null,
     stageProgress: j.stageProgress ?? 0,
     leasedBy: j.leasedBy ?? null,
     leaseExpiresAt: j.leaseExpiresAt ? j.leaseExpiresAt.toISOString() : null,
     priority: j.priority,
-    progress: j.progress,
-    attempts: j.attempts,
-    maxAttempts: j.maxAttempts,
-    errorMessage: j.errorMessage,
+    progress: j.progress ?? 0,
+    attempts: j.attempts ?? 0,
+    maxAttempts: j.maxAttempts ?? 0,
+    errorMessage: j.errorMessage ?? null,
     nextRetryAt: j.nextRetryAt ? j.nextRetryAt.toISOString() : null,
     startedAt: j.startedAt ? j.startedAt.toISOString() : null,
     completedAt: j.completedAt ? j.completedAt.toISOString() : null,
@@ -2393,10 +2398,14 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       try {
-        const { jobId } = await requeueFromDlq(req.params.id);
+        const { ok, reason } = await requeueFromDlq(req.params.id);
+        if (!ok) {
+          reply.code(404);
+          return { message: reason ?? "Dead-letter entry could not be re-queued" };
+        }
         transcoderDispatcher.nudge();
-        adminEventBus.push("transcoding-update", { type: "dlq-requeue", jobId });
-        return { ok: true as const, jobId };
+        adminEventBus.push("transcoding-update", { type: "dlq-requeue", jobId: req.params.id });
+        return { ok: true as const, jobId: req.params.id };
       } catch (err) {
         reply.code(404);
         return { message: (err as Error).message };
@@ -2534,7 +2543,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
         priority: body.priority,
       });
       transcoderDispatcher.nudge();
-      return result;
+      return { id: result.jobId, reused: !result.queued };
     },
   );
   r.delete(

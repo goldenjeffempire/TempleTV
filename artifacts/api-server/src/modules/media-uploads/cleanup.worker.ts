@@ -28,7 +28,7 @@
  * All sweeps are non-fatal: errors are logged and the worker continues.
  * Emits ops-alerts only when anomalies are found.
  */
-import { sql, and, eq, lt, inArray, isNotNull, isNull } from "drizzle-orm";
+import { sql, and, eq, lt, inArray } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { storage } from "../../infrastructure/storage.js";

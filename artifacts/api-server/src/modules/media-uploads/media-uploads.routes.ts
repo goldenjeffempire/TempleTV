@@ -8,7 +8,6 @@ import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { uploadSessions, type UploadSession } from "./upload-sessions.js";
 import { generateQuickThumbnail, probeUploadedDuration } from "../transcoder/transcoder.service.js";
-import { env } from "../../config/env.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";

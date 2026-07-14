@@ -3034,12 +3034,12 @@ class BroadcastOrchestrator extends EventEmitter {
           // local source issues self-heal or an operator intervenes.  The shuffle
           // deactivates automatically in reloadInner the moment any local item
           // becomes playable again (see ytShuffleFallback deactivation guard at
-          // ~line 1732).  Guard: skip if a manual override is active, the shuffle
-          // itself is already running, or it has been explicitly disabled.
+          // ~line 1732).  Guard: skip if the shuffle itself is already running,
+          // or it has been explicitly disabled. (No override-mode check needed
+          // here — tickInner() already early-returns unless this.mode==="queue".)
           const ytShuffleEscalated =
             this.allBlockedRecoveryCycles >= 2 &&
             !ytShuffleFallback.isActive &&
-            this.mode !== "override" &&
             !env.YOUTUBE_SHUFFLE_FALLBACK_DISABLE &&
             !this.midnightPrayersActivating;
 

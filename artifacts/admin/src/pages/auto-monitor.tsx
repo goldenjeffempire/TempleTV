@@ -4,11 +4,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import {
-  CheckCircle2, XCircle, AlertTriangle, RefreshCw, Bot, ShieldCheck, ShieldAlert,
-  Clock, Zap, Activity, Server, Timer, CircleDot, Cpu, Radio, Ban,
-  CircuitBoard, FlameKindling, HeartPulse, Layers, Eye, OctagonAlert,
-  TrendingUp, Terminal, Wifi, Siren, CircleCheck, MemoryStick, Play,
-  RotateCw, PlugZap, ListChecks, Gauge,
+  CheckCircle2, XCircle, AlertTriangle, RefreshCw, Bot,
+  Clock, Zap, Server, Timer, CircleDot, Radio, Ban,
+  CircuitBoard, HeartPulse, Layers, Eye, OctagonAlert,
+  TrendingUp, Terminal, Wifi, Siren, CircleCheck, MemoryStick,
+  Gauge,
 } from "lucide-react";
 import { formatDistanceToNow, format } from "date-fns";
 import { toast } from "sonner";
@@ -243,19 +243,19 @@ function MetricChip({ label, value, sub, color }: { label: string; value: string
 export default function AutoMonitorPage() {
   const qc = useQueryClient();
   const [liveActions, setLiveActions] = useState<AutoHealAction[]>([]);
-  const [lastTick, setLastTick] = useState<number>(Date.now());
+  const [, setLastTick] = useState<number>(Date.now());
   const liveActionsRef = useRef(liveActions);
   liveActionsRef.current = liveActions;
 
   const { data: status, isFetching, dataUpdatedAt } = useQuery<AutoHealStatus>({
     queryKey: ["autoheal-status"],
-    queryFn: () => api.get("/api/broadcast-v2/autoheal/status").json(),
+    queryFn: () => api.get<AutoHealStatus>("/api/broadcast-v2/autoheal/status"),
     refetchInterval: 5_000,
     staleTime: 4_000,
   });
 
   const triggerMutation = useMutation({
-    mutationFn: () => api.post("/api/broadcast-v2/autoheal/trigger").json<{ ok: boolean; triggeredAt: number }>(),
+    mutationFn: () => api.post<{ ok: boolean; triggeredAt: number }>("/api/broadcast-v2/autoheal/trigger"),
     onSuccess: () => {
       toast.success("Manual scan triggered — checking all subsystems…");
       void qc.invalidateQueries({ queryKey: ["autoheal-status"] });

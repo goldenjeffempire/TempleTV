@@ -18,13 +18,11 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import Hls from "hls.js";
 import { useV2Broadcast } from "@workspace/player-core/react";
 import type { V2Source, V2SourceKind } from "@workspace/player-core";
 import { apiBase } from "@/lib/api-base";
-import { api, HttpError, tokenStore } from "@/lib/api";
-import { toast } from "sonner";
+import { tokenStore } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -39,7 +37,6 @@ import {
   Info,
   Loader2,
   Monitor,
-  RefreshCw,
   SkipForward,
   Wifi,
   WifiOff,

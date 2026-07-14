@@ -40,9 +40,7 @@ async function fetchViewerStats(streamId?: string): Promise<ViewerTrackingData> 
   const path = streamId
     ? `/api/viewer-tracking/stats/${encodeURIComponent(streamId)}`
     : "/api/viewer-tracking/stats";
-  const res = await api(path);
-  if (!res.ok) throw new Error(`viewer-tracking stats: ${res.status}`);
-  return res.json() as Promise<ViewerTrackingData>;
+  return api.get<ViewerTrackingData>(path);
 }
 
 export function useViewerTracking(streamId?: string): {
@@ -66,8 +64,9 @@ export function useViewerTracking(streamId?: string): {
     }
   });
 
-  // Fallback polling when SSE is degraded/offline
-  const fallbackInterval = useSseGatedInterval(15_000);
+  // Fallback polling when SSE is degraded/offline; SSE push-invalidation
+  // handles freshness while connected, so no interval polling is needed then.
+  const fallbackInterval = useSseGatedInterval(false, 15_000);
 
   const { data, isLoading, error } = useQuery<ViewerTrackingData, Error>({
     queryKey:    key,

@@ -148,29 +148,12 @@ const VALIDATION_JOB_TIMEOUT_MS = 180_000;
  * uses HTTP byte-range streaming which is tolerant of quality issues.
  *
  * When a "fail" occurs, attemptRemediation tries a stream-copy remux which
- * can repair minor container ordering issues. Only FILE_INTEGRITY and
- * CODEC_COMPAT failures trigger remux since the others no longer fail hard.
+ * can repair minor container ordering issues. FILE_INTEGRITY, CODEC_COMPAT,
+ * FIRST_FRAME, and LAST_FRAME failures trigger remux; other checks never
+ * fail hard (they're warn/skip only) so remediation doesn't apply to them.
  */
-const REMEDIABLE_CHECKS = ["FILE_INTEGRITY", "CODEC_COMPAT"] as const;
-
-/**
- * Retry/backoff for transient (infra) failures — download errors, storage
- * unavailability, unhandled exceptions that are NOT a genuine per-check
- * "fail" result. These must never permanently mark a video "failed"; they
- * are retried with backoff and, once exhausted, left in a non-blocking
- * state (validationStatus reverted to null/'pending') so the video still
- * broadcasts while the stuck-job recovery worker keeps retrying later.
- */
-const TRANSIENT_RETRY_BACKOFF_MS = [30_000, 60_000, 2 * 60_000, 5 * 60_000, 15 * 60_000];
-
-/** Hard cap on self-heal re-attempts for rows that keep failing genuinely. */
-const MAX_VALIDATION_ATTEMPTS = 8;
-
-/** A 'running' job with no terminal status past this age is presumed crashed. */
-const STUCK_RUNNING_THRESHOLD_MS = 15 * 60_000;
-
-/** A 'pending' job that never actually started past this age was dropped (e.g. process restart before setImmediate fired). */
-const STUCK_PENDING_THRESHOLD_MS = 10 * 60_000;
+const REMEDIABLE_CHECKS = ["FILE_INTEGRITY", "CODEC_COMPAT", "FIRST_FRAME", "LAST_FRAME"] as const;
+const REMEDIABLE_CHECKS_SET: ReadonlySet<string> = new Set(REMEDIABLE_CHECKS);
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1014,10 +997,6 @@ async function attemptRemediation(opts: {
   return { attempted: true, updatedChecks, repairsPerformed, newDurationSecs };
 }
 
-function failedCheck_names(checks: VideoCheckResult[]): string {
-  return checks.map((c) => c.check).join(", ");
-}
-
 // ── Main orchestrator ─────────────────────────────────────────────────────────
 
 interface RunValidationOpts {
@@ -1102,6 +1081,8 @@ export async function runVideoValidation(
   const checks: VideoCheckResult[] = [];
   const repairsPerformed: string[] = [];
   let probedDurationSecs: number | null = null;
+  let remediationAttempted = false;
+  let rootCauseCode: "CORRUPT_SOURCE" | "REMEDIATION_EXHAUSTED" | undefined;
 
   // Outer timeout: abandon entire validation after budget.
   const jobTimeout = setTimeout(() => {
@@ -1178,6 +1159,37 @@ export async function runVideoValidation(
       message: `Check skipped due to error: ${err.message}`,
     })));
 
+    // ── Auto-remediation: attempt a stream-copy remux repair for the checks
+    // that still fail hard (FILE_INTEGRITY / CODEC_COMPAT / FIRST_FRAME /
+    // LAST_FRAME). Only runs when at least one of those genuinely failed —
+    // "warn"/"skip" never trigger a remux attempt.
+    const remediableFailed = checks.filter(
+      (c) => c.status === "fail" && REMEDIABLE_CHECKS_SET.has(c.check),
+    );
+    if (remediableFailed.length > 0) {
+      remediationAttempted = true;
+      const outcome = await attemptRemediation({
+        videoId,
+        objectKey,
+        tmpDir,
+        tmpPath,
+        failedChecks: remediableFailed,
+        storedDurationSecs,
+      });
+      repairsPerformed.push(...outcome.repairsPerformed);
+      if (outcome.updatedChecks.length > 0) {
+        // Repair succeeded — splice the re-validated results back in place
+        // of the original failing entries so the report reflects reality.
+        for (const updated of outcome.updatedChecks) {
+          const idx = checks.findIndex((c) => c.check === updated.check);
+          if (idx !== -1) checks[idx] = updated;
+        }
+        if (outcome.newDurationSecs !== null) probedDurationSecs = outcome.newDurationSecs;
+      } else {
+        rootCauseCode = outcome.rootCauseCode;
+      }
+    }
+
     // ── Auto-correction: update real duration if stored is wrong ────────────
     if (probedDurationSecs !== null && storedDurationSecs !== null) {
       const deviation = Math.abs(probedDurationSecs - storedDurationSecs) / probedDurationSecs;
@@ -1217,6 +1229,8 @@ export async function runVideoValidation(
     remainingIssues,
     durationMs: Date.now() - startedAt,
     completedAt: new Date().toISOString(),
+    remediationAttempted: remediationAttempted || undefined,
+    rootCauseCode: overallStatus === "failed" ? rootCauseCode : undefined,
   };
 
   logger.info(

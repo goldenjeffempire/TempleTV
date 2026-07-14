@@ -107,7 +107,7 @@ export async function healthRoutes(app: FastifyInstance) {
   const StatusSchema = z.object({
     service: z.literal("temple-tv-api"),
     version: z.string(),
-    runMode: z.enum(["api", "worker", "all"]),
+    runMode: z.enum(["api", "worker", "all", "broadcast"]),
     env: z.string(),
     uptimeSec: z.number(),
     nodeVersion: z.string(),

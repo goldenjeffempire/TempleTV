@@ -2166,7 +2166,6 @@ function ProgramGuideCard({ guide }: { guide: ProgramGuide | undefined }) {
             {visibleItems.map((entry, idx) => {
               const isNow = entry.isPlaying;
               const isPast = entry.estimatedEndMs < now && !isNow;
-              const isUpcoming = entry.estimatedStartMs > now;
 
               return (
                 <div

@@ -39,7 +39,7 @@
 
 import os from "node:os";
 import path from "node:path";
-import { access, mkdir, readdir, rm, stat, writeFile, unlink, constants } from "node:fs/promises";
+import { mkdir, readdir, rm, stat, writeFile, unlink } from "node:fs/promises";
 import { logger } from "./logger.js";
 import { env } from "../config/env.js";
 

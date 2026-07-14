@@ -1,6 +1,6 @@
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ZodError } from "zod";
-import { AppError, BadGatewayError, GatewayTimeoutError, InternalError, ServiceUnavailableError } from "../shared/errors.js";
+import { AppError, BadGatewayError, GatewayTimeoutError, ServiceUnavailableError } from "../shared/errors.js";
 import { captureException } from "../infrastructure/sentry.js";
 
 interface ProblemDetails {

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { cache } from "../../infrastructure/cache.js";
 import { requireAuth } from "../../middleware/auth.js";
@@ -9,7 +9,6 @@ import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { storage } from "../../infrastructure/storage.js";
 import { enqueueTranscode } from "../transcoder/transcoder.queue.js";
-import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
 import { transcoderDispatcher } from "../transcoder/transcoder.dispatcher.js";
 
 import { isUndefinedColumnError, SAFE_VIDEO_COLS } from "../../infrastructure/db-schema-guard.js";
@@ -1009,15 +1008,15 @@ export async function adminVideosRoutes(app: FastifyInstance) {
         });
       }
 
-      const { id: jobId, reused } = await enqueueTranscode({
+      const { jobId, queued } = await enqueueTranscode({
         videoId: row.id,
         objectKey: row.objectPath,
         priority: 1,
       });
 
-      req.log.info({ videoId: id, jobId, reused }, "admin: manually queued HLS transcode job");
+      req.log.info({ videoId: id, jobId, queued }, "admin: manually queued HLS transcode job");
       transcoderDispatcher.nudge();
-      return { jobId, reused };
+      return { jobId, reused: !queued };
     },
   );
 

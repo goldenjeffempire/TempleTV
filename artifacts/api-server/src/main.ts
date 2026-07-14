@@ -1080,7 +1080,7 @@ async function main() {
               COUNT(*) FILTER (WHERE video_source != 'youtube')::text AS local_cnt
             FROM managed_videos`
           );
-          const libRow = libRows.rows?.[0] ?? libRows[0] as { youtube_cnt: string; local_cnt: string } | undefined;
+          const libRow = libRows.rows?.[0];
           const youtubeCount = parseInt(String(libRow?.youtube_cnt ?? "0"), 10);
           const localCount   = parseInt(String(libRow?.local_cnt  ?? "0"), 10);
           libraryComposition = {

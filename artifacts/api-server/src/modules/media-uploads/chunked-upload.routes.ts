@@ -30,14 +30,13 @@ import { db, schema } from "../../infrastructure/db.js";
 import { env } from "../../config/env.js";
 import { storage } from "../../infrastructure/storage.js";
 import { requireAuth } from "../../middleware/auth.js";
-import { generateQuickThumbnail, normalizeThumbnailBuffer, probeUploadedContainerValidity, probeUploadedDuration, probeVideoMetadata } from "../transcoder/transcoder.service.js";
+import { generateQuickThumbnail, normalizeThumbnailBuffer, probeUploadedDuration, probeVideoMetadata } from "../transcoder/transcoder.service.js";
 import { invalidateVideosCatalogCache } from "../videos/videos.routes.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { uploadTelemetry } from "./upload-telemetry.service.js";
 import { enqueueIfMissing } from "../broadcast/auto-enqueue.service.js";
-import { ServiceUnavailableError, InternalError } from "../../shared/errors.js";
-import { quarantineVideo } from "../broadcast/quarantine.service.js";
+import { InternalError } from "../../shared/errors.js";
 import { scheduleVideoValidation } from "../transcoder/video-validation.service.js";
 
 const sessions = schema.uploadSessionsTable;

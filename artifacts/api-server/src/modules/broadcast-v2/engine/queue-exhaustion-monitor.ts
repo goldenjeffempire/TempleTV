@@ -126,7 +126,7 @@ async function check(): Promise<void> {
       FROM broadcast_queue
       WHERE is_active = true
     `);
-    const row = rows.rows?.[0] ?? rows[0];
+    const row = rows.rows?.[0];
     if (!row) return;
 
     const totalSecs = parseFloat(String(row.total_secs ?? "0"));

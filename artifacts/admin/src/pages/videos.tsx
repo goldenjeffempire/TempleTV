@@ -182,7 +182,7 @@ function snapshotForCompare(f: EditForm): string {
   });
 }
 
-type PatchDelta = Partial<EditForm> & {
+type PatchDelta = Omit<Partial<EditForm>, "scheduledPublishAt" | "scheduledUnpublishAt" | "tags"> & {
   scheduledPublishAt?: string | null;
   scheduledUnpublishAt?: string | null;
   tags?: string[] | null;
