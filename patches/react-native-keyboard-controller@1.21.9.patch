@@ -1,0 +1,26 @@
+diff --git a/android/build.gradle b/android/build.gradle
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -52,10 +52,10 @@
+     }
+   }
+ 
+-  compileSdkVersion getExtOrIntegerDefault('compileSdkVersion')
++  compileSdk getExtOrIntegerDefault('compileSdkVersion')
+   defaultConfig {
+-    minSdkVersion getExtOrIntegerDefault('minSdkVersion')
+-    targetSdkVersion getExtOrIntegerDefault('targetSdkVersion')
++    minSdk getExtOrIntegerDefault('minSdkVersion')
++    targetSdk getExtOrIntegerDefault('targetSdkVersion')
+     versionCode 1
+     versionName "1.0"
+     buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
+@@ -89,7 +89,7 @@
+       minifyEnabled false
+     }
+   }
+-  lintOptions {
++  lint {
+     warningsAsErrors true
+   }
+   compileOptions {

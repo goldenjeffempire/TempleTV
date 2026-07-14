@@ -1,13 +1,21 @@
-apply plugin: 'com.android.library'
-apply plugin: 'kotlin-android'
+// Temple TV — expo-in-app-updates local Expo module
+//
+// Build configuration for the Google Play In-App Updates integration.
+// Uses the modern Gradle plugins {} block (AGP 8.x) instead of the legacy
+// `apply plugin:` approach to eliminate AGP deprecation warnings.
+
+plugins {
+    id 'com.android.library'
+    id 'org.jetbrains.kotlin.android'
+}
 
 android {
-    compileSdkVersion 36
+    compileSdk 36
     namespace "expo.modules.inappupdates"
 
     defaultConfig {
-        minSdkVersion 24
-        targetSdkVersion 36
+        minSdk 24
+        targetSdk 36
     }
 
     compileOptions {
@@ -26,7 +34,13 @@ android {
 
 dependencies {
     compileOnly project(':expo-modules-core')
+    // Google Play In-App Updates KTX (Kotlin coroutine extensions).
+    // 2.1.0 is the current stable release supporting all update flow types
+    // (FLEXIBLE and IMMEDIATE) via the modern AppUpdateOptions API.
     implementation "com.google.android.play:app-update-ktx:2.1.0"
+    // Coroutine support for Play Core tasks (.await() on Task<T>) and
+    // Android dispatcher. Must match the version used by expo-modules-core
+    // to avoid duplicate class / classloader conflicts on the Kotlin stdlib.
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0"
 }

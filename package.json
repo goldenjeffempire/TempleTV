@@ -64,7 +64,20 @@
   },
   "pnpm": {
     "patchedDependencies": {
-      "react-native-track-player@4.1.2": "patches/react-native-track-player@4.1.2.patch"
+      "react-native-track-player@4.1.2": "patches/react-native-track-player@4.1.2.patch",
+      "react-native-screens@4.25.2": "patches/react-native-screens@4.25.2.patch",
+      "react-native-gesture-handler@2.32.0": "patches/react-native-gesture-handler@2.32.0.patch",
+      "react-native-webview@13.16.1": "patches/react-native-webview@13.16.1.patch",
+      "react-native-keyboard-controller@1.21.9": "patches/react-native-keyboard-controller@1.21.9.patch",
+      "react-native-svg@15.15.4": "patches/react-native-svg@15.15.4.patch",
+      "react-native-safe-area-context@5.7.0": "patches/react-native-safe-area-context@5.7.0.patch",
+      "@react-native-async-storage/async-storage@2.2.0": "patches/@react-native-async-storage+async-storage@2.2.0.patch",
+      "expo-av@16.0.8": "patches/expo-av@16.0.8.patch",
+      "expo-updates@57.0.6": "patches/expo-updates@57.0.6.patch",
+      "expo-modules-core@57.0.3": "patches/expo-modules-core@57.0.3.patch",
+      "expo-linking@57.0.2": "patches/expo-linking@57.0.2.patch",
+      "expo-router@57.0.4": "patches/expo-router@57.0.4.patch",
+      "@expo/ui@57.0.4": "patches/@expo+ui@57.0.4.patch"
     },
     "overrides": {
       "shell-quote": "file:./stubs/shell-quote",

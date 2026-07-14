@@ -1,0 +1,30 @@
+diff --git a/android/build.gradle b/android/build.gradle
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -45,7 +45,7 @@
+         }
+     }
+ 
+-    compileSdkVersion project.ext.AsyncStorageConfig.compileSdkVersion
++    compileSdk project.ext.AsyncStorageConfig.compileSdkVersion
+     // Used to override the NDK path/version by allowing users to customize
+     // the NDK path/version from their root project (e.g. for M1 support)
+     if (rootProject.hasProperty("ndkPath")) {
+@@ -57,14 +57,14 @@
+ 
+ 
+     defaultConfig {
+-        minSdkVersion project.ext.AsyncStorageConfig.minSdkVersion
+-        targetSdkVersion project.ext.AsyncStorageConfig.targetSdkVersion
++        minSdk project.ext.AsyncStorageConfig.minSdkVersion
++        targetSdk project.ext.AsyncStorageConfig.targetSdkVersion
+         buildConfigField "Long", "AsyncStorage_db_size", "${project.ext.AsyncStorageConfig.databaseSizeMB}L"
+         buildConfigField "boolean", "AsyncStorage_useDedicatedExecutor", "${project.ext.AsyncStorageConfig.useDedicatedExecutor}"
+         buildConfigField "boolean", "AsyncStorage_useNextStorage", "${useNextStorage}"
+         buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", "${isNewArchitectureEnabled}"
+     }
+-    lintOptions {
++    lint {
+         abortOnError false
+     }
+ 

@@ -1,13 +1,21 @@
-apply plugin: 'com.android.library'
-apply plugin: 'kotlin-android'
+// Temple TV — expo-pip-android local Expo module
+//
+// Build configuration for the Android Picture-in-Picture integration.
+// Uses the modern Gradle plugins {} block (AGP 8.x) instead of the legacy
+// `apply plugin:` approach to eliminate AGP deprecation warnings.
+
+plugins {
+    id 'com.android.library'
+    id 'org.jetbrains.kotlin.android'
+}
 
 android {
-    compileSdkVersion 36
+    compileSdk 36
     namespace "expo.modules.pipandroid"
 
     defaultConfig {
-        minSdkVersion 24
-        targetSdkVersion 36
+        minSdk 24
+        targetSdk 36
     }
 
     compileOptions {
@@ -25,5 +33,9 @@ android {
 }
 
 dependencies {
+    // expo-modules-core provides the Module/ModuleDefinition base classes and
+    // the Coroutine {} / AsyncFunction DSL used by ExpoPipAndroidModule.kt.
+    // compileOnly: the host app provides it at runtime; we must NOT bundle it
+    // in the library AAR (causes duplicate class errors with AGP 8.x).
     compileOnly project(':expo-modules-core')
 }

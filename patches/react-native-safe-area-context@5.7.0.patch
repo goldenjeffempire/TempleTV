@@ -1,0 +1,37 @@
+diff --git a/android/build.gradle b/android/build.gradle
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -47,7 +47,7 @@
+         }
+     }
+ 
+-    compileSdkVersion getExtOrDefault('compileSdkVersion', 30)
++    compileSdk getExtOrDefault('compileSdkVersion', 30)
+ 
+     // Used to override the NDK path/version on internal CI or by allowing
+     // users to customize the NDK path/version from their root project (e.g. for M1 support)
+@@ -59,8 +59,8 @@
+     }
+ 
+     defaultConfig {
+-        minSdkVersion getExtOrDefault('minSdkVersion', 16)
+-        targetSdkVersion getExtOrDefault('targetSdkVersion', 28)
++        minSdk getExtOrDefault('minSdkVersion', 16)
++        targetSdk getExtOrDefault('targetSdkVersion', 28)
+         versionCode 1
+         versionName "1.0"
+         buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
+@@ -70,11 +70,11 @@
+         }
+     }
+ 
+-    lintOptions{
++    lint {
+         abortOnError false
+     }
+ 
+-    packagingOptions {
++    packaging {
+         // For some reason gradle only complains about the duplicated version of libreact_render libraries
+         // while there are more libraries copied in intermediates folder of the lib build directory, we exclude
+         // only the ones that make the build fail (ideally we should only include libsafeareacontext_modules but we

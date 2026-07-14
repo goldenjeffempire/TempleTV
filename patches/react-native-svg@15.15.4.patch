@@ -1,0 +1,30 @@
+diff --git a/android/build.gradle b/android/build.gradle
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -85,7 +85,7 @@
+ def FRESCO_VERSION = getFrescoVersion()
+ 
+ android {
+-    compileSdkVersion safeExtGet('compileSdkVersion', 28)
++    compileSdk safeExtGet('compileSdkVersion', 28)
+     namespace "com.horcrux.svg"
+     def agpVersion = com.android.Version.ANDROID_GRADLE_PLUGIN_VERSION
+     if (agpVersion.tokenize('.')[0].toInteger() >= 8) {
+@@ -103,14 +103,14 @@
+     }
+ 
+     defaultConfig {
+-        minSdkVersion safeExtGet('minSdkVersion', 16)
++        minSdk safeExtGet('minSdkVersion', 16)
+         //noinspection OldTargetApi
+-        targetSdkVersion safeExtGet('targetSdkVersion', 28)
++        targetSdk safeExtGet('targetSdkVersion', 28)
+         buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
+ 
+         consumerProguardFiles 'proguard-rules.pro'
+     }
+-    lintOptions {
++    lint {
+         abortOnError false
+     }
+ 

@@ -1,0 +1,32 @@
+diff --git a/android/build.gradle b/android/build.gradle
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -127,7 +127,7 @@
+ }
+ 
+ android {
+-    compileSdkVersion safeExtGet("compileSdkVersion", 33)
++    compileSdk safeExtGet("compileSdkVersion", 33)
+ 
+     namespace = "com.swmansion.gesturehandler"
+     buildFeatures {
+@@ -145,8 +145,8 @@
+     }
+ 
+     defaultConfig {
+-        minSdkVersion safeExtGet('minSdkVersion', 24)
+-        targetSdkVersion safeExtGet('targetSdkVersion', 33)
++        minSdk safeExtGet('minSdkVersion', 24)
++        targetSdk safeExtGet('targetSdkVersion', 33)
+         buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
+         buildConfigField "int", "REACT_NATIVE_MINOR_VERSION", REACT_NATIVE_MINOR_VERSION.toString()
+ 
+@@ -177,7 +177,7 @@
+         }
+     }
+ 
+-    packagingOptions {
++    packaging {
+         // For some reason gradle only complains about the duplicated version of libreact_render libraries
+         // while there are more libraries copied in intermediates folder of the lib build directory, we exclude
+         // only the ones that make the build fail (ideally we should only include libgesturehandler but we

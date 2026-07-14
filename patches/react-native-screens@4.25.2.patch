@@ -1,0 +1,40 @@
+diff --git a/android/build.gradle b/android/build.gradle
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -107,7 +107,7 @@
+ def REACT_NATIVE_MINOR_VERSION = REACT_NATIVE_VERSION.startsWith("0.0.0-") ? 1000 : REACT_NATIVE_VERSION.split("\\.")[1].toInteger()
+ 
+ android {
+-    compileSdkVersion safeExtGet('compileSdkVersion', rnsDefaultCompileSdkVersion)
++    compileSdk safeExtGet('compileSdkVersion', rnsDefaultCompileSdkVersion)
+     namespace "com.swmansion.rnscreens"
+ 
+     // Used to override the NDK path/version on internal CI or by allowing
+@@ -120,8 +120,8 @@
+     }
+ 
+     defaultConfig {
+-        minSdkVersion safeExtGet(['minSdkVersion', 'minSdk'], rnsDefaultMinSdkVersion)
+-        targetSdkVersion safeExtGet(['targetSdkVersion', 'targetSdk'], rnsDefaultTargetSdkVersion)
++        minSdk safeExtGet(['minSdkVersion', 'minSdk'], rnsDefaultMinSdkVersion)
++        targetSdk safeExtGet(['targetSdkVersion', 'targetSdk'], rnsDefaultTargetSdkVersion)
+         versionCode 1
+         versionName "1.0"
+         buildConfigField "boolean", "RNS_GAMMA_ENABLED", isGammaEnabled().toString()
+@@ -145,14 +145,14 @@
+             path "CMakeLists.txt"
+         }
+     }
+-    lintOptions {
++    lint {
+         abortOnError false
+     }
+     compileOptions {
+         sourceCompatibility JavaVersion.VERSION_1_8
+         targetCompatibility JavaVersion.VERSION_1_8
+     }
+-    packagingOptions {
++    packaging {
+         // For some reason gradle only complains about the duplicated version of libreact_render libraries
+         // while there are more libraries copied in intermediates folder of the lib build directory, we exclude
+         // only the ones that make the build fail (ideally we should only include librnscreens_modules but we

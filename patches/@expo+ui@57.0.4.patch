@@ -1,0 +1,12 @@
+diff --git a/android/build.gradle b/android/build.gradle
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -24,7 +24,7 @@
+   buildFeatures {
+     compose true
+   }
+-  lintOptions {
++  lint {
+     abortOnError false
+   }
+   testOptions {

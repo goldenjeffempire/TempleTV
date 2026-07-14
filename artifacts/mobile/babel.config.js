@@ -1,5 +1,5 @@
 /**
- * Babel configuration for the Temple TV mobile app (Expo SDK 54, React Native 0.81).
+ * Babel configuration for the Temple TV mobile app (Expo SDK 57, React Native 0.86).
  *
  * - `babel-preset-expo` is the only preset required. It transparently includes
  *   the React Native preset, the JSX transform, and the React Compiler plugin

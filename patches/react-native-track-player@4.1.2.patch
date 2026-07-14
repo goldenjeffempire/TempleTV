@@ -19,3 +19,22 @@ diff --git a/android/src/main/java/com/doublesymmetry/trackplayer/module/MusicMo
              )
          )
      }
+diff --git a/android/build.gradle b/android/build.gradle
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -18,12 +18,12 @@
+ }
+ 
+ android {
+-    compileSdkVersion getExtOrIntegerDefault('compileSdkVersion')
++    compileSdk getExtOrIntegerDefault('compileSdkVersion')
+     namespace 'com.doublesymmetry.trackplayer'
+ 
+     defaultConfig {
+-        minSdkVersion getExtOrIntegerDefault('minSdkVersion') // RN's minimum version
+-        targetSdkVersion getExtOrIntegerDefault('targetSdkVersion')
++        minSdk getExtOrIntegerDefault('minSdkVersion') // RN's minimum version
++        targetSdk getExtOrIntegerDefault('targetSdkVersion')
+ 
+         versionCode 300
+         versionName '3.0'
