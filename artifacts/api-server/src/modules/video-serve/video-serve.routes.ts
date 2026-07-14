@@ -314,7 +314,12 @@ export async function videoServeRoutes(app: FastifyInstance) {
                 .send({ error: "Range Not Satisfiable" });
             }
 
-            const rangeObj = await s.getObjectRange(key, start, end);
+            // Pass the pre-fetched head metadata to avoid a second headObject()
+            // DB call inside getObjectRange() for chunked blobs.  For legacy
+            // BYTEA blobs this is irrelevant (the first SUBSTRING query already
+            // serves as the existence check), but for new chunked blobs it saves
+            // one SELECT per Range request — which fires on every video seek.
+            const rangeObj = await s.getObjectRange(key, start, end, head);
             if (!rangeObj) {
               return reply.code(404).send({ error: "File not found in storage" });
             }

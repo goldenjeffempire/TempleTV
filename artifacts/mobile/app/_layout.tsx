@@ -382,7 +382,18 @@ function RootLayoutNav() {
             (async () => {
               try {
                 const { fetchVideoById } = await import("@/services/api");
-                const video = await fetchVideoById(videoId);
+                // Race the video fetch against a 10-second timeout.
+                // Without a deadline, a slow or unreachable API leaves the user
+                // with no feedback and no navigation — indistinguishable from a
+                // hung app on a cold notification tap.  The catch-branch below
+                // provides a graceful fallback to the Library screen in all
+                // failure cases (timeout, network error, 404, etc.).
+                const video = await Promise.race([
+                  fetchVideoById(videoId),
+                  new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error("fetch timeout")), 10_000),
+                  ),
+                ]);
                 router.push({
                   pathname: "/player",
                   params: {
@@ -400,6 +411,7 @@ function RootLayoutNav() {
                 });
               } catch {
                 // Fallback: take the user to Library where they can find the new content.
+                // Covers API timeouts, network errors, 404s, and the 10-second race above.
                 router.push("/(tabs)/library");
               }
             })();

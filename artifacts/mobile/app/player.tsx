@@ -161,6 +161,14 @@ export default function PlayerScreen() {
     return next;
   }, []);
 
+  // Tracks the 500 ms OS-release retry timer so it can be cancelled on unmount.
+  // Without this ref the timer fires after the screen unmounts and calls
+  // setAudioModeAsync on a component that is no longer in the navigation tree —
+  // on iOS this can throw "AVAudioSession deactivation failed" and, in strict
+  // mode, also triggers a React "Can't perform a state update on an unmounted
+  // component" warning from any downstream state setter.
+  const audioRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     let mounted = true;
     void withSerializedAudioSession(async () => {
@@ -204,8 +212,11 @@ export default function PlayerScreen() {
         }
         // Single 500 ms retry — the OS may need a brief moment to release a
         // competing audio session (e.g. after a phone call or Siri dismissal)
-        // before it will accept our reconfiguration.
-        setTimeout(() => {
+        // before it will accept our reconfiguration. Stored in audioRetryTimerRef
+        // so the cleanup function below can cancel it if the screen unmounts
+        // within this 500 ms window, preventing a post-unmount setAudioModeAsync.
+        audioRetryTimerRef.current = setTimeout(() => {
+          audioRetryTimerRef.current = null;
           if (!mounted) return;
           Audio.setAudioModeAsync({
             playsInSilentModeIOS: true,
@@ -227,6 +238,11 @@ export default function PlayerScreen() {
     // in-app audio lose the ability to duck correctly on Android.
     return () => {
       mounted = false;
+      // Cancel any in-flight retry timer — prevents a post-unmount async call.
+      if (audioRetryTimerRef.current !== null) {
+        clearTimeout(audioRetryTimerRef.current);
+        audioRetryTimerRef.current = null;
+      }
       Audio.setAudioModeAsync({
         playsInSilentModeIOS: true,
         staysActiveInBackground: true,

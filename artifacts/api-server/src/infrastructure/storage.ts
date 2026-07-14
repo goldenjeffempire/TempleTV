@@ -155,13 +155,21 @@ export interface ObjectStorage {
    * Returns the number of objects deleted.
    */
   deleteByPrefix(prefix: string): Promise<number>;
-  headObject(key: string): Promise<{ exists: boolean; contentLength?: number; contentType?: string }>;
+  headObject(key: string): Promise<{ exists: boolean; contentLength?: number; contentType?: string; chunked?: boolean; chunkCount?: number }>;
   /**
    * Fetch a byte-range slice of a stored blob.
    * `start` and `end` are 0-indexed, inclusive (matching HTTP Range semantics).
    * Returns null when the key does not exist.
+   *
+   * Pass `preloadedHead` if you have already called `headObject()` for this key
+   * in the same request handler — doing so saves one DB round-trip for chunked blobs.
    */
-  getObjectRange(key: string, start: number, end: number): Promise<{ body: Readable; contentType?: string; contentLength: number } | null>;
+  getObjectRange(
+    key: string,
+    start: number,
+    end: number,
+    preloadedHead?: { exists: boolean; contentLength?: number; contentType?: string; chunked?: boolean; chunkCount?: number },
+  ): Promise<{ body: Readable; contentType?: string; contentLength: number } | null>;
   publicUrl(key: string): string | null;
   createMultipartUpload(args: { key: string; contentType?: string }): Promise<{ uploadId: string }>;
   signUploadPart(args: { key: string; uploadId: string; partNumber: number; ttlSeconds?: number }): Promise<string>;
@@ -232,6 +240,79 @@ class PostgresObjectStorage implements ObjectStorage {
    */
   private readonly _pendingContentTypes = new Map<string, string>();
 
+  // ── Blob metadata cache ──────────────────────────────────────────────────────
+  //
+  // Blob metadata (size, content-type, chunked flag) is immutable once written:
+  // completeMultipartUpload uses ON CONFLICT DO UPDATE which replaces the row,
+  // so any update produces a new headObject() result.  A 90-second TTL is safe:
+  //   • New uploads: first Range request after upload is a cache miss (cold). The
+  //     cache is never pre-populated — only populated on first headObject() read.
+  //   • Mutations: putObject() and completeMultipartUpload() invalidate their key
+  //     immediately so subsequent reads see the fresh row.
+  //   • Deletes: deleteObject() and deleteByPrefix() also invalidate.
+  //
+  // Impact: a single 90-minute sermon streamed at typical HLS/MP4 chunk sizes
+  // (2 MB Range requests → ~45 Range requests per minute per viewer) would
+  // have generated 4,050 headObject() DB reads without the cache.  With the
+  // cache, it is 1 read (cold miss) + 0 for the remainder of the stream.
+  //
+  // The cache is intentionally NOT shared across workers/processes: each worker
+  // has its own small copy, preventing cross-process cache poisoning.
+  private readonly _headCache = new Map<
+    string,
+    {
+      meta: {
+        exists: boolean;
+        contentLength?: number;
+        contentType?: string;
+        chunked?: boolean;
+        chunkCount?: number;
+      };
+      expiresAt: number;
+    }
+  >();
+  // 90 s covers typical 2-hour sermon sessions with room to spare.
+  private readonly _HEAD_CACHE_TTL_MS = 90_000;
+  // Hard cap: 500 entries ≈ 500 unique video blobs in memory — negligible RSS.
+  private readonly _HEAD_CACHE_MAX = 500;
+
+  private _headCacheGet(key: string) {
+    const entry = this._headCache.get(key);
+    if (!entry) return undefined;
+    if (Date.now() > entry.expiresAt) {
+      this._headCache.delete(key);
+      return undefined;
+    }
+    return entry.meta;
+  }
+
+  private _headCacheSet(
+    key: string,
+    meta: { exists: boolean; contentLength?: number; contentType?: string; chunked?: boolean; chunkCount?: number },
+  ): void {
+    if (this._headCache.size >= this._HEAD_CACHE_MAX) {
+      // Evict the oldest 10% of entries to amortise the cost of eviction.
+      const evictCount = Math.ceil(this._HEAD_CACHE_MAX * 0.1);
+      let evicted = 0;
+      for (const k of this._headCache.keys()) {
+        if (evicted >= evictCount) break;
+        this._headCache.delete(k);
+        evicted++;
+      }
+    }
+    this._headCache.set(key, { meta, expiresAt: Date.now() + this._HEAD_CACHE_TTL_MS });
+  }
+
+  private _headCacheInvalidate(key: string): void {
+    this._headCache.delete(key);
+  }
+
+  private _headCacheInvalidatePrefix(prefix: string): void {
+    for (const k of this._headCache.keys()) {
+      if (k.startsWith(prefix)) this._headCache.delete(k);
+    }
+  }
+
   // ── URL helpers ─────────────────────────────────────────────────────────────
 
   publicUrl(key: string): string {
@@ -284,6 +365,9 @@ class PostgresObjectStorage implements ObjectStorage {
         data         = EXCLUDED.data,
         updated_at   = NOW()
     `);
+    // Invalidate any cached metadata so subsequent headObject() calls see the
+    // fresh size and content-type written above, not stale pre-write values.
+    this._headCacheInvalidate(key);
     return { key, url: this.publicUrl(key) };
   }
 
@@ -404,11 +488,31 @@ class PostgresObjectStorage implements ObjectStorage {
     return { body, contentType: head.contentType, contentLength: totalSize };
   }
 
-  async getObjectRange(key: string, start: number, end: number): Promise<{ body: Readable; contentType?: string; contentLength: number } | null> {
+  async getObjectRange(
+    key: string,
+    start: number,
+    end: number,
+    /**
+     * Optional pre-fetched blob metadata from a prior headObject() call.
+     * When supplied the method skips its own headObject() DB round-trip —
+     * callers that already resolved content-length for Content-Range headers
+     * (e.g. the Range request handler in admin-videos.routes.ts) can pass their
+     * cached result here to save one SELECT per Range request on chunked blobs.
+     * For legacy BYTEA blobs this is irrelevant because the first SUBSTRING
+     * query already includes content_type and serves as the existence check.
+     */
+    preloadedHead?: {
+      exists: boolean;
+      contentLength?: number;
+      contentType?: string;
+      chunked?: boolean;
+      chunkCount?: number;
+    },
+  ): Promise<{ body: Readable; contentType?: string; contentLength: number } | null> {
     if (_shuttingDown) return null;
     const rangeLength = end - start + 1;
 
-    const head = await this.headObject(key);
+    const head = preloadedHead ?? await this.headObject(key);
     if (!head.exists) return null;
     if (head.chunked) {
       const body = Readable.from(readPermanentChunksRange(key, start, end), { objectMode: false });
@@ -525,6 +629,10 @@ class PostgresObjectStorage implements ObjectStorage {
   }
 
   async headObject(key: string): Promise<{ exists: boolean; contentLength?: number; contentType?: string; chunked?: boolean; chunkCount?: number }> {
+    // ── Cache check ────────────────────────────────────────────────────────────
+    const cached = this._headCacheGet(key);
+    if (cached) return cached;
+
     type Row = { size_bytes: number; content_type: string; chunked: boolean; chunk_count: number };
     const result = await db.execute<Row>(sql`
       SELECT size_bytes, content_type, chunked, chunk_count
@@ -532,21 +640,33 @@ class PostgresObjectStorage implements ObjectStorage {
       WHERE key = ${key}
       LIMIT 1
     `).catch(() => null);
-    if (!result) return { exists: false };
+    if (!result) return { exists: false }; // DB error — do NOT cache a false-negative
+
     const row = firstRow<Row>(result);
-    if (!row) return { exists: false };
-    return {
-      exists: true,
+    if (!row) {
+      // Key does not exist — cache the negative result briefly (5 s) to
+      // prevent rapid-fire probe loops from hammering the DB on missing keys.
+      const miss = { exists: false as const };
+      this._headCache.set(key, { meta: miss, expiresAt: Date.now() + 5_000 });
+      return miss;
+    }
+    const meta = {
+      exists: true as const,
       contentLength: Number(row.size_bytes),
       contentType: row.content_type,
       chunked: !!row.chunked,
       chunkCount: Number(row.chunk_count ?? 0),
     };
+    this._headCacheSet(key, meta);
+    return meta;
   }
 
   async deleteObject(key: string): Promise<void> {
     await db.execute(sql`DELETE FROM storage_blob_chunks WHERE blob_key = ${key}`);
     await db.execute(sql`DELETE FROM storage_blobs WHERE key = ${key}`);
+    // Invalidate cached metadata so any in-flight reader that calls headObject()
+    // after the delete correctly sees { exists: false } instead of stale data.
+    this._headCacheInvalidate(key);
   }
 
   async deleteByPrefix(prefix: string): Promise<number> {
@@ -557,6 +677,8 @@ class PostgresObjectStorage implements ObjectStorage {
     const result = await db.execute(sql`
       DELETE FROM storage_blobs WHERE starts_with(key, ${prefix})
     `);
+    // Purge all cached metadata entries whose key starts with prefix.
+    this._headCacheInvalidatePrefix(prefix);
     return (result as unknown as { rowCount?: number }).rowCount ?? 0;
   }
 
@@ -869,6 +991,11 @@ class PostgresObjectStorage implements ObjectStorage {
       const etag = `"${uploadId.slice(0, 8)}-${promotedBytes}"`;
       return { key, etag, location: this.publicUrl(key) };
     }); // ← transaction COMMIT; advisory lock auto-released
+
+    // Invalidate any stale metadata cached during upload probes (e.g. scanner
+    // headObject calls that saw { exists: false } on the pre-assembly key).
+    // The transaction has committed at this point so the new row is visible.
+    this._headCacheInvalidate(key);
 
     logger.info(
       { key, uploadId, parts: finalPartCount, bytes: finalTotalBytes, sha256Verified: !!expectedSha256, ...trace },
