@@ -83,7 +83,7 @@ const TICK_MS = 2_000;
  * COMMIT per tick). The dirty-flag gate already suppresses writes during idle
  * periods, so 15 s loses at most 15 s of position on crash — acceptable.
  */
-const CHECKPOINT_INTERVAL_MS = 15_000;
+const CHECKPOINT_INTERVAL_MS = 5_000;
 const EVENT_LOG_TRIM_INTERVAL_MS = 60_000;
 
 /**

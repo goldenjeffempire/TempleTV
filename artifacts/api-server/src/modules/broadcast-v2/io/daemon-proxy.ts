@@ -191,12 +191,21 @@ async function sseDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promise
 
 // ── HTTP REST Proxy ───────────────────────────────────────────────────────────
 
+// REST retry constants — cover the brief window when the daemon is restarting.
+const REST_MAX_RETRIES = 3;
+const REST_RETRY_DELAY_MS = 600;
+const REST_CONNECT_TIMEOUT_MS = 5_000;
+
 /**
  * Generic HTTP proxy handler for all non-SSE broadcast-v2 REST routes.
  *
  * Forwards the request method, body, and auth headers to the daemon and
  * returns the daemon's status code + response body verbatim to the client.
  * No caching — every request is proxied in real time.
+ *
+ * Retries up to REST_MAX_RETRIES times on network errors (ECONNREFUSED,
+ * ECONNRESET) so admin operations issued while the daemon is briefly
+ * restarting don't immediately fail with 502.
  */
 async function httpDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   // req.url in Fastify is the *full* path including outer prefix scopes and any
@@ -208,28 +217,53 @@ async function httpDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promis
   Object.assign(headers, proxyRequestHeaders(req));
   if (req.body) headers["content-type"] = "application/json";
 
-  const init: RequestInit = { method: req.method, headers };
-  if (req.body && ["POST", "PUT", "PATCH"].includes(req.method)) {
-    init.body = JSON.stringify(req.body);
+  const body = (req.body && ["POST", "PUT", "PATCH"].includes(req.method))
+    ? JSON.stringify(req.body)
+    : undefined;
+
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= REST_MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      await new Promise<void>((r) => setTimeout(r, REST_RETRY_DELAY_MS * attempt));
+    }
+    const abort = new AbortController();
+    const t = setTimeout(() => abort.abort(), REST_CONNECT_TIMEOUT_MS);
+    try {
+      const upstreamRes = await fetch(targetUrl, {
+        method: req.method,
+        headers,
+        body,
+        signal: abort.signal,
+      });
+      clearTimeout(t);
+      const respBody = await upstreamRes.text();
+      reply.code(upstreamRes.status);
+      const ct = upstreamRes.headers.get("content-type");
+      if (ct) reply.header("content-type", ct);
+      reply.send(respBody);
+      return;
+    } catch (err) {
+      clearTimeout(t);
+      lastErr = err;
+      logger.debug(
+        { err, targetUrl, attempt },
+        "[broadcast-daemon-proxy] REST forward failed (will retry)",
+      );
+    }
   }
 
-  let upstreamRes: Response;
-  try {
-    upstreamRes = await fetch(targetUrl, init);
-  } catch (err) {
-    logger.warn({ err, targetUrl }, "[broadcast-daemon-proxy] REST forward failed");
-    if (!reply.sent) reply.code(502).send({ error: "broadcast daemon unavailable" });
-    return;
-  }
-
-  const body = await upstreamRes.text();
-  reply.code(upstreamRes.status);
-  const ct = upstreamRes.headers.get("content-type");
-  if (ct) reply.header("content-type", ct);
-  reply.send(body);
+  logger.warn({ err: lastErr, targetUrl }, "[broadcast-daemon-proxy] REST forward failed after retries");
+  if (!reply.sent) reply.code(502).send({ error: "broadcast daemon unavailable" });
 }
 
 // ── WebSocket Proxy ──────────────────────────────────────────────────────────
+
+// WS reconnect constants — mirror the SSE retry window so both channels stay
+// alive through the same daemon restart window.
+const WS_RECONNECT_MAX_MS = 30_000;
+const WS_RECONNECT_INTERVAL_MS = 2_000;
+// Max messages buffered while the upstream is reconnecting (prevents unbounded growth).
+const WS_PENDING_MAX = 64;
 
 /**
  * Application-level WebSocket proxy: bridges the client's Fastify-managed
@@ -248,51 +282,96 @@ async function httpDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promis
  * the proxy entirely through Fastify's own websocket machinery — as a real
  * matched `{ websocket: true }` route — eliminates the second listener
  * entirely, so there is no race.
+ *
+ * RESILIENT RECONNECT: when the upstream daemon WS connection drops (daemon
+ * restart, crash, rolling deploy), the proxy retries for up to WS_RECONNECT_MAX_MS
+ * before closing the client connection. This mirrors the SSE proxy behaviour —
+ * daemon restarts are transparent to connected viewers in most cases.
  */
 function wsDaemonProxyHandler(clientSocket: WebSocket, request: FastifyRequest): void {
   const daemonWsUrl = daemonUrl(request.raw.url ?? "/ws").replace(/^http/, "ws");
   const headers = proxyRequestHeaders(request);
-  const upstream = new WebSocket(daemonWsUrl, { headers });
 
-  let upstreamOpen = false;
-  let closed = false;
+  let clientClosed = false;
+  // Messages from the client buffered while upstream is connecting/reconnecting.
   const pending: RawData[] = [];
 
-  const closeBoth = (code?: number, reason?: string) => {
-    if (closed) return;
-    closed = true;
+  // Close the client socket (called only when we give up reconnecting or client itself closes).
+  function closeClient(code?: number, reason?: string) {
+    if (clientClosed) return;
+    clientClosed = true;
     try { clientSocket.close(code, reason); } catch { /* already closed */ }
-    try { upstream.close(); } catch { /* already closed */ }
-  };
+  }
 
-  upstream.on("open", () => {
-    upstreamOpen = true;
-    for (const msg of pending.splice(0)) {
-      try { upstream.send(msg); } catch { /* upstream gone */ }
-    }
-  });
-
+  // Forward client messages to the upstream (or buffer if not yet open).
   clientSocket.on("message", (data: RawData) => {
-    if (upstreamOpen) {
-      try { upstream.send(data); } catch { /* upstream gone */ }
-    } else {
-      pending.push(data);
-    }
+    if (pending.length < WS_PENDING_MAX) pending.push(data);
   });
+  clientSocket.on("error", () => closeClient());
+  clientSocket.on("close", () => { clientClosed = true; });
 
-  upstream.on("message", (data: RawData) => {
-    if (clientSocket.readyState === WebSocket.OPEN) {
-      try { clientSocket.send(data); } catch { /* client gone */ }
-    }
-  });
+  // Attempt to connect (or reconnect) to the daemon, retrying for up to WS_RECONNECT_MAX_MS.
+  const retryDeadline = Date.now() + WS_RECONNECT_MAX_MS;
 
-  upstream.on("error", (err) => {
-    logger.debug({ err, daemonWsUrl }, "[broadcast-daemon-proxy] WS upstream error");
-    closeBoth(1011, "broadcast daemon unavailable");
-  });
-  upstream.on("close", () => closeBoth());
-  clientSocket.on("error", () => closeBoth());
-  clientSocket.on("close", () => closeBoth());
+  function tryConnect() {
+    if (clientClosed) return; // Client left while we were waiting — no point reconnecting.
+
+    const upstream = new WebSocket(daemonWsUrl, { headers });
+
+    upstream.on("open", () => {
+      // Drain any messages buffered while we were (re)connecting.
+      for (const msg of pending.splice(0)) {
+        try { upstream.send(msg); } catch { /* upstream gone */ }
+      }
+
+      // Now wire up live bidirectional forwarding.
+      // Remove the old buffering listener and replace with live forwarding.
+      clientSocket.removeAllListeners("message");
+      clientSocket.on("message", (data: RawData) => {
+        if (upstream.readyState === WebSocket.OPEN) {
+          try { upstream.send(data); } catch { /* upstream gone */ }
+        }
+      });
+
+      upstream.on("message", (data: RawData) => {
+        if (clientSocket.readyState === WebSocket.OPEN) {
+          try { clientSocket.send(data); } catch { /* client gone */ }
+        }
+      });
+
+      // When upstream drops, attempt to reconnect transparently.
+      upstream.once("close", () => {
+        if (clientClosed) return;
+        logger.debug({ daemonWsUrl }, "[broadcast-daemon-proxy] WS upstream closed — scheduling reconnect");
+
+        // Restore buffering so client messages during reconnect are not lost.
+        clientSocket.removeAllListeners("message");
+        clientSocket.on("message", (data: RawData) => {
+          if (pending.length < WS_PENDING_MAX) pending.push(data);
+        });
+
+        scheduleReconnect();
+      });
+    });
+
+    upstream.on("error", (err) => {
+      logger.debug({ err, daemonWsUrl }, "[broadcast-daemon-proxy] WS upstream error");
+      upstream.removeAllListeners();
+      scheduleReconnect();
+    });
+  }
+
+  function scheduleReconnect() {
+    if (clientClosed) return;
+    if (Date.now() >= retryDeadline) {
+      logger.warn({ daemonWsUrl }, "[broadcast-daemon-proxy] WS daemon unavailable after retry window — closing client");
+      closeClient(1011, "broadcast daemon unavailable");
+      return;
+    }
+    setTimeout(() => tryConnect(), WS_RECONNECT_INTERVAL_MS);
+  }
+
+  tryConnect();
 }
 
 // ── Fastify Plugin ────────────────────────────────────────────────────────────
