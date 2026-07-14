@@ -17,6 +17,39 @@ import {
 } from "@/services/authApi";
 import { setAuthGateBindings, type PendingPlayback } from "@/utils/auth-gate";
 
+// ── Startup safety constants ─────────────────────────────────────────────────
+
+/**
+ * Hard timeout per SecureStore read batch at startup.
+ *
+ * On some Android 10/11 devices, the hardware-backed EncryptedSharedPreferences
+ * keystore can permanently deadlock after a force-stop / OOM kill, never
+ * resolving its read promise. Without a timeout the auth restore hangs
+ * indefinitely, leaving the app stuck on the splash screen.
+ *
+ * 2 000 ms is well above the normal keystore read latency (<50 ms) but
+ * short enough to not noticeably delay startup. If the timeout fires on
+ * attempt 0 the retry loop waits 500 ms and tries again; if it fires on
+ * attempt 1 the outer try/catch leaves the user in the logged-out state.
+ */
+const SECURE_STORE_TIMEOUT_MS = 2_000;
+
+/**
+ * Race a promise against a hard timeout that rejects.
+ * Used exclusively on startup-critical SecureStore reads.
+ */
+function withReadTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`[AuthContext] SecureStore read timed out after ${ms}ms`)),
+        ms,
+      ),
+    ),
+  ]);
+}
+
 interface AuthContextValue {
   user: AuthUser | null;
   token: string | null;
@@ -92,6 +125,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isAuthGateOpen, setAuthGateOpen] = useState(false);
   const [pendingPlayback, setPendingPlayback] = useState<PendingPlayback | null>(null);
   const [sessionExpiredAt, setSessionExpiredAt] = useState<number | null>(null);
+
+  // ── Mounted guard ─────────────────────────────────────────────────────────
+  // Prevents async callbacks (apiGetMe, ensureFreshAccessToken, AppState
+  // handlers) from calling setState after AuthProvider unmounts. In production
+  // AuthProvider is the outermost provider and never unmounts, but during dev
+  // hot-reload it can, and async callbacks that were in-flight fire against the
+  // torn-down instance — causing React 18 "update on unmounted component" noise
+  // and, in edge cases, stale-closure state corruption.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   // Tracks whether we've already navigated to /login for the current
   // session-expiry event, to avoid stacking navigations.
   const expiryNavigatedRef = useRef(false);
@@ -134,16 +181,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         let storedUser: string | null = null;
         for (let attempt = 0; attempt < 2; attempt++) {
           try {
-            [storedToken, storedRefresh, storedUser] = await Promise.all([
-              secureStorage.getItem(SECURE_KEYS.authToken),
-              secureStorage.getItem(SECURE_KEYS.authRefreshToken),
-              secureStorage.getItem(SECURE_KEYS.authUser),
-            ]);
+            // withReadTimeout ensures a permanently-hung native keystore
+            // (seen on some Android 10/11 devices after force-stop) doesn't
+            // strand the app on the splash screen. If the timeout fires, it
+            // rejects and the catch block below handles the retry / give-up.
+            [storedToken, storedRefresh, storedUser] = await withReadTimeout(
+              Promise.all([
+                secureStorage.getItem(SECURE_KEYS.authToken),
+                secureStorage.getItem(SECURE_KEYS.authRefreshToken),
+                secureStorage.getItem(SECURE_KEYS.authUser),
+              ]),
+              SECURE_STORE_TIMEOUT_MS,
+            );
             break; // success — exit retry loop
           } catch (secErr) {
             if (attempt === 0) {
               // First failure: could be a transient keystore initialisation
-              // race. Wait 500 ms and try once more.
+              // race or a timeout. Wait 500 ms and try once more.
               await new Promise<void>((r) => setTimeout(r, 500));
             } else {
               // Second failure: treat as permanent and propagate to the outer
@@ -170,18 +224,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // making /me, so the user never sees a refresh round-trip on cold start.
         try {
           const fresh = await ensureFreshAccessToken();
-          if (fresh && fresh !== storedToken) setToken(fresh);
+          // mountedRef guard: ensureFreshAccessToken is async; AuthProvider
+          // could have unmounted during a fast dev hot-reload. In production
+          // this almost never happens, but the guard is free and correct.
+          if (fresh && fresh !== storedToken && mountedRef.current) setToken(fresh);
         } catch {
           /* transient — apiGetMe will retry */
         }
 
+        // Fire-and-forget background user refresh. The cached user from
+        // SecureStore is already applied above (setUser(storedUser)); this
+        // updates it with the latest profile from the server. Not awaited so
+        // isLoading=false is not held hostage to network latency.
+        // Both callbacks guard on mountedRef so they never land after a hot-
+        // reload unmount of AuthProvider (would be silent in React 18, but
+        // explicit guards prevent stale-closure state corruption in dev).
         apiGetMe()
           .then((freshUser) => {
+            if (!mountedRef.current) return;
             setUser(freshUser);
             secureStorage.setItem(SECURE_KEYS.authUser, JSON.stringify(freshUser)).catch(() => {});
           })
           .catch(async (err: unknown) => {
-            if (err instanceof UserNotFoundError) {
+            if (err instanceof UserNotFoundError && mountedRef.current) {
               await clearLocal();
             }
             // Transient (network/5xx) failures are swallowed — the cached
@@ -261,7 +326,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const sub = AppState.addEventListener("change", (next: AppStateStatus) => {
       if (next === "active" && user) {
         ensureFreshAccessToken().then((t) => {
-          if (t) setToken(t);
+          // mountedRef guard: sub.remove() cancels future AppState events, but
+          // this .then() can still fire after unmount if ensureFreshAccessToken
+          // was already in-flight when the cleanup ran (e.g. fast hot-reload).
+          if (t && mountedRef.current) setToken(t);
         }).catch(() => {});
       }
     });
