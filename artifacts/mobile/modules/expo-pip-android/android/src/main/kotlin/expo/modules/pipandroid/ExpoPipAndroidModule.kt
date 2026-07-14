@@ -245,20 +245,22 @@ class ExpoPipAndroidModule : Module() {
     /**
      * Play or Pause RemoteAction.
      *
-     * Uses the public stable system drawables [android.R.drawable.ic_media_play]
-     * and [android.R.drawable.ic_media_pause] (API 1+, present on all AOSP and
-     * OEM ROMs). When tapped, broadcasts ACTION_PIP_PLAY or ACTION_PIP_PAUSE to
-     * [pipReceiver], which emits "onPipAction" to JS.
+     * Uses bundled vector drawables (ic_pip_play.xml / ic_pip_pause.xml) that are
+     * always present in this module's resources.  These are flat white-on-transparent
+     * vectors that satisfy Android's notification-icon and RemoteAction-icon format
+     * requirements (API 21+ silhouette mode, AOSP + OEM compatible).  Using module-
+     * owned drawables avoids reliance on android.R.drawable system resources whose
+     * visual appearance varies across OEM skins and Android versions.
      */
     private fun buildPlayPauseAction(act: Activity, isPlaying: Boolean): RemoteAction? {
         if (Build.VERSION.SDK_INT < 26) return null
 
         val (action, rc, iconRes, label, desc) = if (isPlaying) {
             PlayPauseSpec(ACTION_PIP_PAUSE, RC_PAUSE,
-                android.R.drawable.ic_media_pause, "Pause", "Pause playback")
+                R.drawable.ic_pip_pause, "Pause", "Pause playback")
         } else {
             PlayPauseSpec(ACTION_PIP_PLAY, RC_PLAY,
-                android.R.drawable.ic_media_play, "Play", "Resume playback")
+                R.drawable.ic_pip_play, "Play", "Resume playback")
         }
 
         val intent = Intent(action).setPackage(act.packageName)
@@ -325,7 +327,11 @@ class ExpoPipAndroidModule : Module() {
         val notification = Notification.Builder(act, CHANNEL_ID)
             .setContentTitle("Temple TV")
             .setContentText("Playing in mini player — tap to return to full screen")
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            // ic_pip_expand is a flat white/transparent vector (API 21+ silhouette-safe).
+            // Using a module-owned drawable instead of android.R.drawable eliminates
+            // the NotificationIconCompatibility lint warning and ensures visual
+            // consistency across OEM skins that may override system drawables.
+            .setSmallIcon(R.drawable.ic_pip_expand)
             .setContentIntent(pi)
             .setAutoCancel(true)
             .build()

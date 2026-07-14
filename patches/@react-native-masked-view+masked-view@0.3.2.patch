@@ -1,0 +1,27 @@
+diff --git a/android/build.gradle b/android/build.gradle
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -38,7 +38,7 @@ manifestOutFile.write(manifestContent)
+ 
+ android {
+-  compileSdkVersion safeExtGet('compileSdkVersion', 28)
++  compileSdk safeExtGet('compileSdkVersion', 28)
+   
+   if(shouldUseNameSpace){
+     namespace = "org.reactnative.maskedview"
+@@ -47,8 +47,8 @@ android {
+ 
+   defaultConfig {
+-    minSdkVersion safeExtGet('minSdkVersion', 16)
+-    targetSdkVersion safeExtGet('targetSdkVersion', 28)
++    minSdk safeExtGet('minSdkVersion', 16)
++    targetSdk safeExtGet('targetSdkVersion', 28)
+   }
+ 
+@@ -63,7 +63,7 @@ android {
+ 
+-  lintOptions {
++  lint {
+     abortOnError false
+     warning 'InvalidPackage'
+   }

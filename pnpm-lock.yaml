@@ -75,6 +75,12 @@ overrides:
   esbuild: '>=0.25.0'
 
 patchedDependencies:
+  '@sentry/react-native@7.11.0':
+    hash: 7157e2ff116d66992b07e77244e1a3b67d1321220248639ae9c462a7add8784b
+    path: patches/@sentry+react-native@7.11.0.patch
+  '@react-native-masked-view/masked-view@0.3.2':
+    hash: 19baf1861efdf9a5fe910baee5867bf0554a6f77f6e0e94056a495e94ee5bbd8
+    path: patches/@react-native-masked-view+masked-view@0.3.2.patch
   '@expo/ui@57.0.4':
     hash: 4cf366bdafaff9beb3f91af5af8f574e5977483e1a1291e933e769964cb02337
     path: patches/@expo+ui@57.0.4.patch
@@ -11090,7 +11096,7 @@ snapshots:
       merge-options: 3.0.4
       react-native: 0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3)
 
-  '@react-native-masked-view/masked-view@0.3.2(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)':
+  '@react-native-masked-view/masked-view@0.3.2(patch_hash=19baf1861efdf9a5fe910baee5867bf0554a6f77f6e0e94056a495e94ee5bbd8)(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)':
     dependencies:
       react: 19.2.3
       react-native: 0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3)
@@ -11423,7 +11429,7 @@ snapshots:
       '@opentelemetry/semantic-conventions': 1.40.0
       '@sentry/core': 10.51.0
 
-  '@sentry/react-native@7.11.0(expo@57.0.4)(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)':
+  '@sentry/react-native@7.11.0(patch_hash=7157e2ff116d66992b07e77244e1a3b67d1321220248639ae9c462a7add8784b)(expo@57.0.4)(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)':
     dependencies:
       '@sentry/babel-plugin-component-annotate': 4.8.0
       '@sentry/browser': 10.37.0

@@ -248,6 +248,7 @@
       "./plugins/android-tv.js",
       "./plugins/with-kotlin-version.js",
       "./plugins/with-modern-gradle-dsl.js",
+      "./plugins/with-gradle-config.js",
       "./plugins/with-foreground-service-type.js",
       "./plugins/with-android-activity-flags.js",
       "./plugins/with-enable-edge-to-edge.js",

@@ -22,7 +22,8 @@
         "APP_ENV": "development",
         "EXPO_PUBLIC_API_URL": "http://10.0.2.2:8080",
         "NODE_OPTIONS": "--max-old-space-size=6144"
-      }
+      },
+      "pnpm": "10.26.1"
     },
     "development-device": {
       "developmentClient": true,
@@ -40,7 +41,8 @@
         "APP_ENV": "development",
         "EXPO_PUBLIC_API_URL": "https://api.templetv.org.ng",
         "NODE_OPTIONS": "--max-old-space-size=6144"
-      }
+      },
+      "pnpm": "10.26.1"
     },
     "preview": {
       "distribution": "internal",
@@ -61,7 +63,8 @@
         "NODE_OPTIONS": "--max-old-space-size=8192",
         "SENTRY_DISABLE_AUTO_UPLOAD": "true",
         "EXPO_PUBLIC_SENTRY_DSN": "https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504"
-      }
+      },
+      "pnpm": "10.26.1"
     },
     "staging": {
       "distribution": "internal",
@@ -82,7 +85,8 @@
         "NODE_OPTIONS": "--max-old-space-size=8192",
         "SENTRY_DISABLE_AUTO_UPLOAD": "true",
         "EXPO_PUBLIC_SENTRY_DSN": "https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504"
-      }
+      },
+      "pnpm": "10.26.1"
     },
     "production": {
       "autoIncrement": true,
@@ -100,7 +104,8 @@
         "NODE_OPTIONS": "--max-old-space-size=8192",
         "SENTRY_DISABLE_AUTO_UPLOAD": "true",
         "EXPO_PUBLIC_SENTRY_DSN": "https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504"
-      }
+      },
+      "pnpm": "10.26.1"
     },
     "production-ios": {
       "autoIncrement": true,
@@ -118,7 +123,8 @@
         "NODE_OPTIONS": "--max-old-space-size=8192",
         "SENTRY_DISABLE_AUTO_UPLOAD": "true",
         "EXPO_PUBLIC_SENTRY_DSN": "https://e1d80a0a1acfca1dc8743cc701de446c@o4511258419462144.ingest.us.sentry.io/4511258444693504"
-      }
+      },
+      "pnpm": "10.26.1"
     },
     "production-android": {
       "autoIncrement": false,
@@ -155,7 +161,8 @@
         "EXPO_PUBLIC_PLATFORM": "firetv",
         "NODE_OPTIONS": "--max-old-space-size=8192",
         "SENTRY_DISABLE_AUTO_UPLOAD": "true"
-      }
+      },
+      "pnpm": "10.26.1"
     },
     "androidtv": {
       "autoIncrement": true,
@@ -172,7 +179,8 @@
         "EXPO_PUBLIC_PLATFORM": "androidtv",
         "NODE_OPTIONS": "--max-old-space-size=8192",
         "SENTRY_DISABLE_AUTO_UPLOAD": "true"
-      }
+      },
+      "pnpm": "10.26.1"
     },
     "appletv": {
       "autoIncrement": true,
@@ -190,7 +198,8 @@
         "EXPO_PUBLIC_PLATFORM": "appletv",
         "NODE_OPTIONS": "--max-old-space-size=8192",
         "SENTRY_DISABLE_AUTO_UPLOAD": "true"
-      }
+      },
+      "pnpm": "10.26.1"
     }
   },
   "submit": {

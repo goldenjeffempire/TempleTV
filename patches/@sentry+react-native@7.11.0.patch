@@ -1,0 +1,19 @@
+diff --git a/android/build.gradle b/android/build.gradle
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -15,7 +15,7 @@ def isNewArchitectureEnabled() {
+ 
+ android {
+-    compileSdkVersion safeExtGet('compileSdkVersion', 31)
++    compileSdk safeExtGet('compileSdkVersion', 31)
+ 
+     // Conditional for compatibility with AGP <4.2.
+     if (project.android.hasProperty("namespace")) {
+@@ -29,8 +29,8 @@ android {
+     defaultConfig {
+-        minSdkVersion safeExtGet('minSdkVersion', 21)
+-        targetSdkVersion safeExtGet('targetSdkVersion', 31)
++        minSdk safeExtGet('minSdkVersion', 21)
++        targetSdk safeExtGet('targetSdkVersion', 31)
+         versionCode 1
+         versionName "1.0"
