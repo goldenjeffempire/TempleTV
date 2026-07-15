@@ -72,12 +72,12 @@
       "react-native-svg@15.15.4": "patches/react-native-svg@15.15.4.patch",
       "react-native-safe-area-context@5.7.0": "patches/react-native-safe-area-context@5.7.0.patch",
       "@react-native-async-storage/async-storage@2.2.0": "patches/@react-native-async-storage+async-storage@2.2.0.patch",
-      "expo-updates@57.0.6": "patches/expo-updates@57.0.6.patch",
-      "expo-modules-core@57.0.3": "patches/expo-modules-core@57.0.3.patch",
-      "expo-linking@57.0.2": "patches/expo-linking@57.0.2.patch",
-      "expo-router@57.0.4": "patches/expo-router@57.0.4.patch",
-      "@expo/ui@57.0.4": "patches/@expo+ui@57.0.4.patch",
-      "@sentry/react-native@7.11.0": "patches/@sentry+react-native@7.11.0.patch"
+      "expo-updates@57.0.7": "patches/expo-updates@57.0.7.patch",
+      "expo-linking@57.0.3": "patches/expo-linking@57.0.3.patch",
+      "expo-router@57.0.6": "patches/expo-router@57.0.6.patch",
+      "@sentry/react-native@7.11.0": "patches/@sentry+react-native@7.11.0.patch",
+      "expo-modules-core@57.0.5": "patches/expo-modules-core@57.0.5.patch",
+      "@expo/ui@57.0.6": "patches/@expo__ui@57.0.6.patch"
     },
     "overrides": {
       "shell-quote": "file:./stubs/shell-quote",

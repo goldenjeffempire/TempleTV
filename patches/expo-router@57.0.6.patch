@@ -3,7 +3,7 @@ diff --git a/android/build.gradle b/android/build.gradle
 +++ b/android/build.gradle
 @@ -12,7 +12,7 @@
      versionCode 1
-     versionName "57.0.4"
+     versionName "57.0.6"
    }
 -  lintOptions {
 +  lint {

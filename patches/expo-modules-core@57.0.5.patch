@@ -1,7 +1,8 @@
 diff --git a/android/build.gradle b/android/build.gradle
+index 5fa47c13ef39f41f3fc0e00d70b4b6c5b3878c79..802a2c70929a38a312bb8798a6544f0c9a08ee08 100644
 --- a/android/build.gradle
 +++ b/android/build.gradle
-@@ -133,7 +133,7 @@
+@@ -133,7 +133,7 @@ android {
      compose shouldIncludeCompose
    }
  
