@@ -246,6 +246,18 @@ const Env = z.object({
    */
   BROADCAST_DAEMON_URL: z.string().url().optional(),
 
+  /**
+   * Render Blueprint `fromService` reference pair used to derive
+   * BROADCAST_DAEMON_URL when the daemon runs as its own Render private
+   * service (`type: pserv`). Render assigns private-network hostnames a
+   * random per-service suffix (e.g. `broadcast-daemon-2j3e`), so the URL
+   * can't be hardcoded in render.yaml — it must be composed at runtime
+   * from the injected host/port pair. Only used as a fallback when
+   * BROADCAST_DAEMON_URL itself is not set directly.
+   */
+  BROADCAST_DAEMON_HOST: z.string().optional(),
+  BROADCAST_DAEMON_PORT: z.coerce.number().int().positive().optional(),
+
   // Scheduled-notification dispatcher cadence. Only consulted when
   // RUN_MODE is `worker` or `all`. The dispatcher polls
   // scheduled_notifications for `status='pending' AND scheduled_at<=now()`
@@ -963,7 +975,16 @@ function loadEnv(): AppEnv {
     console.error(`[config] Environment validation failed:\n${issues}`);
     process.exit(1);
   }
-  return parsed.data;
+  const data = parsed.data;
+
+  // Compose BROADCAST_DAEMON_URL from the Render `fromService` host/port
+  // pair when it wasn't provided directly. See BROADCAST_DAEMON_HOST/PORT
+  // comment above for why this can't be a static value in render.yaml.
+  if (!data.BROADCAST_DAEMON_URL && data.BROADCAST_DAEMON_HOST && data.BROADCAST_DAEMON_PORT) {
+    data.BROADCAST_DAEMON_URL = `http://${data.BROADCAST_DAEMON_HOST}:${data.BROADCAST_DAEMON_PORT}`;
+  }
+
+  return data;
 }
 
 export const env: AppEnv = loadEnv();
