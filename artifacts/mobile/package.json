@@ -113,7 +113,8 @@
         "exclude": [
           "react-native-track-player",
           "expo-pip-android",
-          "expo-in-app-updates"
+          "expo-in-app-updates",
+          "expo-av"
         ]
       }
     }
