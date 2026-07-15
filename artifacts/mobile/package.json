@@ -82,6 +82,8 @@
   },
   "dependencies": {
     "@sentry/react-native": "~7.11.0",
+    "expo": "~57.0.4",
+    "expo-audio": "~57.0.1",
     "expo-av": "~16.0.8",
     "expo-clipboard": "~57.0.0",
     "expo-file-system": "~57.0.0",
@@ -91,6 +93,7 @@
     "expo-pip-android": "workspace:*",
     "expo-secure-store": "~57.0.0",
     "expo-updates": "~57.0.6",
+    "expo-video": "~57.0.1",
     "hls.js": "^1.6.16",
     "react": "catalog:",
     "react-native": "0.86.0",
@@ -98,8 +101,7 @@
     "react-native-track-player": "^4.1.2",
     "react-native-webview": "13.16.1",
     "react-native-worklets": "~0.10.0",
-    "react-native-youtube-iframe": "^2.4.1",
-    "expo": "~57.0.4"
+    "react-native-youtube-iframe": "^2.4.1"
   },
   "expo": {
     "install": {

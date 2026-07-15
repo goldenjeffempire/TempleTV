@@ -280,51 +280,49 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
       };
     }
 
-    // ── Native: expo-av Audio.Sound ───────────────────────────────────────
-    let soundObj: import("expo-av").Audio.Sound | null = null;
+    // ── Native: expo-audio AudioPlayer ─────────────────────────────────────
+    let audioPlayer: import("expo-audio").AudioPlayer | null = null;
+    let statusSub: { remove: () => void } | null = null;
 
     // Start the stall watchdog before the async load so we catch hangs
     startStallWatchdog();
 
     (async () => {
       try {
-        const { Audio } = await import("expo-av");
-        const { sound } = await Audio.Sound.createAsync(
-          { uri: url },
-          {
-            shouldPlay:  true,
-            isLooping:   false,
-            volume:      1.0,
-            // Frequent status updates drive the stall watchdog
-            progressUpdateIntervalMillis: 250,
-          },
-          (status: { isLoaded: false; error?: string } | { isLoaded: true; isPlaying: boolean; isBuffering?: boolean }) => {
-            if (cancelled || !mountedRef.current) return;
-            if (!status.isLoaded) {
-              if (status.error) {
-                stopStallWatchdog();
-                setIsError(true);
-                setIsConnecting(false);
-                setErrorMsg("Stream error. Retrying…");
-                scheduleRetry();
-              }
-            } else if (status.isPlaying) {
-              // Heartbeat — stall watchdog uses this timestamp
-              lastPlayingAt.current = Date.now();
-              setIsConnecting(false);
-              setIsError(false);
-              retryCount.current = 0;
-            } else if (status.isBuffering) {
-              setIsConnecting(true);
-            }
-          },
-        );
+        const { createAudioPlayer } = await import("expo-audio");
+        // Frequent status updates (via updateInterval) drive the stall watchdog.
+        const p = createAudioPlayer({ uri: url }, { updateInterval: 250 });
+        p.loop = false;
+        p.volume = 1.0;
+
+        statusSub = p.addListener("playbackStatusUpdate", (status) => {
+          if (cancelled || !mountedRef.current) return;
+          if (status.error) {
+            stopStallWatchdog();
+            setIsError(true);
+            setIsConnecting(false);
+            setErrorMsg("Stream error. Retrying…");
+            scheduleRetry();
+          } else if (status.playing) {
+            // Heartbeat — stall watchdog uses this timestamp
+            lastPlayingAt.current = Date.now();
+            setIsConnecting(false);
+            setIsError(false);
+            retryCount.current = 0;
+          } else if (status.isBuffering) {
+            setIsConnecting(true);
+          }
+        });
 
         if (cancelled) {
-          await sound.unloadAsync();
+          statusSub.remove();
+          p.remove();
           return;
         }
-        soundObj = sound;
+        // expo-audio's createAudioPlayer does not auto-play like expo-av's
+        // shouldPlay:true option did — playback must be started explicitly.
+        p.play();
+        audioPlayer = p;
       } catch {
         if (cancelled || !mountedRef.current) return;
         stopStallWatchdog();
@@ -338,9 +336,17 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
     return () => {
       cancelled = true;
       stopStallWatchdog();
-      if (soundObj) {
-        soundObj.unloadAsync().catch(() => {});
-        soundObj = null;
+      if (statusSub) {
+        statusSub.remove();
+        statusSub = null;
+      }
+      if (audioPlayer) {
+        try {
+          audioPlayer.remove();
+        } catch {
+          // Non-critical — player may already be released
+        }
+        audioPlayer = null;
       }
     };
     // reconnectKey intentionally included — bumping it forces a full

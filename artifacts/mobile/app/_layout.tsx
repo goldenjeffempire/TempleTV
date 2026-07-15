@@ -158,15 +158,22 @@ import { markStartupPhase } from "@/lib/startupLifecycle";
 async function setupAudioSession() {
   if (Platform.OS === "web") return;
   try {
-    const { Audio, InterruptionModeIOS, InterruptionModeAndroid } = await import("expo-av");
-    await Audio.setAudioModeAsync({
-      allowsRecordingIOS: false,
-      staysActiveInBackground: true,
-      playsInSilentModeIOS: true,
-      shouldDuckAndroid: true,
-      playThroughEarpieceAndroid: false,
-      interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-      interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+    const { setAudioModeAsync } = await import("expo-audio");
+    await setAudioModeAsync({
+      allowsRecording: false,
+      shouldPlayInBackground: true,
+      playsInSilentMode: true,
+      shouldRouteThroughEarpiece: false,
+      // expo-audio unifies iOS/Android interruption handling into a single
+      // `interruptionMode` field. The original expo-av config intentionally
+      // differed per platform here — exclusive focus on iOS (DoNotMix) but
+      // ducking on Android (shouldDuckAndroid: true) — so other apps' audio
+      // (nav prompts, notifications) can softly duck under ours on Android
+      // while iOS keeps hard exclusive focus. `interruptionModeAndroid` is
+      // deprecated but still honored as a per-platform override, so we keep
+      // it to preserve that exact asymmetric baseline behavior.
+      interruptionMode: "doNotMix",
+      interruptionModeAndroid: "duckOthers",
     });
   } catch {
     // Non-critical

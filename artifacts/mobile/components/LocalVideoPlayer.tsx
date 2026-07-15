@@ -23,8 +23,8 @@ import {
   isTrackPlayerSetup,
 } from "@/services/nowPlaying";
 import { postPlaybackTelemetryDelta } from "@/services/broadcast";
-// Type-only imports from lazily-required packages — never bundled at runtime.
-import type { Video as ExpoVideo, AVPlaybackStatus, ResizeMode as ExpoResizeMode } from "expo-av";
+import { useVideoPlayer, VideoView } from "expo-video";
+import type { VideoPlayer as ExpoVideoPlayer } from "expo-video";
 
 /** Minimal interface for an hls.js Hls instance (lazily required on web). */
 interface HlsInstance {
@@ -42,16 +42,6 @@ interface HlsConstructor {
   isSupported?(): boolean;
   default?: HlsConstructor;
   ErrorTypes?: Record<string, string>;
-}
-
-let VideoComponent: typeof ExpoVideo | null = null;
-let ResizeMode: typeof ExpoResizeMode | null = null;
-try {
-  const av = require("expo-av");
-  VideoComponent = av.Video;
-  ResizeMode = av.ResizeMode;
-} catch {
-  VideoComponent = null;
 }
 
 function LocalAudioModeCard({
@@ -258,10 +248,15 @@ export function LocalVideoPlayer({
   const c = useColors();
   const { width } = useWindowDimensions();
   const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, isPlaying, dataSaver, isRadioMode, toggleRadioMode } = usePlayer();
-  const [status, setStatus] = useState<AVPlaybackStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const retryCountRef = useRef(0);
-  const videoRef = useRef<InstanceType<typeof ExpoVideo> | null>(null);
+  // expo-video: useVideoPlayer must be called unconditionally (Rules of Hooks).
+  // Pass null as initial source; source is set via player.replaceAsync() in an effect below.
+  const nativePlayer = useVideoPlayer(null, (p) => {
+    p.allowsExternalPlayback = true;
+    p.timeUpdateEventInterval = 0.5; // replaces progressUpdateIntervalMillis={500}
+    p.loop = false;
+  });
   const isMountedRef = useRef(true);
   const transitionOpacity = useRef(new Animated.Value(1)).current;
   const rntp = Platform.OS !== "web" && isTrackPlayerSetup();
@@ -332,11 +327,10 @@ export function LocalVideoPlayer({
   const lastProgressMsRef = useRef(-1);
   const lastProgressAtRef = useRef(0);
   const stallNudgesRef = useRef(0);
-  // statusRef mirrors the `status` state but is read by the watchdog tick.
-  // We can't put `status` in the watchdog effect's deps — it changes on
-  // every position update, which would tear down and recreate the 1s
-  // interval before it ever fires.
-  const statusRef = useRef<AVPlaybackStatus | null>(null);
+  // nativeIsPlayingRef mirrors nativePlayer.playing as observed via playingChange events,
+  // read by the watchdog tick. We use a ref so the 1s interval doesn't need to be
+  // torn down and recreated whenever the playing state changes.
+  const nativeIsPlayingRef = useRef(false);
   // onErrorRef lets the stall watchdog always call the latest onError without
   // being listed as a dep.  If onError were in the dep array it would force
   // the effect to tear down and re-run on every parent render (the caller

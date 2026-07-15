@@ -53,7 +53,7 @@ import { parseBoolParam, parseNumberParam } from "@/lib/params";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
-import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from "expo-av";
+import { setAudioModeAsync } from "expo-audio";
 import { usePictureInPicture } from "@/hooks/usePictureInPicture";
 import * as ScreenOrientation from "expo-screen-orientation";
 import { useColors } from "@/hooks/useColors";
@@ -181,18 +181,21 @@ export default function PlayerScreen() {
         const { waitForAudioSession } = await import("@/lib/audio-session");
         await waitForAudioSession();
         if (!mounted) return;
-        await Audio.setAudioModeAsync({
-          playsInSilentModeIOS: true,
-          staysActiveInBackground: true,
-          // DoNotMix (not DuckOthers): Temple TV audio takes exclusive focus.
-          // DuckOthers would let phone calls, Spotify, etc. lower our volume
-          // and eventually reclaim focus — unacceptable during a live service.
-          // This re-asserts the same policy set in _layout.tsx's setupAudioSession
-          // which iOS/Android may have revoked while another app held focus.
-          interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-          interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-          shouldDuckAndroid: false,
-          playThroughEarpieceAndroid: false,
+        await setAudioModeAsync({
+          playsInSilentMode: true,
+          shouldPlayInBackground: true,
+          // doNotMix (not duckOthers): Temple TV audio takes exclusive focus
+          // on BOTH platforms while this screen is mounted. duckOthers would
+          // let phone calls, Spotify, etc. lower our volume and eventually
+          // reclaim focus — unacceptable during a live service. This
+          // re-asserts the same exclusive policy _layout.tsx's
+          // setupAudioSession established at boot, which iOS/Android may
+          // have revoked while another app held focus. Unlike the app-wide
+          // baseline (which ducks on Android), this screen wants exclusive
+          // focus on both platforms, so a single unified `interruptionMode`
+          // is sufficient — no per-platform override needed.
+          interruptionMode: "doNotMix",
+          shouldRouteThroughEarpiece: false,
         });
       } catch (err: unknown) {
         if (!mounted) return;
@@ -218,13 +221,11 @@ export default function PlayerScreen() {
         audioRetryTimerRef.current = setTimeout(() => {
           audioRetryTimerRef.current = null;
           if (!mounted) return;
-          Audio.setAudioModeAsync({
-            playsInSilentModeIOS: true,
-            staysActiveInBackground: true,
-            interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-            interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-            shouldDuckAndroid: false,
-            playThroughEarpieceAndroid: false,
+          setAudioModeAsync({
+            playsInSilentMode: true,
+            shouldPlayInBackground: true,
+            interruptionMode: "doNotMix",
+            shouldRouteThroughEarpiece: false,
           }).catch(() => {});
         }, 500);
       }
@@ -243,13 +244,16 @@ export default function PlayerScreen() {
         clearTimeout(audioRetryTimerRef.current);
         audioRetryTimerRef.current = null;
       }
-      Audio.setAudioModeAsync({
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: true,
-        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-        shouldDuckAndroid: true,
-        playThroughEarpieceAndroid: false,
+      // Restore the app-wide baseline (exclusive on iOS, ducking on Android)
+      // set by _layout.tsx's setupAudioSession — mirrors its use of the
+      // deprecated interruptionModeAndroid override to preserve the same
+      // asymmetric per-platform behavior.
+      setAudioModeAsync({
+        playsInSilentMode: true,
+        shouldPlayInBackground: true,
+        interruptionMode: "doNotMix",
+        interruptionModeAndroid: "duckOthers",
+        shouldRouteThroughEarpiece: false,
       }).catch(() => {});
     };
   }, []);
@@ -269,13 +273,11 @@ export default function PlayerScreen() {
         // is still in flight, and racing the two is what throws "Audio
         // session already active" on iOS.
         void withSerializedAudioSession(async () => {
-          await Audio.setAudioModeAsync({
-            playsInSilentModeIOS: true,
-            staysActiveInBackground: true,
-            interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-            interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-            shouldDuckAndroid: false,
-            playThroughEarpieceAndroid: false,
+          await setAudioModeAsync({
+            playsInSilentMode: true,
+            shouldPlayInBackground: true,
+            interruptionMode: "doNotMix",
+            shouldRouteThroughEarpiece: false,
           }).catch(() => {});
         });
       }
