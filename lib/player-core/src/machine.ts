@@ -56,7 +56,7 @@ function resolvePositionSecs(
     // (Math.max(0, actualDurationMs - HLS_END_GUARD_MS)) as a second layer,
     // but aligning the server cap to 10 s gives defense-in-depth and prevents
     // spurious quick-finish events even when actualDurationMs is unavailable
-    // (e.g. while the expo-av onLoad has not yet fired for the new item).
+    // (e.g. while expo-video's sourceLoad event has not yet fired for the new item).
     if ("durationSecs" in item && (item as V2Item).durationSecs > 0) {
       return Math.min(elapsed, Math.max(0, (item as V2Item).durationSecs - 10));
     }
@@ -469,8 +469,8 @@ export class PlayerMachine {
     // Re-bind the current item. This increments `bindRevision` in the
     // mobile adapter even if the source URL is unchanged — the BroadcastBuffer
     // useEffect([state.bindRevision]) fires, runs the same-URL fast-path
-    // (if expo-av still has the URL loaded) or arms a fresh load-timeout
-    // (if the native player needs to reload from scratch).
+    // (if expo-video's player still has the URL loaded) or arms a fresh
+    // load-timeout (if the native player needs to reload from scratch).
     this.bindActive(item);
     const positionSecs = resolvePositionSecs(item, item.startsAtMs, this.clockOffsetMs);
     this.emit({ type: "play", bufferId: activeId, positionSecs });

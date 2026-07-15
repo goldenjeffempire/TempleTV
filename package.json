@@ -72,7 +72,6 @@
       "react-native-svg@15.15.4": "patches/react-native-svg@15.15.4.patch",
       "react-native-safe-area-context@5.7.0": "patches/react-native-safe-area-context@5.7.0.patch",
       "@react-native-async-storage/async-storage@2.2.0": "patches/@react-native-async-storage+async-storage@2.2.0.patch",
-      "expo-av@16.0.8": "patches/expo-av@16.0.8.patch",
       "expo-updates@57.0.6": "patches/expo-updates@57.0.6.patch",
       "expo-modules-core@57.0.3": "patches/expo-modules-core@57.0.3.patch",
       "expo-linking@57.0.2": "patches/expo-linking@57.0.2.patch",

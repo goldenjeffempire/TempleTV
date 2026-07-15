@@ -178,12 +178,6 @@
         }
       ],
       [
-        "expo-av",
-        {
-          "microphonePermission": false
-        }
-      ],
-      [
         "expo-notifications",
         {
           "icon": "./assets/images/notification-icon.png",

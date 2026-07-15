@@ -12,6 +12,7 @@ import {
 import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import * as Sentry from "@sentry/react-native";
 import { useColors } from "@/hooks/useColors";
 import { usePlayer } from "@/context/PlayerContext";
 import {
@@ -25,6 +26,11 @@ import {
 import { postPlaybackTelemetryDelta } from "@/services/broadcast";
 import { useVideoPlayer, VideoView } from "expo-video";
 import type { VideoPlayer as ExpoVideoPlayer } from "expo-video";
+
+/** Strip query params/tokens from a URL for safe Sentry reporting. */
+function sanitizeUrl(url: string): string {
+  try { return new URL(url).origin + new URL(url).pathname; } catch { return url.split("?")[0] ?? url; }
+}
 
 /** Minimal interface for an hls.js Hls instance (lazily required on web). */
 interface HlsInstance {
@@ -408,34 +414,36 @@ export function LocalVideoPlayer({
   }, []);
 
   useEffect(() => {
+    if (Platform.OS === "web") return; // web path wires refs via the active-slot effect below
     if (isRadioMode && rntp) {
       playerPlayRef.current = () => { resumeTrackPlayer().catch(() => {}); };
       playerPauseRef.current = () => { pauseTrackPlayer().catch(() => {}); };
       playerSeekRef.current = (t: number) => { seekTrackPlayer(t).catch(() => {}); };
     } else {
-      playerPlayRef.current = async () => {
+      // expo-video: play/pause are synchronous; currentTime = seconds for seek.
+      playerPlayRef.current = () => {
         try {
-          if (isMountedRef.current && videoRef.current) {
-            await videoRef.current.playAsync?.();
-          }
-        } catch { /* expo-av threw — caller's try/catch handles recovery */ }
+          if (isMountedRef.current) nativePlayer.play();
+        } catch (err) {
+          Sentry.captureException(err, { tags: { module: "expo-video" } });
+        }
       };
-      playerPauseRef.current = async () => {
+      playerPauseRef.current = () => {
         try {
-          if (isMountedRef.current && videoRef.current) {
-            await videoRef.current.pauseAsync?.();
-          }
-        } catch { /* expo-av threw — swallow to prevent unhandled rejection */ }
+          if (isMountedRef.current) nativePlayer.pause();
+        } catch (err) {
+          Sentry.captureException(err, { tags: { module: "expo-video" } });
+        }
       };
-      playerSeekRef.current = async (t: number) => {
+      playerSeekRef.current = (t: number) => {
         try {
-          if (isMountedRef.current && videoRef.current) {
-            await videoRef.current.setPositionAsync?.(t * 1000);
-          }
-        } catch { /* expo-av threw — swallow to prevent unhandled rejection */ }
+          if (isMountedRef.current) nativePlayer.currentTime = t;
+        } catch (err) {
+          Sentry.captureException(err, { tags: { module: "expo-video" } });
+        }
       };
     }
-  }, [isRadioMode, rntp, playerPlayRef, playerPauseRef, playerSeekRef]);
+  }, [isRadioMode, rntp, playerPlayRef, playerPauseRef, playerSeekRef, nativePlayer]);
 
   useEffect(() => {
     if (!isRadioMode || !rntp || !effectiveUrl || Platform.OS === "web") return;
@@ -466,13 +474,64 @@ export function LocalVideoPlayer({
     }
   }, [isPlaying, isRadioMode, rntp]);
 
-  const onPlaybackStatusUpdate = useCallback(
-    (s: AVPlaybackStatus) => {
-      if (!isMountedRef.current) return;
-      setStatus(s);
-      statusRef.current = s;
+  // ── Native source loading effect (expo-video) ─────────────────────────
+  // When effectiveUrl changes (or on first mount), load it into nativePlayer
+  // via replaceAsync so the decoder gets a clean start. In radio mode we
+  // release the source to free decoder memory while audio-only is active.
+  // Guarded by isMountedRef so it never fires after unmount.
+  useEffect(() => {
+    if (Platform.OS === "web") return;
 
-      if (s.isLoaded) {
+    const loadSource = async () => {
+      try {
+        if (isRadioMode) {
+          // Free decoder resources while audio-only mode is active.
+          Sentry.addBreadcrumb({ category: "video-player", message: "radio-mode: releasing native player source", level: "info" });
+          await nativePlayer.replaceAsync(null);
+          return;
+        }
+        if (!effectiveUrl) return;
+        if (!isMountedRef.current) return;
+        setLoading(true);
+        retryCountRef.current = 0;
+        Sentry.addBreadcrumb({ category: "video-player", message: `source load start: ${sanitizeUrl(effectiveUrl)}`, level: "info" });
+        await nativePlayer.replaceAsync({ uri: effectiveUrl });
+        if (!isMountedRef.current) return;
+        // Apply playback rate (ignored for live/broadcast).
+        if (!isBroadcastLive) {
+          try { nativePlayer.playbackRate = rate; } catch { /* noop */ }
+        }
+        // Seek to start position if requested.
+        if (startPositionMs > 0) {
+          try { nativePlayer.currentTime = startPositionMs / 1000; } catch { /* noop */ }
+        }
+        if (autoPlay) {
+          try { nativePlayer.play(); } catch { /* noop */ }
+        }
+        Sentry.addBreadcrumb({ category: "video-player", message: `source load success: ${sanitizeUrl(effectiveUrl)}`, level: "info" });
+      } catch (err) {
+        if (!isMountedRef.current) return;
+        Sentry.addBreadcrumb({ category: "video-player", message: `source load failure: ${sanitizeUrl(effectiveUrl)}`, level: "error" });
+        Sentry.captureException(err, { tags: { module: "expo-video" }, extra: { url: sanitizeUrl(effectiveUrl) } });
+        setLoading(false);
+        onErrorRef.current?.();
+      }
+    };
+
+    void loadSource();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveUrl, isRadioMode, autoPlay, isBroadcastLive, rate, startPositionMs]);
+
+  // ── Native player event listeners (expo-video) ─────────────────────────
+  // Wire statusChange, playingChange, timeUpdate, playToEnd, videoTrackChange
+  // to reproduce all the behaviour previously driven by onPlaybackStatusUpdate.
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+
+    // statusChange: loading spinner management and error/retry logic.
+    const statusSub = nativePlayer.addListener("statusChange", ({ status, error }) => {
+      if (!isMountedRef.current) return;
+      if (status === "readyToPlay") {
         if (loading) {
           setLoading(false);
           Animated.timing(transitionOpacity, {
@@ -481,68 +540,103 @@ export function LocalVideoPlayer({
             useNativeDriver: true,
           }).start();
         }
-
-        const currentSecs = (s.positionMillis ?? 0) / 1000;
-        const durationSecs = (s.durationMillis ?? 0) / 1000;
-        updatePlayback(currentSecs, durationSecs);
-        if (durationSecs > 0) onProgress?.(currentSecs, durationSecs);
-
-        // Stall watchdog progress tracking — record any forward motion so
-        // the 1s tick below can distinguish "playing fine" from "wedged".
-        // Using positionMillis (not currentSecs) keeps sub-second nudges
-        // observable. We treat any change as progress, including the small
-        // bump that the nudge itself applies.
-        const posMs = s.positionMillis ?? 0;
-        if (posMs !== lastProgressMsRef.current) {
-          lastProgressMsRef.current = posMs;
-          lastProgressAtRef.current = Date.now();
-          if (stallNudgesRef.current > 0) stallNudgesRef.current = 0;
-        }
-
-        if (s.isPlaying) {
-          onPlay?.();
-        } else if (!s.isPlaying && !loading) {
-          onPause?.();
-        }
-
-        if (s.didJustFinish) {
-          onEnd?.();
-        }
-      }
-      if (!s.isLoaded && s.error) {
+        Sentry.addBreadcrumb({ category: "video-player", message: "status: readyToPlay", level: "info" });
+      } else if (status === "error") {
+        const errMsg = error?.message ?? "unknown";
+        Sentry.addBreadcrumb({ category: "video-player", message: `status: error — ${errMsg}`, level: "error" });
+        Sentry.captureException(new Error(`expo-video player error: ${errMsg}`), {
+          tags: { module: "expo-video" },
+          extra: { url: sanitizeUrl(effectiveUrl) },
+        });
         if (retryCountRef.current < 2) {
           retryCountRef.current += 1;
           setLoading(true);
-          // Capture videoRef.current NOW (before the 700ms delay) so the
-          // timeout always targets the video element that errored, not
-          // whatever element videoRef.current happens to point at when the
-          // timer fires (the user may have navigated to a different item
-          // during the 700ms window, rebinding the ref to a new element).
-          const capturedVideo = videoRef.current;
-          setTimeout(() => {
-            if (!isMountedRef.current || !capturedVideo) return;
-            // Resume from the last known playhead position so a mid-playback
-            // network error doesn't jump the viewer back to the beginning of
-            // a long sermon.  Fall back to startPositionMs only when no
-            // progress has been recorded yet (e.g. error on the first load).
-            const retryMs =
-              lastProgressMsRef.current > 0 ? lastProgressMsRef.current : startPositionMs;
-            capturedVideo.replayAsync?.({ positionMillis: retryMs })
-              .catch(() => onErrorRef.current?.());
+          Sentry.addBreadcrumb({ category: "video-player", message: `retry attempt ${retryCountRef.current}`, level: "warning" });
+          const retryPositionSecs = lastProgressMsRef.current > 0
+            ? lastProgressMsRef.current / 1000
+            : startPositionMs / 1000;
+          setTimeout(async () => {
+            if (!isMountedRef.current) return;
+            try {
+              await nativePlayer.replaceAsync({ uri: effectiveUrl });
+              if (!isMountedRef.current) return;
+              if (retryPositionSecs > 0) nativePlayer.currentTime = retryPositionSecs;
+              nativePlayer.play();
+            } catch (retryErr) {
+              if (!isMountedRef.current) return;
+              Sentry.captureException(retryErr, { tags: { module: "expo-video" } });
+              setLoading(false);
+              onErrorRef.current?.();
+            }
           }, 700);
         } else {
           setLoading(false);
           onErrorRef.current?.();
         }
       }
-    },
-  // onError is intentionally absent from this dep array — the function body
-  // always calls it via onErrorRef.current, never directly. Including the raw
-  // prop would recreate this callback whenever a parent passes a new inline
-  // lambda (common), causing expo-av to re-subscribe to onPlaybackStatusUpdate
-  // on every render and flushing the `loading` fade-in animation mid-playback.
-    [loading, onEnd, onPlay, onPause, startPositionMs, transitionOpacity, updatePlayback]
-  );
+    });
+
+    // playingChange: fire onPlay/onPause callbacks and track nativeIsPlayingRef
+    // for the stall watchdog.
+    const playingSub = nativePlayer.addListener("playingChange", ({ isPlaying: nowPlaying }) => {
+      if (!isMountedRef.current) return;
+      nativeIsPlayingRef.current = nowPlaying;
+      if (nowPlaying) {
+        onPlay?.();
+      } else {
+        onPause?.();
+      }
+    });
+
+    // timeUpdate: progress reporting and stall watchdog tracking.
+    const timeSub = nativePlayer.addListener("timeUpdate", ({ currentTime, bufferedPosition: _buf }) => {
+      if (!isMountedRef.current) return;
+      const durationSecs = nativePlayer.duration ?? 0;
+      updatePlayback(currentTime, durationSecs);
+      if (durationSecs > 0) onProgress?.(currentTime, durationSecs);
+
+      // Stall watchdog: record forward motion (in ms to match lastProgressMsRef convention).
+      const posMs = Math.round(currentTime * 1000);
+      if (posMs !== lastProgressMsRef.current) {
+        lastProgressMsRef.current = posMs;
+        lastProgressAtRef.current = Date.now();
+        if (stallNudgesRef.current > 0) stallNudgesRef.current = 0;
+      }
+    });
+
+    // playToEnd: fire onEnd callback.
+    const endSub = nativePlayer.addListener("playToEnd", () => {
+      if (!isMountedRef.current) return;
+      onEnd?.();
+    });
+
+    // videoTrackChange: report aspect ratio when a video track becomes available.
+    const trackSub = nativePlayer.addListener("videoTrackChange", ({ videoTrack }) => {
+      if (!isMountedRef.current) return;
+      if (videoTrack && videoTrack.size.width > 0 && videoTrack.size.height > 0) {
+        onAspectRatioChange?.(videoTrack.size.width / videoTrack.size.height);
+      }
+    });
+
+    return () => {
+      statusSub.remove();
+      playingSub.remove();
+      timeSub.remove();
+      endSub.remove();
+      trackSub.remove();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nativePlayer, effectiveUrl, startPositionMs, onEnd, onPlay, onPause, onAspectRatioChange, transitionOpacity, updatePlayback]);
+
+  // ── Native player unmount cleanup ──────────────────────────────────────
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    return () => {
+      Sentry.addBreadcrumb({ category: "video-player", message: "player releasing on unmount", level: "info" });
+      try { nativePlayer.replaceAsync(null).catch(() => {}); } catch { /* noop */ }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Mid-playback stall watchdog effect ────────────────────────────────
   // Reset progress refs whenever the URL changes (queue advance, manual
@@ -559,11 +653,9 @@ export function LocalVideoPlayer({
       if (!isMountedRef.current) return;
       if (loading) return;
       if (!isPlaying) return;
-      const s = statusRef.current;
-      // Only watchdog when the underlying element thinks it is playing.
-      // If it doesn't, expo-av's own pause path will handle it; we'd just
-      // be racing with intentional pauses.
-      if (!s || !s.isLoaded || !s.isPlaying) return;
+      // On native, use nativeIsPlayingRef (driven by playingChange events).
+      // On web, use the active slot's paused state.
+      if (Platform.OS !== "web" && !nativeIsPlayingRef.current) return;
       const stalledFor = Date.now() - lastProgressAtRef.current;
       if (stalledFor < STALL_NUDGE_MS) return;
       if (stalledFor >= STALL_FAIL_MS || stallNudgesRef.current >= MAX_STALL_NUDGES) {
@@ -572,6 +664,7 @@ export function LocalVideoPlayer({
         // mode just triggers the host's recover path, which is a safe
         // soft-refetch.
         if (__DEV__) console.warn("[LocalVideoPlayer] stall watchdog escalating to onError after", stalledFor, "ms");
+        Sentry.addBreadcrumb({ category: "video-player", message: `stall watchdog escalating after ${stalledFor}ms`, level: "warning" });
         stallNudgesRef.current = 0;
         lastProgressAtRef.current = Date.now();
         onErrorRef.current?.();
@@ -582,17 +675,22 @@ export function LocalVideoPlayer({
       // perceptible and recovers from the vast majority of transient
       // stalls (slow CDN edge, momentary network dip, brief decode hiccup).
       stallNudgesRef.current += 1;
-      const nudgeMs = (lastProgressMsRef.current >= 0 ? lastProgressMsRef.current : (s.positionMillis ?? 0)) + 100;
+      const nudgeSecs = ((lastProgressMsRef.current >= 0 ? lastProgressMsRef.current : 0) + 100) / 1000;
       if (__DEV__) console.warn("[LocalVideoPlayer] stall watchdog nudging at", lastProgressMsRef.current, "ms (attempt", stallNudgesRef.current, ")");
+      Sentry.addBreadcrumb({ category: "video-player", message: `stall watchdog nudge #${stallNudgesRef.current} at ${lastProgressMsRef.current}ms`, level: "warning" });
       if (Platform.OS === "web") {
         const v = getWebVideo(webActiveSlotRef.current);
         if (v) {
-          try { v.currentTime = nudgeMs / 1000; } catch {}
+          try { v.currentTime = nudgeSecs; } catch {}
           v.play?.().catch(() => {});
         }
-      } else if (videoRef.current) {
-        videoRef.current.setPositionAsync?.(nudgeMs).catch(() => {});
-        videoRef.current.playAsync?.().catch(() => {});
+      } else {
+        try {
+          if (isMountedRef.current) {
+            nativePlayer.currentTime = nudgeSecs;
+            nativePlayer.play();
+          }
+        } catch { /* noop — player may be releasing */ }
       }
     }, 1_000);
     return () => clearInterval(tick);
@@ -601,7 +699,7 @@ export function LocalVideoPlayer({
   // tear down and re-run on every parent render (callers often pass inline
   // lambdas), resetting lastProgressAtRef.current to Date.now() each time and
   // making the stall clock unable to ever reach STALL_NUDGE_MS.
-  }, [effectiveUrl, loading, isPlaying, getWebVideo]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [effectiveUrl, loading, isPlaying, getWebVideo, nativePlayer]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Web A/B watchdog & helpers ───────────────────────────────────────
   const clearWebWatchdog = useCallback(() => {
@@ -1083,63 +1181,62 @@ export function LocalVideoPlayer({
       );
     }
 
-    if (VideoComponent) {
-      return (
-        <View style={[styles.container, fillContainer ? { flex: 1 } : { height: playerHeight }]}>
-          <VideoComponent
-            ref={videoRef}
-            source={{ uri: effectiveUrl }}
-            style={StyleSheet.absoluteFill}
-            resizeMode={(coverMode ? (ResizeMode?.COVER ?? "cover") : (ResizeMode?.CONTAIN ?? "contain")) as ExpoResizeMode}
-            shouldPlay={autoPlay}
-            positionMillis={startPositionMs}
-            rate={isBroadcastLive ? 1.0 : rate}
-            // @ts-expect-error allowsExternalPlayback was removed from expo-av
-            // 16.x types but the underlying AVPlayer prop is still valid on iOS
-            // and controls AirPlay / HDMI output. Keeping it intentionally.
-            allowsExternalPlayback={true}
-            onLoad={(st: AVPlaybackStatus) => {
-              if (st.isLoaded) {
-                const ns = (st as unknown as { naturalSize?: { width: number; height: number } }).naturalSize;
-                if (ns && ns.width > 0 && ns.height > 0) onAspectRatioChange?.(ns.width / ns.height);
-              }
-            }}
-            onPlaybackStatusUpdate={onPlaybackStatusUpdate}
-            // Round 6: native chrome (scrubber + time + seek hotkeys) is
-            // suppressed when this is a broadcast/live surface, so the
-            // viewer cannot rewind or fast-forward the station feed.
-            useNativeControls={!isBroadcastLive}
-            isLooping={false}
-            progressUpdateIntervalMillis={dataSaver ? 2000 : 500}
-          />
-          <Animated.View
-            style={[styles.overlay, { opacity: transitionOpacity, pointerEvents: "none" }]}
-          >
-            {thumbnailUrl && (
-              <Image source={{ uri: thumbnailUrl }} style={styles.thumbnail} contentFit="contain" />
-            )}
-            <View style={[styles.loadingCenter, { backgroundColor: "rgba(0,0,0,0.5)" }]}>
-              <ActivityIndicator color={c.primary} size="large" />
-              <Text style={[styles.loadingText, { color: "rgba(255,255,255,0.6)" }]}>
-                {dataSaver && !coverMode ? "Loading (data saver)..." : "Loading..."}
-              </Text>
-            </View>
-          </Animated.View>
-          {hlsMasterUrl && !loading && !coverMode && (
-            <View style={[styles.modeBadge, { right: 12, left: undefined }]}>
-              <Feather name="layers" size={12} color="#FFF" />
-              <Text style={styles.modeBadgeText}>ABR</Text>
-            </View>
+    // ── Native render path: expo-video VideoView ───────────────────────────
+    // nativePlayer is created once via useVideoPlayer (above). Source loading,
+    // event handling, and lifecycle cleanup are all managed by the effects above.
+    // VideoView just renders the player's output surface — no source prop needed.
+    return (
+      <View style={[styles.container, fillContainer ? { flex: 1 } : { height: playerHeight }]}>
+        <VideoView
+          player={nativePlayer}
+          style={StyleSheet.absoluteFill}
+          contentFit={coverMode ? "cover" : "contain"}
+          // Native controls suppressed for live broadcast (no scrubbing/seek UI).
+          nativeControls={!isBroadcastLive}
+          allowsPictureInPicture={false}
+          onFirstFrameRender={() => {
+            // Dismiss the loading overlay on first rendered frame —
+            // a more reliable signal than status=readyToPlay on some devices.
+            if (isMountedRef.current && loading) {
+              setLoading(false);
+              Animated.timing(transitionOpacity, {
+                toValue: 0,
+                duration: 350,
+                useNativeDriver: true,
+              }).start();
+            }
+          }}
+        />
+        {/* Loading veil with thumbnail — fades out on first frame. */}
+        <Animated.View
+          style={[styles.overlay, { opacity: transitionOpacity, pointerEvents: "none" }]}
+        >
+          {thumbnailUrl && (
+            <Image source={{ uri: thumbnailUrl }} style={styles.thumbnail} contentFit="contain" />
           )}
-          {dataSaver && !coverMode && (
-            <View style={styles.modeBadge}>
-              <Feather name="wifi-off" size={12} color="#FFF" />
-              <Text style={styles.modeBadgeText}>Data saver</Text>
-            </View>
-          )}
-        </View>
-      );
-    }
+          <View style={[styles.loadingCenter, { backgroundColor: "rgba(0,0,0,0.5)" }]}>
+            <ActivityIndicator color={c.primary} size="large" />
+            <Text style={[styles.loadingText, { color: "rgba(255,255,255,0.6)" }]}>
+              {dataSaver && !coverMode ? "Loading (data saver)..." : "Loading..."}
+            </Text>
+          </View>
+        </Animated.View>
+        {/* ABR badge */}
+        {hlsMasterUrl && !loading && !coverMode && (
+          <View style={[styles.modeBadge, { right: 12, left: undefined }]}>
+            <Feather name="layers" size={12} color="#FFF" />
+            <Text style={styles.modeBadgeText}>ABR</Text>
+          </View>
+        )}
+        {/* Data-saver badge */}
+        {dataSaver && !coverMode && (
+          <View style={styles.modeBadge}>
+            <Feather name="wifi-off" size={12} color="#FFF" />
+            <Text style={styles.modeBadgeText}>Data saver</Text>
+          </View>
+        )}
+      </View>
+    );
   }
 
   // Web HLS player using hls.js — A/B double-buffered.
