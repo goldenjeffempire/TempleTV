@@ -32,3 +32,6 @@ The broadcast engine runs in a separate permanent process (RUN_MODE=broadcast, p
 
 ## Do NOT run both engines simultaneously
 Starting the daemon while the API is still running its own broadcast engine (old RUN_MODE=all without BROADCAST_DAEMON_URL) causes both to write conflicting checkpoint/queue state to the DB. The daemon crashes after ~125s.
+
+## Production status (as of Jul 2026 — corrected)
+This split now runs in the Replit VM deployment too, not just dev workflows — see `production-supervisor-vm-deploy.md`. Before this fix, `.replit [deployment]` and `render.yaml` both ran a single `RUN_MODE=all` monolith, so publishing the API always killed the live broadcast. Daemon binds `127.0.0.1` only now (was `0.0.0.0`) — it is an unauthenticated internal implementation detail, never meant to be reachable except via the API's proxy.

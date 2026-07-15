@@ -393,7 +393,13 @@ async function runBroadcastDaemon(): Promise<never> {
   startMemoryWatchdog();
 
   // ── Listen ────────────────────────────────────────────────────────────────
-  await daemonApp.listen({ port: env.PORT, host: "0.0.0.0" });
+  // Loopback-only: the daemon is an internal implementation detail. Every
+  // real client (browser, TV, mobile) talks to the API server, which proxies
+  // SSE/WS/REST to this port over 127.0.0.1 (daemon-proxy.ts). Binding to
+  // 0.0.0.0 would let a VM deployment's network layer route external traffic
+  // straight to this unauthenticated Fastify instance if a port mapping ever
+  // exposed it — loopback-only closes that off regardless of ports config.
+  await daemonApp.listen({ port: env.PORT, host: "127.0.0.1" });
   logger.info(
     { port: env.PORT },
     "[broadcast-daemon] up — broadcast engine live; API should set BROADCAST_DAEMON_URL to proxy here",
