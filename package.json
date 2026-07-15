@@ -78,8 +78,7 @@
       "expo-linking@57.0.2": "patches/expo-linking@57.0.2.patch",
       "expo-router@57.0.4": "patches/expo-router@57.0.4.patch",
       "@expo/ui@57.0.4": "patches/@expo+ui@57.0.4.patch",
-      "@sentry/react-native@7.11.0": "patches/@sentry+react-native@7.11.0.patch",
-      "@react-native-masked-view/masked-view@0.3.2": "patches/@react-native-masked-view+masked-view@0.3.2.patch"
+      "@sentry/react-native@7.11.0": "patches/@sentry+react-native@7.11.0.patch"
     },
     "overrides": {
       "shell-quote": "file:./stubs/shell-quote",

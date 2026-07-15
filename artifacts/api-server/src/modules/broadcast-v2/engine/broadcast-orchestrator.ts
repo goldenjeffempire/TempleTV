@@ -1145,6 +1145,30 @@ class BroadcastOrchestrator extends EventEmitter {
   }
 
   stop(): void {
+    // ── Flush runtime anchor before clearing timers ───────────────────────
+    // Fire-and-forget: persist the current cycleStartedAtMs to runtimeRepo NOW,
+    // before any timer or state is cleared. This races the process drain window
+    // to ensure the DB always has the freshest anchor — even if an in-flight
+    // bump() fire-and-forget promise was interrupted by SIGTERM before it
+    // could complete its runtimeRepo.save(). If this write also races,
+    // flushCheckpointForShutdown() (called next in stopBroadcastV2) performs
+    // a second awaited runtimeRepo.save() as a belt-and-suspenders guarantee.
+    void runtimeRepo
+      .save({
+        channelId: this.channelId,
+        mode: this.mode,
+        currentItemId: this.lastCurrentItemId,
+        startedAtMs: this.cycleStartedAtMs,
+        offsetMs: 0,
+        activeOverrideId: this.override?.id ?? null,
+        sequence: this.sequence,
+        failoverActive: this.failover.active,
+        failoverReason: this.failover.reason,
+      })
+      .catch((err: unknown) =>
+        logger.warn({ err }, "[broadcast-v2] stop: runtimeRepo anchor flush failed (non-fatal)"),
+      );
+
     if (this.tickTimer)               clearInterval(this.tickTimer);
     if (this.checkpointTimer)         clearInterval(this.checkpointTimer);
     if (this.trimTimer)               clearInterval(this.trimTimer);
@@ -4805,10 +4829,40 @@ class BroadcastOrchestrator extends EventEmitter {
    * restarts from the exact position it was at when it stopped — not from
    * the last 5-second checkpoint boundary (which could be up to 5 seconds
    * stale when the signal arrives between timer fires).
+   *
+   * Also explicitly saves runtimeRepo with the current cycleStartedAtMs so
+   * that the PRIMARY restart-resume path (hydrate → restoredCycleAnchor) gets
+   * the most accurate anchor possible. Without this, the fire-and-forget
+   * runtimeRepo.save() in stop() might still be in-flight (TCP ACK pending)
+   * when the process exits, leaving the DB with an anchor from the previous
+   * bump() call instead of the final state at shutdown.
    */
   async flushCheckpointForShutdown(): Promise<void> {
     this.checkpointDirty = true;
+    // 1. Persist the position checkpoint (player_position_checkpoint table).
     await this.persistCheckpoint();
+
+    // 2. Explicitly flush cycleStartedAtMs to runtimeRepo (awaited, not fire-and-forget).
+    // This ensures hydrate() on the NEXT restart always finds a valid startedAtMs
+    // and uses the fastest primary restore path rather than falling back to the
+    // slower checkpoint-arithmetic or disk-backup paths.
+    // Even if stop() already fired a non-awaited save, this is idempotent — the
+    // ON CONFLICT DO UPDATE semantics in runtimeRepo.save() make a duplicate write safe.
+    await runtimeRepo
+      .save({
+        channelId: this.channelId,
+        mode: this.mode,
+        currentItemId: this.lastCurrentItemId,
+        startedAtMs: this.cycleStartedAtMs,
+        offsetMs: 0,
+        activeOverrideId: this.override?.id ?? null,
+        sequence: this.sequence,
+        failoverActive: this.failover.active,
+        failoverReason: this.failover.reason,
+      })
+      .catch((err: unknown) =>
+        logger.warn({ err }, "[broadcast-v2] flushCheckpointForShutdown: runtimeRepo save failed (non-fatal)"),
+      );
   }
 
   private async persistCheckpoint(): Promise<void> {
@@ -4839,13 +4893,24 @@ class BroadcastOrchestrator extends EventEmitter {
     this.lastCpWallMs = now;
     // Tertiary disk backup — fire-and-forget, non-fatal. Provides a last-resort
     // restore path if the DB is unavailable at restart time.
+    //
+    // IMPORTANT: startedAtMs MUST be this.cycleStartedAtMs (the absolute epoch of
+    // the full broadcast cycle, i.e. when item[0] would have started), NOT
+    // snap.current.startsAtMs (when the current item started).
+    //
+    // hydrate() uses diskSnap.startedAtMs as restoredCycleAnchor, which is then
+    // applied directly as cycleStartedAtMs in reloadInner(). snapshot() computes:
+    //   elapsed = (now − cycleStartedAtMs) % cycleDurationMs
+    // If we stored the item-start time instead of the cycle-start time, the
+    // elapsed calculation would land in the wrong slot (off by the cumulative
+    // duration of all prior items) — resuming from the wrong video entirely.
     void saveDiskBackup({
       channelId: this.channelId,
       savedAtMs: now,
       sequence: this.sequence,
       mode: this.mode,
       currentItemId: snap.current.id,
-      startedAtMs: snap.current.startsAtMs,
+      startedAtMs: this.cycleStartedAtMs,
       positionMs,
       failoverActive: this.failover.active,
       failoverReason: this.failover.reason ?? null,
