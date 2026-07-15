@@ -75,15 +75,15 @@ overrides:
   esbuild: '>=0.25.0'
 
 patchedDependencies:
-  '@sentry/react-native@7.11.0':
-    hash: 7157e2ff116d66992b07e77244e1a3b67d1321220248639ae9c462a7add8784b
-    path: patches/@sentry+react-native@7.11.0.patch
   '@expo/ui@57.0.4':
     hash: 4cf366bdafaff9beb3f91af5af8f574e5977483e1a1291e933e769964cb02337
     path: patches/@expo+ui@57.0.4.patch
   '@react-native-async-storage/async-storage@2.2.0':
     hash: f11df537629088dedcb0daf32692cbe9b8dbf5f4b4b867bce20bd13db1d50eee
     path: patches/@react-native-async-storage+async-storage@2.2.0.patch
+  '@sentry/react-native@7.11.0':
+    hash: c3fbd3e56674330c5ce72921ae0d5b3511af0681a771eb28cd67f852d354715b
+    path: patches/@sentry+react-native@7.11.0.patch
   expo-av@16.0.8:
     hash: 6997178ee2d0295da011dc0b18cc694166621143a016ee5915d8f04e3f72c050
     path: patches/expo-av@16.0.8.patch
@@ -492,7 +492,7 @@ importers:
     dependencies:
       '@sentry/react-native':
         specifier: ~7.11.0
-        version: 7.11.0(expo@57.0.4)(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
+        version: 7.11.0(patch_hash=c3fbd3e56674330c5ce72921ae0d5b3511af0681a771eb28cd67f852d354715b)(expo@57.0.4)(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
       expo:
         specifier: ~57.0.4
         version: 57.0.4(@babel/core@7.29.6)(@expo/metro-runtime@57.0.3)(expo-router@57.0.4)(react-dom@19.2.3(react@19.2.3))(react-native-web@0.21.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-native-webview@13.16.1(patch_hash=6cde6ed5d3d32100a066d3e18bf48b9666e8ac25c75d32481e7dfa1ef3eb0f38)(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native-worklets@0.10.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)(typescript@6.0.3)
@@ -11426,7 +11426,7 @@ snapshots:
       '@opentelemetry/semantic-conventions': 1.40.0
       '@sentry/core': 10.51.0
 
-  '@sentry/react-native@7.11.0(patch_hash=7157e2ff116d66992b07e77244e1a3b67d1321220248639ae9c462a7add8784b)(expo@57.0.4)(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)':
+  '@sentry/react-native@7.11.0(patch_hash=c3fbd3e56674330c5ce72921ae0d5b3511af0681a771eb28cd67f852d354715b)(expo@57.0.4)(react-native@0.86.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)':
     dependencies:
       '@sentry/babel-plugin-component-annotate': 4.8.0
       '@sentry/browser': 10.37.0

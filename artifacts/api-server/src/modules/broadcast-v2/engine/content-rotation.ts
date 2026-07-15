@@ -95,8 +95,6 @@ function persistLastShuffleAtMs(ts: number): void {
   }
 }
 
-const q = schema.broadcastQueueTable;
-
 // ── Module-level state ────────────────────────────────────────────────────────
 
 /** Wall-clock ms of the last successful shuffle. 0 = never shuffled.
