@@ -51,3 +51,10 @@ Zero-output component placed as innermost child of the provider stack in _layout
 - ProGuard rules: comprehensive coverage of all TurboModule + native library classes
 
 **Why:** Pipeline is the product of many prior deep-fix sessions. The 4 bugs above were the only remaining gaps found after full re-audit.
+
+## Follow-up re-audit (same month): cold-start notification-tap race
+Re-ran a full pipeline audit (Application/native entry, Fabric/TurboModules, all native module registration, NavigationContainer/deep-linking, Player page, background tasks, permissions) via 3 parallel explorers. Everything from the original audit held up; one new/missed bug found:
+
+`app/_layout.tsx`'s killed-app cold-start notification tap handler (`getLastNotificationResponseAsync`) fired `router.push()` after a hardcoded `setTimeout(..., 500)` guessing the navigator would be mounted by then. Slow cold starts (font load, auth restore) could exceed 500ms, dropping or crashing the deep-link navigation.
+
+**Fix:** replaced the fixed delay with `useRootNavigationState()` readiness gating — the pending notification is queued in a ref and flushed by an effect keyed on `rootNavigationState?.key` (the real signal Expo Router's navigator has attached), with a 5s bounded fallback timer only as a last resort. This is the correct general pattern for any cold-start deep-link/notification routing in Expo Router — prefer `useRootNavigationState()?.key` over a fixed delay whenever `router.push()`/`router.replace()` must fire before the app has had a chance to render.

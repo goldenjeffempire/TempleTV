@@ -10,7 +10,7 @@ import {
 import { Feather } from "@expo/vector-icons";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Constants from "expo-constants";
-import { router, Stack, useSegments } from "expo-router";
+import { router, Stack, useRootNavigationState, useSegments } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AppState, AppStateStatus, Linking, Platform, View } from "react-native";
@@ -275,6 +275,17 @@ function isKnownAppPath(pathname: string): boolean {
 
 function RootLayoutNav() {
   const notifListenerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Readiness-gated cold-start notification routing (see push notification tap
+  // handler effect below). `rootNavigationState?.key` is null/undefined until
+  // Expo Router's navigator has actually attached; router.push() calls fired
+  // before that point are silently dropped (or, on some killed-app cold starts,
+  // throw). We queue the pending notification here and flush it once the
+  // navigator reports ready, instead of guessing with a fixed delay.
+  const rootNavigationState = useRootNavigationState();
+  const pendingNotificationRef = useRef<{ data: Record<string, unknown>; type: string | undefined } | null>(null);
+  const handleNotificationResponseRef = useRef<
+    ((data: Record<string, unknown>, type: string | undefined) => void) | null
+  >(null);
 
   // ── Deep-link safety net ────────────────────────────────────────────────────
   // On cold start, Android may deliver the initial URL from:
@@ -451,6 +462,10 @@ function RootLayoutNav() {
       }
     }
 
+    // Exposed via ref so the readiness-flush effect (below) can call the same
+    // routing logic once the navigator reports ready.
+    handleNotificationResponseRef.current = handleNotificationResponse;
+
     import("expo-notifications").then((Notifications) => {
       // ── Foreground notification handler ─────────────────────────────────────
       // When the app is open and a push arrives, the system banner shows but
@@ -485,15 +500,30 @@ function RootLayoutNav() {
         if (lastResponse) {
           const data = lastResponse.notification.request.content.data as Record<string, unknown>;
           const type = data?.type as string | undefined;
-          // Small delay so Expo Router's navigation stack has mounted and is
-          // ready to receive router.push() calls before we fire them.
-          // Store in the ref so the effect cleanup can cancel it if the root
-          // layout unmounts before the 500 ms fires (avoids router.push() on
-          // an unmounted navigator → JS crash on killed-app cold-start).
-          notifListenerRef.current = setTimeout(() => {
-            notifListenerRef.current = null;
+          // Queue the response rather than routing immediately or on a fixed
+          // delay — on a killed-app cold start the navigator may not have
+          // attached yet, and router.push() before that point is silently
+          // dropped (or throws). The flush effect below fires this the moment
+          // `rootNavigationState?.key` confirms the navigator is ready, with a
+          // bounded fallback timer in case readiness never resolves.
+          pendingNotificationRef.current = { data, type };
+          if (rootNavigationState?.key) {
+            // Already ready (e.g. this listener resolved after mount) — flush now.
+            pendingNotificationRef.current = null;
             handleNotificationResponse(data, type);
-          }, 500);
+          } else {
+            // Belt-and-suspenders: if the navigator never reports ready within
+            // 5s (should not happen in practice), route anyway rather than
+            // silently dropping the notification tap.
+            notifListenerRef.current = setTimeout(() => {
+              notifListenerRef.current = null;
+              if (pendingNotificationRef.current) {
+                const pending = pendingNotificationRef.current;
+                pendingNotificationRef.current = null;
+                handleNotificationResponse(pending.data, pending.type);
+              }
+            }, 5000);
+          }
         }
       }).catch(() => {/* getLastNotificationResponseAsync can fail on old builds */});
 
@@ -510,6 +540,24 @@ function RootLayoutNav() {
       if (notifListenerRef.current) clearTimeout(notifListenerRef.current);
     };
   }, []);
+
+  // ── Flush queued cold-start notification once the navigator is ready ───────
+  // `rootNavigationState?.key` is set the moment Expo Router's navigator has
+  // actually attached. This replaces a fixed-delay guess with the real
+  // readiness signal, so router.push() never races an unmounted/unattached
+  // navigator on a killed-app cold start.
+  useEffect(() => {
+    if (!rootNavigationState?.key) return;
+    if (!pendingNotificationRef.current) return;
+
+    const pending = pendingNotificationRef.current;
+    pendingNotificationRef.current = null;
+    if (notifListenerRef.current) {
+      clearTimeout(notifListenerRef.current);
+      notifListenerRef.current = null;
+    }
+    handleNotificationResponseRef.current?.(pending.data, pending.type);
+  }, [rootNavigationState?.key]);
 
   const noHeader = { headerShown: false, header: () => null, title: "" } as const;
 
