@@ -35,6 +35,8 @@ import { eq, and, sql } from "drizzle-orm";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 /**
  * Stable advisory lock key for content rotation.
@@ -52,10 +54,56 @@ const ROTATION_ADVISORY_LOCK_KEY = 1_234_567_891; // stable; collisions are beni
 
 const q = schema.broadcastQueueTable;
 
+// ── Disk persistence for lastShuffleAtMs ──────────────────────────────────────
+// Persists the last shuffle timestamp to /tmp so that a process restart does not
+// reset it to 0. Without this, every restart triggers a content rotation 3 minutes
+// after boot (the initial delay) even if the queue was just shuffled — making the
+// broadcast appear to "restart with different content" after every deployment.
+//
+// Uses /tmp (survives within the same container lifetime on Replit/Render) or the
+// configured stateBackup dir. Falls back silently to in-memory state on any I/O error.
+//
+// The file is a single-line JSON: { "lastShuffleAtMs": <number> }
+const ROTATION_STATE_FILE = path.join(
+  process.env["BROADCAST_STATE_BACKUP_DIR"] ?? "/tmp",
+  "broadcast-rotation-state.json",
+);
+
+function loadPersistedLastShuffleAtMs(): number {
+  try {
+    const raw = fs.readFileSync(ROTATION_STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw) as { lastShuffleAtMs?: unknown };
+    const ts = typeof parsed.lastShuffleAtMs === "number" ? parsed.lastShuffleAtMs : 0;
+    if (ts > 0) {
+      logger.debug(
+        { lastShuffleAtMs: ts, file: ROTATION_STATE_FILE },
+        "[content-rotation] loaded persisted lastShuffleAtMs from disk",
+      );
+    }
+    return ts;
+  } catch {
+    // File does not exist on first boot — silence is correct.
+    return 0;
+  }
+}
+
+function persistLastShuffleAtMs(ts: number): void {
+  try {
+    fs.writeFileSync(ROTATION_STATE_FILE, JSON.stringify({ lastShuffleAtMs: ts }), "utf8");
+  } catch (err) {
+    logger.debug({ err }, "[content-rotation] failed to persist lastShuffleAtMs to disk (non-fatal)");
+  }
+}
+
+const q = schema.broadcastQueueTable;
+
 // ── Module-level state ────────────────────────────────────────────────────────
 
-/** Wall-clock ms of the last successful shuffle. 0 = never shuffled. */
-let lastShuffleAtMs = 0;
+/** Wall-clock ms of the last successful shuffle. 0 = never shuffled.
+ *  Initialized from disk on module load so restarts inherit the last shuffle time
+ *  and do not prematurely re-shuffle shortly after boot.
+ */
+let lastShuffleAtMs = loadPersistedLastShuffleAtMs();
 /** Total shuffles performed since process boot. */
 let shuffleCount = 0;
 /** Number of items included in the last shuffle. */
@@ -152,6 +200,9 @@ export async function contentRotationScan(): Promise<void> {
     shuffleCount++;
     lastShuffleItemCount = rows.length;
     lastShuffleError = null;
+    // Persist to disk immediately so a process crash / restart within the
+    // next interval does not re-shuffle too early.
+    persistLastShuffleAtMs(now);
 
     logger.info(
       { itemCount: rows.length, shuffleCount, strategy: env.BROADCAST_ROTATION_STRATEGY },

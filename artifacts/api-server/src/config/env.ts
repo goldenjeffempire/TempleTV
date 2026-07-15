@@ -344,11 +344,17 @@ const Env = z.object({
   BROADCAST_ROTATION_STRATEGY: z.enum(["shuffle", "fifo"]).default("shuffle"),
   BROADCAST_ROTATION_INTERVAL_MS: z.coerce.number().int().positive().default(1_800_000),
   // Initial delay before the FIRST content rotation after server startup.
-  // Defaults to 3 minutes so the queue gets shuffled quickly after a restart
-  // without waiting the full 30-minute rotation interval.  Set to 0 to rotate
-  // immediately at boot, or equal to BROADCAST_ROTATION_INTERVAL_MS to
-  // preserve the original behaviour (first rotation after one full interval).
-  BROADCAST_ROTATION_INITIAL_DELAY_MS: z.coerce.number().int().nonnegative().default(3 * 60_000),
+  // Defaults to BROADCAST_ROTATION_INTERVAL_MS (30 min) so restarts do NOT
+  // immediately reshuffle the queue — the broadcast continues in the same
+  // order it was playing before the restart, and only rotates on the normal
+  // 30-minute cycle boundary.  This is essential for broadcast continuity:
+  // a 3-minute post-restart shuffle was causing viewers to see a different
+  // video order after every deployment, making it appear as though the
+  // broadcast had "restarted from the beginning".
+  //
+  // Set to 0 to rotate immediately at boot (maximum variety on restarts),
+  // or to a shorter value if a fresh shuffle shortly after restart is desired.
+  BROADCAST_ROTATION_INITIAL_DELAY_MS: z.coerce.number().int().nonnegative().default(1_800_000),
 
   // DB Pool Health Monitor — pg connection pool utilization alerting.
   //

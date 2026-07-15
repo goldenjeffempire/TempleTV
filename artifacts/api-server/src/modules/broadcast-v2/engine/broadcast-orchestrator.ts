@@ -2065,8 +2065,84 @@ class BroadcastOrchestrator extends EventEmitter {
       if (restoredAnchor !== null && this.items.length > 0) {
         // PRIMARY: cycle epoch from runtime state — most accurate, zero arithmetic.
         this.cycleStartedAtMs = restoredAnchor;
+
+        // ── Cross-validation against position checkpoint ──────────────────────
+        // The cycle anchor (restoredAnchor) is the most accurate restore source
+        // under normal conditions, but it can be STALE after a content rotation:
+        //
+        //   1. Content rotation shuffles the queue: [A,B,C,D] → [C,A,D,B]
+        //   2. reloadInner() computes a NEW cycleStartedAtMs based on the current
+        //      item's position in the new order.
+        //   3. bump("queue.changed") fires runtimeRepo.save() fire-and-forget.
+        //   4. Process crashes before that async save completes.
+        //
+        // On the next restart, runtimeRepo.startedAtMs is the PRE-ROTATION epoch.
+        // Applied to the POST-ROTATION queue order, it resolves to the WRONG item.
+        //
+        // The position checkpoint (saved every 5 s + event-driven) has the correct
+        // itemId + positionMs but would normally be ignored when restoredAnchor is set.
+        //
+        // Fix: compute which item the anchor predicts as "now playing" and compare
+        // against the checkpoint's itemId. If they disagree, the queue was reordered
+        // since the anchor was last durably written — fall back to the checkpoint
+        // calculation which gives the correct item + position.
+        if (
+          this.queueCheckpoint?.itemId &&
+          cpSavedAtMs !== null &&
+          this.cycleDurationMs > 0
+        ) {
+          const anchorElapsedMs =
+            ((reloadNow - restoredAnchor) % this.cycleDurationMs + this.cycleDurationMs) %
+            this.cycleDurationMs;
+          let anchorPredictedItemId: string | null = null;
+          let accMs = 0;
+          for (const item of this.items) {
+            if (anchorElapsedMs < accMs + item.durationSecs * 1000) {
+              anchorPredictedItemId = item.id;
+              break;
+            }
+            accMs += item.durationSecs * 1000;
+          }
+
+          if (anchorPredictedItemId !== this.queueCheckpoint.itemId) {
+            // Anchor disagrees with checkpoint — queue was reordered after the anchor
+            // was last saved. Try to use the checkpoint for a more accurate restore.
+            const cpIdx = this.items.findIndex((i) => i.id === this.queueCheckpoint!.itemId);
+            if (cpIdx !== -1) {
+              const staleDurationMs = reloadNow - cpSavedAtMs;
+              const isStale = staleDurationMs > this.cycleDurationMs;
+              if (!isStale) {
+                let cpOffsetMs = 0;
+                for (let j = 0; j < cpIdx; j++) cpOffsetMs += this.items[j]!.durationSecs * 1000;
+                this.cycleStartedAtMs = cpSavedAtMs - cpOffsetMs - this.queueCheckpoint.positionMs;
+                logger.info(
+                  {
+                    anchorPredicted: anchorPredictedItemId,
+                    checkpointItem: this.queueCheckpoint.itemId,
+                    cpSavedAtMs,
+                    newCycleStartedAtMs: this.cycleStartedAtMs,
+                    itemCount: this.items.length,
+                  },
+                  "[broadcast-v2] boot: cycle anchor overridden by checkpoint — queue was reordered since anchor was last persisted (content rotation + crash scenario)",
+                );
+              } else {
+                logger.warn(
+                  {
+                    anchorPredicted: anchorPredictedItemId,
+                    checkpointItem: this.queueCheckpoint.itemId,
+                    staleDurationMs: Math.round(staleDurationMs),
+                    cycleDurationMs: Math.round(this.cycleDurationMs),
+                  },
+                  "[broadcast-v2] boot: anchor/checkpoint item mismatch but checkpoint is stale (> one cycle old) — keeping anchor",
+                );
+              }
+            }
+            // If cpIdx === -1 (checkpoint item not in queue), keep the anchor.
+          }
+        }
+
         logger.info(
-          { cycleStartedAtMs: restoredAnchor, itemCount: this.items.length },
+          { cycleStartedAtMs: this.cycleStartedAtMs, itemCount: this.items.length },
           "[broadcast-v2] restored cycle anchor from runtime state after restart",
         );
       } else if (!prevCurrentId && this.queueCheckpoint && this.items.length > 0) {
@@ -4848,7 +4924,11 @@ class BroadcastOrchestrator extends EventEmitter {
     // slower checkpoint-arithmetic or disk-backup paths.
     // Even if stop() already fired a non-awaited save, this is idempotent — the
     // ON CONFLICT DO UPDATE semantics in runtimeRepo.save() make a duplicate write safe.
-    await runtimeRepo
+    //
+    // Hard 8-second timeout guards against a hung DB connection (TCP-layer stall,
+    // pg proxy unresponsive) that would otherwise block graceful process exit
+    // indefinitely — allowing the host to send SIGKILL and corrupt the drain window.
+    const runtimeSavePromise = runtimeRepo
       .save({
         channelId: this.channelId,
         mode: this.mode,
@@ -4863,6 +4943,17 @@ class BroadcastOrchestrator extends EventEmitter {
       .catch((err: unknown) =>
         logger.warn({ err }, "[broadcast-v2] flushCheckpointForShutdown: runtimeRepo save failed (non-fatal)"),
       );
+    const runtimeSaveTimeout = new Promise<void>((resolve) => {
+      const t = setTimeout(() => {
+        logger.warn(
+          { channelId: this.channelId },
+          "[broadcast-v2] flushCheckpointForShutdown: runtimeRepo save timed out after 8 s — proceeding with shutdown",
+        );
+        resolve();
+      }, 8_000);
+      t.unref?.();
+    });
+    await Promise.race([runtimeSavePromise, runtimeSaveTimeout]);
   }
 
   private async persistCheckpoint(): Promise<void> {
