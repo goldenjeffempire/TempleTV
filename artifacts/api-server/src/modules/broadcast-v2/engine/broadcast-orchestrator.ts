@@ -392,6 +392,20 @@ class BroadcastOrchestrator extends EventEmitter {
    */
   private hydrateSource: "checkpoint" | "disk_backup" | "cold_start" = "cold_start";
   /**
+   * Preserved copy of the first successfully-restored cycle anchor at boot.
+   *
+   * Unlike restoredCycleAnchor (consumed on first use), this persists for the
+   * process lifetime so it can be re-applied when the queue temporarily goes
+   * empty (MISSING_BLOB auto-deactivation, boot oscillation) and then recovers
+   * with a different item composition — preventing a fresh-start that would
+   * reset the broadcast to position 0.
+   *
+   * Set whenever restoredCycleAnchor or checkpoint fallback successfully
+   * establishes cycleStartedAtMs at boot. Never cleared — a stale-but-close
+   * epoch is always less harmful than restarting from 0 for 24/7 broadcast TV.
+   */
+  private _bootAnchorPreserved: number | null = null;
+  /**
    * Concurrency guard: prevents overlapping persistCheckpoint() calls when
    * the DB write takes longer than CHECKPOINT_INTERVAL_MS.  Without this,
    * slow writes stack up and can produce out-of-order checkpoints.
@@ -2065,6 +2079,10 @@ class BroadcastOrchestrator extends EventEmitter {
       if (restoredAnchor !== null && this.items.length > 0) {
         // PRIMARY: cycle epoch from runtime state — most accurate, zero arithmetic.
         this.cycleStartedAtMs = restoredAnchor;
+        // Preserve the anchor so subsequent boot-case reloads (after a transient
+        // queue oscillation like MISSING_BLOB deactivation) can reuse it instead
+        // of doing a fresh-start that restarts the broadcast from position 0.
+        this._bootAnchorPreserved = restoredAnchor;
 
         // ── Cross-validation against position checkpoint ──────────────────────
         // The cycle anchor (restoredAnchor) is the most accurate restore source
@@ -2174,6 +2192,7 @@ class BroadcastOrchestrator extends EventEmitter {
             this.cycleStartedAtMs = reloadNow;
           } else {
             this.cycleStartedAtMs = anchor - cpOffsetMs - this.queueCheckpoint.positionMs;
+            this._bootAnchorPreserved = this.cycleStartedAtMs; // survive transient empty-queue
             logger.info(
               {
                 itemId: this.items[cpIdx]!.id,
@@ -2200,8 +2219,31 @@ class BroadcastOrchestrator extends EventEmitter {
           );
           this.cycleStartedAtMs = reloadNow;
         }
+      } else if (this._bootAnchorPreserved !== null) {
+        // PRESERVED BOOT ANCHOR: the cycle was successfully restored at boot
+        // (restoredCycleAnchor applied on a prior reloadInner() call) but the
+        // anchor was consumed and the queue subsequently went empty, then
+        // recovered with a different item composition.
+        //
+        // Common cause: MISSING_BLOB auto-deactivation fires at startup,
+        // empties the queue, then the reverse pass re-activates items whose
+        // blobs are now confirmed present.  Without this path, the boot-case
+        // else branch would do a fresh start (cycleStartedAtMs = reloadNow),
+        // resetting the broadcast to position 0 on every restart — the root
+        // cause of the "videos restart from the beginning" bug.
+        //
+        // Using the preserved epoch is correct: elapsed = (now - preserved) %
+        // newCycleDuration naturally maps to the right position in the new
+        // item set without any additional arithmetic.
+        this.cycleStartedAtMs = this._bootAnchorPreserved;
+        logger.info(
+          { cycleStartedAtMs: this.cycleStartedAtMs, itemCount: this.items.length },
+          "[broadcast-v2] boot: preserved cycle anchor applied — broadcast continues from correct position after transient queue disruption",
+        );
       } else {
-        // FRESH START: no persisted state — broadcast starts from item 0.
+        // TRUE FRESH START: no persisted state and no prior restore — broadcast
+        // starts from item 0. This only fires on the very first boot of a new
+        // deployment or after a complete database wipe.
         this.cycleStartedAtMs = reloadNow;
       }
 

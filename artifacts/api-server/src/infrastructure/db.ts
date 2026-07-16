@@ -1752,11 +1752,10 @@ export async function runPreBuildBootSequence(): Promise<void> {
         ON upload_sessions (video_id)
         WHERE video_id IS NOT NULL
     `);
-    await run("idx_broadcast_queue_active_order", `
-      CREATE INDEX IF NOT EXISTS idx_broadcast_queue_active_order
-        ON broadcast_queue (queue_order ASC)
-        WHERE is_active = true
-    `);
+    // NOTE: idx_broadcast_queue_active_order was removed — the column "queue_order"
+    // does not exist in the schema (the correct column is "sort_order", already
+    // covered by idx_broadcast_queue_active_sort created above).
+    // Creating this index caused a 42703 error on every boot (column not found).
     await run("idx_broadcast_queue_video_id", `
       CREATE INDEX IF NOT EXISTS idx_broadcast_queue_video_id
         ON broadcast_queue (video_id)

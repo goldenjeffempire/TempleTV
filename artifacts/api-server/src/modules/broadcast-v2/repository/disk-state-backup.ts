@@ -55,7 +55,7 @@ export async function saveDiskBackup(snap: DiskStateSnapshot): Promise<void> {
  */
 export async function loadDiskBackup(
   channelId: string,
-  maxAgeMs = 30 * 60 * 1000,
+  maxAgeMs = 4 * 60 * 60 * 1000, // 4 h — covers long deployment queue waits
 ): Promise<DiskStateSnapshot | null> {
   try {
     const raw = await fs.readFile(filePath(channelId), "utf-8");
