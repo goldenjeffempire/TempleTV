@@ -221,6 +221,7 @@ externalPort = 8081
 [[ports]]
 localPort = 9000
 externalPort = 9000
+exposeLocalhost = true
 
 [[ports]]
 localPort = 18115
