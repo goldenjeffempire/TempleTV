@@ -23,17 +23,40 @@
 #  db-schema guardrails. Required by verify-render-yaml.ts Invariant 2.
 #
 #
-#  Four Render services on one manifest, all in `frankfurt`:
+#  Five Render services on one manifest, all in `frankfurt`:
 #
-#    ┌──────────────────────────┬──────────┬────────┬───────────────────────┐
-#    │ Service                  │ Type     │ Plan   │ Role                  │
-#    ├──────────────────────────┼──────────┼────────┼───────────────────────┤
-#    │ temple-tv-api            │ web      │ free   │ Fastify API + SSE +   │
-#    │                          │          │        │ notification dispatch  │
-#    │ temple-tv-admin          │ static   │ —      │ Vite SPA (admin)      │
-#    │ temple-tv-web            │ static   │ —      │ Expo Web (mobile)     │
-#    │ temple-tv-tv             │ static   │ —      │ Vite SPA (TV/Tizen)   │
-#    └──────────────────────────┴──────────┴────────┴───────────────────────┘
+#    ┌────────────────────────────────┬──────────┬──────────┬───────────────────────────────────────────┐
+#    │ Service                        │ Type     │ Plan     │ Role                                      │
+#    ├────────────────────────────────┼──────────┼──────────┼───────────────────────────────────────────┤
+#    │ temple-tv-broadcast-daemon     │ pserv    │ starter  │ Broadcast engine (BroadcastOrchestrator + │
+#    │                                │          │ $7/mo    │ queue workers). NEVER restarted on API    │
+#    │                                │          │          │ deploy. Internal-network only.            │
+#    │ temple-tv-api                  │ web      │ free     │ Fastify API + SSE proxy + notification    │
+#    │                                │          │          │ dispatch. Proxies broadcast traffic to    │
+#    │                                │          │          │ daemon via BROADCAST_DAEMON_URL.          │
+#    │ temple-tv-admin                │ static   │ —        │ Vite SPA (admin dashboard)                │
+#    │ temple-tv-web                  │ static   │ —        │ Expo Web (mobile PWA)                     │
+#    │ temple-tv-tv                   │ static   │ —        │ Vite SPA (TV / Tizen)                     │
+#    └────────────────────────────────┴──────────┴──────────┴───────────────────────────────────────────┘
+#
+#  Zero-downtime 24/7 broadcast architecture (added Jul 2026)
+#  ────────────────────────────────────────────────────────────
+#  The broadcast daemon is the cornerstone of uninterrupted 24/7 broadcasting.
+#  Before this split, the broadcast engine ran inside the API process (RUN_MODE=all).
+#  Every API code deploy triggered a rolling restart of the API process which also
+#  killed the BroadcastOrchestrator, interrupting the active stream for ~15–30 s.
+#
+#  After the split:
+#    • temple-tv-broadcast-daemon (pserv) owns the BroadcastOrchestrator and all
+#      queue workers. It only redeploys when broadcast-engine files change
+#      (buildFilter.paths below).
+#    • temple-tv-api proxies all /broadcast-v2 SSE/WS/REST traffic to the daemon
+#      via BROADCAST_DAEMON_HOST + BROADCAST_DAEMON_PORT (fromService wiring).
+#      The API's daemon-proxy.ts buffers SSE frames (30 s reconnect window) and
+#      WS messages (64 message buffer) so clients survive API restarts without
+#      any interruption visible to viewers.
+#    • API deployments now take zero broadcast engine restarts. The daemon keeps
+#      airing the same video at the same position through every API rolling deploy.
 #
 #  Free-tier constraint summary
 #  ─────────────────────────────
@@ -41,14 +64,16 @@
 #    • Web services  — 1 instance, 512 MiB RAM, 0.1 vCPU (spin-down after
 #                      15 min inactivity; first request cold-starts in ~30 s)
 #    • Static sites  — unlimited, global CDN, always free
-#    • Worker services have NO free tier (minimum Starter at $7/month)
+#    • Worker/private services have NO free tier (minimum Starter at $7/month)
 #
 #  Changes from the previous enterprise manifest:
 #    1. temple-tv-transcoder worker REMOVED — Render charges for all worker
 #       services regardless of plan; there is no free tier for workers.
 #    2. RUN_MODE changed from `api` → `all` so the scheduled-notification
 #       dispatcher runs inside the API process (it is lightweight — one Postgres
-#       poll every 30 s — and causes no memory pressure on the free tier).
+#       poll every 30 s — and causes no memory pressure on the free tier). The
+#       broadcast engine does NOT start in the API when BROADCAST_DAEMON_URL
+#       is set (env.ts/main.ts: ensureBroadcastV2Started() is skipped).
 #    3. TRANSCODER_DISABLE=true — ffmpeg transcoding is disabled on the API
 #       process. A 0.1 vCPU / 512 MiB shared instance cannot safely run ffmpeg
 #       alongside a live HTTP/SSE server; the job would OOM-kill the process
@@ -63,11 +88,14 @@
 #       GC-ineffective OOM crash loop. 256 MiB gives V8 enough headroom to GC
 #       during the burst while leaving ~79 MiB margin under the 512 MiB ceiling.
 #    5. No persistent disks — disks require a paid plan; all media I/O goes
-#       via S3 presigned URLs (confirmed already the case in this codebase).
+#       via PostgreSQL BYTEA (all media is in the database, not on disk).
 #    6. No managed databases or managed Redis — DATABASE_URL and REDIS_URL are
-#       external credentials supplied by the operator (e.g. Supabase free tier
+#       external credentials supplied by the operator (e.g. Neon free tier
 #       for Postgres, Upstash free tier for Redis). REDIS_URL is optional; the
 #       application falls back to an in-process LRU cache when absent.
+#    7. temple-tv-broadcast-daemon pserv added (Jul 2026) — $7/month Starter
+#       plan. Required to eliminate broadcast restarts on API deploys. The daemon
+#       wires to the API via Render's fromService env-var injection mechanism.
 #
 #  Two shared env-var groups so secrets / public domain names are populated
 #  ONCE in the Render dashboard ("Environment Groups" page) and inherited by
@@ -549,6 +577,228 @@ services:
       # API directly. Safe for low viewership; add a CDN when concurrency grows.
       # Example: https://d111111abcdef8.cloudfront.net
       - key: CDN_BASE_URL
+        sync: false
+
+      # ── Broadcast daemon reference (Render private-network service link) ───
+      # Render assigns internal hostnames with random per-service suffixes
+      # (e.g. temple-tv-broadcast-daemon-2j3e) so the full URL cannot be
+      # hardcoded here. Instead, Render's Blueprint `fromService` mechanism
+      # injects the current hostname and port at deploy time. env.ts assembles
+      # BROADCAST_DAEMON_URL = "http://${host}:${port}" from these two parts.
+      #
+      # How this works end-to-end:
+      #   1. temple-tv-broadcast-daemon (pserv below) boots as RUN_MODE=broadcast.
+      #   2. Render injects its internal host/port into the API service here.
+      #   3. The API resolves BROADCAST_DAEMON_URL and routes all broadcast
+      #      SSE/WS/REST calls to the daemon via daemon-proxy.ts.
+      #   4. API deployments (rolling) never restart the daemon — broadcasts
+      #      continue uninterrupted through every API deploy.
+      - key: BROADCAST_DAEMON_HOST
+        fromService:
+          name: temple-tv-broadcast-daemon
+          type: pserv
+          property: host
+      - key: BROADCAST_DAEMON_PORT
+        fromService:
+          name: temple-tv-broadcast-daemon
+          type: pserv
+          property: port
+
+
+  # ═══════════════════════════════════════════════════════════════════════
+  #  temple-tv-broadcast-daemon — long-lived broadcast engine (RUN_MODE=broadcast)
+  # ═══════════════════════════════════════════════════════════════════════
+  #
+  #  This is the CORNERSTONE of zero-downtime 24/7 broadcasting.
+  #
+  #  The broadcast daemon owns the BroadcastOrchestrator, all queue workers,
+  #  and the SSE/WS/REST broadcast endpoints. It NEVER restarts during API
+  #  deployments — the API proxies to it via daemon-proxy.ts. This ensures:
+  #
+  #    • Viewers never see a black screen, playlist restart, or buffering
+  #      during a routine API code deploy (which previously killed the engine).
+  #    • The current video, playback position, queue order, and all
+  #      in-memory broadcast state survive every API rolling deploy.
+  #    • The daemon only restarts on explicit daemon code changes (filtered
+  #      by buildFilter.paths below) or operator-initiated restarts.
+  #
+  #  Persistence layers (defence-in-depth):
+  #    1. broadcast_runtime_state (DB) — cycleStartedAtMs + sequence, written
+  #       on every bump() call (item advance, override, queue change).
+  #    2. player_position_checkpoint (DB) — itemId + positionMs, written every
+  #       5 s and immediately on item transitions.
+  #    3. Disk backup — /tmp JSON written alongside every DB checkpoint as
+  #       a last-resort fallback if DB is unavailable at restart time.
+  #    4. flushCheckpointForShutdown() — awaited synchronously on SIGTERM so
+  #       the final playback position is durably committed before exit.
+  #
+  #  Plan: Starter ($7/month) — required because Render has no free tier for
+  #  pserv (private services). Starter = 512 MiB RAM / 0.5 vCPU — sufficient
+  #  for the broadcast engine workload (no HLS serving, no upload handling,
+  #  no FFmpeg: the daemon only manages the queue and pushes SSE/WS frames).
+  #
+  #  Internal network: pserv is only reachable from other Render services in
+  #  the same account. It is NOT publicly accessible (no public hostname, no
+  #  TLS certificate). The API proxies all external traffic to it.
+
+  - type: pserv
+    name: temple-tv-broadcast-daemon
+    runtime: node
+    plan: starter
+    region: frankfurt
+    branch: main
+    rootDir: .
+    autoDeploy: true
+    pullRequestPreviewsEnabled: false
+
+    # Only redeploy the daemon when broadcast-engine files change.
+    # Changes to artifacts/admin, artifacts/tv, artifacts/mobile, or
+    # non-broadcast API code should NOT restart the daemon (that would
+    # interrupt broadcasts unnecessarily). The daemon shares the same
+    # build pipeline as the API, so the dist/ output is reused.
+    buildFilter:
+      paths:
+        - artifacts/api-server/**
+        - lib/db/**
+        - lib/broadcast-types/**
+        - lib/broadcast-sync/**
+        - pnpm-lock.yaml
+        - package.json
+        - scripts/**
+        - render.yaml
+
+    # ── Build & start ──────────────────────────────────────────────────────
+    # Reuses the same build pipeline as the API server: install, verify,
+    # push DB schema, build dist/. The daemon starts from the same dist/
+    # output — no separate transpile step needed.
+    buildCommand: |
+      bash ./scripts/render-install.sh && \
+      pnpm run verify:render && \
+      pnpm --filter @workspace/db run push-force && \
+      pnpm --filter @workspace/api-server run build
+    # start:render-daemon uses --max-old-space-size=300 MiB — generous for
+    # the daemon's workload (no HLS cache, no upload buffers, no ffmpeg).
+    # Starter plan = 512 MiB RAM; 300 MiB V8 + ~80 MiB external + overhead
+    # stays well under the 512 MiB OOM-killer ceiling.
+    startCommand: pnpm --filter @workspace/api-server run start:render-daemon
+
+    # ── Health check ───────────────────────────────────────────────────────
+    # The daemon registers /healthz at its root (not /api/healthz) because
+    # it runs a minimal Fastify instance without the full API route tree.
+    # Returns { status: "ok", mode: "broadcast", ts: <ms> }.
+    healthCheckPath: /healthz
+
+    envVars:
+      # ── Credentials from shared group ─────────────────────────────────────
+      - fromGroup: temple-tv-shared-secrets
+
+      # ── Runtime ───────────────────────────────────────────────────────────
+      - key: NODE_ENV
+        value: production
+      # Port 9000 — internal-network only (not publicly exposed for pserv).
+      # Must match BROADCAST_DAEMON_PORT referenced by the API service above.
+      - key: PORT
+        value: "9000"
+      # RUN_MODE=broadcast starts the minimal daemon path in main.ts that
+      # boots only the broadcast engine, not the full API route tree.
+      - key: RUN_MODE
+        value: broadcast
+
+      # ── Memory containment (starter: 512 MiB / 0.5 vCPU) ─────────────────
+      - key: MALLOC_ARENA_MAX
+        value: "2"
+      # 300 MiB V8 old-space: daemon workload is mostly in-memory queue
+      # (array of ~20–500 JS objects) + EventEmitter frames + pino.
+      # Well below the 512 MiB ceiling and leaves room for DB pool + Node extras.
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=300 --max-http-header-size=16384"
+      # Warn at 380 MiB — gives early visibility before restart threshold.
+      - key: MEMORY_WARN_RSS_MB
+        value: "380"
+      # Restart at 430 MiB — before Render's 512 MiB OOM-killer fires.
+      # The watchdog triggers a graceful SIGTERM (not an OOM crash), so
+      # flushCheckpointForShutdown() still runs and broadcast position
+      # is preserved across the memory-triggered restart.
+      - key: MEMORY_RESTART_RSS_MB
+        value: "430"
+      # Hard ceiling: immediate SIGTERM at 450 MiB (no 80-second countdown).
+      - key: MEMORY_ABSOLUTE_MAX_RSS_MB
+        value: "450"
+
+      # ── Graceful shutdown timing ───────────────────────────────────────────
+      # The daemon's shutdown path (daemonShutdown in main.ts) is simpler than
+      # the API's: it awaits stopBroadcastV2() (which calls
+      # flushCheckpointForShutdown() — 8 s max) then closes the Fastify app
+      # and DB. Total shutdown window: ~12–15 s.
+      # Render sends SIGKILL after 30 s — we have ample margin.
+      - key: SHUTDOWN_DRAIN_MS
+        value: "5000"
+      - key: SHUTDOWN_PRECLOSE_DELAY_MS
+        value: "5000"
+      - key: SHUTDOWN_FORCE_EXIT_BUDGET_MS
+        value: "25000"
+
+      # ── DB connection pool ─────────────────────────────────────────────────
+      # The daemon uses DB connections for: queue reads, checkpoint writes,
+      # runtime state writes, and all broadcast-v2 worker queries. 8 connections
+      # is generous for the daemon's sequential worker pattern.
+      - key: DB_POOL_MAX
+        value: "8"
+
+      # ── Broadcast engine configuration ────────────────────────────────────
+      # API_ORIGIN — required by resolveSource() to absolutize localVideoUrl
+      # paths (/api/v1/uploads/…) so they pass the SSRF allowlist and are
+      # admitted to the broadcast queue. Without this, locally-uploaded videos
+      # silently fail source resolution and the orchestrator skips them.
+      - key: API_ORIGIN
+        value: https://api.templetv.org.ng
+
+      # Queue health threshold — daemon keeps at least 5 items active.
+      - key: QUEUE_MIN_ITEMS
+        value: "5"
+
+      # ── Dead-air prevention ────────────────────────────────────────────────
+      # Optional looping "Be right back" fallback stream — applied after
+      # BROADCAST_DEADAIR_FALLBACK_AFTER_MS of all sources blocked.
+      - key: BROADCAST_DEADAIR_FALLBACK_URL
+        sync: false
+      - key: BROADCAST_DEADAIR_FALLBACK_AFTER_MS
+        sync: false
+
+      # ── YouTube integration ────────────────────────────────────────────────
+      # Required by ytShuffleFallback (activates when local queue is empty)
+      # and YouTube channel sync workers.
+      - key: YOUTUBE_API_KEY
+        sync: false
+      - key: YOUTUBE_WEBHOOK_SECRET
+        sync: false
+      - key: YOUTUBE_SYNC_INTERVAL_MINS
+        value: "30"
+
+      # ── HLS token auth (for internal orchestrator probe signing) ───────────
+      # The daemon probes broadcast source URLs to detect dead CDN links.
+      # HLS_TOKEN_SECRET signs the probe's Authorization header; REQUIRE_HLS_TOKEN
+      # and INTERNAL_HLS_BYPASS_SECRET let the daemon bypass its own auth check
+      # when probing loopback URLs (probes go through the API proxy).
+      - key: REQUIRE_HLS_TOKEN
+        sync: false
+      - key: HLS_TOKEN_SECRET
+        sync: false
+      - key: INTERNAL_HLS_BYPASS_SECRET
+        sync: false
+
+      # ── HTTP tuning ────────────────────────────────────────────────────────
+      # SSE clients sit idle for 60+ s between broadcasts — 75 s keep-alive
+      # prevents spurious socket closure and the reconnect storm that follows.
+      - key: HTTP_KEEPALIVE_MS
+        value: "75000"
+      - key: HTTP_HEADERS_TIMEOUT_MS
+        value: "80000"
+
+      # ── Third-party integrations ───────────────────────────────────────────
+      - key: CLIENT_ERROR_SINK_URL
+        sync: false
+      - key: CLIENT_ERROR_SINK_TOKEN
         sync: false
 
 
