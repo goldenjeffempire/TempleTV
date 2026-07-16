@@ -449,7 +449,25 @@ const HeroSection = React.memo(function HeroSection({
     ? (v2Server?.override?.title ?? "Live Broadcast")
     : "Live Broadcast";
 
+  // ── Navigation debounce guard ─────────────────────────────────────────────
+  // Prevents double-navigation that can occur when BOTH the outer hero
+  // Pressable AND the inner CTA button fire (e.g. touch lands exactly on the
+  // boundary, or RN gesture system propagates to parent in an edge case).
+  // A double router.push() pushes /player twice onto the stack, requiring two
+  // back-presses to return home. The 600 ms window comfortably covers the
+  // animation frame after the first push completes.
+  const lastTuneInMs = useRef(0);
+
   const handleTuneIn = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTuneInMs.current < 600) {
+      if (__DEV__) {
+        console.log("[HeroSection] handleTuneIn debounced (< 600 ms since last call)");
+      }
+      return;
+    }
+    lastTuneInMs.current = now;
+
     if (__DEV__) {
       console.log(
         "[HeroSection] handleTuneIn",

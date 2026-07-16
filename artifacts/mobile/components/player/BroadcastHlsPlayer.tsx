@@ -1,5 +1,4 @@
 import React, { useCallback } from "react";
-import { router } from "expo-router";
 import { V2PlayerContainer } from "@/components/V2PlayerContainer";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { getApiBase } from "@/lib/apiBase";
@@ -35,9 +34,30 @@ export interface BroadcastHlsPlayerProps {
 }
 
 /**
- * Wrapper around `<V2PlayerContainer/>` that handles FATAL navigation and
- * wires PiP teardown. The v2 container owns its own transport, FSM, and
- * source resolution; the extra props are accepted for call-site compat.
+ * Wrapper around `<V2PlayerContainer/>` that handles PiP teardown.
+ *
+ * The v2 container owns its own transport, FSM, and source resolution;
+ * the extra props (initialUrl, initialPositionMs, thumbnailUrl, title,
+ * playerHeightOverride, onProgress) are accepted for call-site compat
+ * but intentionally discarded — the V2 engine resolves all of these
+ * from its own WS snapshot.
+ *
+ * IMPORTANT — onFatal design:
+ *   onFatal is passed to V2PlayerContainer as a PiP-cleanup hook only.
+ *   It MUST NOT call router.back() or router.replace().
+ *
+ *   The old behaviour (auto-navigate back on FATAL) caused a critical UX
+ *   regression: when the player opens and the WS transport fails (no API
+ *   URL set, transient network error, connection refused), the FSM
+ *   transitions to FATAL almost immediately.  With router.back() in
+ *   handleFatal the player screen was opening and closing in < 300 ms —
+ *   indistinguishable to the user from "the button doesn't work at all."
+ *
+ *   V2PlayerContainer already shows a "Playback Error" overlay with a
+ *   countdown timer and a manual Retry button for FATAL state.  Closing
+ *   the screen automatically removes that recovery path entirely.  The
+ *   user should stay on the player screen and use its own back button
+ *   (always visible in the page header) or the Retry button to recover.
  */
 export function BroadcastHlsPlayer({ muted, suppressEvents, isInPip, ...rest }: BroadcastHlsPlayerProps) {
   void rest;
@@ -61,16 +81,35 @@ export function BroadcastHlsPlayer({ muted, suppressEvents, isInPip, ...rest }: 
     console.log("[BroadcastHlsPlayer] mounting, baseUrl:", `${apiBase}/api/broadcast-v2`);
   }
 
+  /**
+   * Called by V2PlayerContainer when the FSM enters FATAL state.
+   *
+   * Responsibilities:
+   *   1. Cancel any active PiP restore notification so the system-level
+   *      "Return to broadcast" pill doesn't linger after the FSM fails.
+   *
+   * Explicitly NOT responsible for:
+   *   • Navigating back / closing the player — V2PlayerContainer already
+   *     renders a "Playback Error" overlay with countdown + Retry.  Auto-
+   *     closing would silently remove that recovery path and make the
+   *     "Open Player" button appear completely non-functional whenever the
+   *     API is temporarily unreachable.
+   */
   const handleFatal = useCallback(() => {
     if (isInPictureInPictureMode()) {
       cancelPipRestoreNotification().catch(() => {});
     }
-    if (router.canGoBack()) {
-      router.back();
-    } else {
-      router.replace("/");
+    if (__DEV__) {
+      console.warn(
+        "[BroadcastHlsPlayer] handleFatal: FSM entered FATAL.",
+        "V2PlayerContainer will show the error overlay with retry.",
+        "The player screen stays open — user can tap Retry or the back button.",
+      );
     }
+    // Do NOT call router.back() or router.replace() here.
+    // See the component-level JSDoc above for the full rationale.
   }, []);
+
   return (
     <ErrorBoundary>
       <V2PlayerContainer
