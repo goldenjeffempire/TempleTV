@@ -468,11 +468,22 @@ const HeroSection = React.memo(function HeroSection({
       // its HLS/MP4 stream.  Let the player derive the URL from the V2
       // snapshot (hlsUrl="" is fine; the player reads it from the WS session).
       navigateToLive("", activeBroadcastTitle, 0, undefined, thumbUrl ?? undefined);
-    } else if (hasYoutubeOverride && youtubeOverrideVideoId) {
-      // YouTube override (e.g. ytShuffleFallback) is the active broadcast
-      // source.  Pass the video ID so the player renders YoutubePlayer
-      // immediately on the first render, without waiting for the WS snapshot.
-      navigateToLive("", activeBroadcastTitle, 0, youtubeOverrideVideoId, thumbUrl ?? undefined);
+    } else if (hasYoutubeOverride) {
+      // YouTube shuffle fallback is the active broadcast source.  Navigate
+      // WITHOUT a youtubeId param so that in player.tsx:
+      //
+      //   isBroadcastV2 = isLive && !(!!youtubeId && !hlsUrl)  →  true
+      //
+      // With isBroadcastV2=true the player subscribes to the V2 singleton
+      // and derives v2YouTubeOverrideVideoId reactively.  Because the hero
+      // has been running the same WS session for seconds, lastServerSnapshot
+      // is already populated when the player mounts — v2YouTubeOverrideVideoId
+      // is non-null on the FIRST render, so there is no blank-screen delay.
+      //
+      // Passing youtubeId here would have forced isBroadcastV2=false, locking
+      // the player into a static YoutubePlayer that can't follow override
+      // changes and never sets PlayerContext.isBroadcastMode=true.
+      navigateToLive("", activeBroadcastTitle, 0, undefined, thumbUrl ?? undefined);
     } else if (fallbackSermon) {
       navigateToSermon(fallbackSermon);
     } else {

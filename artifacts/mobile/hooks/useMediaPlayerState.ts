@@ -33,12 +33,30 @@ import { getApiBase } from "@/lib/apiBase";
 
 // V2 FSM state names as produced by the player-core machine.
 // Keep in sync with lib/player-core/src/machine.ts StateValue enum.
+//
+// SYNCING: machine is (re-)connecting to the server after a drop or restart.
+//   Treat as "loading" — something is coming, just not visible yet.
+//   If mapped to "idle" the hero flickers "Watch Now" during brief reconnects.
+//
+// PREPARING_NEXT: machine is loading the NEXT queue item into the inactive
+//   buffer while the current item is still playing (A/B preload). The user
+//   sees uninterrupted playback. Map to "live" so the hero stays in
+//   "Open Player" mode rather than flipping back to "Watch Now".
+//
+// HANDOFF: brief buffer swap (inactive → active) during item advance. The
+//   decoder is live; this state lasts < 200 ms. Map to "live" for the same
+//   reason as PREPARING_NEXT.
 const LOADING_STATES = new Set([
   "BOOTSTRAP",
+  "SYNCING",
   "PREPARING_ACTIVE",
   "SKIP_PENDING",
 ]);
-const PLAYING_STATES = new Set(["PLAYING"]);
+const PLAYING_STATES = new Set([
+  "PLAYING",
+  "PREPARING_NEXT", // next item loading; current is still playing
+  "HANDOFF",        // < 200 ms buffer swap; content visible throughout
+]);
 const RECOVERING_STATES = new Set([
   "RECOVERING_PRIMARY",
   "RECOVERING_FAILOVER",
