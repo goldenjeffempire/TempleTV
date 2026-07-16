@@ -4177,8 +4177,8 @@ class BroadcastOrchestrator extends EventEmitter {
     // ── Event-driven checkpoint ───────────────────────────────────────────
     // On significant broadcast transitions (item advance, queue change,
     // override start/end) persist position immediately rather than waiting
-    // up to CHECKPOINT_INTERVAL_MS (15 s). This tightens the worst-case
-    // position loss on crash from 15 s to < 1 s for these key events.
+    // up to CHECKPOINT_INTERVAL_MS (5 s). This tightens the worst-case
+    // position loss on crash from 5 s to < 1 s for these key events.
     // The concurrency guard in persistCheckpoint() (checkpointWriting flag)
     // prevents stacking with the interval-based timer write.
     if (
@@ -4996,6 +4996,26 @@ class BroadcastOrchestrator extends EventEmitter {
       t.unref?.();
     });
     await Promise.race([runtimeSavePromise, runtimeSaveTimeout]);
+
+    // 3. Explicitly flush YouTube shuffle fallback state on graceful shutdown.
+    //
+    // The periodic persistState() calls inside ytShuffleFallback.advance() are
+    // fire-and-forget for performance.  Without this awaited flush, a process
+    // exit that arrives within milliseconds of a video advance could leave the
+    // DB with stale ytShuffleState (the previous video's start time), causing
+    // the next restart to compute the wrong elapsed time and either pick the
+    // wrong resume position or skip the resume entirely and start a fresh video.
+    //
+    // 3-second timeout — ytShuffleState is secondary to the cycle-anchor and
+    // position checkpoint already saved above, so we do not block shutdown long.
+    const ytFlushPromise = ytShuffleFallback.flushStateForShutdown().catch((err: unknown) =>
+      logger.warn({ err }, "[broadcast-v2] flushCheckpointForShutdown: ytShuffleState flush failed (non-fatal)"),
+    );
+    const ytFlushTimeout = new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, 3_000);
+      t.unref?.();
+    });
+    await Promise.race([ytFlushPromise, ytFlushTimeout]);
   }
 
   private async persistCheckpoint(): Promise<void> {

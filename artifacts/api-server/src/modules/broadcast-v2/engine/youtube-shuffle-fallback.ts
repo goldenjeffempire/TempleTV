@@ -748,6 +748,35 @@ class YtShuffleFallback {
     return entry ? { youtubeId: entry.youtubeId, title: entry.title } : null;
   }
 
+  /**
+   * Explicitly persist the current YouTube shuffle state to the DB and await
+   * the result. Called from the orchestrator's graceful-shutdown path
+   * (flushCheckpointForShutdown) so a process exit within milliseconds of a
+   * video advance cannot leave the DB with stale ytShuffleState.
+   *
+   * The periodic persistState() calls in advance() are fire-and-forget for
+   * performance; this method is the one synchronous save that runs exactly
+   * once, just before the process exits.  Always resolves (never throws) —
+   * errors are logged and swallowed so a DB hiccup cannot block shutdown.
+   *
+   * No-ops immediately when the shuffle is not active (nothing useful to save).
+   */
+  async flushStateForShutdown(): Promise<void> {
+    if (!this._active) return;
+    const state: PersistedYtShuffleState = {
+      playlist: this._shuffledPlaylist,
+      playlistIndex: this._playlistIndex,
+      currentVideoId: this._currentVideoId,
+      currentVideoTitle: this._currentVideoTitle,
+      currentVideoStartedAtMs: this._currentVideoStartedAtMs,
+      activatedAtMs: this._activatedAtMs,
+      savedAtMs: Date.now(),
+    };
+    await runtimeRepo.saveYtShuffleState(CHANNEL_ID, state).catch((err: unknown) =>
+      logger.warn({ err }, "[yt-shuffle] flushStateForShutdown: failed to persist state (non-fatal)"),
+    );
+  }
+
   /** Snapshot for the /health endpoint and admin observability. */
   getInfo(): YtShuffleFallbackInfo {
     return {
