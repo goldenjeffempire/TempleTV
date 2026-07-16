@@ -45,6 +45,15 @@ const RECOVERING_STATES = new Set([
 ]);
 const ERROR_STATES = new Set(["FATAL"]);
 
+// LIVE_OVERRIDE_ACTIVE is the FSM state for an active schedule override
+// (e.g. a YouTube shuffle fallback video).  On YouTube-only deployments this
+// is the *permanent* broadcast state: the broadcast_queue is always empty and
+// ytShuffleFallback drives content via override frames.  The machine never
+// enters PLAYING in this scenario — the A/B buffers are excluded from
+// YouTube sources — so LIVE_OVERRIDE_ACTIVE must be treated as "live" for all
+// UI purposes (badge, CTA, navigation, mini-player).
+const LIVE_OVERRIDE_STATES = new Set(["LIVE_OVERRIDE_ACTIVE"]);
+
 export type MediaState =
   | "idle"
   | "loading"
@@ -152,9 +161,16 @@ export function useMediaPlayerState(): MediaPlayerState {
       mediaState = "reconnecting";
     } else if (PLAYING_STATES.has(fsmState)) {
       mediaState = "live";
+    } else if (LIVE_OVERRIDE_STATES.has(fsmState)) {
+      // LIVE_OVERRIDE_ACTIVE: an override (e.g. YouTube shuffle fallback) is
+      // actively streaming.  This is the permanent broadcast state on
+      // YouTube-only deployments — treat it identically to PLAYING so that the
+      // hero shows "Open Player", the mini-player shows "Now Watching", and all
+      // navigation guards correctly detect an active broadcast.
+      mediaState = "live";
     } else if (LOADING_STATES.has(fsmState)) {
       // If the FSM is loading but nothing is queued (empty channel), treat as idle.
-      const hasItem = !!lastSnapshot?.current;
+      const hasItem = !!(lastSnapshot?.current || lastSnapshot?.override);
       mediaState = hasItem ? "loading" : "idle";
     } else {
       // IDLE, unknown, or no snapshot yet
@@ -169,13 +185,26 @@ export function useMediaPlayerState(): MediaPlayerState {
       mediaState === "idle" ||
       mediaState === "error";
 
+    // For YouTube overrides the "current" item is null (empty queue); read
+    // title/thumbnail from the override frame instead so the hero and
+    // mini-player can display meaningful metadata.
+    const overrideTitle = lastSnapshot?.override?.title ?? null;
+    const overrideThumbnailUrl: string | null = (() => {
+      const url = lastSnapshot?.override?.url ?? null;
+      if (!url) return null;
+      const m = url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+      return m ? `https://img.youtube.com/vi/${m[1]}/hqdefault.jpg` : null;
+    })();
+
     const currentTitle =
       lastSnapshot?.current?.title ??
+      overrideTitle ??
       currentSermon?.title ??
       (isLive ? "Live" : null);
 
     const currentThumbnailUrl =
       lastSnapshot?.current?.thumbnailUrl ??
+      overrideThumbnailUrl ??
       currentSermon?.thumbnailUrl ??
       null;
 

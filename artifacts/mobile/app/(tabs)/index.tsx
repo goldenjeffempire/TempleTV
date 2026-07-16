@@ -300,13 +300,20 @@ const HeroSection = React.memo(function HeroSection({
   });
   const v2Server = v2Snapshot.lastServerSnapshot;
 
-  // STRICT POLICY: YouTube items are never promoted to the hero.
-  // Only uploaded/local platform broadcasts get the hero treatment.
-  // Declared early so heroProgress effect below can read it.
+  // ── Broadcast source classification ──────────────────────────────────────────
+  // hasUploadedBroadcast: a non-YouTube item is currently live in the queue.
+  //   Used for audio controls (mute button) and the live progress bar —
+  //   features that only make sense for buffered MP4/HLS content.
+  // hasYoutubeOverride: a YouTube override (ytShuffleFallback or operator) is
+  //   the active broadcast source.  On YouTube-only deployments this is the
+  //   permanent state.
+  // hasActiveBroadcast: true when EITHER form of broadcast is live.
+  //   Used for navigation (tap → open player) and status badges.
   const hasUploadedBroadcast = !!(
     v2Server?.current && v2Server.current.source?.kind !== "youtube"
   );
-  const hasActiveBroadcast = hasUploadedBroadcast;
+  const hasYoutubeOverride = v2Server?.override?.kind === "youtube" && !!v2Server.override.url;
+  const hasActiveBroadcast = hasUploadedBroadcast || hasYoutubeOverride;
 
   // ── Hero live progress bar ─────────────────────────────────────────────────
   // Tracks how far into the current broadcast item we are: 0 = start, 1 = end.
@@ -401,10 +408,25 @@ const HeroSection = React.memo(function HeroSection({
     return () => anim.stop();
   }, [syncState.emergencyBroadcast, emergencyPulseAnim]);
 
-  // Thumbnail: broadcast thumbnail > fallback sermon poster > null (gradient only).
+  // Extract YouTube video ID from the active override URL so we can derive a
+  // thumbnail and pre-populate the player navigation params.
+  const youtubeOverrideVideoId: string | null = (() => {
+    if (!hasYoutubeOverride) return null;
+    const url = v2Server?.override?.url ?? "";
+    const m = url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+    return m ? m[1] : null;
+  })();
+
+  // Thumbnail priority:
+  //   1. Uploaded broadcast thumbnail (current queue item)
+  //   2. YouTube override thumbnail (derived from video ID)
+  //   3. Fallback sermon poster
+  //   4. null (gradient only)
   const thumbUrl =
     hasUploadedBroadcast && v2Server?.current?.thumbnailUrl
       ? v2Server.current.thumbnailUrl
+      : youtubeOverrideVideoId
+      ? `https://img.youtube.com/vi/${youtubeOverrideVideoId}/hqdefault.jpg`
       : fallbackSermon?.thumbnailUrl ?? null;
 
   // Never permanently disable navigation: even during BOOTSTRAP or when the
@@ -419,15 +441,38 @@ const HeroSection = React.memo(function HeroSection({
   // the home screen should never be a gatekeeper.
   const watchNowDisabled = false;
 
+  // Derive the display title for the active broadcast so the player has a
+  // meaningful title even for YouTube override sessions.
+  const activeBroadcastTitle = hasUploadedBroadcast
+    ? (v2Server?.current?.title ?? "Live Broadcast")
+    : hasYoutubeOverride
+    ? (v2Server?.override?.title ?? "Live Broadcast")
+    : "Live Broadcast";
+
   const handleTuneIn = useCallback(() => {
     if (__DEV__) {
       console.log(
         "[HeroSection] handleTuneIn",
-        { hasActiveBroadcast, hasFallback: !!fallbackSermon, thumbUrl },
+        {
+          hasUploadedBroadcast,
+          hasYoutubeOverride,
+          youtubeOverrideVideoId,
+          hasFallback: !!fallbackSermon,
+          thumbUrl,
+        },
       );
     }
-    if (hasActiveBroadcast) {
-      navigateToLive("", "Live Broadcast", 0, undefined, thumbUrl ?? undefined);
+
+    if (hasUploadedBroadcast) {
+      // Non-YouTube upload is live in the broadcast queue — navigate with
+      // its HLS/MP4 stream.  Let the player derive the URL from the V2
+      // snapshot (hlsUrl="" is fine; the player reads it from the WS session).
+      navigateToLive("", activeBroadcastTitle, 0, undefined, thumbUrl ?? undefined);
+    } else if (hasYoutubeOverride && youtubeOverrideVideoId) {
+      // YouTube override (e.g. ytShuffleFallback) is the active broadcast
+      // source.  Pass the video ID so the player renders YoutubePlayer
+      // immediately on the first render, without waiting for the WS snapshot.
+      navigateToLive("", activeBroadcastTitle, 0, youtubeOverrideVideoId, thumbUrl ?? undefined);
     } else if (fallbackSermon) {
       navigateToSermon(fallbackSermon);
     } else {
@@ -443,7 +488,14 @@ const HeroSection = React.memo(function HeroSection({
       }
       navigateToLive("", "Live Broadcast", 0, undefined, undefined);
     }
-  }, [hasActiveBroadcast, fallbackSermon, thumbUrl]);
+  }, [
+    hasUploadedBroadcast,
+    hasYoutubeOverride,
+    youtubeOverrideVideoId,
+    activeBroadcastTitle,
+    fallbackSermon,
+    thumbUrl,
+  ]);
 
   return (
     <Pressable
@@ -495,11 +547,13 @@ const HeroSection = React.memo(function HeroSection({
 
       {/* ── Mute / Unmute toggle — top-right corner ──────────────────────────
           Only shown when there is an active non-YouTube broadcast playing (so
-          the user has real audio to control). Positioned as a sibling of the
-          pointerEvents="none" layers so its own Pressable receives touches;
-          the inner Pressable stops propagation, preventing the outer hero
-          Pressable from also firing navigateToLive. */}
-      {hasActiveBroadcast && !isBroadcastMode && (
+          the user has real audio to control). YouTube overrides are played via
+          the embedded YoutubePlayer, not the native A/B buffers in the hero,
+          so there is no audio stream to mute here — gate on hasUploadedBroadcast.
+          Positioned as a sibling of the pointerEvents="none" layers so its own
+          Pressable receives touches; the inner Pressable stops propagation,
+          preventing the outer hero Pressable from also firing navigateToLive. */}
+      {hasUploadedBroadcast && !isBroadcastMode && (
         <Pressable
           onPress={onMuteToggle}
           style={({ pressed }) => [
