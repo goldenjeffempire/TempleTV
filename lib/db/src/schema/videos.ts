@@ -245,6 +245,12 @@ export const videosTable = pgTable("managed_videos", {
   uniqueIndex("uq_managed_videos_object_path")
     .on(table.objectPath)
     .where(sql`"object_path" IS NOT NULL`),
+  // pipeline_stage: content-scheduling-worker and pipeline-stage watchdog
+  // query WHERE pipeline_stage = 'queued'/'broadcasting'/etc. on every tick.
+  // NOTE: idx_managed_videos_validation_status is intentionally created via
+  // the startup boot sequence (db.ts runPreBuildBootSequence) as a partial
+  // index (WHERE validation_status IS NOT NULL) — do not duplicate here.
+  index("idx_managed_videos_pipeline_stage").on(table.pipelineStage),
   // NOTE: The GIN full-text search index (idx_managed_videos_fts) is created via
   // raw SQL at API startup in infrastructure/db.ts using CREATE INDEX IF NOT EXISTS.
   // Drizzle Kit does not support expression GIN indexes in the schema DSL,

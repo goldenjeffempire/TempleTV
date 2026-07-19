@@ -150,3 +150,4 @@
 - [Broadcast shutdown flush completeness](broadcast-shutdown-flush-completeness.md) — ytShuffleState fire-and-forget gap closed; flushCheckpointForShutdown now awaits 3-tier write: checkpoint→runtimeRepo(8s)→ytShuffleState(3s).
 - [Player FSM FATAL backoff base is 10s not 30s](player-fatal-backoff-10s.md) — FATAL_AUTO_RECOVERY_MS=10_000 in machine.ts; tests previously documented 30s schedule (wrong); correct schedule: 10→20→40→80→160→240s.
 - [FailoverHandler React Native network events](failover-handler-rn-network.md) — window 'online'/'offline' silently never fire on RN Hermes; use notifyOnline()/notifyOffline() from NetInfo + bindDomEvents:false.
+- [Schedule bridge one-time entry exactly-once](schedule-bridge-one-time-claim.md) — must claim-deactivate in DB BEFORE firing handleEntry; `claimOneTimeFiring()` returns bool; only fire when true.

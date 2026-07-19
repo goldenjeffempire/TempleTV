@@ -249,16 +249,47 @@ export async function scheduleBridgeScan(): Promise<void> {
   for (const entry of firing) {
     const startMin = parseTimeToMinutes(entry.startTime);
     const qualifier = entry.scheduledDate ?? String(dow);
+
+    // ── One-time entry: atomic claim-before-fire ────────────────────────────
+    // For one-time (scheduledDate IS NOT NULL) entries we must deactivate the
+    // row in the DB BEFORE dispatching the action. This prevents double-fire
+    // on restart: if the process crashes after deactivation but before (or
+    // during) handleEntry, the entry stays inactive in the DB and will NOT be
+    // re-fired the next time this scan runs. Without this guard the in-memory
+    // firedSlots map is empty on restart and the entry would fire again.
+    //
+    // claimOneTimeFiring() does UPDATE SET is_active=false WHERE id=? AND
+    // is_active=true. If it returns false the row was already claimed (another
+    // process won the race, or it was manually deactivated) — skip it.
+    if (entry.scheduledDate) {
+      let claimed: boolean;
+      try {
+        claimed = await scheduleService.claimOneTimeFiring(entry.id);
+      } catch (claimErr: unknown) {
+        logger.warn(
+          { err: claimErr, entryId: entry.id },
+          "[schedule-bridge] failed to atomically claim one-time entry — skipping to avoid double-fire risk",
+        );
+        continue;
+      }
+      if (!claimed) {
+        logger.info(
+          { entryId: entry.id, title: entry.title },
+          "[schedule-bridge] one-time entry already claimed/deactivated — skipping (another process or prior run handled it)",
+        );
+        continue;
+      }
+      adminEventBus.push("broadcast-schedule-updated", { reason: "one-time-fired-deactivated", entryId: entry.id });
+    }
+
+    // Mark as fired in the in-memory map to prevent duplicate dispatch within
+    // the same process session (e.g. if the scan fires twice in the same minute
+    // window due to jitter). For one-time entries the DB claim above is the
+    // authoritative guard; firedSlots is belt-and-suspenders for same-session.
     firedSlots.set(firedSlotKey(entry.id, qualifier, startMin), Date.now());
+
     try {
       await handleEntry(entry);
-      // Deactivate one-time entries after firing so they don't re-fire on restart.
-      if (entry.scheduledDate) {
-        await scheduleService.deactivateOneTime(entry.id).catch((err: unknown) =>
-          logger.warn({ err, entryId: entry.id }, "[schedule-bridge] failed to deactivate one-time entry (non-fatal)"),
-        );
-        adminEventBus.push("broadcast-schedule-updated", { reason: "one-time-fired-deactivated", entryId: entry.id });
-      }
     } catch (err: unknown) {
       logger.warn(
         { err, entryId: entry.id, title: entry.title, contentType: entry.contentType },

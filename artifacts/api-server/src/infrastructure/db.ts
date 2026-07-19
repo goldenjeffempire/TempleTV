@@ -1853,6 +1853,23 @@ export async function runPreBuildBootSequence(): Promise<void> {
         ON managed_videos (validation_status)
         WHERE validation_status IS NOT NULL
     `);
+    // Pipeline stage index: content-scheduling-worker and pipeline-stage
+    // watchdog filter WHERE pipeline_stage = 'queued'/'broadcasting'/etc.
+    // on every 60-second tick. Without this every sweep is a full table scan.
+    await run("idx_managed_videos_pipeline_stage", `
+      CREATE INDEX IF NOT EXISTS idx_managed_videos_pipeline_stage
+        ON managed_videos (pipeline_stage)
+    `);
+    // Queue validator reverse-pass index: queue-integrity-validator does 4 separate
+    // queries WHERE is_active=false AND validator_deactivated_reason='xxx' to
+    // re-activate rows when the underlying fault is resolved. Without this index
+    // each reverse pass scans the full broadcast_queue table; the partial index
+    // covers only the minority of deactivated-by-validator rows.
+    await run("idx_broadcast_queue_validator_reason", `
+      CREATE INDEX IF NOT EXISTS idx_broadcast_queue_validator_reason
+        ON broadcast_queue (validator_deactivated_reason)
+        WHERE validator_deactivated_reason IS NOT NULL
+    `);
     {
       const aggCheck = await client.query(`
         SELECT 1 FROM pg_proc p

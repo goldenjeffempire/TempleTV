@@ -83,6 +83,14 @@ export const broadcastQueueTable = pgTable("broadcast_queue", {
   // place items before the natural first position, which is semantically invalid
   // and an easy source of off-by-one bugs in admin tooling.
   check("chk_broadcast_queue_sort_order_nonneg", sql`${table.sortOrder} >= 0`),
+  // Reverse-pass queries in queue-integrity-validator scan inactive rows by
+  // validator_deactivated_reason (e.g. WHERE is_active=false AND
+  // validator_deactivated_reason='missing_blob'). A partial index covering
+  // only the non-null rows is far smaller than a full-table index and makes
+  // these reverse passes O(log n) instead of O(n).
+  index("idx_broadcast_queue_validator_reason")
+    .on(table.validatorDeactivatedReason)
+    .where(sql`${table.validatorDeactivatedReason} IS NOT NULL`),
 ]);
 
 export type BroadcastQueueItem = typeof broadcastQueueTable.$inferSelect;

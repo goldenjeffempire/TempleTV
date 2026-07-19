@@ -1,4 +1,4 @@
-import { asc, eq, gte, isNotNull, and } from "drizzle-orm";
+import { and, asc, eq, gte, isNotNull } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { z } from "zod";
 import { db, schema } from "../../infrastructure/db.js";
@@ -182,5 +182,33 @@ export const scheduleService = {
   /** Mark a one-time entry as inactive after it fires (prevents re-fire on server restart). */
   async deactivateOneTime(id: string) {
     await db.update(sched).set({ isActive: false }).where(eq(sched.id, id));
+  },
+
+  /**
+   * Atomically claim a one-time schedule entry for firing by setting
+   * `isActive = false` in a single UPDATE with an `is_active = true` guard.
+   *
+   * Returns `true` if the claim succeeded (this process owns the firing),
+   * or `false` if the row was already claimed by another process or a prior
+   * restart. The caller must only dispatch the entry's action when this
+   * returns `true` — this prevents double-fire across process restarts and
+   * concurrent replicas.
+   *
+   * Claim-before-fire pattern:
+   *   1. claimOneTimeFiring() — atomic DB claim, deactivates the entry
+   *   2. handleEntry()        — dispatch the broadcast action
+   *
+   * If the process crashes after step 1 but before step 2 completes the
+   * entry stays inactive in the DB and does NOT re-fire on restart. A missed
+   * fire (due to crash between claim and dispatch) is less harmful than a
+   * double-fire (duplicate live overrides, two enqueues, two emails).
+   */
+  async claimOneTimeFiring(id: string): Promise<boolean> {
+    const result = await db
+      .update(sched)
+      .set({ isActive: false })
+      .where(and(eq(sched.id, id), eq(sched.isActive, true)))
+      .returning({ id: sched.id });
+    return result.length > 0;
   },
 };
