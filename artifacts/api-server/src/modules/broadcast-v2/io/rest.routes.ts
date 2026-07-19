@@ -25,7 +25,7 @@ import { reactivateSystemDeactivated } from "../engine/queue-health-guard.js";
 import { markBadUrl, markBadUrlWithTtl, clearAllBadUrls, clearBadUrl, getItemsHealth, getBadUrlStats, queueRepo, incrementBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, getRecentlySuspended, reEnableAllSuspended, normalizeQueueUrl, getUrlBadSourceSetsSize, persistBadUrlCache, clearSourceApproval, clearAllSourceApprovals } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { db, schema } from "../../../infrastructure/db.js";
-import { eq, and, isNull, isNotNull, sql, inArray, or } from "drizzle-orm";
+import { eq, and, isNotNull, sql, inArray } from "drizzle-orm";
 import { probeUploadedDuration } from "../../transcoder/transcoder.service.js";
 import { enqueueTranscode } from "../../transcoder/transcoder.queue.js";
 import { transcoderDispatcher } from "../../transcoder/transcoder.dispatcher.js";
@@ -39,7 +39,6 @@ import { playbackAnalytics } from "../engine/playback-analytics.js";
 import { randomUUID } from "node:crypto";
 import { statfs } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import path from "node:path";
 import os from "node:os";
 import { env } from "../../../config/env.js";
 import {
@@ -2528,34 +2527,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     async (_req, reply) => {
       reply.header("Cache-Control", "no-store, max-age=0");
 
-      // 1. Find all active queue items with hls_ready videos
-      type HlsRow = {
-        queue_id: string;
-        video_id: string;
-        title: string | null;
-        local_video_url: string | null;
-      };
-      let hlsReadyItems: HlsRow[];
-      try {
-        const result = await db.execute<HlsRow>(sql`
-          SELECT
-            q.id        AS queue_id,
-            v.id        AS video_id,
-            q.title,
-            v.local_video_url
-          FROM broadcast_queue q
-          JOIN managed_videos v ON v.id = q.video_id
-          WHERE q.is_active = true
-            AND v.transcoding_status = 'hls_ready'
-          ORDER BY q.sort_order
-          LIMIT 100
-        `);
-        hlsReadyItems = (result.rows as HlsRow[]) ?? [];
-      } catch (err) {
-        logger.warn({ err }, "[broadcast-v2] repair-hls-storage-missing: DB query failed");
-        return reply.code(500).send({ error: "DB query failed" });
-      }
-
+      // HLS pipeline removed — this endpoint is a permanent no-op.
       return { repaired: 0, noSource: 0, alreadyHealthy: 0, message: "Route removed: HLS pipeline no longer active. This endpoint is a no-op." };
     },
   );
@@ -3700,7 +3672,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     },
     async (req, reply) => {
       const { ids } = req.body as { ids: string[] };
-      const result = await db
+      await db
         .update(schema.broadcastQueueTable)
         .set({ isActive: false, validatorDeactivatedReason: "operator-bulk-deactivate" })
         .where(inArray(schema.broadcastQueueTable.id, ids));

@@ -354,7 +354,7 @@ function wsDaemonProxyHandler(clientSocket: WebSocket, request: FastifyRequest):
       });
     });
 
-    upstream.on("error", (err) => {
+    upstream.on("error", (err: Error) => {
       logger.debug({ err, daemonWsUrl }, "[broadcast-daemon-proxy] WS upstream error");
       upstream.removeAllListeners();
       scheduleReconnect();

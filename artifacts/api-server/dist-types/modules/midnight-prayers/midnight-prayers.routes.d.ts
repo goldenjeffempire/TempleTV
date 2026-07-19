@@ -14,6 +14,17 @@
  *   PATCH /config      – update schedule config (editor+)
  *   GET  /queue        – list midnight-prayers videos (editor+)
  *   POST /queue/refresh – force video list reload (editor+)
+ *
+ * SERVER-SIDE WINDOW ENFORCEMENT:
+ *   All snapshot-returning endpoints (/state, /events, /ws) rely on
+ *   midnightPrayersService.getSnapshot() which enforces the [startHour,
+ *   endHour) window in the configured IANA timezone and returns
+ *   mode="offline_hold" with null items outside the window. Routes do not
+ *   need to duplicate the check — getSnapshot() is authoritative.
+ *
+ *   Cache headers on /state use stale-if-error=10 (not 60) to minimise the
+ *   window during which a browser-cached snapshot can serve midnight-prayer
+ *   content after 3:00 AM.
  */
 import type { FastifyInstance } from "fastify";
 export declare function closeAllMidnightPrayersSseSessions(): void;

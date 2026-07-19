@@ -38,14 +38,47 @@ declare const Env: z.ZodObject<{
     BCRYPT_ROUNDS: z.ZodDefault<z.ZodNumber>;
     MEMORY_WARN_RSS_MB: z.ZodDefault<z.ZodNumber>;
     MEMORY_RESTART_RSS_MB: z.ZodDefault<z.ZodNumber>;
+    MEMORY_ABSOLUTE_MAX_RSS_MB: z.ZodDefault<z.ZodNumber>;
     DB_POOL_MAX: z.ZodDefault<z.ZodNumber>;
     DB_POOL_IDLE_TIMEOUT_MS: z.ZodDefault<z.ZodNumber>;
     DB_POOL_CONNECT_TIMEOUT_MS: z.ZodDefault<z.ZodNumber>;
     DB_STATEMENT_TIMEOUT_MS: z.ZodDefault<z.ZodNumber>;
     SENTRY_DSN: z.ZodOptional<z.ZodString>;
-    RUN_MODE: z.ZodDefault<z.ZodEnum<["api", "worker", "all"]>>;
+    VIEWER_TRACKING_SESSION_TTL_S: z.ZodDefault<z.ZodNumber>;
+    /**
+     * Process role:
+     *   api       → Fastify HTTP listener + broadcast engine (in-process)
+     *   worker    → background dispatchers only (no HTTP listener)
+     *   all       → everything in one process (default; ideal for dev/single-instance prod)
+     *   broadcast → long-lived broadcast daemon only — minimal HTTP on a separate port
+     *               (never restarted during API deployments; API proxies SSE/WS/REST to it)
+     */
+    RUN_MODE: z.ZodDefault<z.ZodEnum<["api", "worker", "all", "broadcast"]>>;
+    /**
+     * When set, the API server proxies all broadcast-v2 SSE, WebSocket, and REST
+     * traffic to this URL instead of running the broadcast engine in-process.
+     * Enables zero-downtime API deployments: the daemon never restarts while the
+     * API is restarted, so broadcasts continue uninterrupted.
+     *
+     * Example: http://127.0.0.1:9000
+     *
+     * Leave unset to run the broadcast engine in-process (legacy behaviour).
+     */
+    BROADCAST_DAEMON_URL: z.ZodOptional<z.ZodString>;
+    /**
+     * Render Blueprint `fromService` reference pair used to derive
+     * BROADCAST_DAEMON_URL when the daemon runs as its own Render private
+     * service (`type: pserv`). Render assigns private-network hostnames a
+     * random per-service suffix (e.g. `broadcast-daemon-2j3e`), so the URL
+     * can't be hardcoded in render.yaml — it must be composed at runtime
+     * from the injected host/port pair. Only used as a fallback when
+     * BROADCAST_DAEMON_URL itself is not set directly.
+     */
+    BROADCAST_DAEMON_HOST: z.ZodOptional<z.ZodString>;
+    BROADCAST_DAEMON_PORT: z.ZodOptional<z.ZodNumber>;
     SCHEDULED_NOTIF_POLL_MS: z.ZodDefault<z.ZodNumber>;
     SCHEDULED_NOTIF_MAX_ATTEMPTS: z.ZodDefault<z.ZodNumber>;
+    SCHEDULED_NOTIF_BATCH_SIZE: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_POLL_MS: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_THREADS: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
@@ -76,7 +109,12 @@ declare const Env: z.ZodObject<{
     TRANSCODER_LEASE_RENEW_MS: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_LEASE_RECLAIM_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
     TRANSCODER_DLQ_ALERT_THRESHOLD: z.ZodDefault<z.ZodNumber>;
+    TRANSCODER_QUEUE_STALE_ALERT_MS: z.ZodDefault<z.ZodNumber>;
+    DLQ_RECOVERY_ENABLED: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
+    DLQ_RECOVERY_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
+    TRANSCODER_ZOMBIE_SCAN_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
     ASSEMBLY_WATCHDOG_MS: z.ZodDefault<z.ZodNumber>;
+    MAX_CONCURRENT_CHUNK_DB_OPS: z.ZodDefault<z.ZodNumber>;
     SMTP_HOST: z.ZodOptional<z.ZodString>;
     SMTP_PORT: z.ZodDefault<z.ZodNumber>;
     SMTP_USER: z.ZodOptional<z.ZodString>;
@@ -88,6 +126,8 @@ declare const Env: z.ZodObject<{
     VAPID_PRIVATE_KEY: z.ZodOptional<z.ZodString>;
     VAPID_MAILTO: z.ZodDefault<z.ZodString>;
     EXPO_ACCESS_TOKEN: z.ZodOptional<z.ZodString>;
+    GITHUB_TOKEN: z.ZodOptional<z.ZodString>;
+    GITHUB_REPO: z.ZodOptional<z.ZodString>;
     CDN_BASE_URL: z.ZodOptional<z.ZodString>;
     REQUIRE_HLS_TOKEN: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     HLS_TOKEN_SECRET: z.ZodOptional<z.ZodString>;
@@ -98,6 +138,7 @@ declare const Env: z.ZodObject<{
     HLS_SEGMENT_CACHE_MB: z.ZodDefault<z.ZodNumber>;
     SHUTDOWN_PRECLOSE_DELAY_MS: z.ZodDefault<z.ZodNumber>;
     SHUTDOWN_DRAIN_MS: z.ZodDefault<z.ZodNumber>;
+    SHUTDOWN_FORCE_EXIT_BUDGET_MS: z.ZodDefault<z.ZodNumber>;
     APP_VERSION: z.ZodOptional<z.ZodString>;
     YOUTUBE_API_KEY: z.ZodOptional<z.ZodString>;
     YOUTUBE_CHANNEL_ID: z.ZodOptional<z.ZodString>;
@@ -107,6 +148,8 @@ declare const Env: z.ZodObject<{
     YOUTUBE_SYNC_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     YOUTUBE_AUTO_OVERRIDE_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     YOUTUBE_SHUFFLE_FALLBACK_DISABLE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
+    YOUTUBE_SHUFFLE_MIN_SLOT_SECS: z.ZodDefault<z.ZodNumber>;
+    YOUTUBE_SHUFFLE_DEFAULT_DURATION_SECS: z.ZodDefault<z.ZodNumber>;
     PROD_SYNC_API_URL: z.ZodOptional<z.ZodString>;
     API_ORIGIN: z.ZodOptional<z.ZodString>;
     PROD_SYNC_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
@@ -126,6 +169,27 @@ declare const Env: z.ZodObject<{
     SEED_ADMIN_FORCE: z.ZodDefault<z.ZodEffects<z.ZodUnion<[z.ZodBoolean, z.ZodString]>, boolean, string | boolean>>;
     QUEUE_MIN_ITEMS: z.ZodDefault<z.ZodNumber>;
     STORAGE_HEALTH_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
+    STORAGE_RECONCILIATION_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
+    ORPHAN_BLOB_AUTO_DELETE: z.ZodDefault<z.ZodBoolean>;
+    ORPHAN_BLOB_MIN_AGE_HOURS: z.ZodDefault<z.ZodNumber>;
+    STORAGE_RECON_LIBRARY_BATCH: z.ZodDefault<z.ZodNumber>;
+    STORAGE_RECON_QUARANTINE_MIN_FAILURES: z.ZodDefault<z.ZodNumber>;
+    STORAGE_RECON_BROADCAST_SAFE: z.ZodDefault<z.ZodBoolean>;
+    STORAGE_RECON_SIZE_CHECK: z.ZodDefault<z.ZodBoolean>;
+    STORAGE_RECON_SESSION_REPAIR: z.ZodDefault<z.ZodBoolean>;
+    QUEUE_WARN_MS: z.ZodDefault<z.ZodNumber>;
+    QUEUE_CRIT_MS: z.ZodDefault<z.ZodNumber>;
+    QUEUE_REFILL_TRIGGER_MS: z.ZodDefault<z.ZodNumber>;
+    QUEUE_REFILL_BATCH: z.ZodDefault<z.ZodNumber>;
+    QUEUE_REFILL_DISABLE: z.ZodOptional<z.ZodString>;
+    BROADCAST_STATE_BACKUP_PATH: z.ZodDefault<z.ZodString>;
+    STORAGE_PATH: z.ZodOptional<z.ZodString>;
+    UPLOAD_DIR: z.ZodOptional<z.ZodString>;
+    HLS_DIR: z.ZodOptional<z.ZodString>;
+    THUMBNAIL_DIR: z.ZodOptional<z.ZodString>;
+    DISK_WATCHDOG_INTERVAL_MS: z.ZodDefault<z.ZodNumber>;
+    SCRATCH_WARN_PERCENT: z.ZodDefault<z.ZodNumber>;
+    SCRATCH_ALERT_PERCENT: z.ZodDefault<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
     NODE_ENV: "development" | "test" | "production";
     PORT: number;
@@ -133,7 +197,7 @@ declare const Env: z.ZodObject<{
     MOBILE_DEV_PORT: number;
     HTTP_KEEPALIVE_MS: number;
     HTTP_HEADERS_TIMEOUT_MS: number;
-    LOG_LEVEL: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
+    LOG_LEVEL: "warn" | "error" | "trace" | "info" | "debug" | "fatal" | "silent";
     DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
     JWT_REFRESH_SECRET: string;
@@ -141,7 +205,7 @@ declare const Env: z.ZodObject<{
     JWT_REFRESH_TTL_SECONDS: number;
     JWT_ALGORITHM: "HS256";
     REFRESH_TOKEN_STRICT_IP_CHECK: boolean;
-    ADMIN_API_TOKEN_ROLE: "admin" | "editor" | "moderator" | "user";
+    ADMIN_API_TOKEN_ROLE: "admin" | "editor" | "user" | "moderator";
     CORS_ORIGINS: string;
     BROADCAST_PRELOAD_LEAD_MS: number;
     RATE_LIMIT_DEFAULT_PER_MINUTE: number;
@@ -153,13 +217,16 @@ declare const Env: z.ZodObject<{
     BCRYPT_ROUNDS: number;
     MEMORY_WARN_RSS_MB: number;
     MEMORY_RESTART_RSS_MB: number;
+    MEMORY_ABSOLUTE_MAX_RSS_MB: number;
     DB_POOL_MAX: number;
     DB_POOL_IDLE_TIMEOUT_MS: number;
     DB_POOL_CONNECT_TIMEOUT_MS: number;
     DB_STATEMENT_TIMEOUT_MS: number;
-    RUN_MODE: "api" | "worker" | "all";
+    VIEWER_TRACKING_SESSION_TTL_S: number;
+    RUN_MODE: "api" | "worker" | "all" | "broadcast";
     SCHEDULED_NOTIF_POLL_MS: number;
     SCHEDULED_NOTIF_MAX_ATTEMPTS: number;
+    SCHEDULED_NOTIF_BATCH_SIZE: number;
     TRANSCODER_POLL_MS: number;
     TRANSCODER_THREADS: number;
     TRANSCODER_DISABLE: boolean;
@@ -186,7 +253,12 @@ declare const Env: z.ZodObject<{
     TRANSCODER_LEASE_RENEW_MS: number;
     TRANSCODER_LEASE_RECLAIM_INTERVAL_MS: number;
     TRANSCODER_DLQ_ALERT_THRESHOLD: number;
+    TRANSCODER_QUEUE_STALE_ALERT_MS: number;
+    DLQ_RECOVERY_ENABLED: boolean;
+    DLQ_RECOVERY_INTERVAL_MS: number;
+    TRANSCODER_ZOMBIE_SCAN_INTERVAL_MS: number;
     ASSEMBLY_WATCHDOG_MS: number;
+    MAX_CONCURRENT_CHUNK_DB_OPS: number;
     SMTP_PORT: number;
     SMTP_FROM_NAME: string;
     SMTP_SECURE: boolean;
@@ -198,12 +270,15 @@ declare const Env: z.ZodObject<{
     HLS_SEGMENT_CACHE_MB: number;
     SHUTDOWN_PRECLOSE_DELAY_MS: number;
     SHUTDOWN_DRAIN_MS: number;
+    SHUTDOWN_FORCE_EXIT_BUDGET_MS: number;
     YOUTUBE_QUOTA_DAILY_LIMIT: number;
     YOUTUBE_CONTENT_WINDOW_DAYS: number;
     YOUTUBE_SYNC_INTERVAL_MINS: number;
     YOUTUBE_SYNC_DISABLE: boolean;
     YOUTUBE_AUTO_OVERRIDE_DISABLE: boolean;
     YOUTUBE_SHUFFLE_FALLBACK_DISABLE: boolean;
+    YOUTUBE_SHUFFLE_MIN_SLOT_SECS: number;
+    YOUTUBE_SHUFFLE_DEFAULT_DURATION_SECS: number;
     PROD_SYNC_INTERVAL_MS: number;
     PROD_SYNC_DISABLE: boolean;
     CLEANUP_RETENTION_HOURS: number;
@@ -213,6 +288,22 @@ declare const Env: z.ZodObject<{
     SEED_ADMIN_FORCE: boolean;
     QUEUE_MIN_ITEMS: number;
     STORAGE_HEALTH_INTERVAL_MS: number;
+    STORAGE_RECONCILIATION_INTERVAL_MS: number;
+    ORPHAN_BLOB_AUTO_DELETE: boolean;
+    ORPHAN_BLOB_MIN_AGE_HOURS: number;
+    STORAGE_RECON_LIBRARY_BATCH: number;
+    STORAGE_RECON_QUARANTINE_MIN_FAILURES: number;
+    STORAGE_RECON_BROADCAST_SAFE: boolean;
+    STORAGE_RECON_SIZE_CHECK: boolean;
+    STORAGE_RECON_SESSION_REPAIR: boolean;
+    QUEUE_WARN_MS: number;
+    QUEUE_CRIT_MS: number;
+    QUEUE_REFILL_TRIGGER_MS: number;
+    QUEUE_REFILL_BATCH: number;
+    BROADCAST_STATE_BACKUP_PATH: string;
+    DISK_WATCHDOG_INTERVAL_MS: number;
+    SCRATCH_WARN_PERCENT: number;
+    SCRATCH_ALERT_PERCENT: number;
     WEBHOOK_BASE_URL?: string | undefined;
     ADMIN_API_TOKEN?: string | undefined;
     ADMIN_API_TOKEN_IP_ALLOWLIST?: string | undefined;
@@ -220,6 +311,9 @@ declare const Env: z.ZodObject<{
     REDIS_URL?: string | undefined;
     AUTH_BF_BYPASS_TOKEN?: string | undefined;
     SENTRY_DSN?: string | undefined;
+    BROADCAST_DAEMON_URL?: string | undefined;
+    BROADCAST_DAEMON_HOST?: string | undefined;
+    BROADCAST_DAEMON_PORT?: number | undefined;
     BROADCAST_DEADAIR_FALLBACK_URL?: string | undefined;
     BROADCAST_WEBHOOK_URL?: string | undefined;
     BROADCAST_WEBHOOK_SECRET?: string | undefined;
@@ -230,6 +324,8 @@ declare const Env: z.ZodObject<{
     VAPID_PUBLIC_KEY?: string | undefined;
     VAPID_PRIVATE_KEY?: string | undefined;
     EXPO_ACCESS_TOKEN?: string | undefined;
+    GITHUB_TOKEN?: string | undefined;
+    GITHUB_REPO?: string | undefined;
     CDN_BASE_URL?: string | undefined;
     HLS_TOKEN_SECRET?: string | undefined;
     INTERNAL_HLS_BYPASS_SECRET?: string | undefined;
@@ -247,6 +343,11 @@ declare const Env: z.ZodObject<{
     REPL_DEPLOYMENT?: string | undefined;
     SEED_ADMIN_EMAIL?: string | undefined;
     SEED_ADMIN_PASSWORD?: string | undefined;
+    QUEUE_REFILL_DISABLE?: string | undefined;
+    STORAGE_PATH?: string | undefined;
+    UPLOAD_DIR?: string | undefined;
+    HLS_DIR?: string | undefined;
+    THUMBNAIL_DIR?: string | undefined;
 }, {
     DATABASE_URL: string;
     JWT_ACCESS_SECRET: string;
@@ -258,13 +359,13 @@ declare const Env: z.ZodObject<{
     HTTP_KEEPALIVE_MS?: number | undefined;
     HTTP_HEADERS_TIMEOUT_MS?: number | undefined;
     WEBHOOK_BASE_URL?: string | undefined;
-    LOG_LEVEL?: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent" | undefined;
+    LOG_LEVEL?: "warn" | "error" | "trace" | "info" | "debug" | "fatal" | "silent" | undefined;
     JWT_ACCESS_TTL_SECONDS?: number | undefined;
     JWT_REFRESH_TTL_SECONDS?: number | undefined;
     JWT_ALGORITHM?: "HS256" | undefined;
     REFRESH_TOKEN_STRICT_IP_CHECK?: string | boolean | undefined;
     ADMIN_API_TOKEN?: string | undefined;
-    ADMIN_API_TOKEN_ROLE?: "admin" | "editor" | "moderator" | "user" | undefined;
+    ADMIN_API_TOKEN_ROLE?: "admin" | "editor" | "user" | "moderator" | undefined;
     ADMIN_API_TOKEN_IP_ALLOWLIST?: string | undefined;
     CORS_ORIGINS?: string | undefined;
     CORS_ORIGINS_EXTRA?: string | undefined;
@@ -280,14 +381,20 @@ declare const Env: z.ZodObject<{
     BCRYPT_ROUNDS?: number | undefined;
     MEMORY_WARN_RSS_MB?: number | undefined;
     MEMORY_RESTART_RSS_MB?: number | undefined;
+    MEMORY_ABSOLUTE_MAX_RSS_MB?: number | undefined;
     DB_POOL_MAX?: number | undefined;
     DB_POOL_IDLE_TIMEOUT_MS?: number | undefined;
     DB_POOL_CONNECT_TIMEOUT_MS?: number | undefined;
     DB_STATEMENT_TIMEOUT_MS?: number | undefined;
     SENTRY_DSN?: string | undefined;
-    RUN_MODE?: "api" | "worker" | "all" | undefined;
+    VIEWER_TRACKING_SESSION_TTL_S?: number | undefined;
+    RUN_MODE?: "api" | "worker" | "all" | "broadcast" | undefined;
+    BROADCAST_DAEMON_URL?: string | undefined;
+    BROADCAST_DAEMON_HOST?: string | undefined;
+    BROADCAST_DAEMON_PORT?: number | undefined;
     SCHEDULED_NOTIF_POLL_MS?: number | undefined;
     SCHEDULED_NOTIF_MAX_ATTEMPTS?: number | undefined;
+    SCHEDULED_NOTIF_BATCH_SIZE?: number | undefined;
     TRANSCODER_POLL_MS?: number | undefined;
     TRANSCODER_THREADS?: number | undefined;
     TRANSCODER_DISABLE?: string | boolean | undefined;
@@ -318,7 +425,12 @@ declare const Env: z.ZodObject<{
     TRANSCODER_LEASE_RENEW_MS?: number | undefined;
     TRANSCODER_LEASE_RECLAIM_INTERVAL_MS?: number | undefined;
     TRANSCODER_DLQ_ALERT_THRESHOLD?: number | undefined;
+    TRANSCODER_QUEUE_STALE_ALERT_MS?: number | undefined;
+    DLQ_RECOVERY_ENABLED?: string | boolean | undefined;
+    DLQ_RECOVERY_INTERVAL_MS?: number | undefined;
+    TRANSCODER_ZOMBIE_SCAN_INTERVAL_MS?: number | undefined;
     ASSEMBLY_WATCHDOG_MS?: number | undefined;
+    MAX_CONCURRENT_CHUNK_DB_OPS?: number | undefined;
     SMTP_HOST?: string | undefined;
     SMTP_PORT?: number | undefined;
     SMTP_USER?: string | undefined;
@@ -330,6 +442,8 @@ declare const Env: z.ZodObject<{
     VAPID_PRIVATE_KEY?: string | undefined;
     VAPID_MAILTO?: string | undefined;
     EXPO_ACCESS_TOKEN?: string | undefined;
+    GITHUB_TOKEN?: string | undefined;
+    GITHUB_REPO?: string | undefined;
     CDN_BASE_URL?: string | undefined;
     REQUIRE_HLS_TOKEN?: string | boolean | undefined;
     HLS_TOKEN_SECRET?: string | undefined;
@@ -340,6 +454,7 @@ declare const Env: z.ZodObject<{
     HLS_SEGMENT_CACHE_MB?: number | undefined;
     SHUTDOWN_PRECLOSE_DELAY_MS?: number | undefined;
     SHUTDOWN_DRAIN_MS?: number | undefined;
+    SHUTDOWN_FORCE_EXIT_BUDGET_MS?: number | undefined;
     APP_VERSION?: string | undefined;
     YOUTUBE_API_KEY?: string | undefined;
     YOUTUBE_CHANNEL_ID?: string | undefined;
@@ -349,6 +464,8 @@ declare const Env: z.ZodObject<{
     YOUTUBE_SYNC_DISABLE?: string | boolean | undefined;
     YOUTUBE_AUTO_OVERRIDE_DISABLE?: string | boolean | undefined;
     YOUTUBE_SHUFFLE_FALLBACK_DISABLE?: string | boolean | undefined;
+    YOUTUBE_SHUFFLE_MIN_SLOT_SECS?: number | undefined;
+    YOUTUBE_SHUFFLE_DEFAULT_DURATION_SECS?: number | undefined;
     PROD_SYNC_API_URL?: string | undefined;
     API_ORIGIN?: string | undefined;
     PROD_SYNC_INTERVAL_MS?: number | undefined;
@@ -368,6 +485,27 @@ declare const Env: z.ZodObject<{
     SEED_ADMIN_FORCE?: string | boolean | undefined;
     QUEUE_MIN_ITEMS?: number | undefined;
     STORAGE_HEALTH_INTERVAL_MS?: number | undefined;
+    STORAGE_RECONCILIATION_INTERVAL_MS?: number | undefined;
+    ORPHAN_BLOB_AUTO_DELETE?: boolean | undefined;
+    ORPHAN_BLOB_MIN_AGE_HOURS?: number | undefined;
+    STORAGE_RECON_LIBRARY_BATCH?: number | undefined;
+    STORAGE_RECON_QUARANTINE_MIN_FAILURES?: number | undefined;
+    STORAGE_RECON_BROADCAST_SAFE?: boolean | undefined;
+    STORAGE_RECON_SIZE_CHECK?: boolean | undefined;
+    STORAGE_RECON_SESSION_REPAIR?: boolean | undefined;
+    QUEUE_WARN_MS?: number | undefined;
+    QUEUE_CRIT_MS?: number | undefined;
+    QUEUE_REFILL_TRIGGER_MS?: number | undefined;
+    QUEUE_REFILL_BATCH?: number | undefined;
+    QUEUE_REFILL_DISABLE?: string | undefined;
+    BROADCAST_STATE_BACKUP_PATH?: string | undefined;
+    STORAGE_PATH?: string | undefined;
+    UPLOAD_DIR?: string | undefined;
+    HLS_DIR?: string | undefined;
+    THUMBNAIL_DIR?: string | undefined;
+    DISK_WATCHDOG_INTERVAL_MS?: number | undefined;
+    SCRATCH_WARN_PERCENT?: number | undefined;
+    SCRATCH_ALERT_PERCENT?: number | undefined;
 }>;
 export type AppEnv = z.infer<typeof Env>;
 export declare const env: AppEnv;

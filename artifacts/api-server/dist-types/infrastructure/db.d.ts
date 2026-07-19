@@ -83,20 +83,6 @@ export declare function ensureMemoryHourlySnapshotsTable(): Promise<void>;
 export declare function ensureMidnightPrayersTable(): Promise<void>;
 /**
  * Reset managed_videos rows stuck in transcodingStatus='processing'.
- *
- * 'processing' is the transient state set by runFaststart while it atomically
- * replaces the stored blob.  runFaststart restores the prior status on a clean
- * failure, but a mid-faststart server crash leaves the row permanently blocked:
- * loadActive() excludes 'processing' items, so the broadcast queue slot is
- * silently held but never aired.
- *
- * At startup we can safely reset any 'processing' row back to 'queued' (if it
- * has a playable localVideoUrl) or 'none' (if not).  The object-storage blob is
- * always consistent — runFaststart uses a multipart atomic swap so the key
- * holds either the old un-optimised file or the fully written new file.
- * faststartApplied is intentionally left unchanged; the value was false before
- * the crash and the file may or may not be optimised.
- *
  * Called once at boot, non-blocking.
  */
 export declare function resetStuckProcessingVideos(): Promise<void>;
@@ -195,6 +181,36 @@ export declare function recoverStaleSyncLogs(): Promise<void>;
  *   broadcast_event_log   — events older than 14 days (replay window is seconds)
  */
 export declare function scheduleStaleDataCleanup(): void;
+/**
+ * Phase-1 boot sequence — runs before buildApp().
+ *
+ * Consolidates onto ONE pool connection (sequential DDL):
+ *   1. ensureRuntimeIndexes
+ *   2. ensureUserSchemaColumns
+ *   3. ensureMemoryHourlySnapshotsTable
+ *   4. ensureMidnightPrayersTable
+ *
+ * Error semantics preserved:
+ *   - ensureRuntimeIndexes   → per-index errors logged, never thrown (non-fatal)
+ *   - ensureUserSchemaColumns → per-column errors logged, never thrown (non-fatal)
+ *   - ensureMemoryHourlySnapshotsTable → errors logged, never thrown (non-fatal)
+ *   - ensureMidnightPrayersTable → errors are thrown so main.ts can log + continue
+ */
+export declare function runPreBuildBootSequence(): Promise<void>;
+/**
+ * Phase-2 boot sequence — runs after buildApp() and broadcastEngine.start(),
+ * before ensureBroadcastV2Started().
+ *
+ * Consolidates onto ONE pool connection (sequential DDL + data fixes):
+ *   1. ensureBroadcastV2Tables
+ *   2. resetStuckProcessingVideos
+ *   3. resetStuckEncodingVideos
+ *   4. recoverStaleSyncLogs
+ *
+ * All operations are non-fatal — errors are logged and swallowed so startup
+ * continues regardless.
+ */
+export declare function runPostBuildBootSequence(): Promise<void>;
 /**
  * Wrap a DB call in bounded exponential-backoff retries for *transient*
  * errors only. Use sparingly — most code should let errors bubble up

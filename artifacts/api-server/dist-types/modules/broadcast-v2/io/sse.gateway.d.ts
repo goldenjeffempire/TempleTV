@@ -16,4 +16,5 @@ export declare function closeAllSseSessions(): void;
  * 5–15 s on production).
  */
 export declare function broadcastReconnectHint(retryAfterMs: number): void;
+export declare function getBroadcastV2SseViewerCount(): number;
 export declare function sseRoutes(app: FastifyInstance): Promise<void>;

@@ -46,7 +46,9 @@ export declare const notificationsService: {
      * transaction so a partial failure (e.g. count succeeds, insert
      * fails) doesn't leave orphaned state.
      */
-    sendPush(body: z.infer<typeof SendPushBodySchema>): Promise<{
+    sendPush(body: z.infer<typeof SendPushBodySchema>, opts?: {
+        awaitDelivery?: boolean;
+    }): Promise<{
         recipients: number;
         delivered: number;
         deduplicated: boolean;

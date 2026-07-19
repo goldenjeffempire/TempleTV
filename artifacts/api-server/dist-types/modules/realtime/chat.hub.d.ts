@@ -1,97 +1,123 @@
 /**
- * Live-chat hub — singleton in-process room manager for the WebSocket
- * gateway in `chat.routes.ts`.
+ * Live-chat hub — singleton in-process room manager.
  *
- * Responsibilities
- *   - Track connected sockets per channel (one room per channelId)
- *   - Maintain per-room viewer counts and emit `presence` frames on
- *     join / leave (debounced; we only re-broadcast when the count
- *     actually changes)
- *   - Broadcast new `message` frames inserted via the WS `send` path
- *   - Broadcast `delete` frames when a moderator soft-deletes a row
- *     (called from `admin-chat.routes.ts`)
- *   - Broadcast `moderate` frames when a mute/ban is created
- *   - Keep an in-memory token-bucket per IP-hash so spammers can't
- *     flood the DB regardless of how many sockets they open
- *
- * Persistence + cross-process fan-out is intentionally out of scope:
- * the api-server runs single-replica in dev and (per `replit.md`) in
- * the current production deployment as well, so an in-process
- * EventEmitter is the right level of complexity. When the broadcast
- * tier scales horizontally, this hub gains a Redis pub/sub adapter
- * — the room/membership API above stays unchanged.
+ * Enhancements over the basic version:
+ *   • Slow-mode enforcement (per-channel, bypassed for admin/mod)
+ *   • Subscriber-only gate (checked by routes before calling publishMessage)
+ *   • Keyword-ban filter
+ *   • Duplicate-message + ALL-CAPS normalisation
+ *   • In-memory reaction store (ephemeral; resets on restart)
+ *   • Per-channel settings cache (populated from DB on first connect;
+ *     updated and broadcast on admin PATCH /settings)
+ *   • Pinned-message cache (populated from DB, broadcast on pin/unpin)
+ *   • 100 ms batch-flush: queues outgoing messages and flushes as either
+ *     a single `message` frame (1 msg) or a `batch` frame (>1 msg), keeping
+ *     the per-socket write count low under high-volume bursts
+ *   • Backpressure guard: skips sockets whose TX buffer exceeds 64 KiB so
+ *     a slow client never stalls the main event loop
  */
 import { EventEmitter } from "node:events";
-import type { ChatMessage, ChatServerEvent } from "./chat.types.js";
-/**
- * Structural type for the subset of the `ws` WebSocket API we touch.
- * We could pull `ws` in directly, but it's a transitive dep of
- * `@fastify/websocket` and the existing `ws.gateway.ts` already follows
- * the inferred-type pattern — keeping the dep surface narrow.
- */
+import type { ChatMessage, ChatRole, ChatServerEvent, ChatSettings } from "./chat.types.js";
 export interface ChatSocket {
     readonly readyState: number;
     send(data: string): void;
-    /** Available when the underlying socket is a `ws` WebSocket instance. */
     terminate?(): void;
+    /** Available on ws.WebSocket — bytes queued but not yet sent. */
+    readonly bufferedAmount?: number;
 }
+export declare const DEFAULT_SETTINGS: ChatSettings;
 export interface RoomMember {
     socket: ChatSocket;
     sessionId: string;
     displayName: string;
     userId: string | null;
     isModerator: boolean;
+    role: ChatRole;
     ipHash: string | null;
-    /** Token bucket: integer count of remaining sends in the current window. */
     sendTokens: number;
-    /** Epoch ms when the bucket last refilled. */
     bucketRefilledAtMs: number;
-    /**
-     * Epoch ms when the server last received proof-of-liveness from this member
-     * (either a "pong" message-type frame or a native WS pong event).
-     * Initialised to join-time so newly-connected sockets get a grace period.
-     */
     lastPongMs: number;
+    /** When the member last successfully sent a message (epoch ms). */
+    lastSentAtMs: number;
+    /** Body of the last message sent — used for duplicate detection. */
+    lastMsgBody: string;
 }
 declare class ChatHub extends EventEmitter {
     private rooms;
-    /** Add a socket to a channel room. Returns the (mutable) member record. */
+    private _settings;
+    private _pinnedMessages;
+    /** messageId → { emoji → count } */
+    private _reactions;
+    /** `${messageId}:${userKey}` → emoji reacted with (one per user per message) */
+    private _reactionUsers;
+    private _batchQueues;
+    private _batchTimer;
+    constructor();
+    private _flushBatches;
     join(channelId: string, member: RoomMember): {
         viewers: number;
     };
-    /** Remove a socket from a channel room (idempotent). */
     leave(channelId: string, member: RoomMember): void;
-    /** Current viewer count for a channel (0 if none). */
     viewers(channelId: string): number;
-    /** Send a frame to every socket in a room (best-effort, ignores closed sockets). */
+    /** Raw broadcast — bypasses batch queue (used for control frames). */
     broadcast(channelId: string, event: ChatServerEvent): void;
-    /** Called from chat.routes.ts after a successful DB insert. */
+    private _broadcastRaw;
+    /**
+     * Enqueue a message for the next 100 ms batch flush.
+     * Use this for every viewer-facing chat message so high-volume
+     * bursts are coalesced into a single WS write per client.
+     */
     publishMessage(channelId: string, message: ChatMessage): void;
-    /**
-     * Called from admin-chat.routes.ts after a soft-delete. Idempotent —
-     * sockets that don't have the message just ignore the frame.
-     */
     publishDelete(channelId: string, messageId: string): void;
-    /** Called from admin-chat.routes.ts after a mute/ban. */
     publishModeration(channelId: string, action: "mute" | "ban", subjectKind: "user" | "ip", subjectId: string, expiresAtMs: number | null): void;
+    getSettings(channelId: string): ChatSettings;
     /**
-     * Token-bucket check. Returns `true` if the send is allowed and the
-     * bucket has been decremented. Returns `false` if the member is over
-     * their per-window quota.
+     * Update the in-memory settings cache.
+     * Pass `broadcast = true` (default) when admin changes settings — sends a
+     * `settings` frame to all connected clients.
+     * Pass `broadcast = false` on first WS-connect load — just warms the cache.
      */
+    updateSettings(channelId: string, settings: ChatSettings, broadcast?: boolean): void;
+    getPinnedMessage(channelId: string): ChatMessage | null;
+    /**
+     * Set (or clear) the pinned message for a channel and broadcast a `pin` frame.
+     * Pass `broadcast = false` when warming the cache on first connect.
+     */
+    setPinnedMessage(channelId: string, message: ChatMessage | null, broadcast?: boolean): void;
+    getReactions(messageId: string): Record<string, number>;
+    /**
+     * Toggle a reaction emoji for a user on a message.
+     * One emoji per user per message — selecting a different emoji removes the
+     * previous one. Anonymous users are keyed by sessionId.
+     * Returns the updated reactions snapshot.
+     */
+    toggleReaction(channelId: string, messageId: string, emoji: string, userKey: string): Record<string, number>;
     consumeSendToken(member: RoomMember): boolean;
-    /** ms until a member's bucket next refills (for retryAtMs in error frames). */
     retryAtMs(member: RoomMember): number;
-    /** Internal: emit a `presence` frame after join/leave. */
-    private broadcastPresence;
     /**
-     * Send a server-initiated `ping` to every socket in every room, then
-     * sweep for zombie connections that haven't responded within ZOMBIE_TIMEOUT_MS.
-     *
-     * Without the sweep, half-open sockets (OS-level TCP connection alive but
-     * client process gone) accumulate indefinitely in the room Set — leaking
-     * event-loop references and inflating viewer counts.
+     * Returns how many seconds remain before the member can send again
+     * (0 = not throttled). Admins and mods bypass slow mode.
      */
+    slowModeRemainingS(member: RoomMember, slowModeSecs: number): number;
+    /**
+     * Returns true if the member just sent the identical message within the
+     * duplicate detection window. Mods/admins are exempt.
+     */
+    isDuplicate(member: RoomMember, body: string): boolean;
+    /**
+     * Checks body against the channel's keyword ban list.
+     * Returns the matched keyword (lower-cased) or null.
+     */
+    matchesBannedKeyword(body: string, bannedKeywords: string[]): string | null;
+    /**
+     * Normalises a message body: if >70 % of alphabetic characters are
+     * uppercase and the body is longer than 10 chars, convert to lower-case.
+     * This reduces ALL-CAPS spam without outright rejecting the message.
+     */
+    normaliseCaps(body: string): string;
+    /** Record a successful send. Updates slow-mode and duplicate-detection state. */
+    recordSend(member: RoomMember, body: string): void;
+    private _broadcastPresence;
     pingAll(): void;
 }
 export declare const chatHub: ChatHub;
@@ -101,6 +127,7 @@ export declare function createMember(args: {
     displayName: string;
     userId: string | null;
     isModerator: boolean;
+    role: ChatRole;
     ipHash: string | null;
 }): RoomMember;
 export {};

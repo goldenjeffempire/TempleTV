@@ -28,12 +28,12 @@
  *
  * Results are cached and exposed via the /diagnostics endpoint. Non-fatal.
  */
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { asc, eq, inArray, sql } from "drizzle-orm";
 import { sendBroadcastWebhook } from "../webhook/webhook.service.js";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
-import { normalizeQueueUrl } from "../repository/queue.repo.js";
+
 
 /**
  * Derive the storage_blobs key from a localVideoUrl.

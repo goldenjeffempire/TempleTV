@@ -8,7 +8,7 @@ import { broadcastSequence, broadcastQueueDepth, broadcastQueueStuck, broadcastS
 import { eventLogRepo } from "../repository/event-log.repo.js";
 import { runtimeRepo } from "../repository/runtime.repo.js";
 import { checkpointRepo } from "../repository/checkpoint.repo.js";
-import { queueRepo, countActiveRaw, isKnownBadUrl, markBadUrl, clearAllBadUrls, clearBadUrl, BAD_URL_TTL_MS, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, getBadUrlCacheSize, getBadUrlStats, markUrlBadBySource, getUrlConfidenceState, markSourceApproved, isSourceApproved, clearSourceApproval, clearAllSourceApprovals, type RawQueueRow } from "../repository/queue.repo.js";
+import { queueRepo, countActiveRaw, markBadUrl, clearAllBadUrls, clearBadUrl, incrementBadUrlSkipCount, resetBadUrlSkipCount, autoSuspendQueueItem, BAD_URL_SKIP_THRESHOLD, reEnableAllSuspended, persistBadUrlCache, hydrateBadUrlCache, getBadUrlCacheSize, getBadUrlStats, markUrlBadBySource, getUrlConfidenceState, markSourceApproved, isSourceApproved, clearSourceApproval, type RawQueueRow } from "../repository/queue.repo.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { saveDiskBackup, loadDiskBackup } from "../repository/disk-state-backup.js";
 import { restartLogRepo } from "../repository/restart-log.repo.js";
@@ -1718,7 +1718,7 @@ class BroadcastOrchestrator extends EventEmitter {
         // toItem() itself, which also corrupted itemCount.
         primaryUrl: v2.source.url,
         source: v2.source,
-        failoverSource: v2.failoverSource,
+        failoverSource: v2.failoverSource as { kind: "mp4"; url: string } | null,
         sourceQuality: row.sourceQuality,
       });
     }

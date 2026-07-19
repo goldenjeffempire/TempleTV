@@ -7,7 +7,15 @@ export declare function normalizeQueueUrl(raw: string | null | undefined): strin
  * proxy as an open relay.
  */
 export declare function makeMediaProxyUrl(externalUrl: string, ownBase?: string): string;
-export declare const BAD_URL_TTL_MS = 90000;
+export declare const BAD_URL_TTL_MS = 60000;
+/**
+ * No-op stub retained for backward compatibility with callers in recovery
+ * services that may reference this export. The storage-blob admission gate
+ * has been removed — all eligible items (is_active=true with any URL) are
+ * admitted unconditionally. Playback failures are handled at runtime by the
+ * orchestrator's bad-URL cache and auto-skip logic.
+ */
+export declare function invalidateStorageVerifyCache(_videoId?: string): void;
 /**
  * How long a repeatedly-failing item is kept out of broadcast rotation.
  * Longer than BAD_URL_TTL_MS so the standard per-snapshot check doesn't
@@ -20,12 +28,12 @@ export declare const SUSPENSION_TTL_MS: number;
 export declare function getBadUrlCacheSize(): number;
 /** Mark a source URL as recently confirmed unreachable.
  *
- * Uses exponential backoff: each successive call for the same URL doubles
- * the blacklist window (90 s → 3 min → 5 min → 10 min) so genuinely broken
- * sources don't re-enter rotation every 90 s and cause cascading RECOVERING
- * → SKIP_PENDING cycles. The per-URL failure count is reset by clearBadUrl()
- * or clearAllBadUrls() so an operator "clear blocks" action always gives a
- * clean slate.
+ * Uses exponential backoff: each successive call for the same URL extends
+ * the blacklist window (60 s → 3 min → 5 min → 10 min → 20 min) so
+ * genuinely broken sources don't re-enter rotation after a brief TTL and
+ * cause cascading RECOVERING → SKIP_PENDING cycles. The per-URL failure
+ * count is reset by clearBadUrl() or clearAllBadUrls() so an operator
+ * "clear blocks" action always gives a clean slate.
  */
 export declare function markBadUrl(url: string): void;
 /**
@@ -44,13 +52,38 @@ export declare function markBadUrl(url: string): void;
  */
 export declare function markBadUrlWithTtl(url: string, ttlMs: number): void;
 /** Clear a URL from the bad cache (e.g. after a queue reload with new sources).
- * Also resets the per-URL failure count so the next failure starts fresh at 90 s TTL. */
+ * Also resets the per-URL failure count and confidence source-set so the next
+ * failure cycle starts completely fresh. */
 export declare function clearBadUrl(url: string): void;
 /** Flush the entire bad-URL cache (e.g. operator-triggered "clear blocks").
- * Also resets all per-URL failure counts so every URL gets a clean slate. */
+ * Also resets all per-URL failure counts, confidence source-sets, per-item
+ * skip counters, and the recentlySuspended list so an operator recovery action
+ * gives every source a completely clean slate — including items that were
+ * accumulating toward the auto-suspend threshold. */
 export declare function clearAllBadUrls(): void;
 /** True if the URL is currently blacklisted and should not be served. */
 export declare function isKnownBadUrl(url: string): boolean;
+export type UrlConfidenceState = "healthy" | "gap1" | "gap2" | "gap3";
+/** Return the current confidence state for a URL without side-effects. */
+export declare function getUrlConfidenceState(url: string): UrlConfidenceState;
+/**
+ * Mark a URL as suspected bad from a named independent source.
+ *
+ * Confidence-based degradation (see module comment above):
+ *   • gap1 (1 source)  — logs a warning; URL stays in rotation; returns "gap1".
+ *   • gap2 (2 sources) — writes to bad-URL cache (exponential-backoff TTL);
+ *                        URL leaves rotation; returns "gap2".
+ *   • gap3 (3+ sources) — same as gap2 but a quarantine candidate; returns "gap3".
+ *
+ * Callers MUST check the return value and only take action (snapshot push,
+ * skip-counter increment, auto-suspend) when state !== "gap1".
+ *
+ * @param url    Client-visible source URL (before proxy-stripping).
+ * @param source Caller identifier — must be unique per independent subsystem.
+ */
+export declare function markUrlBadBySource(url: string, source: string): UrlConfidenceState;
+/** Returns the size of the confidence source-set map (for memory diagnostics). */
+export declare function getUrlBadSourceSetsSize(): number;
 /** Consecutive URL-failure reports required before auto-suspension.
  *  Raised from 3 → 5 to avoid auto-suspending items on transient network
  *  blips or brief storage hiccups that self-resolve within one bad-URL TTL. */
@@ -93,6 +126,20 @@ export declare function getRecentlySuspended(): ReadonlyArray<{
  * crashes the broadcast loop.
  */
 export declare function autoSuspendQueueItem(itemId: string, title: string | null, failCount: number, primaryUrl?: string): void;
+/** How long a successful probe suppresses future probes for the same item. */
+export declare const SOURCE_APPROVAL_TTL_MS: number;
+/** Mark a queue item's primary source URL as confirmed reachable. */
+export declare function markSourceApproved(itemId: string, url: string): void;
+/**
+ * Return true if this item was confirmed reachable recently (within SOURCE_APPROVAL_TTL_MS)
+ * AND the approved URL matches the current URL.
+ * URL mismatch (e.g. after a source swap) forces a re-probe automatically.
+ */
+export declare function isSourceApproved(itemId: string, url: string): boolean;
+/** Clear approval for an item — call when a stall report arrives or bad-URL is marked. */
+export declare function clearSourceApproval(itemId: string): void;
+/** Clear all approvals (call on operator "clear all blocks"). */
+export declare function clearAllSourceApprovals(): void;
 /**
  * Re-enable all queue items that are currently inactive (is_active = false).
  *
@@ -147,9 +194,6 @@ export interface RawQueueRow {
     thumbnailUrl: string | null;
     durationSecs: number;
     localVideoUrl: string | null;
-    hlsMasterUrl: string | null;
-    /** True when faststart.service.ts successfully relocated the moov atom. */
-    faststartApplied: boolean;
     /**
      * Raw ffprobe duration string from the joined managed_videos row
      * (e.g. "3600.123"). Preferred over durationSecs when valid — prevents
@@ -158,12 +202,10 @@ export interface RawQueueRow {
      */
     videoDuration: string | null;
     /**
-     * Computed source quality for this queue item.
-     * 'hls'           — hlsMasterUrl is set (adaptive HLS, preferred)
-     * 'mp4_faststart' — hlsMasterUrl absent but faststart_applied=true
-     * 'mp4_raw'       — hlsMasterUrl absent and faststart not applied
+     * Source quality for this queue item. Always "mp4" — the FastStart pipeline
+     * has been retired; all local videos broadcast directly as raw MP4.
      */
-    sourceQuality: "hls" | "mp4_faststart" | "mp4_raw";
+    sourceQuality: "mp4";
 }
 /**
  * Count broadcast_queue rows that are `is_active = true`, regardless of
@@ -175,8 +217,8 @@ export interface RawQueueRow {
  *   A) "Truly empty" — no active rows in the DB → library-scan backstop
  *      is the right recovery path.
  *   B) "Filtered out" — active rows exist but are excluded by the strict
- *      broadcast policy (faststart_applied=false, status='processing', etc.)
- *      → re-enabling suspended items + triggering faststart recovery is the
+ *      broadcast policy (bad URL, missing blob, etc.)
+ *      → re-enabling suspended items + triggering queue reload is the
  *      right path. Library scan would find nothing new to add, so running
  *      it alone doesn't help.
  *
@@ -204,6 +246,18 @@ export declare const queueRepo: {
      * duration after the queue row was already created with a placeholder.
      */
     updateDurationSecsByVideoId(videoId: string, durationSecs: number): Promise<void>;
+    /**
+     * Fetch the actual encoded duration from managed_videos for a given video ID.
+     *
+     * Used by naturalItemEnd() when the in-memory queue item still carries the
+     * 1800-s upload-time placeholder: the 5% threshold based on 1800s (= 90s)
+     * would incorrectly reject natural-end signals from videos shorter than 90s.
+     * Looking up the real duration fixes the threshold for those videos.
+     *
+     * Returns null when the video row is not found, the duration column is empty,
+     * the value cannot be parsed as a positive number, or the DB query fails.
+     */
+    getVideoDurationSecs(videoId: string): Promise<number | null>;
     /**
      * Project a raw queue row + a wall-clock window into a v2 V2Item.
      *

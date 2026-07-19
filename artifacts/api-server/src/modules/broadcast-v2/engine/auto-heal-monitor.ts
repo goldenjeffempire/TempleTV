@@ -367,7 +367,7 @@ async function doScan(): Promise<void> {
 
     // ── 5. All items blocked ──────────────────────────────────────────────
     // Detected via orchestrator mode being "all-blocked" or similar
-    if (started && mode === "all-blocked" && itemCount > 0) {
+    if (started && (mode as string) === "all-blocked" && itemCount > 0) {
       raiseAlert("ALL_ITEMS_BLOCKED", "queue", "error",
         "All broadcast queue items are blocked or suspended");
       if (!onCooldown("ALL_ITEMS_BLOCKED")) {
@@ -392,7 +392,7 @@ async function doScan(): Promise<void> {
           });
         }
       }
-    } else if (mode !== "all-blocked") {
+    } else if ((mode as string) !== "all-blocked") {
       clearAlert("ALL_ITEMS_BLOCKED");
     }
 
@@ -475,7 +475,7 @@ async function doScan(): Promise<void> {
         name: "queue",
         label: "Broadcast Queue",
         status: itemCount === 0 ? "critical"
-          : mode === "all-blocked" ? "degraded"
+          : (mode as string) === "all-blocked" ? "degraded"
           : "healthy",
         detail: `${itemCount} active items`,
         lastCheckedAt: t0,

@@ -8,6 +8,26 @@ export declare function generateTotpCode(secret: string): string;
  */
 export declare function verifyTotpCode(code: string, secret: string): boolean;
 /**
+ * Verify a 6-digit TOTP code with replay protection.
+ *
+ * Returns the matched time-step counter on success so the caller can
+ * atomically persist it and reject any future code at or below that counter,
+ * preventing replay attacks within the ±WINDOW clock-skew window.
+ *
+ * @param code          6-digit string from the authenticator app.
+ * @param secret        Base32-encoded TOTP secret from the user record.
+ * @param lastCounter   The previously persisted counter (from `last_totp_counter`
+ *                      in the DB). Pass null / undefined for the first TOTP use.
+ * @returns `{ valid: true, matchedCounter }` on success, `{ valid: false, matchedCounter: null }` on failure.
+ */
+export declare function verifyTotpCodeWithCounter(code: string, secret: string, lastCounter: bigint | null | undefined): {
+    valid: true;
+    matchedCounter: bigint;
+} | {
+    valid: false;
+    matchedCounter: null;
+};
+/**
  * Build the `otpauth://` URI recognised by Google Authenticator, Authy, etc.
  * The URI encodes the issuer, account email, secret, algorithm, digits, and period
  * so scanning the resulting QR code fully configures the authenticator.

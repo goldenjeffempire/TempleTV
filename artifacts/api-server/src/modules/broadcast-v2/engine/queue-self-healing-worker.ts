@@ -25,7 +25,7 @@
  *   "SUSPICIOUS_DURATION"                  → "Re-probe duration from admin panel"
  *   default                                → "Review source URL"
  */
-import { eq, and, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";

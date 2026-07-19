@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 export declare function closeAllBroadcastV2WsSessions(): void;
+export declare function getBroadcastV2WsViewerCount(): number;
 /**
  * Broadcast a graceful-restart hint to all currently-connected WebSocket
  * clients WITHOUT closing the connections.  Called by main.ts immediately

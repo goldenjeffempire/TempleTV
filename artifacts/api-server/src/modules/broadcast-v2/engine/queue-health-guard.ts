@@ -23,7 +23,7 @@
  * QUEUE_MIN_ITEMS after reconciliation — indicating the library genuinely
  * has fewer eligible videos than the minimum threshold.
  */
-import { and, count, eq, sql } from "drizzle-orm";
+import { count, eq, sql } from "drizzle-orm";
 import { db, schema } from "../../../infrastructure/db.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";

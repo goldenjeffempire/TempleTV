@@ -10,11 +10,59 @@ export declare function isAutoEnqueueEnabled(): boolean;
  */
 export declare function enqueueIfMissing(opts: {
     videoId: string;
-    reason: "upload-finalize" | "yt-sync" | "library-scan" | "manual-import" | "upload-recovery-on-restart" | "repair-all" | "enqueue-missing" | "assembly-retry" | "schedule-bridge";
+    reason: "upload-finalize" | "yt-sync" | "library-scan" | "manual-import" | "upload-recovery-on-restart" | "repair-all" | "enqueue-missing" | "assembly-retry" | "assembly-recovered-on-restart" | "schedule-bridge" | "schedule-bridge-fallback" | "deep-recovery" | "manual-enqueue" | "bulk-enqueue" | "validation-remediated" | "stuck-assembly-scanner";
 }): Promise<{
     enqueued: boolean;
     queueItemId?: string;
     skipReason?: string;
+}>;
+/**
+ * Self-healing repair sweep: finds all local `managed_videos` rows where
+ * `s3_mirrored_at IS NULL` (indicating the post-assembly stamp was either
+ * never written or silently swallowed), confirms the storage blob actually
+ * exists in `storage_blobs`, and stamps `s3_mirrored_at = NOW()` for every
+ * confirmed match.
+ *
+ * WHY THIS EXISTS:
+ *   The upload finalize path sets
+ *   `s3MirroredAt` inside a `Promise.all` with `.catch(() => {})` that
+ *   previously swallowed errors silently. If that UPDATE ever failed (transient
+ *   pool exhaustion, statement timeout), the video's `s3_mirrored_at` would
+ *   remain NULL permanently. `scanLibraryAndEnqueue` pre-filters out local
+ *   videos whose `s3_mirrored_at IS NULL`, so those videos would never enter
+ *   the broadcast queue — not at startup, not during self-heal, never.
+ *
+ *   This function runs before every `scanLibraryAndEnqueue` call to ensure that
+ *   no valid, assembled video is permanently excluded by a stale NULL stamp.
+ *
+ * SAFETY:
+ *   - Only repairs videos where the blob is confirmed present in storage_blobs
+ *     (i.e., `completeMultipartUpload` actually committed the bytes). Pre-
+ *     committed or partially-assembled rows have no blob row yet and are left
+ *     untouched — they continue to be excluded from the scan until the
+ *     assembly finishes and stamps the field correctly.
+ *   - Excludes terminal error codes (ASSEMBLY_FAILED, CORRUPT_SOURCE,
+ *     SOURCE_MISSING) so we don't re-admit permanently broken uploads.
+ *   - Batch-updates with a single UPDATE … WHERE id IN (…) to minimise
+ *     round-trips; the cap of 500 rows prevents runaway scans on large DBs.
+ */
+export declare function repairMissingS3MirroredAt(videoId?: string): Promise<{
+    repaired: number;
+}>;
+/**
+ * Startup blob audit: scans all local managed_videos rows that have a
+ * `localVideoUrl` and confirms each one has a corresponding row in
+ * `storage_blobs`.  Videos whose blob is absent are logged as errors so
+ * operators can identify and re-upload them.  This is a read-only diagnostic
+ * — it does NOT deactivate queue items (the queue integrity validator handles
+ * that) or delete video rows.
+ *
+ * Returns a summary of how many videos were checked and how many are missing.
+ */
+export declare function auditMissingBlobs(): Promise<{
+    checked: number;
+    missing: number;
+    missingIds: string[];
 }>;
 /**
  * Scan the entire library for playable videos that are NOT in the broadcast

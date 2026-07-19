@@ -5,6 +5,12 @@ import { broadcastFanout } from "./io/broadcast-fanout.js";
 import { getBroadcastHealthMonitorStatus } from "./engine/broadcast-health-monitor.js";
 import { getContentRotationStatus } from "./engine/content-rotation.js";
 import { getQueueHealthGuardStatus } from "./engine/queue-health-guard.js";
+import { getExhaustionStatus } from "./engine/queue-exhaustion-monitor.js";
+import { getAutoRefillStatus } from "./engine/auto-queue-refill.js";
+import { getStorageStats } from "../../infrastructure/storage.js";
+import { getDeadAirStats } from "./engine/dead-air-tracker.js";
+export { getExhaustionStatus, getAutoRefillStatus, getStorageStats };
+export { getDeadAirStats };
 export { getQueueHealthGuardStatus };
 /**
  * Broadcast v2 — server-authoritative streaming control plane.
@@ -17,6 +23,16 @@ export { getQueueHealthGuardStatus };
  * Coexists with the v1 broadcast module until the cut-over (T008).
  */
 export declare function broadcastV2Routes(app: FastifyInstance): Promise<void>;
+/**
+ * Proxy variant of broadcastV2Routes.
+ *
+ * Used by the API server when BROADCAST_DAEMON_URL is set: instead of running
+ * the broadcast engine in-process, every request is forwarded to the external
+ * daemon. SSE connections are streamed through, REST calls are proxied with
+ * fetch(). WebSocket is handled at the raw server upgrade-event level in
+ * app.ts (TCP proxy) and is deliberately excluded here.
+ */
+export { broadcastDaemonProxyRoutes } from "./io/daemon-proxy.js";
 /**
  * /health-visible bootstrap status. Lets external monitors and the
  * operator distinguish "bridge installed but start() throwing" from

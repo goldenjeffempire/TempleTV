@@ -123,23 +123,6 @@ declare const queueTable: import("drizzle-orm/pg-core").PgTableWithColumns<{
             identity: undefined;
             generated: undefined;
         }, {}, {}>;
-        hlsMasterUrl: import("drizzle-orm/pg-core").PgColumn<{
-            name: "hls_master_url";
-            tableName: "broadcast_queue";
-            dataType: "string";
-            columnType: "PgText";
-            data: string;
-            driverParam: string;
-            notNull: false;
-            hasDefault: false;
-            isPrimaryKey: false;
-            isAutoincrement: false;
-            hasRuntimeDefault: false;
-            enumValues: [string, ...string[]];
-            baseColumn: never;
-            identity: undefined;
-            generated: undefined;
-        }, {}, {}>;
         videoSource: import("drizzle-orm/pg-core").PgColumn<{
             name: "video_source";
             tableName: "broadcast_queue";
@@ -266,13 +249,12 @@ export declare const broadcastService: {
     snapshot(): import("./queue.engine.js").BroadcastSnapshot;
     listQueue(): Promise<(typeof queueTable.$inferSelect)[]>;
     addToQueue(item: z.infer<typeof AddQueueItemSchema>): Promise<{
-        title: string;
         id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
-        hlsMasterUrl: string | null;
         isActive: boolean;
         videoId: string | null;
         sortOrder: number;
@@ -283,13 +265,12 @@ export declare const broadcastService: {
         validatorDeactivatedReason: string | null;
     }>;
     removeFromQueue(id: string): Promise<{
-        title: string;
         id: string;
         youtubeId: string;
+        title: string;
         thumbnailUrl: string;
         videoSource: string;
         localVideoUrl: string | null;
-        hlsMasterUrl: string | null;
         isActive: boolean;
         videoId: string | null;
         sortOrder: number;
@@ -308,7 +289,6 @@ export declare const broadcastService: {
         thumbnailUrl: string;
         durationSecs: number;
         localVideoUrl: string | null;
-        hlsMasterUrl: string | null;
         videoSource: string;
         isActive: boolean;
         sortOrder: number;

@@ -20,7 +20,9 @@ export declare const authService: {
         ip?: string;
         userAgent?: string;
     }): Promise<AuthTokens>;
-    logout(refreshToken?: string): Promise<void>;
+    logout(refreshToken?: string, opts?: {
+        everywhere?: boolean;
+    }): Promise<void>;
     /**
      * Non-rotating token extension — issues a new access token WITHOUT revoking
      * the refresh token. Used by the client keep-alive so session maintenance

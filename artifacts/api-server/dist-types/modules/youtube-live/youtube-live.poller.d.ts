@@ -22,8 +22,28 @@ export interface YtLiveState {
     viewerCount: number | null;
     checkedAt: number;
     detectionMethod: "youtube-api-v3" | "youtube-rss" | "no-channel-configured" | "youtube-live-poller-disabled-in-build" | "api-error" | "rss-error";
+    /** True when the channel has an upcoming (scheduled but not yet started) broadcast. */
+    isUpcoming: boolean;
+    /** YouTube video ID of the first upcoming broadcast, or null. */
+    upcomingVideoId: string | null;
+    /** Title of the upcoming broadcast, or null. */
+    upcomingTitle: string | null;
 }
 type Listener = (state: YtLiveState) => void;
+/**
+ * Parse the YouTube RSS feed XML for live broadcasts.
+ *
+ * Uses @xmldom/xmldom's DOMParser instead of string splitting + regex so that:
+ *   • CDATA-wrapped titles/content are handled natively via textContent
+ *   • Whitespace variations around element values are normalised via .trim()
+ *   • Completely malformed XML throws ParseError which is caught below and
+ *     returned as detectionMethod:"rss-error" (graceful degradation)
+ *   • Namespace-prefixed tags (yt:videoId, yt:liveBroadcastContent) are
+ *     matched by local name regardless of the xmlns declaration order
+ *
+ * Exported for unit testing.
+ */
+export declare function parseRssResponse(xml: string): Omit<YtLiveState, "checkedAt">;
 declare class YtLivePoller extends EventEmitter {
     private state;
     private timer;

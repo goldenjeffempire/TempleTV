@@ -109,7 +109,7 @@ async function run(): Promise<void> {
       FROM broadcast_queue
       WHERE is_active = true
     `);
-    const durationRow = durationRows.rows?.[0] ?? durationRows[0];
+    const durationRow = durationRows.rows?.[0];
     const totalSecs = parseFloat(String(durationRow?.total_secs ?? "0"));
     const timeToEmptyMs = totalSecs * 1000;
 
@@ -193,7 +193,7 @@ async function run(): Promise<void> {
           COUNT(*) FILTER (WHERE video_source != 'youtube')::text AS local_cnt
         FROM managed_videos
       `);
-      const libRow = libraryRows.rows?.[0] ?? libraryRows[0] as { youtube_cnt: string; local_cnt: string } | undefined;
+      const libRow = libraryRows.rows?.[0] as { youtube_cnt: string; local_cnt: string } | undefined;
       const youtubeCount = parseInt(String(libRow?.youtube_cnt ?? "0"), 10);
       const localCount   = parseInt(String(libRow?.local_cnt  ?? "0"), 10);
 

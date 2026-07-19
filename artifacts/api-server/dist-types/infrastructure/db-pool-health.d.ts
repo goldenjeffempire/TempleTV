@@ -10,6 +10,7 @@
  * Follows the same pattern as memory-watchdog.ts and event-loop-lag.ts:
  *   • installDbPoolHealthMonitor() / uninstallDbPoolHealthMonitor() for lifecycle
  *   • getDbPoolHealthStatus() exposes live state for /health / /diagnostics
+ *   • getPoolBackpressureLevel() lets workers self-throttle before saturation
  *
  * Alert tiers
  * ───────────
@@ -20,6 +21,17 @@
  *   2. WAITING connections (pool.waitingCount > 0):
  *      emits ops-alert with level="critical" immediately (no sustain buffer)
  *      because waiting queries mean callers are already stalling.
+ *
+ * Backpressure API
+ * ────────────────
+ *   getPoolBackpressureLevel() → 0 | 1 | 2
+ *     0 = normal    — pool healthy, no throttling needed
+ *     1 = elevated  — utilization > warn threshold; workers should reduce
+ *                     concurrency (e.g. halve parallel chunk uploads)
+ *     2 = saturated — waiting > 0; workers should pause non-critical ops
+ *
+ *   isPoolSaturated() → boolean
+ *     Shorthand for level === 2.  Use in tight loops before spawning work.
  *
  * No DB queries are made by this monitor — it reads synchronous counters
  * directly from the pg Pool instance.
@@ -41,3 +53,30 @@ export interface DbPoolHealthStatus {
     warnThreshold: number;
 }
 export declare function getDbPoolHealthStatus(): DbPoolHealthStatus;
+/**
+ * Returns the current pool backpressure level:
+ *   0 = normal    — pool healthy (<= warn threshold), full concurrency OK
+ *   1 = elevated  — utilization > warn threshold; workers should reduce
+ *                   concurrent DB operations (e.g. halve parallel queries)
+ *   2 = saturated — queries are waiting for a connection; workers should
+ *                   pause non-critical background DB work entirely
+ *
+ * Workers check this before spawning concurrent batches:
+ *
+ *   const level = getPoolBackpressureLevel();
+ *   if (level >= 2) return; // back off entirely
+ *   const concurrency = level >= 1 ? 1 : MAX_CONCURRENCY;
+ */
+export declare function getPoolBackpressureLevel(): 0 | 1 | 2;
+/**
+ * Returns true when the pool is fully saturated (queries are waiting).
+ * Shorthand for getPoolBackpressureLevel() === 2.
+ *
+ * Use inside tight worker loops to skip non-critical DB work:
+ *
+ *   if (isPoolSaturated()) {
+ *     logger.warn("pool saturated — skipping this tick");
+ *     return;
+ *   }
+ */
+export declare function isPoolSaturated(): boolean;

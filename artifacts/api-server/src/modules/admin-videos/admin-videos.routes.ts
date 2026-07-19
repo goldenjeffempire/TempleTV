@@ -1209,7 +1209,9 @@ export async function adminVideosRoutes(app: FastifyInstance) {
 
       return {
         videoId: id,
-        validationStatus: (vs === "pending" || vs === "running" || vs === "passed" || vs === "warn" || vs === "failed") ? vs : null,
+        validationStatus: (vs === "pending" || vs === "running" || vs === "passed" || vs === "warn" || vs === "failed")
+          ? vs as "pending" | "running" | "passed" | "warn" | "failed"
+          : null,
         validationCompletedAt: row.validationCompletedAt?.toISOString() ?? null,
         report,
       };

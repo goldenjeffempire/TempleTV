@@ -4,7 +4,6 @@ import { db, schema } from "../../../infrastructure/db.js";
 import { resolveSource } from "../resolver/universal-source-resolver.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
-import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import type { V2Item, V2Source } from "../domain/types.js";
 import { isUndefinedColumnError } from "../../../infrastructure/db-schema-guard.js";
 import { runtimeRepo } from "./runtime.repo.js";

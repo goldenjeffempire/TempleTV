@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 import { db, schema } from "../../infrastructure/db.js";
 import { broadcastEngine } from "./queue.engine.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
-import { BadRequestError, ConflictError, InternalError, NotFoundError } from "../../shared/errors.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../shared/errors.js";
 import { logger } from "../../infrastructure/logger.js";
 import type { z } from "zod";
 import type { AddQueueItemSchema } from "./broadcast.schemas.js";

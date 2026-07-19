@@ -14,7 +14,7 @@ export interface V2Source {
     /** Epoch-ms when a signed URL stops working; null if not signed. */
     expiresAtMs: number | null;
 }
-export type V2SourceQuality = "hls" | "mp4_faststart" | "mp4_raw";
+export type V2SourceQuality = "hls" | "mp4";
 export interface V2Item {
     id: string;
     title: string;
@@ -32,9 +32,8 @@ export interface V2Item {
     endsAtMs: number;
     /**
      * Source quality classification populated by the orchestrator.
-     * 'hls'           — adaptive HLS stream (preferred)
-     * 'mp4_faststart' — moov-at-byte-0 range-seekable MP4
-     * 'mp4_raw'       — sequential-only MP4 (may buffer slowly on seek)
+     * 'hls' — adaptive HLS stream (preferred)
+     * 'mp4' — raw MP4 (byte-range streaming)
      */
     sourceQuality?: V2SourceQuality;
 }
@@ -47,6 +46,13 @@ export interface V2Override {
     endsAtMs: number | null;
     /** When true, the orchestrator restores the queue position when override ends. */
     resumeQueueOnEnd: boolean;
+    /**
+     * Elapsed seconds into the video/stream that playback should start at.
+     * Populated only when resuming a YouTube shuffle-fallback video after a
+     * server restart (so the same video continues from where it left off
+     * instead of restarting at 0:00). Undefined/0 for a normal fresh start.
+     */
+    resumeSeconds?: number;
 }
 export interface V2Snapshot {
     channelId: string;
@@ -75,15 +81,32 @@ export interface V2Snapshot {
      */
     offAirReason: "empty" | "all_blocked" | null;
     /**
+     * YouTube video ID of the NEXT video in the shuffle playlist.
+     * Only populated when the YouTube shuffle fallback is active (mode=override,
+     * override.kind="youtube"). Clients use this to preload the next YouTube
+     * iframe before the current one ends, enabling seamless gapless transitions.
+     * Null when shuffle is inactive, the playlist has only one entry, or the
+     * next entry is unknown.
+     */
+    nextYtVideoId?: string | null;
+    /**
      * Source quality of the currently-playing item.
      * 'hls'           — adaptive HLS stream (preferred)
-     * 'mp4_faststart' — moov-at-byte-0 range-seekable MP4
-     * 'mp4_raw'       — sequential-only MP4 (may buffer slowly)
+     * 'mp4'           — raw MP4 (byte-range streaming)
      * 'live_override' — operator HLS/RTMP live override
      * 'youtube'       — YouTube live override
      * null            — off-air
      */
     sourceQuality: V2SourceQuality | "live_override" | "youtube" | null;
+    /**
+     * "midnight-prayers" when the Midnight Prayers window is on-air (the main
+     * queue is frozen and `current`/`next`/`nextNext` are drawn from the
+     * Midnight Prayers rotation instead). "regular" otherwise. Additive,
+     * optional field — older clients that don't read it simply render
+     * `current` as normal, since Midnight Prayers content is a first-class
+     * queue item indistinguishable in shape from any other.
+     */
+    programMode?: "regular" | "midnight-prayers";
 }
 /** Server → client WebSocket / SSE frames. */
 export type V2ServerFrame = {
@@ -165,4 +188,17 @@ export type V2EventType = "queue.changed" | "item.advanced" | "item.skipped" | "
  *
  * Payload: { itemId: string; newSource: V2Source; oldKind: V2SourceKind }
  */
- | "source.upgraded";
+ | "source.upgraded"
+/**
+ * Emitted when the Midnight Prayers window opens and the orchestrator
+ * swaps `this.items` to the prayer rotation (preempting an active
+ * ytShuffleFallback override when necessary). Payload:
+ * { itemCount: number; preemptedYtShuffle: boolean }
+ */
+ | "midnight_prayers.started"
+/**
+ * Emitted when the Midnight Prayers window closes and the main queue (or
+ * ytShuffleFallback, on YouTube-only deployments) resumes. Payload:
+ * { resumedItemId: string | null }
+ */
+ | "midnight_prayers.ended";

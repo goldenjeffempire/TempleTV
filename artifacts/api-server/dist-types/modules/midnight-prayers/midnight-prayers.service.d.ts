@@ -13,7 +13,13 @@
  *   viewer's local midnight) so playback is synchronised within each timezone.
  * - Config (startHour / endHour / timezone) is a singleton DB row; the server
  *   reloads it on PATCH; clients poll /config once per session.
+ * - STRICT SERVER-SIDE WINDOW ENFORCEMENT: getSnapshot() returns offline_hold
+ *   outside the [startHour, endHour) window in the configured timezone. The
+ *   itemWatchTimer tracks window transitions and pushes offline_hold to all
+ *   connected clients the moment the window closes at endHour.
  */
+import { getLocalHour, isWindowActive, type MPWindowConfig } from "./window-utils.js";
+export { getLocalHour, isWindowActive, type MPWindowConfig };
 export interface MPV2Source {
     kind: "hls" | "mp4" | "youtube";
     url: string;
@@ -49,6 +55,8 @@ export interface MPV2Snapshot {
         totalDurationSecs: number;
         cycleLengthMs: number;
         epochMs: number;
+        windowActive: boolean;
+        windowDescription: string;
     };
 }
 export type MPServerFrame = {
@@ -101,6 +109,8 @@ declare class MidnightPrayersService {
     private heartbeatTimer;
     private itemWatchTimer;
     private lastBroadcastedId;
+    /** Tracks the last known window state so the timer can detect transitions. */
+    private lastWindowActive;
     init(): Promise<void>;
     getConfig(): MidnightPrayersConfigData;
     loadConfig(): Promise<void>;
@@ -115,11 +125,18 @@ declare class MidnightPrayersService {
         queued: number;
         inRotation: number;
         deadAirRisk: boolean;
+        windowActive: boolean;
         statusCounts: Record<string, number>;
         config: MidnightPrayersConfigData;
     }>;
     /**
      * Build a V2Snapshot-compatible object for the current moment in time.
+     *
+     * STRICT TIME-WINDOW ENFORCEMENT: This method enforces the [startHour,
+     * endHour) window in the configured IANA timezone on every call. Outside
+     * the window it returns mode="offline_hold" with all items null so the
+     * player-core FSM goes dark. This is the authoritative server-side check —
+     * client-side switching is a UX optimisation on top of it, not a substitute.
      *
      * @param epochMs  The client's local midnight (ms since epoch).
      *                 Defaults to today's midnight in the server's configured
@@ -134,4 +151,3 @@ declare class MidnightPrayersService {
     private startTimers;
 }
 export declare const midnightPrayersService: MidnightPrayersService;
-export {};

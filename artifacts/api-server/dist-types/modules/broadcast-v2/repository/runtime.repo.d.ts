@@ -16,6 +16,21 @@ export interface PersistedBadUrlState {
     /** itemId → consecutive failure count */
     skipCounts: Record<string, number>;
 }
+export interface PersistedYtShuffleState {
+    playlist: {
+        youtubeId: string;
+        title: string;
+        duration: string;
+    }[];
+    playlistIndex: number;
+    currentVideoId: string | null;
+    currentVideoTitle: string | null;
+    /** Wall-clock ms when the current video started airing. */
+    currentVideoStartedAtMs: number | null;
+    activatedAtMs: number | null;
+    /** Wall-clock ms when this state was written — used for staleness checks. */
+    savedAtMs: number;
+}
 export declare const runtimeRepo: {
     load(channelId: string): Promise<RuntimeStateRecord | null>;
     save(rec: RuntimeStateRecord): Promise<void>;
@@ -71,4 +86,24 @@ export declare const runtimeRepo: {
         savedAt: number;
         items: unknown[];
     } | null>;
+    /**
+     * Persist the YouTube shuffle-fallback state (shuffled playlist, current
+     * playlist index/video, and when the current video started airing) so a
+     * restart resumes the SAME video at the correct elapsed position instead
+     * of re-shuffling the catalog and starting a random video from 0:00.
+     * Non-throwing; callers fire-and-forget.
+     */
+    saveYtShuffleState(channelId: string, state: PersistedYtShuffleState): Promise<void>;
+    /**
+     * Load the persisted YouTube shuffle-fallback state. Returns null when no
+     * row exists or the column is NULL (first boot, column just added, or the
+     * shuffle was never active before the last shutdown).
+     */
+    loadYtShuffleState(channelId: string): Promise<PersistedYtShuffleState | null>;
+    /**
+     * Clear the persisted YouTube shuffle-fallback state. Called on deactivate()
+     * so a stale "resume video X" record doesn't linger after the shuffle
+     * fallback is intentionally stopped (e.g. local content became available).
+     */
+    clearYtShuffleState(channelId: string): Promise<void>;
 };

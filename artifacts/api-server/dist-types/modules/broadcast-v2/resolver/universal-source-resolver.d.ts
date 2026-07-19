@@ -8,7 +8,7 @@ export interface ResolverInput {
 export interface ResolvedSource {
     source: V2Source;
     failoverSource: {
-        kind: "hls" | "mp4";
+        kind: "mp4";
         url: string;
     } | null;
 }

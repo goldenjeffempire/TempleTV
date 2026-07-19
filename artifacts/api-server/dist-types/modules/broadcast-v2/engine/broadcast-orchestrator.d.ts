@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { V2Override, V2ServerFrame, V2Snapshot } from "../domain/types.js";
+import type { V2Override, V2ServerFrame, V2Snapshot, V2Source } from "../domain/types.js";
 /**
  * One entry in the orchestrator's airing history ring buffer.
  * Exposed via getAiringHistory() and the /health endpoint so operators can
@@ -14,6 +14,35 @@ export interface AiringEntry {
     startedAtMs: number;
     /** Wall-clock ms when this item stopped airing. null = currently on air. */
     endedAtMs: number | null;
+}
+/**
+ * Pre-resolved queue item stored in the orchestrator's in-memory items array.
+ *
+ * Source resolution (resolveSource + allowlist check) runs ONCE per item at
+ * queue-load time (inside reloadInner), NOT on every snapshot() call. This
+ * eliminates the "no playable source available" WARN log storm seen when
+ * every WS/SSE client heartbeat re-triggered resolveSource() for every item
+ * with an invalid URL.
+ *
+ * Source blocking removed: projectItem() always returns an item and never
+ * checks the bad-URL cache. Videos broadcast directly via MP4/YouTube source.
+ */
+interface CachedQueueItem {
+    id: string;
+    /** managed_videos.id — null for queue items that have no joined video row. */
+    videoId: string | null;
+    title: string;
+    thumbnailUrl: string | null;
+    durationSecs: number;
+    /** Stored for fast bad-URL cache lookups in snapshot(). */
+    primaryUrl: string | null;
+    source: V2Source;
+    failoverSource: {
+        kind: "mp4";
+        url: string;
+    } | null;
+    /** Source quality tier — always 'mp4' for local uploads (raw MP4, byte-range streaming). */
+    sourceQuality: "mp4";
 }
 /**
  * Server-authoritative broadcast orchestrator.
@@ -50,6 +79,30 @@ declare class BroadcastOrchestrator extends EventEmitter {
     private override;
     /** Position checkpoint of the queue item paused under an override. */
     private queueCheckpoint;
+    /**
+     * True while the Midnight Prayers window is on-air. While active, `this.items`
+     * holds the Midnight Prayers rotation instead of the normal broadcast queue,
+     * and reloadInner() is a no-op — the main queue is frozen (not mutated) so it
+     * resumes exactly where it left off. Reuses the SAME dual-buffer preload /
+     * checkpoint / self-heal machinery that the primary broadcast already relies
+     * on, so Midnight Prayers gets the identical gapless-transition and
+     * self-healing guarantees for free instead of a bespoke, less-reliable path.
+     */
+    private midnightPrayersActive;
+    /**
+     * True for the brief async window between preempting ytShuffleFallback and
+     * committing the Midnight Prayers item swap (`midnightPrayersActive = true`).
+     * activateMidnightPrayers() awaits a checkpoint load/save in that window,
+     * during which the 2 s tick loop and self-heal timers keep running — if any
+     * of them observe "mode === queue, items still empty" they will race to
+     * re-activate ytShuffleFallback right back, undoing the preemption before
+     * the prayer rotation is swapped in. Every ytShuffleFallback auto-activation
+     * site is gated on `!midnightPrayersActivating` to close that race.
+     */
+    private midnightPrayersActivating;
+    /** Main-queue items saved when Midnight Prayers activated, restored on end. */
+    private mpSavedItems;
+    private mpSavedCycleStartedAtMs;
     private failover;
     private sequence;
     private tickTimer;
@@ -92,6 +145,13 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * fresh escalation immediately rather than waiting for the cooldown.
      */
     private lastDeadAirEscalationMs;
+    /**
+     * Wall-clock ms of the last ytShuffleFallback.activate() attempt from the
+     * reloadInner fast-path. Throttles to once per 60 s so an empty YouTube
+     * catalog does not trigger a DB query on every 5-second drift-poll.
+     * Reset to 0 when items load so the next outage gets an immediate attempt.
+     */
+    private lastYtShuffleActivateAttemptMs;
     /**
      * Dirty flag for the position checkpoint.  Set whenever the orchestrator
      * emits a snapshot (state has changed).  persistCheckpoint() returns
@@ -188,6 +248,28 @@ declare class BroadcastOrchestrator extends EventEmitter {
     private lastCpPositionMs;
     private lastCpWallMs;
     /**
+     * What the most recent hydrate() call resumed from.
+     * Written during hydrate(); read in start() to record the restart log entry.
+     * "checkpoint"  = resumed from DB runtime_state or player_position_checkpoint
+     * "disk_backup" = DB was empty/unavailable; fell back to /tmp disk snapshot
+     * "cold_start"  = no persisted state found; started fresh from sequence 0
+     */
+    private hydrateSource;
+    /**
+     * Preserved copy of the first successfully-restored cycle anchor at boot.
+     *
+     * Unlike restoredCycleAnchor (consumed on first use), this persists for the
+     * process lifetime so it can be re-applied when the queue temporarily goes
+     * empty (MISSING_BLOB auto-deactivation, boot oscillation) and then recovers
+     * with a different item composition — preventing a fresh-start that would
+     * reset the broadcast to position 0.
+     *
+     * Set whenever restoredCycleAnchor or checkpoint fallback successfully
+     * establishes cycleStartedAtMs at boot. Never cleared — a stale-but-close
+     * epoch is always less harmful than restarting from 0 for 24/7 broadcast TV.
+     */
+    private _bootAnchorPreserved;
+    /**
      * Concurrency guard: prevents overlapping persistCheckpoint() calls when
      * the DB write takes longer than CHECKPOINT_INTERVAL_MS.  Without this,
      * slow writes stack up and can produce out-of-order checkpoints.
@@ -237,19 +319,61 @@ declare class BroadcastOrchestrator extends EventEmitter {
      */
     private currentItemProbeTimer;
     private badUrlCacheTimer;
+    /**
+     * One-shot precision timer that fires exactly when the current broadcast
+     * item should end (currentItem.endsAtMs). This supplements the 2 s tick
+     * loop: the tick is correct on average but can fire up to 2 s late, which
+     * means items can run ~2 s over their scheduled duration without anyone
+     * noticing on the server side.
+     *
+     * When this fires it simply calls tick() once — the same work the 2 s loop
+     * would do anyway, just at a more precise moment. If the item already
+     * advanced (client /natural-end arrived first) tick() is a harmless no-op.
+     *
+     * Upper-bound guard: never schedule more than 4 h ahead (items longer than
+     * that are rare and a multi-hour setTimeout can drift significantly on busy
+     * Node event loops).
+     */
+    private itemEndTimer;
+    /**
+     * Precision one-shot timer that fires when the current YouTube shuffle
+     * override's endsAtMs is reached.  Calls ytShuffleFallback.advance()
+     * immediately so the next video starts without waiting up to 5 s for the
+     * selfHealEmptyTimer to detect an expired override.  Cleared whenever a
+     * new override starts (startOverride reschedules it) or when the
+     * orchestrator stops.
+     */
+    private overrideEndTimer;
     /** Consecutive definitive 4xx failure count for the currently-playing item. */
     private currentItemProbeFailures;
     /**
      * Consecutive ambiguous (5xx / timeout / network error) failure count.
      * Tracked separately from 4xx: 5xx are transient by nature (CDN blip, origin
-     * restart) and a single probe must never drop content. However, 5
+     * restart) and a single probe must never drop content. However, 7
      * consecutive ambiguous failures at the 30 s probe interval means the CDN
-     * has been unresponsive for ≥ 2.5 minutes — at that point the item is
+     * has been unresponsive for ≥ 3.5 minutes — at that point the item is
      * genuinely dead-air for all viewers and auto-skip is warranted.
      */
     private currentItemProbeAmbiguousFailures;
     /** Item ID under observation — resets failure counters on item advance. */
     private currentItemProbeId;
+    /**
+     * Wall-clock ms when the first probe failure (4xx or ambiguous) was recorded
+     * for the currently-playing item in the current instability window. Used with
+     * PROBE_FAILURE_WINDOW_MS to discard stale failure counts accumulated during
+     * a previous instability episode on the same long-running item (e.g. a
+     * 2-hour sermon that had a CDN blip an hour ago but recovered). Reset to
+     * null when the item changes or the URL is confirmed reachable.
+     */
+    private currentItemProbeFirstFailureMs;
+    /**
+     * Maximum age of probe failures before they are treated as stale and the
+     * counters are reset. Prevents failure counts from separate instability
+     * episodes on the same long-running item accumulating toward the skip
+     * threshold. At a 30 s probe interval, 5 min = at most 10 failures can occur
+     * in one window — well above the 4× and 7× thresholds.
+     */
+    private static readonly PROBE_FAILURE_WINDOW_MS;
     /**
      * Guards the fire-and-forget duration write-back in naturalItemEnd().
      * Prevents two near-simultaneous client reports for the same item from
@@ -564,10 +688,8 @@ declare class BroadcastOrchestrator extends EventEmitter {
      *                                      rows left by older server versions.
      *     2. clearAllBadUrls()           — removes in-memory 90 s / 5 min TTL
      *                                      blocks so items can be re-probed.
-     *     3. faststartRecoveryWorker.sweep() — immediately triggers faststart
-     *                                      for items with faststart_applied=false;
-     *                                      on success the worker fires
-     *                                      broadcast-queue-updated → reload().
+     *     3. scanLibraryAndEnqueue()     — enqueues any eligible library videos
+     *                                      not yet in the active broadcast queue.
      *     4. scheduleSelfHealReload()    — belt-and-suspenders reload that
      *                                      picks up any items re-enabled by (1).
      *
@@ -604,6 +726,36 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * This prevents a persistently broken tick from burning CPU in a tight loop
      * while still allowing automatic recovery when the root cause is transient.
      */
+    /**
+     * Arms a one-shot timer to fire a single tick() exactly when the current
+     * item is scheduled to end. Replaces any previously-armed timer so calling
+     * this on every item advance is safe.
+     *
+     * Rationale: the 2 s tick loop fires every 2 s regardless of where the
+     * item boundary falls, meaning items can run 0–2 s over their scheduled
+     * duration before the server detects the boundary. The precision timer
+     * eliminates this slack by firing tick() at the exact wall-clock moment
+     * the item should end — the tick is then a no-op if a client /natural-end
+     * already advanced the anchor (idempotent).
+     */
+    private scheduleItemEndTimer;
+    /**
+     * Schedule a precision one-shot timer to fire at `endsAtMs` and advance the
+     * YouTube shuffle fallback to the next video.  Replaces the old approach of
+     * relying solely on the 5-second selfHealEmptyTimer detecting an expired
+     * override — that approach failed because `!this.override` is never true while
+     * the override object exists (it's only cleared by stopOverride(), which is
+     * never called for natural YouTube override expiry).
+     *
+     * This timer fires at exactly `endsAtMs`, checks the override is still the
+     * same expired one, then calls advance() directly to atomically replace it
+     * with the next video — zero dead-air gap.
+     *
+     * Mirrors the same guard structure as scheduleItemEndTimer:
+     * - max 4 h ahead (long items drift on busy event loops)
+     * - unref() so it never prevents process exit
+     */
+    private scheduleOverrideEndTimer;
     private tick;
     /**
      * Inner tick body — may throw. Called only by the outer tick() wrapper
@@ -616,8 +768,99 @@ declare class BroadcastOrchestrator extends EventEmitter {
         title: string;
         endsAtMs: number | null;
         resumeQueueOnEnd: boolean;
+        resumeSeconds?: number;
     }): Promise<V2Override>;
+    get isMidnightPrayersActive(): boolean;
+    /**
+     * Last item id proactively preloaded ahead of a Midnight Prayers boundary
+     * transition (activation or deactivation), so preloadMidnightPrayers() is
+     * idempotent across the multiple scheduler polls that occur inside a
+     * single lead window.
+     */
+    private mpPreloadFiredForId;
+    /**
+     * Proactively announces the item that will start playing at the next
+     * Midnight Prayers boundary (window open OR close) — called by the
+     * scheduler once it is within the preload lead window, BEFORE the actual
+     * queue swap happens. This gives every connected client the same
+     * PRELOAD_LEAD_MS head start on the transition item that the normal
+     * mid-rotation preload mechanism gives every other item, so the hard cut
+     * at the boundary (main → prayers, or prayers → main) is gapless instead
+     * of a cold-start black frame / buffering spinner.
+     *
+     * Safe to call repeatedly with the same item (idempotent) or with
+     * `item: null` (clears the gate so a later, different item can preload).
+     */
+    preloadMidnightPrayers(item: CachedQueueItem | null): void;
+    /**
+     * Best-effort peek at the item the main queue will resume on once
+     * Midnight Prayers deactivates — used only to fire a proactive preload
+     * ahead of the close boundary. Not guaranteed to exactly match the item
+     * `resolvePendingMidnightPrayersCheckpoint()` ultimately resumes at (that
+     * is decided by the persisted checkpoint at the moment of deactivation),
+     * but is the correct value in the overwhelming common case (no queue
+     * edits during the window) and a harmless miss otherwise — the actual
+     * resume item still gets a normal (if less proactive) preload via the
+     * regular in-rotation mechanism moments later.
+     */
+    peekMainQueueResumeItem(): CachedQueueItem | null;
+    /**
+     * Activate the Midnight Prayers window: freezes the main queue and swaps
+     * `this.items` to the supplied Midnight Prayers rotation. Idempotent — a
+     * second call while already active is a no-op.
+     *
+     * On a real manual/operator override (e.g. an emergency announcement) this
+     * defers — logging and letting the caller retry on the next tick — so
+     * Midnight Prayers never fights a live operator override for control of
+     * the channel.
+     *
+     * CRITICAL: on YouTube-only deployments `ytShuffleFallback` keeps `mode`
+     * permanently at `"override"` (it IS the primary broadcast driver, not a
+     * fallback — see youtube-shuffle-fallback.ts). A naive `mode !== "queue"`
+     * guard here means the prayer window would NEVER activate in production.
+     * We detect that specific case (the active override's id matches
+     * ytShuffleFallback's own tracked override id) and preempt it: stop the
+     * override, drop straight into `mode: "queue"`, and continue activation.
+     * ytShuffleFallback resumes automatically after deactivation via the
+     * existing reloadInner fast-path once the window closes.
+     */
+    activateMidnightPrayers(mpItems: CachedQueueItem[]): Promise<void>;
+    /**
+     * End the Midnight Prayers window: restores the frozen main queue and
+     * resumes it at the exact item/position it was paused at (via the
+     * persisted checkpoint, which also survives a mid-window process
+     * restart). Idempotent — a call while inactive is a no-op.
+     */
+    deactivateMidnightPrayers(): Promise<void>;
+    /**
+     * Applies the persisted Midnight Prayers resume checkpoint (if any) to the
+     * current `this.items` and clears it. Used both by deactivateMidnightPrayers()
+     * (normal end-of-window path) and by boot-time reconciliation (the process
+     * crashed/restarted while a checkpoint was pending — e.g. the window ended
+     * while the server was down). Safe to call with no pending checkpoint.
+     */
+    resolvePendingMidnightPrayersCheckpoint(): Promise<void>;
     stopOverride(): Promise<void>;
+    /**
+     * Public wrapper around {@link probeUrlReachability} for use by the
+     * `/report-stall` route. A single client's local network hiccup (WiFi
+     * drop, CPU throttle on a TV/mobile device, brief buffer starvation) can
+     * exhaust its local retry/failover budget and report a "stall" even
+     * though the source is perfectly healthy for every other viewer. Blindly
+     * trusting one client's self-report and skipping for the ENTIRE broadcast
+     * is a genuine root cause of "random" video skipping — the skip is real,
+     * but the failure was local to one viewer, not the source.
+     *
+     * This lets the caller independently re-verify the source server-side
+     * (same HEAD→ranged-GET / HLS-manifest probe used for proactive checks)
+     * before committing to a global skip. Returns:
+     *   - true  — source confirmed reachable (the report was a false positive)
+     *   - false — source confirmed broken (skip is justified)
+     *   - null  — ambiguous (timeout/5xx) — treat as "not disproven", still
+     *             justifies a skip so a genuinely wedged source doesn't leave
+     *             every viewer stuck waiting on repeated ambiguous probes.
+     */
+    verifySourceReachable(rawUrl: string): Promise<boolean | null>;
     skip(): Promise<void>;
     /**
      * Signal that a player client watched the current item to its natural end
@@ -747,11 +990,19 @@ declare class BroadcastOrchestrator extends EventEmitter {
     /**
      * Fast HEAD probe for YouTube sources with a 2 s timeout.
      *
-     * Returns:
-     *  "blocked"   — HTTP 403 or 451 (geo-block / legal takedown). The item is
-     *                definitively unreachable for most viewers → mark bad immediately.
-     *  "ambiguous" — Network error, timeout, or any other status code (including
-     *                5xx / 2xx). Do NOT mark bad; allow the normal retry path.
+     * Returns a three-way classification to let callers apply different levels
+     * of confidence gating:
+     *
+     *  "permanent"  — HTTP 410 (Gone) or 451 (legal takedown). The video is
+     *                 definitively and permanently removed. Mark bad immediately
+     *                 without waiting for a second source confirmation.
+     *  "transient"  — HTTP 403 (geo-block / auth required) or 404 (private /
+     *                 deleted). These CAN be transient (CDN auth races, brief
+     *                 YouTube outages, regional availability windows). Route
+     *                 through the confidence system (gap1 warning, gap2 block)
+     *                 so a single auth hiccup does not silently drop content.
+     *  "ambiguous"  — Network error, timeout, or any other status code (including
+     *                 5xx / 2xx). Do NOT mark bad; allow the normal retry path.
      */
     private probeYouTubeReachability;
     /**
@@ -777,10 +1028,14 @@ declare class BroadcastOrchestrator extends EventEmitter {
      *  • Only runs when mode === "queue" and a current item exists.
      *  • Skips if < 15 s remain on the item (let it finish naturally).
      *  • Skips YouTube sources — HEAD probes return HTML, creating false positives.
+     *  • Skips if the source was recently confirmed reachable (isSourceApproved).
      *  • Resets the per-item failure counter when the current item changes.
-     *  • Auto-skips after 3 consecutive definitive 4xx responses (`reachable === false`).
-     *  • `null` (ambiguous / timeout / 5xx) never increments the counter — a single
-     *    CDN blip must never drop healthy content from the rotation.
+     *  • After 5 consecutive definitive 4xx responses or 8 consecutive ambiguous
+     *    (5xx/timeout) results, logs a warning and resets counters — never skips.
+     *    24/7 autonomous broadcast mode: retry indefinitely; the player handles
+     *    dead-air recovery at the client level.
+     *  • `null` (ambiguous / timeout / 5xx) never increments the 4xx counter — a
+     *    single CDN blip must never drop healthy content from the rotation.
      */
     private probeCurrentItem;
     /**
@@ -791,6 +1046,13 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * restarts from the exact position it was at when it stopped — not from
      * the last 5-second checkpoint boundary (which could be up to 5 seconds
      * stale when the signal arrives between timer fires).
+     *
+     * Also explicitly saves runtimeRepo with the current cycleStartedAtMs so
+     * that the PRIMARY restart-resume path (hydrate → restoredCycleAnchor) gets
+     * the most accurate anchor possible. Without this, the fire-and-forget
+     * runtimeRepo.save() in stop() might still be in-flight (TCP ACK pending)
+     * when the process exits, leaving the DB with an anchor from the previous
+     * bump() call instead of the final state at shutdown.
      */
     flushCheckpointForShutdown(): Promise<void>;
     private persistCheckpoint;
@@ -811,8 +1073,7 @@ declare class BroadcastOrchestrator extends EventEmitter {
         id: string;
         localVideoUrl: string | null;
         hlsMasterUrl: string | null;
-        faststartApplied: boolean;
-        sourceQuality: "hls" | "mp4_faststart" | "mp4_raw";
+        sourceQuality: "mp4";
     }[];
     /** Reload diagnostics for /health. */
     getReloadStats(): {
@@ -936,11 +1197,24 @@ declare class BroadcastOrchestrator extends EventEmitter {
     getStartedAtMs(): number;
     isStarted(): boolean;
     /**
+     * Returns the current override state for monitoring consumers (e.g. the
+     * queue-exhaustion monitor and auto-refill) so they can avoid false-positive
+     * alerts when the broadcast is ON AIR via a manual or shuffle override
+     * even though the local queue is empty.
+     *
+     * Returns null when no override is active.
+     */
+    getOverrideState(): {
+        kind: V2Override["kind"];
+        title: string;
+        endsAtMs: number | null;
+        isYtShuffle: boolean;
+    } | null;
+    /**
      * Performs an optimistic in-place source quality upgrade for a queue item.
      *
-     * Called when the bus bridge receives `broadcast-source-upgraded` (fired by
-     * faststart.service.ts or transcoder.dispatcher.ts after a source upgrade
-     * completes). Updates `sourceQuality` on the matching CachedQueueItem
+     * Called by transcoder.dispatcher.ts after a source upgrade completes (e.g.
+     * MP4 → HLS). Updates `sourceQuality` on the matching CachedQueueItem
      * immediately so the next snapshot includes the correct quality metadata
      * without waiting for the full queue reload triggered by the companion
      * `broadcast-queue-updated` event.
@@ -956,8 +1230,32 @@ declare class BroadcastOrchestrator extends EventEmitter {
      */
     upgradeItemSource(opts: {
         videoId: string;
-        quality: "hls" | "mp4_faststart" | "mp4_raw";
+        quality: "hls" | "mp4";
     }): boolean;
+    /**
+     * Returns a lightweight program-guide payload that REST callers use to
+     * compute the upcoming broadcast schedule (EPG) without needing access to
+     * the private `items`, `cycleStartedAtMs`, or `cycleDurationMs` fields.
+     *
+     * The caller projects wall-clock start/end times for each item by
+     * starting from the current item's wall-clock position and chaining
+     * forward. Items loop in a ring (when the last item finishes the cycle
+     * returns to item 0), so a 24-hour EPG will typically show each item
+     * several times.
+     *
+     * Returns null when the orchestrator has no items loaded (OFF_AIR).
+     */
+    getProgramGuide(): {
+        cycleStartedAtMs: number;
+        cycleDurationMs: number;
+        items: Array<{
+            id: string;
+            title: string;
+            durationSecs: number;
+            thumbnailUrl: string | null;
+            sourceQuality: "mp4";
+        }>;
+    } | null;
     initiateFullRecovery(reason: string): Promise<void>;
 }
 export declare const broadcastOrchestrator: BroadcastOrchestrator;

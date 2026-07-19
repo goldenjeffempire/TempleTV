@@ -43,7 +43,7 @@ export declare function getCorruptMediaInventory(opts: {
         errorCode: string | null;
         errorMessage: string | null;
         transcodingStatus: string | null;
-        detectedAt: Date | null;
+        detectedAt: string | null;
         auditId: string;
         reason: string | null;
         triggeredBy: string;

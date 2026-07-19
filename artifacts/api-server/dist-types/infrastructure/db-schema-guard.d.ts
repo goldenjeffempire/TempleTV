@@ -558,12 +558,10 @@ export declare const SAFE_VIDEO_COLS: {
         generated: undefined;
     }, {}, {}>;
     readonly metadataLocked: import("drizzle-orm").SQL<boolean>;
-    readonly faststartApplied: import("drizzle-orm").SQL<boolean | null>;
     readonly broadcastOnly: import("drizzle-orm").SQL<boolean>;
     readonly transcodingErrorMessage: import("drizzle-orm").SQL<string | null>;
     readonly transcodingErrorCode: import("drizzle-orm").SQL<string | null>;
     readonly youtubeLiveStatus: import("drizzle-orm").SQL<string | null>;
     readonly youtubeLiveStatusUpdatedAt: import("drizzle-orm").SQL<Date | null>;
     readonly transcodingErrorKind: import("drizzle-orm").SQL<string | null>;
-    readonly faststartAttempts: import("drizzle-orm").SQL<number>;
 };

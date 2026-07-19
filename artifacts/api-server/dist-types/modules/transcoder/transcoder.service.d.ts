@@ -23,6 +23,17 @@ export interface TranscodeRequest {
      * can skip already-uploaded renditions.
      */
     onRenditionUploaded?: (renditionName: string, renditionIndex: number) => Promise<void>;
+    /**
+     * Override the FFmpeg thread count for this job.
+     *
+     * The dispatcher computes this adaptively as:
+     *   max(1, floor(TRANSCODER_THREADS / activeJobCount))
+     *
+     * so that two concurrent jobs each get half the thread budget instead of
+     * both claiming the full count and starving the event loop and each other
+     * on a shared-CPU host. Defaults to TRANSCODER_THREADS when omitted.
+     */
+    threads?: number;
 }
 export interface TranscodeResult {
     masterPlaylistKey: string;
@@ -70,7 +81,7 @@ interface RenditionSpec {
  *   progressive displays at every motion boundary. Safe to leave false for all
  *   modern progressive camera sources (field_order = progressive or unknown).
  */
-declare function buildFfmpegArgs(input: string, outDir: string, renditions: RenditionSpec[], hasAudio?: boolean, isInterlaced?: boolean): string[];
+declare function buildFfmpegArgs(input: string, outDir: string, renditions: RenditionSpec[], hasAudio?: boolean, isInterlaced?: boolean, threads?: number): string[];
 /**
  * Pre-flight probe to detect MP4 container damage BEFORE running HLS encode.
  *
@@ -125,6 +136,29 @@ export declare function detectMdatWithoutMoov(inputPath: string): Promise<boolea
  * Exported so faststart.service.ts can share the same gate.
  */
 export declare function validateLocalSourceFile(filePath: string, expectedSizeBytes?: number): Promise<void>;
+/**
+ * Attempt to decode the first video frame of a local file to verify that its
+ * media data (mdat) is intact and decodable — not just that the container
+ * structure (moov atom) is parseable.
+ *
+ * This closes the gap that probeContainerIsValid misses: files where moov is
+ * valid (correct stream counts, codec parameters, sample tables) but mdat is
+ * truncated, bit-flipped, or otherwise corrupt. Such files pass the structural
+ * probe because ffprobe reads stream info from moov only and does NOT read
+ * the payload. They then enter the full HLS encode loop and fail after burning
+ * a full 15+ minute transcoding attempt with a decode-error exit.
+ *
+ * Uses ffmpeg (not ffprobe) because only an actual decode pass exercises the
+ * mdat payload. `-t 2.0` limits processing to the first 2 seconds so the
+ * probe completes in < 1 s for normal files regardless of total duration.
+ *
+ * Returns:
+ *   true  — at least one frame decoded successfully, OR the probe is
+ *           unavailable (ffmpeg not on PATH) / times out — fail-open so
+ *           transient slowness does not permanently reject healthy files.
+ *   false — decode explicitly failed (clear media-data corruption signal).
+ */
+export declare function probeCanDecodeFirstFrame(inputPath: string): Promise<boolean>;
 /**
  * Recovery pass for MP4 files where the moov atom is at EOF, fragmented,
  * or otherwise unreadable by ffmpeg's HLS muxer. Tries three strategies in

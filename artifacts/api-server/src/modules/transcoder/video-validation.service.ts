@@ -47,7 +47,7 @@ import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { eq, sql, and, or, lt, isNull, inArray } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { storage } from "../../infrastructure/storage.js";

@@ -12,6 +12,7 @@ export interface CleanupStats {
     lastStaleSessiosClosed: number;
     lastPrunedStalePushTokens: number;
     lastPrunedStaleWebPushSubs: number;
+    lastPrunedTerminalVideoBlobs: number;
     lastError: string | null;
     nextRunAtMs: number | null;
 }

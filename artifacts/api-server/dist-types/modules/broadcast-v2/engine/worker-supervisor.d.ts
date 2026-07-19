@@ -72,6 +72,22 @@ export declare class WorkerSupervisor {
     get(name: string): SupervisedWorker | undefined;
     getHealth(): WorkerHealth[];
     /**
+     * Returns aggregate worker health with Prometheus gauge update.
+     * Exposes a `state` string ("running"|"circuit_open"|"stopped") for each
+     * worker — more human-readable than the raw running/circuitOpen booleans.
+     */
+    getWorkerStatuses(): {
+        workers: Array<WorkerHealth & {
+            state: string;
+        }>;
+        summary: {
+            total: number;
+            running: number;
+            circuitOpen: number;
+            stopped: number;
+        };
+    };
+    /**
      * Stop and remove a single named worker.  Safe to call if the worker does
      * not exist — returns false in that case, true if it was found and removed.
      *
@@ -79,6 +95,24 @@ export declare class WorkerSupervisor {
      * channel is torn down — without remove() the workers Map grows indefinitely.
      */
     remove(name: string): boolean;
+    /**
+     * Restart a named worker: stops it, clears its circuit breaker, then
+     * immediately starts it again. Returns false if the worker is not found.
+     *
+     * Safe to call while the worker is running — the existing execution
+     * is abandoned (its Promise may still resolve, but it will not schedule
+     * another run). The fresh start uses initialDelayMs = 0 for immediate
+     * operator-initiated recovery.
+     */
+    restart(name: string): boolean;
+    /**
+     * Reset the circuit breaker for a named worker without stopping it.
+     * Returns false if the worker is not found.
+     *
+     * Use when a transient error has tripped the circuit and the operator
+     * has confirmed the root cause is resolved.
+     */
+    resetCircuit(name: string): boolean;
     stopAll(): void;
 }
 export declare const workerSupervisor: WorkerSupervisor;

@@ -17,9 +17,11 @@
  *      growth exceeds HEAP_USED_GROWTH_ALERT_MB_PER_MIN. This catches JS
  *      object leaks that don't show up in the `external` counter.
  *
- *   4. Critical escalation — in production only, voluntarily exits after
- *      CRITICAL_SAMPLES_FOR_EXIT consecutive over-threshold RSS samples so
- *      the supervisor (Replit, k8s) can restart cleanly.
+ *   4. Critical escalation — in production only, runs a self-healing relief
+ *      pass (cancel faststart jobs, drain HLS cache, run GC) after
+ *      CRITICAL_SAMPLES_FOR_EXIT consecutive over-threshold RSS samples.
+ *      The process does NOT auto-restart; all thresholds are log-only.
+ *      Relief re-fires after RELIEF_COOLDOWN_MS if pressure persists.
  *
  * State is exposed via getWatchdogState() for the
  * GET /admin/diagnostics/memory endpoint.
@@ -30,6 +32,7 @@ export interface WatchdogState {
     thresholds: {
         rssAlertMb: number;
         rssRestartMb: number;
+        rssAbsoluteMaxMb: number;
         rssRecoveryMb: number;
         externalGrowthAlertMbPerMin: number;
         externalGrowthRecoveryMbPerMin: number;
@@ -60,7 +63,7 @@ export interface WatchdogState {
 /**
  * Returns the rolling memory sample window as MB-valued objects for sparkline
  * rendering.  The window holds up to SLOPE_WINDOW_SAMPLES entries at
- * SAMPLE_INTERVAL_MS cadence (default: 6 × 30 s = last 3 minutes).
+ * SAMPLE_INTERVAL_MS cadence (180 × 10 s = last 30 minutes).
  */
 export declare function getMemoryHistory(): Array<{
     ts: number;

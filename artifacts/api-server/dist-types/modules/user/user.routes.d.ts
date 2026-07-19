@@ -14,6 +14,13 @@
  *   GET    /user/watch-history           — alias for /user/history
  *   POST   /user/history                 — upsert a watch-history entry
  *   DELETE /user/history                 — clear entire watch history
+ *
+ *   GET    /user/continue-watching       — in-progress videos (cross-device resume)
+ *
+ *   GET    /user/watch-later             — list Watch Later items
+ *   POST   /user/watch-later             — add to Watch Later
+ *   DELETE /user/watch-later/:videoId    — remove a specific item
+ *   DELETE /user/watch-later             — clear entire Watch Later list
  */
 import type { FastifyInstance } from "fastify";
 export declare function userRoutes(app: FastifyInstance): Promise<void>;

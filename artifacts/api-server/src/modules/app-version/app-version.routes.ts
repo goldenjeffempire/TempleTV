@@ -20,7 +20,7 @@ import { eq, desc, and, or } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { logger } from "../../infrastructure/logger.js";
-import { InternalError, NotFoundError } from "../../shared/errors.js";
+import { InternalError } from "../../shared/errors.js";
 
 const _429 = z.object({ error: z.string() });
 

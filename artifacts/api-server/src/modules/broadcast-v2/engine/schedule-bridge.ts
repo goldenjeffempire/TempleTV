@@ -44,7 +44,6 @@ import { broadcastOrchestrator } from "./broadcast-orchestrator.js";
 import { enqueueIfMissing, scanLibraryAndEnqueue } from "../../broadcast/auto-enqueue.service.js";
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { scheduleService } from "../../schedule/schedule.service.js";
-import { env } from "../../../config/env.js";
 import { midnightPrayersService } from "../../midnight-prayers/midnight-prayers.service.js";
 import { isWindowActive } from "../../midnight-prayers/window-utils.js";
 
