@@ -276,12 +276,13 @@ describe("Failover — FATAL auto-recovery", () => {
     }
   }
 
-  it("FATAL state auto-recovers to SYNCING after 30s (first attempt)", () => {
+  // machine.ts: FATAL_AUTO_RECOVERY_MS = 10_000, FATAL_BACKOFF_MAX_MS = 240_000
+  it("FATAL state auto-recovers to SYNCING after 10s (first attempt)", () => {
     const { machine } = makeHarness();
     driveToFatal(machine);
     expect(machine.getSnapshot().state).toBe("FATAL");
 
-    vi.advanceTimersByTime(31_000);
+    vi.advanceTimersByTime(11_000);
     expect(machine.getSnapshot().state).toBe("SYNCING");
   });
 
@@ -292,14 +293,16 @@ describe("Failover — FATAL auto-recovery", () => {
     driveToFatal(machine);
     expect(machine.getSnapshot().state).toBe("FATAL");
 
-    vi.advanceTimersByTime(31_000);
+    vi.advanceTimersByTime(11_000);
     expect(snapRequests).toBeGreaterThanOrEqual(1);
   });
 
   it("FATAL backoff doubles on each successive FATAL entry — capped at 240s", () => {
-    const FATAL_AUTO_RECOVERY_MS = 30_000;
+    // machine.ts: FATAL_AUTO_RECOVERY_MS = 10_000, FATAL_BACKOFF_MAX_MS = 240_000
+    // Schedule: 10s → 20s → 40s → 80s → 160s → 240s (cap)
+    const FATAL_AUTO_RECOVERY_MS = 10_000;
     const FATAL_BACKOFF_MAX_MS = 240_000;
-    const expected = [30_000, 60_000, 120_000, 240_000, 240_000, 240_000];
+    const expected = [10_000, 20_000, 40_000, 80_000, 160_000, 240_000];
     for (let attempt = 1; attempt <= 6; attempt++) {
       const backoff = Math.min(
         FATAL_AUTO_RECOVERY_MS * Math.pow(2, attempt - 1),
@@ -315,12 +318,12 @@ describe("Failover — FATAL auto-recovery", () => {
     expect(machine.getSnapshot().state).toBe("FATAL");
 
     // Recover via auto-recovery timer + fresh snapshot
-    vi.advanceTimersByTime(31_000);
+    vi.advanceTimersByTime(11_000);
     const goodItem = makeItem({ id: "good-item", endsAtMs: Date.now() + 7_200_000 });
     machine.send({ type: "snapshot", snapshot: makeSnapshot({ current: goodItem, sequence: 10 }) });
     machine.send({ type: "buffer-ready", bufferId: machine.getSnapshot().activeBufferId });
     expect(machine.getSnapshot().state).toBe("PLAYING");
-    // A subsequent FATAL entry should start from the base 30s (counter reset)
+    // A subsequent FATAL entry should start from the base 10s (counter reset)
     // We can't introspect fatalAttemptCount directly but verify the formula
   });
 

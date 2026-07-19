@@ -41,5 +41,5 @@ export { resolveSource, resolveUrl, isPlainVideoUrl } from "./engine/StreamResol
 export type { ResolvedSource, ResolvedSourceKind } from "./engine/StreamResolver";
 export type { QueueState }    from "./engine/QueueManager";
 export type { LiveControllerState, LiveMode } from "./engine/LiveStreamController";
-export type { FailoverState } from "./engine/FailoverHandler";
+export type { FailoverState, FailoverHandlerOptions } from "./engine/FailoverHandler";
 export type { BroadcastEngineOptions } from "./engine/types";

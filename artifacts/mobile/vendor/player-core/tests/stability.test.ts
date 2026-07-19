@@ -622,7 +622,8 @@ describe("Stability — FATAL auto-recovery cycles", () => {
       }
 
       if (machine.getSnapshot().state === "FATAL") {
-        vi.advanceTimersByTime(30_000);
+        // machine.ts: FATAL_AUTO_RECOVERY_MS = 10_000
+        vi.advanceTimersByTime(11_000);
         expect(["SYNCING", "BOOTSTRAP"]).toContain(machine.getSnapshot().state);
       }
 
@@ -647,7 +648,8 @@ describe("Stability — FATAL auto-recovery cycles", () => {
       }
 
       if (machine.getSnapshot().state === "FATAL") {
-        vi.advanceTimersByTime(30_000);
+        // machine.ts: FATAL_AUTO_RECOVERY_MS = 10_000
+        vi.advanceTimersByTime(11_000);
 
         const recoveryItem = makeItem("recovery-item");
         machine.send({ type: "snapshot", snapshot: makeSnapshot({ current: recoveryItem }) });
@@ -661,14 +663,15 @@ describe("Stability — FATAL auto-recovery cycles", () => {
     }
   });
 
-  it("FATAL backoff doubles each cycle: 30s → 60s → 120s → 240s → cap at 240s", () => {
-    const FATAL_AUTO_RECOVERY_MS = 30_000;
+  it("FATAL backoff doubles each cycle: 10s → 20s → 40s → 80s → 160s → 240s (cap)", () => {
+    // machine.ts: FATAL_AUTO_RECOVERY_MS = 10_000, FATAL_BACKOFF_MAX_MS = 240_000
+    const FATAL_AUTO_RECOVERY_MS = 10_000;
     const FATAL_BACKOFF_MAX_MS = 240_000;
 
     const schedule = [1, 2, 3, 4, 5, 6].map((attempt) =>
       Math.min(FATAL_AUTO_RECOVERY_MS * Math.pow(2, attempt - 1), FATAL_BACKOFF_MAX_MS),
     );
-    expect(schedule).toEqual([30_000, 60_000, 120_000, 240_000, 240_000, 240_000]);
+    expect(schedule).toEqual([10_000, 20_000, 40_000, 80_000, 160_000, 240_000]);
     expect(Math.max(...schedule)).toBe(FATAL_BACKOFF_MAX_MS);
   });
 

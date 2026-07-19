@@ -66,17 +66,19 @@ describe("PlayerMachine — construction & lifecycle", () => {
 // ---------------------------------------------------------------------------
 
 describe("PlayerMachine — FATAL exponential backoff (T002)", () => {
-  it("backoff schedule is 30s → 60s → 120s → 240s (cap)", () => {
-    const FATAL_AUTO_RECOVERY_MS = 30_000;
+  // machine.ts: FATAL_AUTO_RECOVERY_MS = 10_000, FATAL_BACKOFF_MAX_MS = 240_000
+  // Backoff schedule: 10s → 20s → 40s → 80s → 160s → 240s (cap)
+  it("backoff schedule is 10s → 20s → 40s → 80s → 160s → 240s (cap)", () => {
+    const FATAL_AUTO_RECOVERY_MS = 10_000;
     const FATAL_BACKOFF_MAX_MS   = 240_000;
-    const schedule = [1, 2, 3, 4, 5].map((attempt) =>
+    const schedule = [1, 2, 3, 4, 5, 6].map((attempt) =>
       Math.min(FATAL_AUTO_RECOVERY_MS * Math.pow(2, attempt - 1), FATAL_BACKOFF_MAX_MS),
     );
-    expect(schedule).toEqual([30_000, 60_000, 120_000, 240_000, 240_000]);
+    expect(schedule).toEqual([10_000, 20_000, 40_000, 80_000, 160_000, 240_000]);
   });
 
   it("backoff never exceeds 240 s regardless of attempt count", () => {
-    const FATAL_AUTO_RECOVERY_MS = 30_000;
+    const FATAL_AUTO_RECOVERY_MS = 10_000;
     const FATAL_BACKOFF_MAX_MS   = 240_000;
     for (let attempt = 1; attempt <= 20; attempt++) {
       const backoff = Math.min(
@@ -87,14 +89,14 @@ describe("PlayerMachine — FATAL exponential backoff (T002)", () => {
     }
   });
 
-  it("first attempt backoff equals base FATAL_AUTO_RECOVERY_MS", () => {
-    const FATAL_AUTO_RECOVERY_MS = 30_000;
+  it("first attempt backoff equals base FATAL_AUTO_RECOVERY_MS (10 s)", () => {
+    const FATAL_AUTO_RECOVERY_MS = 10_000;
     const FATAL_BACKOFF_MAX_MS   = 240_000;
     const backoff = Math.min(
       FATAL_AUTO_RECOVERY_MS * Math.pow(2, 0), // attempt 1: index 0
       FATAL_BACKOFF_MAX_MS,
     );
-    expect(backoff).toBe(30_000);
+    expect(backoff).toBe(10_000);
   });
 
   it("setNeedSnapshotCallback is invoked when recovery timer fires", () => {
