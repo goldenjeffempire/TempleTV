@@ -1135,8 +1135,10 @@ export function V2PlayerContainer({
       setFatalRetrySecsLeft(null);
       return;
     }
+    // machine.ts: FATAL_AUTO_RECOVERY_MS = 10_000, FATAL_BACKOFF_MAX_MS = 240_000
+    // Schedule: 10s → 20s → 40s → 80s → 160s → 240s (cap)
     const backoffMs = Math.min(
-      30_000 * Math.pow(2, Math.max(0, (snapshot.fatalAttemptCount ?? 1) - 1)),
+      10_000 * Math.pow(2, Math.max(0, (snapshot.fatalAttemptCount ?? 1) - 1)),
       240_000,
     );
     const tick = () => {
