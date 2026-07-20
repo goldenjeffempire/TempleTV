@@ -414,7 +414,7 @@ const HeroSection = React.memo(function HeroSection({
     if (!hasYoutubeOverride) return null;
     const url = v2Server?.override?.url ?? "";
     const m = url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
-    return m ? m[1] : null;
+    return m ? (m[1] ?? null) : null;
   })();
 
   // Thumbnail priority:

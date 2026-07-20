@@ -29,7 +29,7 @@
     "release:rollback": "bash scripts/release-rollback.sh",
     "android:clean": "cd android && ./gradlew clean",
     "android:stop": "cd android && ./gradlew --stop",
-    "test": "node --import tsx/esm --test __tests__/**/*.test.ts"
+    "test": "node --import tsx/esm --test __tests__/startup.test.ts __tests__/hero-youtube-override.test.ts __tests__/open-player-navigation.test.ts"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

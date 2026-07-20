@@ -161,6 +161,8 @@ function LocalAudioModeCard({
         <Pressable
           onPress={onToggle}
           style={({ pressed }: { pressed: boolean }) => [audioStyles.switchBtn, { opacity: pressed ? 0.7 : 1 }]}
+          accessibilityRole="button"
+          accessibilityLabel="Switch to video mode"
         >
           <Feather name="video" size={13} color="#B47FEB" />
           <Text style={audioStyles.switchBtnText}>Switch to Video</Text>

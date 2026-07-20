@@ -1,3 +1,4 @@
+/// <reference types="node" />
 /**
  * Mobile Startup Regression Tests
  *
@@ -144,20 +145,23 @@ describe("playbackQueue", async () => {
     getCurrentIndex,
   } = await import("../lib/playbackQueue.js");
 
-  // Minimal Sermon shape for testing (only the fields the queue cares about)
+  // Minimal Sermon shape for testing (only the fields the queue cares about).
+  // Non-id fields are typed as `string` in the Sermon interface; the queue
+  // implementation only reads `id`, so empty-string stubs are safe here.
   const makeSermon = (id: string) => ({
     id,
     title:        `Sermon ${id}`,
-    thumbnailUrl: null,
-    hlsMasterUrl: null,
-    localVideoUrl:null,
+    thumbnailUrl: "",
+    hlsMasterUrl: undefined as string | undefined,
+    localVideoUrl:undefined as string | undefined,
     youtubeId:    "",       // ← explicitly empty for local/MP4 sermons
-    videoSource:  "upload" as const,
-    duration:     null,
-    preacher:     null,
-    category:     null,
-    description:  null,
-    publishedAt:  null,
+    videoSource:  "local"  as "youtube" | "local",
+    duration:     "",
+    preacher:     "",
+    category:     "Sermons" as const,
+    description:  "",
+    date:         "",
+    publishedAt:  undefined as string | undefined,
   });
 
   const s1 = makeSermon("aaa-111");

@@ -1,5 +1,6 @@
 import React, { createContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, type AppStateStatus } from "react-native";
+import * as Sentry from "@sentry/react-native";
 import { markStartupPhase } from "@/lib/startupLifecycle";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router } from "expo-router";
@@ -334,6 +335,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     });
     return () => sub.remove();
+  }, [user]);
+
+  // ── Sentry user context ───────────────────────────────────────────────────
+  // Attaches the authenticated user's identity to every crash report and
+  // error event so they can be attributed to a specific account. Cleared
+  // immediately on sign-out so crashes from logged-out sessions are never
+  // linked to the previous user on a shared device.
+  useEffect(() => {
+    if (user) {
+      Sentry.setUser({
+        id:       String(user.id),
+        email:    user.email       ?? undefined,
+        username: user.displayName ?? undefined,
+      });
+    } else {
+      Sentry.setUser(null);
+    }
   }, [user]);
 
   const signIn = useCallback(async (resp: AuthResponse | string, newUser: AuthUser) => {

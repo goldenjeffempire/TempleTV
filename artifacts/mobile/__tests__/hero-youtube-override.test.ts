@@ -1,3 +1,4 @@
+/// <reference types="node" />
 /**
  * Hero YouTube Override — Regression Tests
  *
@@ -45,7 +46,7 @@ const YT_ID = "dQw4w9WgXcQ"; // canonical 11-char YouTube ID used throughout
 /** Pure extraction helper — same logic as HeroSection and player.tsx */
 function extractYouTubeId(url: string): string | null {
   const m = url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
-  return m ? m[1] : null;
+  return m ? (m[1] ?? null) : null;
 }
 
 describe("extractYouTubeId — standard watch URL", () => {

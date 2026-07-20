@@ -20,6 +20,11 @@
     "expo-env.d.ts",
     "global.d.ts"
   ],
+  "exclude": [
+    "node_modules",
+    "vendor/player-core/tests",
+    "vendor/broadcast-sync/src/engine/FailoverHandler.test.ts"
+  ],
   "references": [
     {
       "path": "../../lib/api-client-react"

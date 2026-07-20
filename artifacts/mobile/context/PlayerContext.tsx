@@ -187,8 +187,15 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // Debounced settings persistence — 500 ms trailing-edge write so rapid
+  // volume-slider drags don't spam AsyncStorage with intermediate values.
+  // Non-volume settings changes (toggles) are rare, so the 500 ms delay
+  // is imperceptible in practice while eliminating dozens of writes per
+  // swipe gesture on the volume slider.
+  const _settingsDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!loadedSettingsRef.current) return;
+    if (_settingsDebounceRef.current) clearTimeout(_settingsDebounceRef.current);
     const payload: PersistedPlaybackSettings = {
       dataSaver,
       isRadioMode,
@@ -196,11 +203,20 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       loopMode,
       volume,
     };
-    AsyncStorage.setItem(STORAGE_KEYS.playbackSettings, JSON.stringify(payload)).catch((e) => {
-      if (process.env.NODE_ENV !== "production") {
-        if (__DEV__) console.error("[PlayerContext] Failed to persist playback settings:", e);
+    _settingsDebounceRef.current = setTimeout(() => {
+      _settingsDebounceRef.current = null;
+      AsyncStorage.setItem(STORAGE_KEYS.playbackSettings, JSON.stringify(payload)).catch((e) => {
+        if (process.env.NODE_ENV !== "production") {
+          if (__DEV__) console.error("[PlayerContext] Failed to persist playback settings:", e);
+        }
+      });
+    }, 500);
+    return () => {
+      if (_settingsDebounceRef.current) {
+        clearTimeout(_settingsDebounceRef.current);
+        _settingsDebounceRef.current = null;
       }
-    });
+    };
   }, [dataSaver, isRadioMode, shuffleMode, loopMode, volume]);
 
   useEffect(() => {

@@ -32,7 +32,7 @@ export function getApiBase(): string {
     const trimmed = apiUrl.replace(/\/$/, "");
     if (/^https?:\/\//i.test(trimmed)) {
       _cachedBase = trimmed;
-      return _cachedBase;
+      return trimmed;
     }
     // Auto-fix: bare domain without a protocol prefix — assume https://.
     // This recovers from the common mistake of setting EXPO_PUBLIC_API_URL
