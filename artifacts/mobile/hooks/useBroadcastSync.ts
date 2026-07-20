@@ -99,13 +99,19 @@ export function useBroadcastSync(): BroadcastSyncState {
   // has arrived for 90 s — ruling out the previous false-positive reconnects on
   // healthy connections where the ref was never updated from actual WS frames.
   useEffect(() => {
+    // Timeout threshold: 90 s of silence = zombie connection.
     const HEARTBEAT_TIMEOUT_MS = 90_000;
+    // Poll interval is intentionally shorter (30 s) so detection latency is
+    // 90–120 s rather than 90–180 s.  Without this the interval could align
+    // so the connection dies 1 ms after a check and goes undetected for
+    // a full extra 90 s cycle (worst-case 3× the threshold).
+    const POLL_INTERVAL_MS = 30_000;
     const timer = setInterval(() => {
       if (Date.now() - lastHeartbeatMsRef.current > HEARTBEAT_TIMEOUT_MS) {
         lastHeartbeatMsRef.current = Date.now(); // reset before reconnect
         setReconnectKey((k) => k + 1);
       }
-    }, HEARTBEAT_TIMEOUT_MS);
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
   }, []);
 

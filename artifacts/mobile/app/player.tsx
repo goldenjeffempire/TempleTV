@@ -906,7 +906,7 @@ export default function PlayerScreen() {
 
   useEffect(() => {
     if (!videoId || videoId === "live") return;
-    recordView(videoId);
+    void recordView(videoId).catch(() => { /* fire-and-forget — network hiccups must not surface to the user */ });
     addToHistory({
       id: videoId,
       title,

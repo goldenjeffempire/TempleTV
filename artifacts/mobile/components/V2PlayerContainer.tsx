@@ -242,7 +242,7 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
     return () => {
       try {
         // replace(null) drops the decoder and all media buffer memory.
-        player.replace(null, true /* disableWarning */);
+        player.replace(null);
       } catch {
         // Ignore — player may already be in an idle state.
       }

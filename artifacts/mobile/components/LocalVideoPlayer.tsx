@@ -64,14 +64,26 @@ function LocalAudioModeCard({
   onToggle?: () => void;
 }) {
   const c = useColors();
-  const rotateAnim = useRef(new Animated.Value(0)).current;
-  const waveAnims = [
-    useRef(new Animated.Value(0.3)).current,
-    useRef(new Animated.Value(0.6)).current,
-    useRef(new Animated.Value(0.4)).current,
-    useRef(new Animated.Value(0.8)).current,
-    useRef(new Animated.Value(0.5)).current,
-  ];
+  // Lazy initialisation: Animated.Value objects must be created exactly once.
+  // The `useRef(new X()).current` pattern creates a *new* X on every render and
+  // discards it — wasteful and flagged by the react-hooks/exhaustive-deps rule.
+  // Using a single ref that holds the array initialised on the first render is
+  // idiomatic and avoids repeated GC pressure on a frequently re-rendered card.
+  const rotateAnimRef = useRef<Animated.Value | null>(null);
+  if (!rotateAnimRef.current) rotateAnimRef.current = new Animated.Value(0);
+  const rotateAnim = rotateAnimRef.current;
+
+  const waveAnimsRef = useRef<Animated.Value[] | null>(null);
+  if (!waveAnimsRef.current) {
+    waveAnimsRef.current = [
+      new Animated.Value(0.3),
+      new Animated.Value(0.6),
+      new Animated.Value(0.4),
+      new Animated.Value(0.8),
+      new Animated.Value(0.5),
+    ];
+  }
+  const waveAnims = waveAnimsRef.current;
 
   useEffect(() => {
     if (!isPlaying) {

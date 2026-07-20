@@ -12,6 +12,11 @@ export function useDownloads() {
       if (!mounted) return;
       setDownloads(downloadManager.getAll());
       setInitialized(true);
+    }).catch(() => {
+      // init() wraps all failures internally — this catch guards against any
+      // unexpected throw (e.g. storage permission error on a new OS version)
+      // and still marks the hook as initialized so UI doesn't hang forever.
+      if (mounted) setInitialized(true);
     });
     const unsub = downloadManager.subscribe((updated) => {
       if (mounted) setDownloads(updated);
@@ -25,15 +30,21 @@ export function useDownloads() {
   const addDownload = useCallback(async (sermon: Sermon) => {
     const sourceUrl = sermon.localVideoUrl ?? sermon.hlsMasterUrl;
     if (!sourceUrl || sermon.videoSource === "youtube") return;
-    await downloadManager.addDownload({
-      videoId: sermon.id,
-      videoTitle: sermon.title,
-      thumbnailUrl: sermon.thumbnailUrl,
-      duration: sermon.duration,
-      category: sermon.category ?? "",
-      preacher: sermon.preacher ?? "",
-      sourceUrl,
-    });
+    try {
+      await downloadManager.addDownload({
+        videoId: sermon.id,
+        videoTitle: sermon.title,
+        thumbnailUrl: sermon.thumbnailUrl,
+        duration: sermon.duration,
+        category: sermon.category ?? "",
+        preacher: sermon.preacher ?? "",
+        sourceUrl,
+      });
+    } catch (err) {
+      if (__DEV__) console.error("[useDownloads] addDownload failed:", err);
+      // Re-throw so the UI can surface an error message (e.g. "Storage full").
+      throw err;
+    }
   }, []);
 
   const pauseDownload = useCallback(

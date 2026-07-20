@@ -17,13 +17,23 @@
  *
  * Returns "" when none of the above yield a value, so callers can
  * early-return on no-op builds without throwing.
+ *
+ * Module-level cache: env vars are baked at bundle time on native (constant).
+ * On web, window.location.origin is stable within a session.  The cache is
+ * therefore safe and eliminates repeated string ops on the hot API call path.
  */
+let _cachedBase: string | undefined;
+
 export function getApiBase(): string {
+  if (_cachedBase !== undefined) return _cachedBase;
   // 1. Explicit API URL — always wins (EAS build profiles, Render, production).
   const apiUrl = process.env.EXPO_PUBLIC_API_URL;
   if (apiUrl) {
     const trimmed = apiUrl.replace(/\/$/, "");
-    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    if (/^https?:\/\//i.test(trimmed)) {
+      _cachedBase = trimmed;
+      return _cachedBase;
+    }
     // Auto-fix: bare domain without a protocol prefix — assume https://.
     // This recovers from the common mistake of setting EXPO_PUBLIC_API_URL
     // to "api.templetv.org.ng" instead of "https://api.templetv.org.ng".
@@ -37,7 +47,8 @@ export function getApiBase(): string {
         `auto-fixing with https://. Update the env var to silence this warning.`,
       );
     }
-    return `https://${trimmed}`;
+    _cachedBase = `https://${trimmed}`;
+    return _cachedBase;
   }
 
   // 2. Explicit domain env var — covers custom dev environments and native Expo Go builds.
@@ -46,19 +57,24 @@ export function getApiBase(): string {
   // Expo dev server (returns HTML for /api/* paths). EXPO_PUBLIC_DOMAIN overrides
   // this so API calls route to the correct host.
   const domain = process.env.EXPO_PUBLIC_DOMAIN;
-  if (domain) return `https://${domain.replace(/^https?:\/\//i, "").replace(/\/$/, "")}`;
+  if (domain) {
+    _cachedBase = `https://${domain.replace(/^https?:\/\//i, "").replace(/\/$/, "")}`;
+    return _cachedBase;
+  }
 
   // 3. Same-origin fallback for static deployments where the Expo web build is
   // served directly by the API server (no EXPO_PUBLIC_DOMAIN set).
+  // NOTE: window.location.origin is NOT cached — it is stable within any given
+  // page load, but tests may reset window.location between cases.
   if (typeof window !== "undefined" && window.location?.origin) {
     return window.location.origin;
   }
 
   // Native-only startup warning: if we reach here on a non-web platform,
   // push notifications, API calls, and WS connections will all fail silently
-  // because every URL will be a bare path with no host. Emit once at module
-  // load so developers see it immediately rather than when the first request
-  // fails with a cryptic error.
+  // because every URL will be a bare path with no host. Emit once per module
+  // load (the cache ensures subsequent calls skip this block) so developers
+  // see it immediately rather than when the first request fails.
   if (
     __DEV__ &&
     typeof window === "undefined"
@@ -72,5 +88,6 @@ export function getApiBase(): string {
     );
   }
 
-  return "";
+  _cachedBase = "";
+  return _cachedBase;
 }

@@ -40,7 +40,7 @@ function url(path: string): string {
 async function publicFetch(path: string, init?: RequestInit): Promise<Response> {
   const res = await fetchWithRetry(url(path), init);
   if (__DEV__ && !res.ok) {
-    if (__DEV__) console.warn(`[api] publicFetch ${path} → HTTP ${res.status}`);
+    console.warn(`[api] publicFetch ${path} → HTTP ${res.status}`);
   }
   return res;
 }
@@ -57,7 +57,7 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
     signal: init?.signal ?? AbortSignal.timeout(12_000),
   });
   if (__DEV__ && !res.ok) {
-    if (__DEV__) console.warn(`[api] authedFetch ${path} → HTTP ${res.status}`);
+    console.warn(`[api] authedFetch ${path} → HTTP ${res.status}`);
   }
   return res;
 }
