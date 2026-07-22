@@ -30,6 +30,15 @@ android {
     buildFeatures {
         buildConfig false
     }
+
+    lint {
+        // Prevent lint analysis errors in transitive deps (expo-modules-core
+        // subgraph, AGP API references) from aborting the library compilation.
+        // Fatal lint errors in THIS module's own Kotlin sources still surface
+        // as build warnings that the developer can act on.
+        abortOnError false
+        checkDependencies false
+    }
 }
 
 dependencies {

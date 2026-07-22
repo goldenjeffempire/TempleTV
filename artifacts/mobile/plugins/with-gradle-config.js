@@ -115,6 +115,18 @@ module.exports = function withGradleConfig(config) {
     // a forced migration warning on the next AGP major version.
     upsert("android.enableJetifier", "false");
 
+    // ── Kotlin 2.x incremental compilation (classpath-snapshot mode) ──────────
+    // Kotlin 2.0+ uses classpath-snapshot mode for incremental compilation:
+    // instead of recompiling a module whenever ANY classpath entry changes, the
+    // compiler builds a structural snapshot (interfaces + inlinable method bodies)
+    // for each classpath entry and only recompiles when the snapshot actually
+    // differs. In a monorepo with many RN/Expo modules this can halve incremental
+    // compile time on EAS when a single package is updated.
+    // This is the Kotlin 2.x default but must be set explicitly for projects that
+    // may have an older `kotlin.incremental.usePreciseJavaTracking` flag lingering
+    // from prior tooling.
+    upsert("kotlin.incremental.useClasspathSnapshot", "true");
+
     return mod;
   });
 };

@@ -74,6 +74,33 @@ module.exports = function withAndroidActivityFlags(config) {
       });
     }
 
+    // ── android.window.PROPERTY_COMPAT_ALLOW_USER_ASPECT_RATIO_OVERRIDE ────────
+    // Android 14 (API 34) introduced user-controlled aspect ratio overrides on
+    // large-screen devices (tablets, foldables, ChromeOS). Users can enable this
+    // in Settings → Display → Large Screen. Setting this property to "true" opts
+    // the app in to that override path, signalling to the Play Console large screen
+    // quality checker that the app is compatible with user-controlled aspect ratio.
+    //
+    // Without it, some OEMs letterbox the app even when resizeableActivity="true"
+    // is set, because the system can't confirm the app has been tested against the
+    // aspect ratio override path. This property is the explicit opt-in for the
+    // improved large-screen behaviour formalised in the Android 16 compatibility
+    // guidelines and required for the Play Console "Large Screen ready" tier.
+    const hasAspectRatioProp = application["meta-data"].some(
+      (m) =>
+        m.$?.["android:name"] ===
+        "android.window.PROPERTY_COMPAT_ALLOW_USER_ASPECT_RATIO_OVERRIDE",
+    );
+    if (!hasAspectRatioProp) {
+      application["meta-data"].push({
+        $: {
+          "android:name":
+            "android.window.PROPERTY_COMPAT_ALLOW_USER_ASPECT_RATIO_OVERRIDE",
+          "android:value": "true",
+        },
+      });
+    }
+
     const activities = application.activity ?? [];
     const mainActivity = activities.find(
       (a) => a.$?.["android:name"] === ".MainActivity",

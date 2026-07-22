@@ -60,6 +60,16 @@ module.exports = function withModernGradleDsl(config) {
       "targetSdk$1$2",
     );
 
+    // ── 2b. android-block: compileSdkVersion → compileSdk ────────────────────
+    // The `android { compileSdkVersion N }` block-level form (not inside
+    // defaultConfig) is also deprecated in AGP 7.0 and removed in AGP 9.x.
+    // Matches both the `rootProject.ext.*` form and any bare integer literal so
+    // the replacement is safe regardless of where the template puts the value.
+    contents = contents.replace(
+      /\bcompileSdkVersion(\s+)(rootProject\.ext\.compileSdkVersion|\d+)/g,
+      "compileSdk$1$2",
+    );
+
     // ── 3. android { packagingOptions { } } → android { packaging { } } ──────
     // Replaces the block opener only. Property names inside (pickFirsts,
     // excludes, merges, doNotStrip) are identical in both APIs.
