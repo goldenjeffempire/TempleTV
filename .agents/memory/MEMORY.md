@@ -1,3 +1,4 @@
+- [Android 16 (API 36) migration audit — mobile app](android16-migration-audit.md) — project was 90% ready; 9 targeted fixes: PiP close action, disableAutoEnterPip, notif permission guard, activity embedding meta-data, Jetifier disable, receiver exported pass, eas.json autoIncrement, coroutines 1.10.1.
 - [Corrupted pnpm patch + duplicate const build blockers](corrupted-patch-and-duplicate-const.md) — regenerate corrupted patch files from the real unpatched source; expect layered install→build→runtime blockers on unfamiliar setups.
 - [Android build warnings audit — mobile app](android-build-warnings-audit.md) — all deprecated DSL/icon/lockfile/eas warnings eliminated; see before touching patches/ or any native library gradle files.
 - [Broadcast continuity — all fixes applied](broadcast-continuity-fixes.md) — 6-layer fix; boot dead-air 75s→9ms; video resumes exact timestamp; see before touching daemon-proxy, orchestrator, or yt-shuffle.

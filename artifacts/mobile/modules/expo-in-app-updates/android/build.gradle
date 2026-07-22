@@ -39,8 +39,10 @@ dependencies {
     // (FLEXIBLE and IMMEDIATE) via the modern AppUpdateOptions API.
     implementation "com.google.android.play:app-update-ktx:2.1.0"
     // Coroutine support for Play Core tasks (.await() on Task<T>) and
-    // Android dispatcher. Must match the version used by expo-modules-core
+    // Android dispatcher. 1.10.1 is the latest stable release aligned with
+    // Kotlin 2.1.x and Android 16 (API 36) compatibility.
+    // Must be kept in sync with the version used by expo-modules-core
     // to avoid duplicate class / classloader conflicts on the Kotlin stdlib.
-    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0"
-    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.1"
 }

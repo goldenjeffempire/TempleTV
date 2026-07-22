@@ -16,6 +16,9 @@
  *       if (action === "pause") pausePlayback();
  *       if (action === "play")  resumePlayback();
  *     },
+ *     onClose: () => {               // Android 15+ (API 35): PiP close button tapped
+ *       stopPlayback();              // stop media and release resources
+ *     },
  *   });
  *
  * PiP mode detection:
@@ -29,6 +32,12 @@
  *   module emits "onPipAction". This hook subscribes to that event and forwards
  *   it to `onPlayPause`. The media control icon also updates via `updatePipParams`
  *   whenever `isPlaying` changes, so the button always reflects real playback state.
+ *
+ * Close action (Android 15+ / API 35):
+ *   A custom close action is registered automatically by the native module so
+ *   tapping the PiP window's close (×) button fires { action: "close" } to JS.
+ *   This hook delivers that event to the `onClose` callback. Without handling
+ *   this, closing the PiP overlay leaves media playing silently in the background.
  *
  * Restore button (showRestoreButton = true):
  *   • Adds a bundled expand-icon action to the PiP overlay window itself.
@@ -54,6 +63,7 @@ import {
   isInPictureInPictureMode,
   cancelPipRestoreNotification,
   updatePipParams,
+  disableAutoEnterPip,
   type PipActionEvent,
 } from "../modules/expo-pip-android/src";
 
@@ -97,6 +107,16 @@ export interface UsePictureInPictureOptions {
    * or playerPlayRef.current() from the player context).
    */
   onPlayPause?: (event: PipActionEvent) => void;
+  /**
+   * Called when the user taps the PiP window close (×) button on Android 15+
+   * (API 35 / VANILLA_ICE_CREAM). Stop playback and release all resources when
+   * this fires — the PiP overlay is gone and the user explicitly dismissed it.
+   *
+   * Without this handler, closing the PiP window leaves media playing silently
+   * in the background (no visible UI, no notification). On Android < 15 the
+   * system never calls this callback; the default OS close behavior applies.
+   */
+  onClose?: () => void;
 }
 
 export interface UsePictureInPictureResult {
@@ -122,6 +142,7 @@ export function usePictureInPicture(
     title,
     isPlaying = true,
     onPlayPause,
+    onClose,
   } = options;
 
   // Track mounted state so async PiP responses (.then callbacks, AppState
@@ -161,6 +182,7 @@ export function usePictureInPicture(
   const titleRef       = useRef(title ?? null);
   const isPlayingRef   = useRef(isPlaying);
   const onPlayPauseRef = useRef(onPlayPause);
+  const onCloseRef     = useRef(onClose);
   useEffect(() => {
     aspectRef.current      = { width: aspectRatioWidth, height: aspectRatioHeight };
     autoEnterRef.current   = autoEnterOnBackground;
@@ -168,15 +190,23 @@ export function usePictureInPicture(
     titleRef.current       = title ?? null;
     isPlayingRef.current   = isPlaying;
     onPlayPauseRef.current = onPlayPause;
+    onCloseRef.current     = onClose;
   }, [aspectRatioWidth, aspectRatioHeight, autoEnterOnBackground,
-      showRestoreButton, title, isPlaying, onPlayPause]);
+      showRestoreButton, title, isPlaying, onPlayPause, onClose]);
 
-  // ── Media-control event listener ─────────────────────────────────────────
-  // Subscribe to play/pause button taps from inside the PiP overlay window.
+  // ── Media-control and close event listener ───────────────────────────────
+  // Subscribe to play/pause button taps and — on Android 15+ — the PiP close
+  // button event from inside the PiP overlay window.
   useEffect(() => {
     if (!isSupported) return;
     const sub = addPipActionListener((event) => {
-      onPlayPauseRef.current?.(event);
+      if (event.action === "close") {
+        // Android 15+ (API 35): user tapped the PiP window close (×) button.
+        // Notify JS so the player can stop and release resources.
+        onCloseRef.current?.();
+      } else {
+        onPlayPauseRef.current?.(event);
+      }
     });
     return () => sub.remove();
   }, [isSupported]);
@@ -268,6 +298,11 @@ export function usePictureInPicture(
   // and is frequently rejected by the system on modern Android. Below API 31
   // this is a native no-op and the AppState fallback handles auto-enter.
   //
+  // Cleanup uses disableAutoEnterPip() (added for Android 16 compliance) which
+  // only resets the autoEnter flag without disturbing other PiP params — more
+  // targeted than updatePipParams(autoEnter=false) which resets everything and
+  // can race a concurrent PiP session on the same activity.
+  //
   // We re-arm whenever any PiP param changes so the system always uses the
   // correct window shape, title, and media control state, and we DISARM on
   // cleanup so PiP never triggers from an unrelated screen after this unmounts.
@@ -282,14 +317,8 @@ export function usePictureInPicture(
       isPlaying,
     );
     return () => {
-      void updatePipParams(
-        aspectRatioWidth,
-        aspectRatioHeight,
-        showRestoreButton,
-        false,
-        title ?? null,
-        isPlaying,
-      );
+      // Targeted disable: only clears autoEnter, leaves aspect ratio / title intact.
+      void disableAutoEnterPip();
     };
   }, [
     isSupported,

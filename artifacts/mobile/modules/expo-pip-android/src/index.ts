@@ -7,8 +7,8 @@
  *
  * Media controls:
  *   Subscribe to "onPipAction" events (via addPipActionListener) to receive
- *   play/pause button taps from inside the PiP overlay window. The native
- *   module broadcasts these as { action: "play" | "pause" }.
+ *   play/pause button taps and — on Android 15+ (API 35) — the close button
+ *   tap from inside the PiP overlay window.
  *
  * Restore button (withRestore = true):
  *   Adds a bundled "expand" icon button inside the PiP overlay window AND posts
@@ -19,6 +19,12 @@
  * Title (Android 12+ / API 31):
  *   When provided, shown in the PiP window chrome above the video so viewers
  *   know what is currently playing (same as YouTube's PiP title treatment).
+ *
+ * Close action (Android 15+ / API 35):
+ *   A custom close action is registered automatically so tapping the PiP
+ *   window's close (×) button fires { action: "close" } to JS. The player
+ *   should stop playback and release resources on this event rather than
+ *   leaving media running invisibly in the background.
  */
 import { Platform } from "react-native";
 import type { EventSubscription } from "expo-modules-core";
@@ -37,8 +43,13 @@ interface NativePipEmitter {
 }
 
 export interface PipActionEvent {
-  /** "play" when the user taps Play in the PiP overlay; "pause" for Pause. */
-  action: "play" | "pause";
+  /**
+   * "play"  — user tapped Play in the PiP overlay
+   * "pause" — user tapped Pause in the PiP overlay
+   * "close" — user tapped the PiP window close (×) button (Android 15+ / API 35)
+   *           Stop playback and release resources when this fires.
+   */
+  action: "play" | "pause" | "close";
 }
 
 let NativeModule: {
@@ -59,6 +70,7 @@ let NativeModule: {
     title: string | null,
     isPlaying: boolean,
   ): Promise<void>;
+  disableAutoEnterPip(): Promise<void>;
   cancelPipRestoreNotification(): Promise<void>;
 } | null = null;
 
@@ -82,14 +94,20 @@ if (Platform.OS === "android") {
 }
 
 /**
- * Subscribe to media-control button taps from inside the PiP overlay.
+ * Subscribe to media-control button taps and close events from the PiP overlay.
  * Returns an EventSubscription that must be removed when the component unmounts.
+ *
+ * Event actions:
+ *   "play"  — user tapped Play inside the PiP overlay
+ *   "pause" — user tapped Pause inside the PiP overlay
+ *   "close" — user tapped the PiP close (×) button (Android 15+ / API 35)
  *
  * @example
  * useEffect(() => {
  *   const sub = addPipActionListener(({ action }) => {
  *     if (action === "pause") pausePlayback();
  *     if (action === "play")  resumePlayback();
+ *     if (action === "close") stopAndRelease();
  *   });
  *   return () => sub.remove();
  * }, []);
@@ -183,6 +201,25 @@ export async function updatePipParams(
       title ?? null,
       isPlaying,
     );
+  } catch {
+    // non-fatal
+  }
+}
+
+/**
+ * Explicitly disable PiP auto-enter (Android 12+ / API 31+).
+ *
+ * Call this when the player unmounts or the user navigates away so the OS does
+ * not auto-enter PiP on the next Home gesture when nothing is playing.
+ *
+ * More targeted than updatePipParams(autoEnter=false) because it only resets
+ * the autoEnter flag and leaves all other params (aspect ratio, title, actions)
+ * untouched. Safe no-op on Android < 12 (setAutoEnterEnabled did not exist).
+ */
+export async function disableAutoEnterPip(): Promise<void> {
+  if (!NativeModule) return;
+  try {
+    await NativeModule.disableAutoEnterPip();
   } catch {
     // non-fatal
   }

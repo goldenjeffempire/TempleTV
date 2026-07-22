@@ -146,7 +146,7 @@
       "pnpm": "10.26.1"
     },
     "production-android": {
-      "autoIncrement": false,
+      "autoIncrement": true,
       "distribution": "store",
       "channel": "production",
       "credentialsSource": "remote",

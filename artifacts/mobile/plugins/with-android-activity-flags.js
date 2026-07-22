@@ -1,10 +1,12 @@
 // Expo Config Plugin — Android Activity Compliance Flags
 //
-// Adds attributes to MainActivity required for:
+// Adds attributes to MainActivity and Application required for:
 //   1. Google Play "Large screen / foldable compatibility" warnings
 //      (android:resizeableActivity="true")
 //   2. Picture-in-Picture support at the manifest level
 //      (android:supportsPictureInPicture="true")
+//   3. Android 12L+ Activity Embedding / split-screen on large screens
+//      (android.window.PROPERTY_ACTIVITY_EMBEDDING_ALLOW_SYSTEM_OVERRIDE)
 //
 // Note: setting supportsPictureInPicture only declares capability. The
 // actual PiP entry must be triggered from native (enterPictureInPictureMode)
@@ -42,6 +44,36 @@ module.exports = function withAndroidActivityFlags(config) {
     const application = manifest.manifest.application?.[0];
     if (!application) return mod;
 
+    // ── android.window.PROPERTY_ACTIVITY_EMBEDDING_ALLOW_SYSTEM_OVERRIDE ─────
+    // Android 12L (API 32) introduced Activity Embedding: the system can split
+    // the screen between two activities on large screens and foldables. Setting
+    // this property to "true" opts in to system-managed embedding, improving the
+    // app's Google Play large screen compatibility score without requiring manual
+    // split-screen implementation.
+    //
+    // With this opt-in, on eligible large-screen devices (tablets, foldables,
+    // ChromeOS) Android can run Temple TV side-by-side with another app in a
+    // multi-pane layout. The app does not need to implement any embedding APIs —
+    // the system handles layout, the app just needs to declare readiness.
+    //
+    // Required for Google Play's "Large screen ready" badge (Play Console →
+    // Android vitals → App quality → Large screen).
+    if (!application["meta-data"]) application["meta-data"] = [];
+    const hasEmbeddingProp = application["meta-data"].some(
+      (m) =>
+        m.$?.["android:name"] ===
+        "android.window.PROPERTY_ACTIVITY_EMBEDDING_ALLOW_SYSTEM_OVERRIDE",
+    );
+    if (!hasEmbeddingProp) {
+      application["meta-data"].push({
+        $: {
+          "android:name":
+            "android.window.PROPERTY_ACTIVITY_EMBEDDING_ALLOW_SYSTEM_OVERRIDE",
+          "android:value": "true",
+        },
+      });
+    }
+
     const activities = application.activity ?? [];
     const mainActivity = activities.find(
       (a) => a.$?.["android:name"] === ".MainActivity",
@@ -77,6 +109,16 @@ module.exports = function withAndroidActivityFlags(config) {
     // fontScale: prevents recreation when the user changes system font size
     //   in Accessibility settings (API 24+), which is a common accessibility
     //   action taken while an app is backgrounded / in PiP.
+    // colorMode: prevents activity recreation when the display color mode
+    //   changes (HDR, wide color gamut, dark/light mode on some OEM skins).
+    //   On Android 16 devices with HDR or high-refresh-rate displays, OS-level
+    //   color-mode switches (e.g. auto-HDR while playing video) would otherwise
+    //   destroy and recreate the Activity mid-playback. Unknown on API < 26,
+    //   which safely ignores unrecognised config-change flags.
+    // grammaticalGender: Android 14 (API 34) added grammatical gender as a
+    //   configChange category (RTL-language locale features). Without it,
+    //   locale changes involving grammatical gender markers on supported locales
+    //   recreate the Activity on API 34+ devices.
     const existingConfigChanges = mainActivity.$["android:configChanges"] || "";
     const required = [
       "keyboard",
@@ -89,13 +131,9 @@ module.exports = function withAndroidActivityFlags(config) {
       "layoutDirection",
       "density",
       "fontScale",
-      // API 26+ — prevents activity recreation when the display color mode
-      // changes (HDR, wide color gamut, dark/light mode on some OEM skins).
-      // On Android 16 devices with HDR or high-refresh-rate displays, OS-level
-      // color-mode switches (e.g. auto-HDR while playing video) would otherwise
-      // destroy and recreate the Activity mid-playback. Unknown on API < 26,
-      // which safely ignores unrecognised config-change flags.
       "colorMode",
+      // Android 14 (API 34): grammatical gender locale changes.
+      "grammaticalGender",
     ];
     const present = new Set(existingConfigChanges.split("|").filter(Boolean));
     for (const flag of required) present.add(flag);
