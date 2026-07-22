@@ -218,9 +218,10 @@
         {
           "android": {
             "compileSdkVersion": 36,
-            "targetSdkVersion": 35,
+            "targetSdkVersion": 36,
             "minSdkVersion": 24,
             "buildToolsVersion": "36.0.0",
+            "ndkVersion": "27.2.12479018",
             "kotlinVersion": "2.1.20",
             "jvmArgs": "-Xmx4g -XX:MaxMetaspaceSize=512m -XX:+UseParallelGC -XX:+HeapDumpOnOutOfMemoryError",
             "enableProguardInReleaseBuilds": true,
@@ -244,6 +245,7 @@
       "./plugins/with-modern-gradle-dsl.js",
       "./plugins/with-gradle-config.js",
       "./plugins/with-foreground-service-type.js",
+      "./plugins/with-16kb-page-size.js",
       "./plugins/with-android-activity-flags.js",
       "./plugins/with-enable-edge-to-edge.js",
       "./plugins/with-edge-to-edge.js",

@@ -71,6 +71,18 @@ module.exports = function withGradleConfig(config) {
     // explicit -keep rules in proguard-rules.pro and expo-build-properties.
     upsert("android.enableR8.fullMode", "true");
 
+    // ── Non-transitive R classes (AGP 8.x best practice) ─────────────────────
+    // Each module's R.java only references its OWN resources, not the merged
+    // set from all transitive dependencies.  Benefits:
+    //   • Smaller DEX — eliminates the giant merged R.class from the final APK
+    //   • Faster incremental builds — resource changes in one module do not
+    //     invalidate every other module's R
+    //   • Avoids cross-module resource name collisions that can silently surface
+    //     wrong resources at runtime (e.g. two libraries with identically named
+    //     drawables; without non-transitive R the last one wins randomly)
+    // React Native ≥ 0.72 and all Expo SDK 50+ packages are compatible.
+    upsert("android.nonTransitiveRClass", "true");
+
     return mod;
   });
 };

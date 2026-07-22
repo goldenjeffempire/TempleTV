@@ -48,6 +48,15 @@ module.exports = function withAndroidActivityFlags(config) {
     );
     if (!mainActivity || !mainActivity.$) return mod;
 
+    // android:hasFragileUserData="false" — tells Android there is no locally
+    // stored user data worth preserving on uninstall, suppressing the
+    // "Keep app data?" dialog that Android 7+ shows when uninstalling apps
+    // that have stored any files.  All sensitive state (auth tokens, prefs) is
+    // kept in SecureStore / encrypted SharedPreferences and the API server; the
+    // user can restore their account on a fresh install just by signing in.
+    // This is consistent with android:allowBackup="false" already set in app.json.
+    application.$["android:hasFragileUserData"] = "false";
+
     // Large-screen / foldable / multi-window compatibility.
     mainActivity.$["android:resizeableActivity"] = "true";
 
@@ -80,6 +89,13 @@ module.exports = function withAndroidActivityFlags(config) {
       "layoutDirection",
       "density",
       "fontScale",
+      // API 26+ — prevents activity recreation when the display color mode
+      // changes (HDR, wide color gamut, dark/light mode on some OEM skins).
+      // On Android 16 devices with HDR or high-refresh-rate displays, OS-level
+      // color-mode switches (e.g. auto-HDR while playing video) would otherwise
+      // destroy and recreate the Activity mid-playback. Unknown on API < 26,
+      // which safely ignores unrecognised config-change flags.
+      "colorMode",
     ];
     const present = new Set(existingConfigChanges.split("|").filter(Boolean));
     for (const flag of required) present.add(flag);
