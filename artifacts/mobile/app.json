@@ -2,7 +2,7 @@
   "expo": {
     "name": "Temple TV",
     "slug": "temple-tv-mobile",
-    "version": "1.0.51",
+    "version": "1.0.52",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "templetv",
@@ -13,7 +13,7 @@
     "assetBundlePatterns": [
       "assets/**/*"
     ],
-    "runtimeVersion": "1.0.51",
+    "runtimeVersion": "1.0.52",
     "updates": {
       "enabled": true,
       "checkAutomatically": "ON_LOAD",
@@ -86,7 +86,7 @@
     },
     "android": {
       "package": "com.templetv.jctm",
-      "versionCode": 113,
+      "versionCode": 114,
       "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon-foreground.png",
