@@ -16,12 +16,14 @@
 //     Gradle's local build cache. Drastically reduces clean-build times on EAS when
 //     inputs haven't changed (Gradle re-uses cached task outputs).
 //
-//   org.gradle.configuration-cache=true
-//     Gradle Configuration Cache (Gradle 8.1+). Caches the task configuration
-//     graph between builds so subsequent runs skip the configuration phase
-//     entirely. Significantly speeds up incremental EAS builds and CI runs.
-//     Safe for all React Native 0.86 / Expo 57 projects — all used Gradle
-//     plugins declare configuration-cache compatibility.
+//   NOTE: org.gradle.configuration-cache is intentionally NOT set.
+//     React Native's build.gradle, Expo's resolveAppEntry script, and
+//     Sentry's sentry.gradle all spawn external `node` processes during the
+//     Gradle *configuration* phase. Gradle's configuration cache forbids
+//     external process spawning at configuration time and fails the build
+//     with "Starting an external process during configuration time is
+//     unsupported." This is an upstream limitation in the RN/Expo/Sentry
+//     Gradle tooling; do not re-enable until all three upstreams fix it.
 //
 //   android.nonTransitiveRClass=true
 //     Eliminates the global merged R.java file (AGP 8.x recommended setting).
@@ -81,11 +83,6 @@ module.exports = function withGradleConfig(config) {
 
     // ── Gradle local build cache ──────────────────────────────────────────────
     upsert("org.gradle.caching", "true");
-
-    // ── Gradle Configuration Cache (Gradle 8.1+) ─────────────────────────────
-    // Caches the task configuration graph so subsequent builds skip the entire
-    // configuration phase. Saves 30–90 seconds per incremental EAS build run.
-    upsert("org.gradle.configuration-cache", "true");
 
     // ── R8 full mode (smaller, faster release APK/AAB) ───────────────────────
     // Enables dead-code removal, method inlining, and class merging in R8.
