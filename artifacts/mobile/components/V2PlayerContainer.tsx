@@ -70,6 +70,7 @@ import {
   isInPictureInPictureMode,
   updatePipParams,
 } from "../modules/expo-pip-android/src";
+import { useBroadcastInterstitialAd } from "@/hooks/useInterstitialAd";
 
 // Audio session (playsInSilentModeIOS, staysActiveInBackground, DoNotMix
 // interruption mode) is configured globally in app/_layout.tsx at app boot.
@@ -1195,6 +1196,19 @@ export function V2PlayerContainer({
        activeItem.kind === "youtube") ||
       server?.override?.kind === "youtube"
     );
+
+  // ── Google Ad Manager interstitial ads ───────────────────────────────────
+  // Shows interstitials at natural broadcast break points (first PLAYING state
+  // and subsequent buffer swaps between queue items). Suppressed during YouTube
+  // live overrides and all non-PLAYING FSM states. No-op when the env var
+  // EXPO_PUBLIC_GAM_INTERSTITIAL_AD_UNIT_ID is not set, or in the minimal /
+  // suppressed-event player variants (hero / inline player).
+  useBroadcastInterstitialAd({
+    broadcastState: snapshot.state,
+    activeBufferId,
+    isYouTubeOverride,
+    enabled: !minimal && !suppressEvents,
+  });
 
   // ── PiP buffer-swap re-entry (Android) ───────────────────────────────
   const prevActiveBufferIdRef = useRef<"A" | "B">(activeBufferId);

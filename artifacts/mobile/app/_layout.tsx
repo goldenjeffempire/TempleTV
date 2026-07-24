@@ -155,6 +155,31 @@ const queryClient = new QueryClient({
 import { setAudioSessionPromise } from "@/lib/audio-session";
 import { markStartupPhase } from "@/lib/startupLifecycle";
 
+/**
+ * Initialize the Google Mobile Ads SDK once at app boot.
+ *
+ * Must be called before any ad is loaded or shown — the SDK buffers all ad
+ * requests until initialization is complete. Calling it here (alongside
+ * audio session setup, before any broadcast player mounts) guarantees the
+ * first interstitial pre-loads as early as possible.
+ *
+ * Non-critical: if initialization fails (SDK blocked, no network, web
+ * platform) the promise resolves silently and the app runs without ads.
+ *
+ * Delay app measurement init is configured in app.json (delay_app_measurement_init: true)
+ * so the SDK waits for the UMP consent signal before attributing events.
+ * This is required for GDPR compliance.
+ */
+async function setupMobileAds() {
+  if (Platform.OS === "web") return;
+  try {
+    const MobileAds = (await import("react-native-google-mobile-ads")).default;
+    await MobileAds().initialize();
+  } catch {
+    // Non-critical — ads will not load but the broadcast plays normally.
+  }
+}
+
 async function setupAudioSession() {
   if (Platform.OS === "web") return;
   try {
@@ -765,6 +790,10 @@ function RootLayout() {
       const audioSessionPromise = setupAudioSession();
       setAudioSessionPromise(audioSessionPromise);
       audioSessionPromise.then(() => markStartupPhase("audio_session")).catch(() => markStartupPhase("audio_session"));
+      // Initialize the Google Mobile Ads SDK in parallel with audio setup so
+      // interstitial pre-loading starts as early as possible. Fire-and-forget
+      // — MobileAds failure must never block the broadcast from starting.
+      void setupMobileAds();
       if (Platform.OS !== "web") {
         setupTrackPlayer()
           .then(() => markStartupPhase("track_player_setup"))

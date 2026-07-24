@@ -70,6 +70,17 @@
          secondary thumbnail data (important on low-end Smart-TV SoCs). -->
     <link rel="preload" as="image" href="/icon.png" fetchpriority="high" />
 
+    <!-- IMA SDK CDN — preconnect so the SDK script and first ad request skip
+         TLS handshake latency. Smart TV SoCs can spend 300–600 ms on a cold
+         TLS setup, so these hints are on the critical path to first-ad-play. -->
+    <link rel="preconnect" href="https://imasdk.googleapis.com" />
+    <link rel="preconnect" href="https://pubads.g.doubleclick.net" />
+    <link rel="preconnect" href="https://googleads.g.doubleclick.net" />
+    <link rel="dns-prefetch" href="https://imasdk.googleapis.com" />
+    <link rel="dns-prefetch" href="https://pubads.g.doubleclick.net" />
+    <link rel="dns-prefetch" href="https://googleads.g.doubleclick.net" />
+    <link rel="dns-prefetch" href="https://securepubads.g.doubleclick.net" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link rel="dns-prefetch" href="https://img.youtube.com" />
@@ -120,6 +131,16 @@
       </div>
     </noscript>
     <div id="root"></div>
+
+    <!-- Google IMA HTML5 SDK — loaded synchronously so it is available before
+         React mounts. The SDK is small (~160 KB gzipped) and cached by the
+         browser after the first load. Loading it here avoids a dynamic import
+         race where the broadcast player initialises before the SDK is ready.
+         If the script is blocked (ad blocker, network failure, old TV browser
+         that cannot reach imasdk.googleapis.com), the AdManager falls back to
+         a silent no-op and the broadcast plays without ads.           -->
+    <script src="https://imasdk.googleapis.com/js/sdkloader/ima3.js"></script>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

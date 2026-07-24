@@ -740,6 +740,13 @@ function isPlayableForBroadcast(row: {
   // state, transcoding status, or caller reason.
   if (row.category === "midnight-prayers") return false;
 
+  // Videos that explicitly failed validation are blocked from broadcast.
+  // null/undefined/pending/running/passed/warn are all allowed — only the
+  // explicit "failed" verdict gates admission here.  This prevents a video
+  // whose ffprobe checks surfaced a fatal codec/container fault from silently
+  // entering the rotation and causing dead-air at the source-resolver layer.
+  if (row.validationStatus === "failed") return false;
+
   if (row.localVideoUrl && row.localVideoUrl.trim() !== "") {
     // ── Blob-existence gate ─────────────────────────────────────────────────
     // Only gate when s3MirroredAt was explicitly fetched and provided (not

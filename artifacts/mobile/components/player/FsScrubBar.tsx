@@ -25,6 +25,12 @@ export function FsScrubBar({
   const startXRef   = useRef(0);
   const lastRRef    = useRef(ratio);
   lastRRef.current  = ratio;
+  // Keep callback refs so the PanResponder (created once) always invokes the
+  // latest prop values without being recreated on every render.
+  const onScrubRef    = useRef(onScrub);
+  const onScrubEndRef = useRef(onScrubEnd);
+  onScrubRef.current    = onScrub;
+  onScrubEndRef.current = onScrubEnd;
 
   const pan = useRef(
     PanResponder.create({
@@ -34,20 +40,20 @@ export function FsScrubBar({
       onPanResponderGrant: (evt: GestureResponderEvent) => {
         startXRef.current = evt.nativeEvent.locationX;
         const r = Math.max(0, Math.min(1, startXRef.current / (barWidthRef.current || 1)));
-        onScrub(r);
+        onScrubRef.current(r);
       },
       onPanResponderMove: (_evt: GestureResponderEvent, gs: PanResponderGestureState) => {
         const x = startXRef.current + gs.dx;
         const r = Math.max(0, Math.min(1, x / (barWidthRef.current || 1)));
-        onScrub(r);
+        onScrubRef.current(r);
       },
       onPanResponderRelease: (_evt: GestureResponderEvent, gs: PanResponderGestureState) => {
         const x = startXRef.current + gs.dx;
         const r = Math.max(0, Math.min(1, x / (barWidthRef.current || 1)));
-        onScrubEnd(r);
+        onScrubEndRef.current(r);
       },
       onPanResponderTerminate: () => {
-        onScrubEnd(lastRRef.current);
+        onScrubEndRef.current(lastRRef.current);
       },
     }),
   ).current;

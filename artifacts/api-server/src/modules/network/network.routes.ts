@@ -332,7 +332,9 @@ export async function networkRoutes(app: FastifyInstance) {
             await liveOverridesService.stop().catch(() => null);
             overrideBus.notifyStopped();
           }
-          await broadcastEngine.reload();
+          await broadcastEngine.reload().catch((err: unknown) =>
+            req.log.warn({ err }, "network FAILOVER: broadcastEngine.reload() failed (non-fatal)"),
+          );
           broadcastSignal("FAILOVER_ACTIVATED", channelId, {
             message: payload?.reason ?? "Manual failover triggered by admin",
             payload: { command, failoverHlsUrl: null },

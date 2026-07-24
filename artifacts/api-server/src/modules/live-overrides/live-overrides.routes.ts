@@ -96,9 +96,13 @@ export async function liveOverridesRoutes(app: FastifyInstance) {
         security: [{ bearerAuth: [] }],
       },
     },
-    async () => {
+    async (req) => {
       const stopped = await liveOverridesService.stop();
-      await broadcastEngine.reload();
+      // Non-fatal: V1 engine may throw after a successful stop; swallow so the
+      // override is reliably stopped and clients are always notified.
+      await broadcastEngine.reload().catch((err: unknown) =>
+        req.log.warn({ err }, "live-overrides /stop: broadcastEngine.reload() failed (non-fatal)"),
+      );
       // Notify connected clients to fall back to the broadcast queue.
       overrideBus.notifyStopped();
       return stopped;

@@ -533,7 +533,11 @@ export async function adminBroadcastRoutes(app: FastifyInstance) {
       // Either change affects the active rotation — both engines need to reload.
       // V1: broadcastEngine.reload() recomputes the queue snapshot.
       // V2: adminEventBus fires the bus bridge that calls orchestrator.reload().
-      await broadcastEngine.reload();
+      // Non-fatal: V1 engine may throw after a successful DB write; swallow so
+      // the PATCH response still reaches the client and the DB change persists.
+      await broadcastEngine.reload().catch((err: unknown) =>
+        req.log.warn({ err }, "broadcast PATCH: broadcastEngine.reload() failed (non-fatal)"),
+      );
       adminEventBus.push("broadcast-queue-updated", { reason: "item-patched", id });
       const patchRow = updated[0]!;
       const patchHls = patchRow.videoId

@@ -252,6 +252,16 @@
         {
           "initialOrientation": "DEFAULT"
         }
+      ],
+      [
+        "react-native-google-mobile-ads",
+        {
+          "android_app_id": "ca-app-pub-3940256099942544~3347511713",
+          "ios_app_id": "ca-app-pub-3940256099942544~1458002511",
+          "sk_ad_network_items": [],
+          "user_tracking_usage_description": "Temple TV uses this identifier to show relevant ads that support our free broadcast ministry.",
+          "delay_app_measurement_init": true
+        }
       ]
     ],
     "extra": {

@@ -96,6 +96,7 @@
     "hls.js": "^1.6.16",
     "react": "catalog:",
     "react-native": "0.86.0",
+    "react-native-google-mobile-ads": "^14.11.0",
     "react-native-sse": "^1.2.1",
     "react-native-track-player": "^4.1.2",
     "react-native-webview": "13.16.1",

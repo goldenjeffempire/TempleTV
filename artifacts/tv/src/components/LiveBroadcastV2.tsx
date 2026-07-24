@@ -25,6 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Hls from "hls.js";
 import { useV2Broadcast } from "@workspace/player-core/react";
 import { resolveApiOrigin } from "../lib/api";
+import { useAdManager } from "../hooks/useAdManager";
 
 // ── Time formatting ───────────────────────────────────────────────────────────
 /** Format seconds as "m:ss" (< 1 h) or "h:mm:ss" (≥ 1 h). Tabular digits. */
@@ -419,6 +420,19 @@ export function LiveBroadcastV2({
   const videoRefA = useRef<HTMLVideoElement | null>(null);
   const videoRefB = useRef<HTMLVideoElement | null>(null);
   const prevActiveBufferId = useRef(snapshot.activeBufferId);
+
+  // ── Google IMA ad manager ─────────────────────────────────────────────────
+  // Requests a VMAP schedule from Google Ad Manager and plays prerolls /
+  // midrolls as configured. Only active in the "player" variant — the "hero"
+  // background preview variant never shows ads. Mutes/unmutes the live HLS
+  // buffers around each ad break so the broadcast FSM is never disturbed.
+  // Set VITE_IMA_AD_TAG_URL in .env to enable; no-ops when unset.
+  const { adContainerRef, isAdActive } = useAdManager({
+    videoRefA,
+    videoRefB,
+    variant,
+    broadcastState: snapshot.state,
+  });
 
   // ── YouTube dual-slot preload ─────────────────────────────────────────────
   // Two permanent iframe slots (A / B) avoid DOM remounts between YouTube
@@ -1847,6 +1861,39 @@ export function LiveBroadcastV2({
             }}
           />
         </div>
+      )}
+
+      {/* ── Google IMA Ad Container ────────────────────────────────────────────
+          The IMA SDK renders linear video ads (prerolls, midrolls) inside
+          this div. It sits above all broadcast overlays at zIndex 28:
+          above the stall spinner (22) and progress bar (25), below nothing.
+
+          While an ad plays (isAdActive=true):
+            • pointerEvents are "auto" so the user can interact with the
+              Skip Ad button that the IMA SDK injects into this container.
+            • The live HLS video buffers are muted (not paused) by the
+              useAdManager hook — content keeps streaming in the background.
+
+          While no ad plays (isAdActive=false):
+            • pointerEvents are "none" so remote-control / mouse events
+              targeting the player controls pass through unchanged.
+            • The div occupies no visible space (IMA SDK clears its content).
+
+          Only rendered in the "player" variant — the "hero" background
+          variant is an ambient preview and should never play ads.        */}
+      {variant === "player" && (
+        <div
+          ref={adContainerRef}
+          aria-live="polite"
+          aria-label={isAdActive ? "Advertisement" : undefined}
+          aria-hidden={!isAdActive}
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 28,
+            pointerEvents: isAdActive ? "auto" : "none",
+          }}
+        />
       )}
 
       <style>{`
