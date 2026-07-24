@@ -241,22 +241,23 @@ class ExpoPipAndroidModule : Module() {
         // touches the autoEnter flag — it does not reset aspect ratio, title, or
         // action buttons that might still be needed for a concurrent PiP session.
         // Safe no-op below API 31 (autoEnter did not exist before S).
+        //
+        // Uses a regular AsyncFunction (not Coroutine) with fire-and-forget
+        // runOnUiThread — the caller does not need to await the param update,
+        // and the zero-arg Coroutine overload causes ambiguity with Kotlin's
+        // overload resolution in expo-modules-core 3.x.
 
-        AsyncFunction("disableAutoEnterPip") Coroutine {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return@Coroutine null
-            val act = currentActivity ?: return@Coroutine null
-
-            suspendCancellableCoroutine<Unit> { cont ->
-                act.runOnUiThread {
-                    try {
-                        act.setPictureInPictureParams(
-                            PictureInPictureParams.Builder()
-                                .setAutoEnterEnabled(false)
-                                .build()
-                        )
-                    } catch (_: Exception) { /* non-fatal */ }
-                    if (cont.isActive) cont.resume(Unit)
-                }
+        AsyncFunction("disableAutoEnterPip") {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return@AsyncFunction null
+            val act = currentActivity ?: return@AsyncFunction null
+            act.runOnUiThread {
+                try {
+                    act.setPictureInPictureParams(
+                        PictureInPictureParams.Builder()
+                            .setAutoEnterEnabled(false)
+                            .build()
+                    )
+                } catch (_: Exception) { /* non-fatal */ }
             }
             null
         }
