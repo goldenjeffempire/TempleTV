@@ -4,6 +4,9 @@
       "eas": {
         "projectId": "cce6b18b-caa0-42a1-aa1e-3f59061a99e6"
       }
+    },
+    "android": {
+      "package": "com.anonymous.workspace"
     }
   }
 }

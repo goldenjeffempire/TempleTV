@@ -111,5 +111,10 @@
       "msw",
       "unrs-resolver"
     ]
+  },
+  "dependencies": {
+    "expo": "~57.0.6",
+    "react": "19.2.3",
+    "react-native": "0.86.0"
   }
 }
