@@ -16,6 +16,7 @@ import {
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { router, Stack } from "expo-router";
+import { safeNavPush } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { SermonCard } from "@/components/SermonCard";
@@ -24,9 +25,9 @@ import { useWatchLater } from "@/hooks/useWatchLater";
 import type { Sermon } from "@/types";
 
 function navigateToSermon(sermon: Sermon) {
-  router.push({
-    pathname: "/player",
-    params: {
+  safeNavPush(
+    "/player",
+    {
       id: sermon.id,
       title: sermon.title,
       youtubeId: sermon.videoSource === "youtube" ? sermon.youtubeId : "",
@@ -38,7 +39,8 @@ function navigateToSermon(sermon: Sermon) {
       category: sermon.category,
       description: sermon.description,
     },
-  });
+    "watch-later",
+  );
 }
 
 export default function WatchLaterScreen() {

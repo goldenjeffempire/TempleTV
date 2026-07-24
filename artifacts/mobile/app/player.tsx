@@ -50,6 +50,8 @@ import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, Stack, useLocalSearchParams } from "expo-router";
 import { parseBoolParam, parseNumberParam } from "@/lib/params";
+import { navLogger } from "@/lib/navLogger";
+import { safeNavReplace } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
@@ -307,13 +309,18 @@ export default function PlayerScreen() {
   // which already calls playLive() and sets PlayerContext.isLive=true.
   const isBroadcastV2 = isLive && !( !!( params.youtubeId ?? params.videoId ) && !hlsUrl );
 
-  // ── Dev-mode routing diagnostics ─────────────────────────────────────────
-  // Logs the routing decision on every player mount so it's trivial to verify
-  // which surface will be rendered (BroadcastHlsPlayer / YoutubePlayer /
-  // LocalVideoPlayer / no-source error) without reading source code.
-  // Runs once on mount because params / apiBase are stable after navigation.
+  // ── Player mount telemetry ────────────────────────────────────────────────
+  // Confirms to navLogger that the navigation succeeded and the player screen
+  // actually mounted. safeNavPush logs a "success" immediately (push didn't
+  // throw) but that only means the call was accepted — not that the screen
+  // rendered. This effect fires after the first paint and records the real
+  // mount-to-render latency so Sentry breadcrumbs capture the full picture:
+  //   [nav:attempt] → [nav:success] → [nav:player-mount]
+  //
+  // Also logs the routing decision (BroadcastHlsPlayer / YoutubePlayer /
+  // LocalVideoPlayer / no-source error) so it's trivial to verify which surface
+  // rendered without reading source code.
   useEffect(() => {
-    if (!__DEV__) return;
     const isYoutubeLocal    = !!youtubeId && !hlsUrl;
     const isHlsLocal        = !!hlsUrl;
     const hasNoSourceLocal  = !isLive && !isYoutubeLocal && !isHlsLocal;
@@ -324,21 +331,30 @@ export default function PlayerScreen() {
     else if (hasNoSourceLocal) surface = "no-source error";
     else                       surface = "placeholder";
 
-    console.log(
-      "[player.tsx] routing decision",
-      {
-        surface,
-        isLive,
-        isBroadcastV2,
-        isYoutube: isYoutubeLocal,
-        isHls: isHlsLocal,
-        hasNoSource: hasNoSourceLocal,
-        hlsUrl: hlsUrl || "(empty)",
-        youtubeId: youtubeId || "(empty)",
-        videoId,
-        apiBase: apiBase || "(empty — set EXPO_PUBLIC_API_URL!)",
-      },
-    );
+    // Emit the mount confirmation as a navLogger success event so it appears
+    // in the Sentry session timeline and in the ring buffer for debug sessions.
+    // `startTs=0` signals "timestamp not available from the caller" — navLogger
+    // records `elapsedMs=Date.now()-0` which is meaningless, but the breadcrumb
+    // data (surface, params) is what matters here.
+    navLogger.logSuccess("/player", Date.now(), `player-mount:${surface}`);
+
+    if (__DEV__) {
+      console.log(
+        "[player.tsx] mounted",
+        {
+          surface,
+          isLive,
+          isBroadcastV2,
+          isYoutube: isYoutubeLocal,
+          isHls: isHlsLocal,
+          hasNoSource: hasNoSourceLocal,
+          hlsUrl: hlsUrl || "(empty)",
+          youtubeId: youtubeId || "(empty)",
+          videoId,
+          apiBase: apiBase || "(empty — set EXPO_PUBLIC_API_URL!)",
+        },
+      );
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -942,9 +958,9 @@ export default function PlayerScreen() {
     // Keep the shared queue pointer in sync so Prev/Next on the next render
     // pivot around the newly-loaded item rather than the previous one.
     playbackQueue.setCurrent(s.id);
-    router.replace({
-      pathname: "/player",
-      params: {
+    safeNavReplace(
+      "/player",
+      {
         id: s.id,
         title: s.title,
         youtubeId: s.videoSource === "youtube" ? s.youtubeId : "",
@@ -956,7 +972,8 @@ export default function PlayerScreen() {
         category: s.category,
         description: s.description,
       },
-    });
+      "player-related",
+    );
   }, []);
 
   // ── Autoplay countdown state ────────────────────────────────────────────

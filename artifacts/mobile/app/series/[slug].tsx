@@ -18,6 +18,7 @@ import {
 import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
 import { router, Stack, useLocalSearchParams } from "expo-router";
+import { safeNavPush } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { SermonCard } from "@/components/SermonCard";
@@ -76,9 +77,9 @@ function episodeToSermon(ep: Episode): Sermon {
 }
 
 function navigateToSermon(episode: Episode) {
-  router.push({
-    pathname: "/player",
-    params: {
+  safeNavPush(
+    "/player",
+    {
       id: episode.id,
       title: episode.title,
       youtubeId: episode.videoSource === "youtube" ? episode.youtubeId : "",
@@ -90,7 +91,8 @@ function navigateToSermon(episode: Episode) {
       category: episode.category,
       description: episode.description,
     },
-  });
+    "series",
+  );
 }
 
 export default function SeriesDetailScreen() {

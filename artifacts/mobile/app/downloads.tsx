@@ -17,6 +17,7 @@ import {
 import { Feather } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { router, Stack } from "expo-router";
+import { safeNavPush } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { AppHeader } from "@/components/AppHeader";
@@ -51,9 +52,9 @@ function DownloadRow({ item }: { item: DownloadItem }) {
 
   const handlePlay = () => {
     if (!item.localPath) return;
-    router.push({
-      pathname: "/player",
-      params: {
+    safeNavPush(
+      "/player",
+      {
         id: item.videoId,
         title: item.videoTitle,
         localVideoUrl: item.localPath,
@@ -62,7 +63,8 @@ function DownloadRow({ item }: { item: DownloadItem }) {
         category: item.category,
         preacher: item.preacher,
       },
-    });
+      "downloads",
+    );
   };
 
   const handleCancel = () => {

@@ -1,4 +1,4 @@
-import { router, useSegments } from "expo-router";
+import { useSegments } from "expo-router";
 import React, { useEffect, useRef } from "react";
 import { AppState, type AppStateStatus } from "react-native";
 import { usePlayer } from "@/context/PlayerContext";
@@ -6,6 +6,7 @@ import { subscribeBroadcastEvents } from "@/services/broadcast";
 import { checkLiveStatus } from "@/services/youtube";
 import { getApiBase } from "@/lib/apiBase";
 import { BROADCAST_TITLE, BROADCAST_PREACHER } from "@/lib/broadcastIdentity";
+import { safeNavPush } from "@/lib/safeNavPush";
 
 /**
  * LiveBroadcastSupervisor — monitors for genuine LIVE events and navigates
@@ -88,6 +89,9 @@ export function LiveBroadcastSupervisor() {
     const onPlayer = () => segmentsRef.current.includes("player" as never);
 
     // ── Helper: navigate to live player (debounced) ───────────────────────────
+    // Uses safeNavPush (try/catch + 1 retry + Sentry telemetry) so that a
+    // transient Expo Router error during an SSE burst doesn't silently discard
+    // the navigation and leave the user on the home screen.
     const navigateToPlayer = (params?: Record<string, string>) => {
       const now = Date.now();
       if (now - lastNavAtRef.current < NAV_DEBOUNCE_MS) {
@@ -104,15 +108,16 @@ export function LiveBroadcastSupervisor() {
         return;
       }
       lastNavAtRef.current = now;
-      router.push({
-        pathname: "/player",
-        params: {
+      safeNavPush(
+        "/player",
+        {
           isLive: "true",
           title: BROADCAST_TITLE,
           preacher: BROADCAST_PREACHER,
           ...params,
         },
-      });
+        "live-supervisor",
+      );
     };
 
     // ── 1. YouTube live detection ─────────────────────────────────────────────

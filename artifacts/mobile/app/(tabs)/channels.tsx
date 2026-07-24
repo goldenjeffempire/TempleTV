@@ -19,6 +19,7 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { router, Stack, useFocusEffect } from "expo-router";
+import { safeNavPush } from "@/lib/safeNavPush";
 import { useColors } from "@/hooks/useColors";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import { StreamStatusBadge } from "@/components/StreamStatusBadge";
@@ -606,16 +607,17 @@ export default function ChannelsTab() {
     setTuningId(channel.id);
     // Small tick so the tuning spinner renders before the navigation fires.
     requestAnimationFrame(() => {
-      router.push({
-        pathname: "/player",
-        params: {
+      safeNavPush(
+        "/player",
+        {
           id: "live",
           title: channel.name,
           isLive: "true",
           // No hlsUrl — V2 ignores it and uses its own WS/SSE transport.
           // No youtubeId — Live Channel never opens YouTube.
         },
-      });
+        "channels-live",
+      );
     });
     // Safety-net release: normally `useFocusEffect` clears `tuningId` when
     // the user returns from the player. But if `router.push` above is ever
@@ -755,15 +757,16 @@ export default function ChannelsTab() {
                     item={item}
                     index={idx + 1}
                     onPress={() => {
-                      router.push({
-                        pathname: "/player",
-                        params: {
+                      safeNavPush(
+                        "/player",
+                        {
                           id: "live",
                           isLive: "true",
                           title: item.title,
                           preacher: "",
                         },
-                      });
+                        "channels-schedule",
+                      );
                     }}
                   />
                 ))}

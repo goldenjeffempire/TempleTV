@@ -36,7 +36,8 @@ import {
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
-import { router, Stack } from "expo-router";
+import { Stack } from "expo-router";
+import { safeNavPush } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
@@ -65,11 +66,15 @@ const CATEGORY_ROWS: SermonCategory[] = [
 ];
 
 // ─── Navigation helpers ───────────────────────────────────────────────────────
+// All navigation to /player uses safeNavPush (try/catch + 1 retry + Sentry
+// breadcrumb/exception). router.push() can throw when the navigator is in a
+// transient bad state; without a catch the error is silently lost and the user
+// sees nothing happen — indistinguishable from a frozen button.
 
-function navigateToSermon(sermon: Sermon) {
-  router.push({
-    pathname: "/player",
-    params: {
+function navigateToSermon(sermon: Sermon, source = "home-catalog") {
+  safeNavPush(
+    "/player",
+    {
       id: sermon.id,
       title: sermon.title,
       youtubeId: sermon.videoSource === "youtube" ? sermon.youtubeId : "",
@@ -84,7 +89,8 @@ function navigateToSermon(sermon: Sermon) {
       category: sermon.category,
       description: sermon.description,
     },
-  });
+    source,
+  );
 }
 
 function navigateToLive(
@@ -93,10 +99,11 @@ function navigateToLive(
   positionSecs: number,
   youtubeId?: string,
   thumbnailUrl?: string,
+  source = "home-hero",
 ) {
-  router.push({
-    pathname: "/player",
-    params: {
+  safeNavPush(
+    "/player",
+    {
       id: "live",
       title,
       hlsUrl,
@@ -105,7 +112,8 @@ function navigateToLive(
       isLive: "true",
       startPositionSecs: String(Math.max(0, Math.round(positionSecs))),
     },
-  });
+    source,
+  );
 }
 
 // ─── Ministry Header ──────────────────────────────────────────────────────────
@@ -185,7 +193,7 @@ const NowPlayingMiniBar = React.memo(function NowPlayingMiniBar({
   const thumbUrl = v2Server?.current?.thumbnailUrl ?? null;
 
   const handleOpen = () => {
-    navigateToLive("", title, 0, undefined, thumbUrl ?? undefined);
+    navigateToLive("", title, 0, undefined, thumbUrl ?? undefined, "mini-bar");
   };
 
   const BAR_HEIGHT  = 62;
@@ -346,6 +354,24 @@ const HeroSection = React.memo(function HeroSection({
     isReconnecting,
     isFatal,
   } = useMediaPlayerState();
+
+  // ── Reconnecting escape hatch ───────────────────────────────────────────────
+  // When the FSM is recovering (STALL_REBIND_MS = 20 s), the hero normally
+  // shows NO button — only the StreamStatusBadge. This is fine for brief
+  // reconnects (< 1 s) but leaves the user stranded if recovery takes longer.
+  // After 5 s of continuous reconnecting, reveal the "Open Player" button so
+  // the user can navigate to the player screen, which has its own reconnection
+  // UI (retry countdown, status badge, quality indicator). The timer resets
+  // every time the reconnecting state leaves (recovered or went fatal).
+  const [reconnectingEscapeVisible, setReconnectingEscapeVisible] = useState(false);
+  useEffect(() => {
+    if (!isReconnecting) {
+      setReconnectingEscapeVisible(false);
+      return;
+    }
+    const t = setTimeout(() => setReconnectingEscapeVisible(true), 5_000);
+    return () => clearTimeout(t);
+  }, [isReconnecting]);
 
   // ── Hero skeleton (initial broadcast connection) ───────────────────────────
   // Show the skeleton only during the very first connection attempt — once we
@@ -669,8 +695,25 @@ const HeroSection = React.memo(function HeroSection({
               3. Active broadcast, not reconnecting → quiet "Open Player" secondary button.
               While reconnecting, no button is shown — the StreamStatusBadge provides feedback. */}
           {isFatal ? (
+            // isFatal: FSM reached FATAL state. forceRebind() reconnects the
+            // transport. We ALSO navigate to the player immediately — the
+            // player screen has a superior reconnection UI (retry countdown,
+            // quality badge, FATAL error overlay with status detail) compared
+            // to the home screen which only shows the StreamStatusBadge. The
+            // player's own BroadcastHlsPlayer watchdog will drive recovery;
+            // leaving the user on the home screen wastes the recovery window.
             <Pressable
-              onPress={forceRebind}
+              onPress={() => {
+                forceRebind();
+                navigateToLive(
+                  "",
+                  activeBroadcastTitle,
+                  0,
+                  undefined,
+                  thumbUrl ?? undefined,
+                  "hero-reconnect",
+                );
+              }}
               style={({ pressed }) => [
                 styles.heroBtn,
                 { backgroundColor: "#DC2626", opacity: pressed ? 0.85 : 1 },
@@ -696,7 +739,12 @@ const HeroSection = React.memo(function HeroSection({
                 {hasActiveBroadcast ? "Watch Live" : "Watch Now"}
               </Text>
             </Pressable>
-          ) : !watchNowDisabled && !isWatchLiveCTAVisible && !isReconnecting ? (
+          ) : !watchNowDisabled && !isWatchLiveCTAVisible && (!isReconnecting || reconnectingEscapeVisible) ? (
+            // "Open Player" — shown when the broadcast is live/loading (not
+            // idle/error where "Watch Live" is more appropriate). Also shown
+            // after 5 s of continuous reconnecting (reconnectingEscapeVisible)
+            // so the user is never permanently stranded without a navigation
+            // affordance during a slow recovery (STALL_REBIND_MS = 20 s).
             <Pressable
               onPress={handleTuneIn}
               style={({ pressed }) => [
@@ -836,9 +884,9 @@ const ContinueWatchingRow = React.memo(function ContinueWatchingRow({
             <Pressable
               onPress={() => {
                 if (item.hlsMasterUrl || item.localVideoUrl) {
-                  router.push({
-                    pathname: "/player",
-                    params: {
+                  safeNavPush(
+                    "/player",
+                    {
                       id: item.videoKey,
                       title: item.title ?? "Continue watching",
                       hlsUrl: item.hlsMasterUrl ?? "",
@@ -847,18 +895,20 @@ const ContinueWatchingRow = React.memo(function ContinueWatchingRow({
                       thumbnailUrl: item.thumbnailUrl ?? "",
                       startPositionSecs: String(Math.max(0, Math.round(item.position - 3))),
                     },
-                  });
+                    "continue-watching",
+                  );
                 } else if (item.youtubeId) {
-                  router.push({
-                    pathname: "/player",
-                    params: {
+                  safeNavPush(
+                    "/player",
+                    {
                       id: item.videoKey,
                       title: item.title ?? "Continue watching",
                       youtubeId: item.youtubeId,
                       thumbnailUrl: item.thumbnailUrl ?? "",
                       startPositionSecs: String(Math.max(0, Math.round(item.position - 3))),
                     },
-                  });
+                    "continue-watching",
+                  );
                 }
               }}
               style={({ pressed }) => [

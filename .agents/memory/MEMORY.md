@@ -1,3 +1,4 @@
+- [Safe nav push pattern — player navigation](safe-nav-push-pattern.md) — safeNavPush/safeNavReplace + navLogger replace all bare router.push("/player") call sites; try/catch+retry+Sentry; player.tsx logs mount confirmation.
 - [IMA SDK integration — TV + Mobile](ima-sdk-integration.md) — TV: IMA HTML5 VMAP via CDN script + adManager.ts class; Mobile: react-native-google-mobile-ads@14.11.0; both use 30-min frequency cap; see before touching ad config.
 - [Gradle config cache — incompatible with RN/Expo/Sentry](gradle-config-cache-incompatibility.md) — org.gradle.configuration-cache=true breaks EAS builds; RN/Expo/Sentry spawn node at config time; do not re-enable.
 - [Android 16 audit — final completion](android16-audit-final.md) — all 7 gaps fixed Jul 2026; see file for details + accepted upstream limitation.

@@ -34,6 +34,7 @@ import {
 import { StatusBar } from "expo-status-bar";
 import { Feather } from "@expo/vector-icons";
 import { router, Stack } from "expo-router";
+import { safeNavPush } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useColors } from "@/hooks/useColors";
@@ -85,9 +86,9 @@ async function removeRecent(query: string, existing: string[]): Promise<string[]
 }
 
 function navigateToSermon(sermon: Sermon) {
-  router.push({
-    pathname: "/player",
-    params: {
+  safeNavPush(
+    "/player",
+    {
       id: sermon.id,
       title: sermon.title,
       youtubeId: sermon.videoSource === "youtube" ? sermon.youtubeId : "",
@@ -99,7 +100,8 @@ function navigateToSermon(sermon: Sermon) {
       category: sermon.category,
       description: sermon.description,
     },
-  });
+    "search",
+  );
 }
 
 export default function SearchScreen() {

@@ -26,6 +26,7 @@ import { StatusBar } from "expo-status-bar";
 import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
 import { router, Stack, useLocalSearchParams } from "expo-router";
+import { safeNavPush } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { usePlaylistDetail, type PlaylistVideo } from "@/hooks/usePlaylists";
@@ -134,9 +135,9 @@ export default function PlaylistDetailScreen() {
 
   const navigateToEpisode = useCallback((ep: PlaylistVideo) => {
     const isLocal = ep.videoSource === "local" || ep.videoSource === "upload";
-    router.push({
-      pathname: "/player",
-      params: {
+    safeNavPush(
+      "/player",
+      {
         id: ep.id,
         title: ep.title,
         youtubeId: !isLocal ? (ep.youtubeId ?? "") : "",
@@ -148,7 +149,8 @@ export default function PlaylistDetailScreen() {
         category: ep.category ?? "",
         description: ep.description ?? "",
       },
-    });
+      "playlists",
+    );
   }, []);
 
   const renderItem = useCallback(

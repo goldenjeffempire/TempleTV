@@ -23,6 +23,7 @@ import {
 import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
 import { router, Stack, useLocalSearchParams } from "expo-router";
+import { safeNavPush } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { ScreenHeader } from "@/components/ScreenHeader";
@@ -81,9 +82,9 @@ function navigateToSermon(sermon: Sermon, orderedList?: readonly Sermon[]) {
   } else {
     playbackQueue.set([sermon], sermon.id);
   }
-  router.push({
-    pathname: "/player",
-    params: {
+  safeNavPush(
+    "/player",
+    {
       id: sermon.id,
       title: sermon.title,
       youtubeId: sermon.videoSource === "youtube" ? sermon.youtubeId : "",
@@ -95,7 +96,8 @@ function navigateToSermon(sermon: Sermon, orderedList?: readonly Sermon[]) {
       category: sermon.category,
       description: sermon.description,
     },
-  });
+    "library",
+  );
 }
 
 // Memoized so re-renders from search input / sort state don't repaint all pills
@@ -174,9 +176,9 @@ const ContinueWatchingRow = React.memo(function ContinueWatchingRow({ items }: {
   const c = useColors();
 
   const navigateToItem = useCallback((item: ContinueWatchingItem) => {
-    router.push({
-      pathname: "/player",
-      params: {
+    safeNavPush(
+      "/player",
+      {
         id: item.videoKey,
         title: item.title ?? "Continue Watching",
         thumbnailUrl: item.thumbnailUrl ?? "",
@@ -185,7 +187,8 @@ const ContinueWatchingRow = React.memo(function ContinueWatchingRow({ items }: {
         localVideoUrl: item.localVideoUrl ?? "",
         startPositionSecs: String(Math.floor(item.position)),
       },
-    });
+      "library-continue-watching",
+    );
   }, []);
 
   if (items.length === 0) return null;

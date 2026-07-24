@@ -11,6 +11,8 @@ import { Feather } from "@expo/vector-icons";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Constants from "expo-constants";
 import { router, Stack, useRootNavigationState, useSegments } from "expo-router";
+import { safeNavPush, safeNavReplace } from "@/lib/safeNavPush";
+import { navLogger } from "@/lib/navLogger";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AppState, AppStateStatus, Linking, Platform, View } from "react-native";
@@ -344,11 +346,11 @@ function RootLayoutNav() {
         const path = parsed.pathname ?? "/";
         if (!isKnownAppPath(path)) {
           // Unknown path — redirect to Watch/Home (the app's default screen).
-          router.replace("/");
+          safeNavReplace("/", {}, "deep-link-guard");
         }
       } catch {
         // Malformed URL — navigate to Watch/Home.
-        router.replace("/");
+        safeNavReplace("/", {}, "deep-link-guard-malformed");
       }
     }).catch(() => {
       // getInitialURL failure is non-fatal — the route resolver handles it.
@@ -363,7 +365,7 @@ function RootLayoutNav() {
         if (!isKnownAppPath(path)) {
           // Unknown external path — redirect to Watch/Home so the user is
           // never stranded on a 404 by a stale web link or Play Store referral.
-          router.replace("/");
+          safeNavReplace("/", {}, "incoming-link-guard");
         }
         // Known paths fall through — Expo Router's built-in handler processes them.
       } catch { /* ignore malformed URLs */ }
@@ -402,6 +404,14 @@ function RootLayoutNav() {
     ): void {
       if (!type) return;
 
+      // Emit a Sentry breadcrumb for every notification tap so the session
+      // timeline shows the full path: notification → navigation → player mount.
+      navLogger.logAttempt(
+        type === "live_started" || type === "live_now" || type === "live" ? "/player" : "/(tabs)",
+        { notificationType: type },
+        `notification:${type}`,
+      );
+
       switch (type) {
         case "live_started":
         case "live_now":
@@ -410,14 +420,15 @@ function RootLayoutNav() {
           // IMPORTANT: player.tsx reads `params.isLive` (not `params.live`).
           // Using the wrong key leaves isLive=false and the player shows a
           // blank placeholder instead of the live broadcast.
-          router.push({
-            pathname: "/player",
-            params: {
+          safeNavPush(
+            "/player",
+            {
               isLive: "true",
               title: "Live Broadcast",
               preacher: "JCTM Ministries",
             },
-          });
+            `notification:${type}`,
+          );
           break;
         }
         case "new_video":
@@ -445,9 +456,9 @@ function RootLayoutNav() {
                     setTimeout(() => reject(new Error("fetch timeout")), 10_000),
                   ),
                 ]);
-                router.push({
-                  pathname: "/player",
-                  params: {
+                safeNavPush(
+                  "/player",
+                  {
                     id:           videoId,
                     title:        video.title ?? notifTitle,
                     youtubeId:    video.videoSource === "youtube" ? (video.youtubeId ?? "") : "",
@@ -459,15 +470,16 @@ function RootLayoutNav() {
                     category:     video.category ?? "",
                     description:  video.description ?? "",
                   },
-                });
+                  "notification:video",
+                );
               } catch {
                 // Fallback: take the user to Library where they can find the new content.
                 // Covers API timeouts, network errors, 404s, and the 10-second race above.
-                router.push("/(tabs)/library");
+                safeNavPush("/(tabs)/library", {}, "notification:video-fallback");
               }
             })();
           } else {
-            router.push("/(tabs)/library");
+            safeNavPush("/(tabs)/library", {}, "notification:video-no-id");
           }
           break;
         }
@@ -476,7 +488,7 @@ function RootLayoutNav() {
           // is displayed. The player might not be running yet on a cold start,
           // so routing to channels guarantees the user sees the live alert
           // even before the broadcast hero initialises.
-          router.push("/(tabs)/channels");
+          safeNavPush("/(tabs)/channels", {}, "notification:emergency");
           break;
         }
         case "app_update": {
@@ -493,7 +505,7 @@ function RootLayoutNav() {
         case "announcement":
         default:
           // General or unrecognised type — land on the channel hub.
-          router.push("/(tabs)/channels");
+          safeNavPush("/(tabs)/channels", {}, `notification:${type ?? "unknown"}`);
       }
     }
 
