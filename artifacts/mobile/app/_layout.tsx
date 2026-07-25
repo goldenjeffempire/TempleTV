@@ -61,6 +61,7 @@ import { NotificationOptInModal } from "@/components/NotificationOptInModal";
 import { reportClientError } from "@/lib/errorReporter";
 import { LiveBroadcastSupervisor } from "@/components/LiveBroadcastSupervisor";
 import { PersistentAudioPlayer } from "@/components/PersistentAudioPlayer";
+import { AppOpenAdController } from "@/components/ads/AppOpenAdController";
 import { AuthGateModal } from "@/components/AuthGateModal";
 import { PlayerProvider } from "@/context/PlayerContext";
 import { AuthProvider } from "@/context/AuthContext";
@@ -175,8 +176,10 @@ import { markStartupPhase } from "@/lib/startupLifecycle";
 async function setupMobileAds() {
   if (Platform.OS === "web") return;
   try {
-    const MobileAds = (await import("react-native-google-mobile-ads")).default;
-    await MobileAds().initialize();
+    // Delegates to the hardened ads bootstrap: UMP consent → request config
+    // (COPPA/TFUA, max content rating) → MobileAds().initialize(). Never throws.
+    const { initializeMobileAds } = await import("@/services/ads/mobileAds");
+    await initializeMobileAds();
   } catch {
     // Non-critical — ads will not load but the broadcast plays normally.
   }
@@ -912,6 +915,12 @@ function RootLayout() {
                   <StatusBar style="auto" />
                   <ProvidersReadyMarker />
                   <RootLayoutNav />
+                  {/*
+                   * App Open ad controller — shows on foreground resume only,
+                   * suppressed while the fullscreen live player route is active
+                   * so it can never interrupt or restart live playback.
+                   */}
+                  <AppOpenAdController isBlocked={segments.includes("player")} />
                   <PersistentAudioPlayer />
                   {/*
                    * AuthGateModal is rendered at the root so it can be

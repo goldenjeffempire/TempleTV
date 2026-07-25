@@ -27,18 +27,22 @@
 
 import { useEffect, useRef } from "react";
 import { useInterstitialAd, TestIds } from "react-native-google-mobile-ads";
+import { resolveAdUnitId } from "@/lib/ads/adConfig";
+import { adsCanRequest, defaultRequestOptions } from "@/services/ads/mobileAds";
+import { nextBackoffDelay } from "@/lib/ads/adFrequency";
+import {
+  reportAdEvent,
+  reportAdRevenue,
+  type AdPaidEvent,
+} from "@/lib/ads/adTelemetry";
 
-// GAM_INTERSTITIAL is the test ID for Google Ad Manager interstitials.
-// TestIds.INTERSTITIAL (AdMob) is an empty string — do NOT use it for GAM.
-const GAM_TEST_INTERSTITIAL_ID = TestIds.GAM_INTERSTITIAL;
-
-// ── Configuration ─────────────────────────────────────────────────────────────
-
-const PROD_AD_UNIT_ID =
-  process.env.EXPO_PUBLIC_GAM_INTERSTITIAL_AD_UNIT_ID ?? "";
-
-/** The ad unit ID resolved for the current environment. */
-const AD_UNIT_ID = __DEV__ ? GAM_TEST_INTERSTITIAL_ID : PROD_AD_UNIT_ID;
+/**
+ * The ad unit ID resolved for the current environment via the central ad
+ * config. In DEBUG this is Google's GAM interstitial test id (always fills);
+ * in RELEASE it is EXPO_PUBLIC_GAM_INTERSTITIAL_AD_UNIT_ID (null/disabled when
+ * not provisioned). `resolveAdUnitId` also honours the global ads kill-switch.
+ */
+const AD_UNIT_ID = resolveAdUnitId("gamInterstitial", TestIds.GAM_INTERSTITIAL) ?? "";
 
 /** Minimum milliseconds between interstitial impressions. */
 const AD_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
@@ -95,14 +99,45 @@ export function useBroadcastInterstitialAd({
   // useInterstitialAd from react-native-google-mobile-ads.
   // When adUnitId is null / empty we still call the hook (rules of hooks)
   // but the ad will never load — the SDK ignores empty unit IDs gracefully.
-  const { isLoaded, isClosed, load, show } = useInterstitialAd(
+  // requestNonPersonalizedAdsOnly is driven by the UMP consent result gathered
+  // in services/ads/mobileAds.ts so we stay GDPR/CCPA compliant.
+  const { isLoaded, isClosed, error, revenue, load, show } = useInterstitialAd(
     adUnitId ?? "",
-    {
-      // Honour GDPR/CCPA consent signals from the UMP SDK (see MobileAds
-      // initialization in app/_layout.tsx) before this request is made.
-      requestNonPersonalizedAdsOnly: false,
-    },
+    defaultRequestOptions(),
   );
+
+  // Backoff retry on load error.
+  const errorAttemptRef = useRef(0);
+  const errorRetryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!enabled || !adUnitId || !error) return;
+    reportAdEvent("ad_load_failed", {
+      format: "gamInterstitial",
+      adUnitId,
+      attempt: errorAttemptRef.current,
+      errorMessage: error.message,
+    });
+    const delay = nextBackoffDelay(errorAttemptRef.current);
+    errorAttemptRef.current += 1;
+    if (errorRetryTimer.current) clearTimeout(errorRetryTimer.current);
+    errorRetryTimer.current = setTimeout(() => load(), delay);
+    return () => {
+      if (errorRetryTimer.current) clearTimeout(errorRetryTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [error, enabled, adUnitId]);
+
+  // Report impression-level ad revenue (ILRD) once per paid event.
+  const lastRevenueRef = useRef<AdPaidEvent | null>(null);
+  useEffect(() => {
+    if (revenue && revenue !== lastRevenueRef.current) {
+      lastRevenueRef.current = revenue as AdPaidEvent;
+      reportAdRevenue(revenue as AdPaidEvent, {
+        format: "gamInterstitial",
+        adUnitId: adUnitId ?? undefined,
+      });
+    }
+  }, [revenue, adUnitId]);
 
   // ── Session frequency cap ─────────────────────────────────────────────────
   // Use a module-level ref (not state/localStorage) so it survives re-renders
@@ -119,7 +154,7 @@ export function useBroadcastInterstitialAd({
   // configured. The ad loads in the background; the first impression fires
   // only when a natural break point is detected (see effect below).
   useEffect(() => {
-    if (!enabled || !adUnitId) return;
+    if (!enabled || !adUnitId || !adsCanRequest()) return;
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, adUnitId]);
@@ -128,8 +163,10 @@ export function useBroadcastInterstitialAd({
   // Pre-load the next interstitial immediately after the current one is
   // dismissed so the next break never has to wait for a cold load.
   useEffect(() => {
-    if (!enabled || !adUnitId) return;
+    if (!enabled || !adUnitId || !adsCanRequest()) return;
     if (isClosed) {
+      errorAttemptRef.current = 0;
+      reportAdEvent("ad_closed", { format: "gamInterstitial", adUnitId });
       load();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -176,13 +213,24 @@ export function useBroadcastInterstitialAd({
     hasShownFirstAdRef.current = true;
     lastShownAtRef.current = Date.now();
 
-    show().catch((err: unknown) => {
-      // SDK failed to show (ad expired, dismissed before show, etc.).
-      // This is non-fatal — the broadcast continues normally.
+    // NOTE: `show()` from useInterstitialAd returns `void` (NOT a Promise).
+    // The previous `show().catch(...)` threw "undefined is not an object" at
+    // runtime every time an interstitial fired during live playback. Guard
+    // with a synchronous try/catch instead — show errors surface via the
+    // hook's `error` state, which the backoff effect above handles.
+    try {
+      reportAdEvent("ad_impression", { format: "gamInterstitial", adUnitId });
+      show();
+    } catch (err) {
+      reportAdEvent("ad_show_failed", {
+        format: "gamInterstitial",
+        adUnitId,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
       if (__DEV__) {
         console.warn("[useInterstitialAd] show() failed:", err);
       }
-    });
+    }
   }, [
     broadcastState,
     activeBufferId,
