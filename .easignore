@@ -66,6 +66,17 @@ scripts/*.ts
 artifacts/*/build/
 lib/*/dist/
 
+# ── Mobile native dirs (generated — EAS regenerates via prebuild) ──────────
+# CRITICAL: if android/ is uploaded, EAS skips clean prebuild and uses its
+# stale build/generated/autolinking/autolinking.json, which contains absolute
+# /home/runner/workspace/... paths that don't exist on the EAS builder →
+# "Configuring project ':react-native-worklets' without an existing directory".
+# Local module android/ dirs (artifacts/mobile/modules/*/android/) must STAY.
+artifacts/mobile/android/
+artifacts/mobile/ios/
+artifacts/mobile/web-dist/
+artifacts/mobile/.expo/
+
 # ── Misc ───────────────────────────────────────────────────────────────────
 .git/
 RELEASE_PIPELINE.md

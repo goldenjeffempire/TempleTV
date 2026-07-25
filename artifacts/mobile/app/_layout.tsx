@@ -176,8 +176,10 @@ import { markStartupPhase } from "@/lib/startupLifecycle";
 async function setupMobileAds() {
   if (Platform.OS === "web") return;
   try {
-    // Delegates to the hardened ads bootstrap: UMP consent → request config
-    // (COPPA/TFUA, max content rating) → MobileAds().initialize(). Never throws.
+    // Delegates to the hardened ads bootstrap: UMP consent (AdsConsent
+    // .gatherConsent) → request config (COPPA/TFUA, max content rating) →
+    // MobileAds().initialize(). Encapsulates the inline flow that previously
+    // lived here. Never throws.
     const { initializeMobileAds } = await import("@/services/ads/mobileAds");
     await initializeMobileAds();
   } catch {

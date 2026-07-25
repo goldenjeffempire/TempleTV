@@ -26,10 +26,10 @@
  */
 
 import { useEffect, useRef } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useInterstitialAd, TestIds } from "react-native-google-mobile-ads";
 import { resolveAdUnitId } from "@/lib/ads/adConfig";
 import { adsCanRequest, defaultRequestOptions } from "@/services/ads/mobileAds";
-import { nextBackoffDelay } from "@/lib/ads/adFrequency";
 import {
   reportAdEvent,
   reportAdRevenue,
@@ -46,6 +46,16 @@ const AD_UNIT_ID = resolveAdUnitId("gamInterstitial", TestIds.GAM_INTERSTITIAL) 
 
 /** Minimum milliseconds between interstitial impressions. */
 const AD_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * AsyncStorage key persisting the last impression time so the 30-minute
+ * frequency cap survives app restarts (a session-only cap lets a user who
+ * relaunches the app see an ad every time).
+ */
+const LAST_SHOWN_STORAGE_KEY = "ads:interstitial:lastShownAt";
+
+/** Load-failure retry backoff schedule (ms). Resets on successful load. */
+const LOAD_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 300_000];
 
 /** FSM states where ads must never be shown. */
 const NON_PLAYABLE_STATES = new Set([
@@ -106,27 +116,6 @@ export function useBroadcastInterstitialAd({
     defaultRequestOptions(),
   );
 
-  // Backoff retry on load error.
-  const errorAttemptRef = useRef(0);
-  const errorRetryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (!enabled || !adUnitId || !error) return;
-    reportAdEvent("ad_load_failed", {
-      format: "gamInterstitial",
-      adUnitId,
-      attempt: errorAttemptRef.current,
-      errorMessage: error.message,
-    });
-    const delay = nextBackoffDelay(errorAttemptRef.current);
-    errorAttemptRef.current += 1;
-    if (errorRetryTimer.current) clearTimeout(errorRetryTimer.current);
-    errorRetryTimer.current = setTimeout(() => load(), delay);
-    return () => {
-      if (errorRetryTimer.current) clearTimeout(errorRetryTimer.current);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [error, enabled, adUnitId]);
-
   // Report impression-level ad revenue (ILRD) once per paid event.
   const lastRevenueRef = useRef<AdPaidEvent | null>(null);
   useEffect(() => {
@@ -139,10 +128,35 @@ export function useBroadcastInterstitialAd({
     }
   }, [revenue, adUnitId]);
 
-  // ── Session frequency cap ─────────────────────────────────────────────────
-  // Use a module-level ref (not state/localStorage) so it survives re-renders
-  // but resets on app restart — acceptable for a live broadcast session.
+  // ── Persistent frequency cap ──────────────────────────────────────────────
+  // Hydrated from AsyncStorage on mount so the cooldown survives app
+  // restarts. Until hydration finishes, the cap conservatively blocks ads
+  // (capHydratedRef=false) — worst case an ad shows a few hundred ms late.
   const lastShownAtRef = useRef<number | null>(null);
+  const capHydratedRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const raw = await AsyncStorage.getItem(LAST_SHOWN_STORAGE_KEY);
+        if (!cancelled && raw) {
+          const parsed = Number(raw);
+          if (Number.isFinite(parsed) && parsed > 0) {
+            // Keep the more restrictive of persisted vs in-memory value.
+            lastShownAtRef.current = Math.max(lastShownAtRef.current ?? 0, parsed);
+          }
+        }
+      } catch {
+        // Storage unavailable — fall back to session-only capping.
+      } finally {
+        if (!cancelled) capHydratedRef.current = true;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ── State tracking refs ───────────────────────────────────────────────────
   const prevActiveBufferIdRef = useRef<"A" | "B">(activeBufferId);
@@ -165,12 +179,59 @@ export function useBroadcastInterstitialAd({
   useEffect(() => {
     if (!enabled || !adUnitId || !adsCanRequest()) return;
     if (isClosed) {
-      errorAttemptRef.current = 0;
+      retryAttemptRef.current = 0;
       reportAdEvent("ad_closed", { format: "gamInterstitial", adUnitId });
       load();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isClosed, enabled, adUnitId]);
+
+  // ── Load-failure retry with backoff ──────────────────────────────────────
+  // "No fill" and transient network errors are routine; retry on a bounded
+  // exponential schedule instead of leaving the slot empty until the next
+  // ad close. The attempt counter resets whenever an ad loads successfully.
+  const retryAttemptRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (isLoaded) {
+      retryAttemptRef.current = 0;
+    }
+  }, [isLoaded]);
+
+  useEffect(() => {
+    if (!enabled || !adUnitId || !error) return;
+    const attempt = retryAttemptRef.current;
+    reportAdEvent("ad_load_failed", {
+      format: "gamInterstitial",
+      adUnitId,
+      attempt,
+      errorMessage: error.message,
+    });
+    if (attempt >= LOAD_RETRY_DELAYS_MS.length) return; // give up until next close
+    const delay = LOAD_RETRY_DELAYS_MS[attempt];
+    retryAttemptRef.current = attempt + 1;
+    if (__DEV__) {
+      console.warn(
+        `[useInterstitialAd] load failed (attempt ${attempt + 1}), retrying in ${delay}ms:`,
+        error?.message ?? error,
+      );
+    }
+    retryTimerRef.current = setTimeout(() => {
+      try {
+        load();
+      } catch {
+        // Non-fatal — next error event re-arms the schedule.
+      }
+    }, delay);
+    return () => {
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [error, enabled, adUnitId]);
 
   // ── Show trigger ──────────────────────────────────────────────────────────
   // Evaluate whether to show an ad on every relevant state change.
@@ -192,7 +253,8 @@ export function useBroadcastInterstitialAd({
     if (isYouTubeOverride) return;
     if (broadcastState !== "PLAYING") return;
 
-    // Gate: frequency cap.
+    // Gate: frequency cap (blocked until persisted value hydrates).
+    if (!capHydratedRef.current) return;
     if (
       lastShownAtRef.current !== null &&
       Date.now() - lastShownAtRef.current < AD_COOLDOWN_MS
@@ -212,12 +274,16 @@ export function useBroadcastInterstitialAd({
     // Fire the ad.
     hasShownFirstAdRef.current = true;
     lastShownAtRef.current = Date.now();
+    // Persist for the cross-restart frequency cap (fire-and-forget).
+    AsyncStorage.setItem(
+      LAST_SHOWN_STORAGE_KEY,
+      String(lastShownAtRef.current),
+    ).catch(() => {});
 
     // NOTE: `show()` from useInterstitialAd returns `void` (NOT a Promise).
-    // The previous `show().catch(...)` threw "undefined is not an object" at
-    // runtime every time an interstitial fired during live playback. Guard
-    // with a synchronous try/catch instead — show errors surface via the
-    // hook's `error` state, which the backoff effect above handles.
+    // A `show().catch(...)` would throw "undefined is not an object" at
+    // runtime; guard with a synchronous try/catch instead — show errors
+    // surface via the hook's `error` state, which the retry effect handles.
     try {
       reportAdEvent("ad_impression", { format: "gamInterstitial", adUnitId });
       show();

@@ -658,7 +658,10 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
       const stale = Date.now() - lastFrameAt.current > HEARTBEAT_STALE_MS;
       if (!esRef.current || stale) {
         clearTimeout(reconnectTimer.current);
-        attempt.current = 0;
+        // Do NOT reset attempt.current here — backoff must accumulate across
+        // visibility-restore triggers so a server that is down or rate-limiting
+        // doesn't get hammered at 300 ms on every tab-switch.  The open handler
+        // resets attempt.current once the connection actually succeeds.
         connect();
       }
     };
@@ -666,7 +669,11 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
     // ── Network recovery ────────────────────────────────────────────────────
     const onOnline = () => {
       clearTimeout(reconnectTimer.current);
-      attempt.current = 0;
+      // Do NOT reset attempt.current here — the server may be down even
+      // though the local network has recovered (e.g. ISP came back but the
+      // origin is still restarting).  Keeping the accumulated backoff prevents
+      // a flood of rapid retries in that scenario.  attempt.current is reset
+      // only inside the `open` handler once the handshake actually succeeds.
       // Immediately surface "reconnecting" so the pill transitions away
       // from red/amber before the handshake completes.
       if (stateRef.current === "offline" || stateRef.current === "degraded") {
@@ -698,7 +705,11 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
       const stale = Date.now() - lastFrameAt.current > HEARTBEAT_STALE_MS;
       if (stale && !connecting.current) {
         clearTimeout(reconnectTimer.current);
-        attempt.current = 0;
+        // Do NOT reset attempt.current here — the watchdog fires every
+        // WATCHDOG_INTERVAL_MS regardless of server availability.  Resetting
+        // backoff on each watchdog cycle means a dead server gets hit at
+        // 300 ms intervals indefinitely.  Let backoff accumulate; it resets
+        // only inside the `open` handler once the connection truly succeeds.
         connect();
       }
     }, WATCHDOG_INTERVAL_MS);
