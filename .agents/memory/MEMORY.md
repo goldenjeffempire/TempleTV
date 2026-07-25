@@ -1,3 +1,4 @@
+- [EAS root .easignore + google-mobile-ads Kotlin pinning](eas-android-dir-and-ads-kotlin.md) — root .easignore governs monorepo uploads (must exclude artifacts/mobile/android/); rn-google-mobile-ads 16.3.4 max for Kotlin 2.1.x projects.
 - [Stale patch causes EAS frozen-lockfile failure](stale-patch-eas-failure.md) — patch applied locally via cache but fails on EAS clean store; verify every patch still applies to raw npm source before building.
 - [Safe nav push pattern — player navigation](safe-nav-push-pattern.md) — safeNavPush/safeNavReplace + navLogger replace all bare router.push("/player") call sites; try/catch+retry+Sentry; player.tsx logs mount confirmation.
 - [IMA SDK integration — TV + Mobile](ima-sdk-integration.md) — TV: IMA HTML5 VMAP via CDN script + adManager.ts class; Mobile: react-native-google-mobile-ads@14.11.0; both use 30-min frequency cap; see before touching ad config.
