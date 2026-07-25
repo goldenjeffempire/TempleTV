@@ -19,10 +19,33 @@ import type { ConfigContext, ExpoConfig } from "expo/config";
 type PluginEntry = NonNullable<ExpoConfig["plugins"]>[number];
 
 const GMA_PLUGIN = "react-native-google-mobile-ads";
+const SAMPLE_ANDROID_APP_ID = "ca-app-pub-3940256099942544~3347511713";
+const SAMPLE_IOS_APP_ID = "ca-app-pub-3940256099942544~1458002511";
+
+function readAppId(name: string, sampleId: string): string {
+  const value = process.env[name]?.trim();
+  if (value) return value;
+
+  const appEnv = (process.env.APP_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
+  if (appEnv === "production") {
+    throw new Error(
+      `[mobile config] ${name} is required for production builds. ` +
+        "The Google sample App ID must never ship in a release binary.",
+    );
+  }
+
+  return sampleId;
+}
 
 export default ({ config }: ConfigContext): ExpoConfig => {
-  const androidAppId = process.env.EXPO_PUBLIC_ADMOB_ANDROID_APP_ID?.trim();
-  const iosAppId = process.env.EXPO_PUBLIC_ADMOB_IOS_APP_ID?.trim();
+  const androidAppId = readAppId(
+    "EXPO_PUBLIC_ADMOB_ANDROID_APP_ID",
+    SAMPLE_ANDROID_APP_ID,
+  );
+  const iosAppId = readAppId(
+    "EXPO_PUBLIC_ADMOB_IOS_APP_ID",
+    SAMPLE_IOS_APP_ID,
+  );
 
   const plugins: PluginEntry[] = (config.plugins ?? []).map((entry): PluginEntry => {
     if (Array.isArray(entry) && entry[0] === GMA_PLUGIN) {
@@ -31,8 +54,11 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         name,
         {
           ...opts,
-          ...(androidAppId ? { android_app_id: androidAppId } : {}),
-          ...(iosAppId ? { ios_app_id: iosAppId } : {}),
+          // react-native-google-mobile-ads expects camelCase plugin options.
+          // The snake_case keys previously used here were ignored, leaving
+          // the sample IDs in the generated native projects.
+          androidAppId,
+          iosAppId,
         },
       ] as PluginEntry;
     }

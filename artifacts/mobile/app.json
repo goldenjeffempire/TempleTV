@@ -10,6 +10,8 @@
     "description": "Stream live worship, sermons, and teachings from Temple TV JCTM Broadcasting \u2014 Jesus Christ Temple Ministry.",
     "owner": "mobileapptemples-team",
     "primaryColor": "#6A0DAD",
+    "newArchEnabled": true,
+    "jsEngine": "hermes",
     "assetBundlePatterns": [
       "assets/**/*"
     ],

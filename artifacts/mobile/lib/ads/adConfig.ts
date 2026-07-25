@@ -141,6 +141,14 @@ export function getIosAppId(): string {
   return envStr("EXPO_PUBLIC_ADMOB_IOS_APP_ID") || TEST_IOS_APP_ID;
 }
 
+/** True when the native SDK would be configured with a real publisher app ID. */
+export function hasProductionAppIds(): boolean {
+  return (
+    getAndroidAppId() !== TEST_ANDROID_APP_ID &&
+    getIosAppId() !== TEST_IOS_APP_ID
+  );
+}
+
 // ── Privacy / compliance knobs ──────────────────────────────────────────────
 
 /**
