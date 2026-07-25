@@ -19,7 +19,10 @@ const rawPort = process.env.PORT ?? "8081";
 
 const port = Number(rawPort);
 
-if (Number.isNaN(port) || port <= 0) {
+// Only enforce a valid PORT when actually starting a server (dev/serve/preview).
+// A one-shot `vite build` produces a static bundle that never binds a port, so
+// it must not fail just because a runtime-only PORT env var is unset/invalid.
+if (isServerCommand && (Number.isNaN(port) || port <= 0)) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 

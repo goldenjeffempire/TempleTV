@@ -23,8 +23,6 @@
  */
 
 import { parseArgs } from "node:util";
-import { performance } from "node:perf_hooks";
-
 const { values } = parseArgs({
   options: {
     url: { type: "string", default: "http://localhost:8080" },

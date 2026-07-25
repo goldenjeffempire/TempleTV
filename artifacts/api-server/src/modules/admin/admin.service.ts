@@ -13,6 +13,12 @@ type ConcurrentBucket = { ts: string; concurrent: number; tv: number; mobile: nu
 type ConcurrentResult = { buckets: ConcurrentBucket[]; peak: { concurrent: number; ts: string }; granularity: "hour" | "4h" | "day"; generatedAt: string };
 type DailyPlatformDay = { date: string; tv: number; mobile: number; web: number; total: number };
 type DailyPlatformResult = { days: DailyPlatformDay[]; generatedAt: string };
+type GeoAnalyticsResult = {
+  countries: { country: string; sessions: number }[];
+  totalWithGeo: number;
+  unknown: number;
+  generatedAt: string;
+};
 
 const users = schema.usersTable;
 const videos = schema.videosTable;
@@ -423,6 +429,52 @@ export const adminService = {
 
     const days = Array.from(dayMap.values()).sort((a, b) => a.date.localeCompare(b.date));
     const result: DailyPlatformResult = { days, generatedAt: new Date().toISOString() };
+    await cache().set(CACHE_KEY, result, 60);
+    return result;
+  },
+
+  /**
+   * Viewers-by-country breakdown for the admin geographic analytics panel.
+   * Aggregates viewer_sessions by the edge-derived `country` column (see
+   * analytics.routes.ts deriveCountry). Returns the top countries by session
+   * count plus a bucket for sessions with no resolvable country.
+   */
+  async getGeoAnalytics(range: "7d" | "30d" | "90d" = "30d"): Promise<GeoAnalyticsResult> {
+    const CACHE_KEY = `admin:analytics:geo:${range}:v1`;
+    const cached = await cache().get<GeoAnalyticsResult>(CACHE_KEY);
+    if (cached) return cached;
+
+    const sessions = schema.viewerSessionsTable;
+    const rangeDays = range === "7d" ? 7 : range === "30d" ? 30 : 90;
+    const since = new Date(Date.now() - rangeDays * 24 * 60 * 60 * 1000);
+
+    const rows = await db
+      .select({ country: sessions.country, sessions: count() })
+      .from(sessions)
+      .where(gte(sessions.startedAt, since))
+      .groupBy(sessions.country)
+      .orderBy(desc(count()));
+
+    let unknown = 0;
+    let totalWithGeo = 0;
+    const countries: { country: string; sessions: number }[] = [];
+    for (const r of rows) {
+      const n = Number(r.sessions);
+      const code = (r.country ?? "").trim().toUpperCase();
+      if (/^[A-Z]{2}$/.test(code)) {
+        countries.push({ country: code, sessions: n });
+        totalWithGeo += n;
+      } else {
+        unknown += n;
+      }
+    }
+    // Cap to a sane number of rows for the UI; they are already sorted desc.
+    const result: GeoAnalyticsResult = {
+      countries: countries.slice(0, 100),
+      totalWithGeo,
+      unknown,
+      generatedAt: new Date().toISOString(),
+    };
     await cache().set(CACHE_KEY, result, 60);
     return result;
   },

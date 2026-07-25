@@ -12,6 +12,7 @@ import {
   AnalyticsSchema,
   ConcurrentViewersSchema,
   DailyPlatformTrendsSchema,
+  GeoAnalyticsSchema,
   ListUsersQuerySchema,
   ListUsersResponseSchema,
   UpdateUserRoleBodySchema,
@@ -108,6 +109,24 @@ export async function adminRoutes(app: FastifyInstance) {
       },
     },
     async (req) => adminService.getDailyPlatformTrends(req.query.range),
+  );
+
+  r.get(
+    "/analytics/geo",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Viewers-by-country breakdown (edge-derived geolocation) for the geographic analytics map",
+        querystring: z.object({
+          range: z.enum(["7d", "30d", "90d"]).default("30d"),
+        }),
+        response: { 200: GeoAnalyticsSchema, 429: z.object({ error: z.string() }) },
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    async (req) => adminService.getGeoAnalytics(req.query.range),
   );
 
   r.delete(

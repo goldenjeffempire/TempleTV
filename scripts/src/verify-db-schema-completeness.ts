@@ -54,7 +54,7 @@
  *     in this project. `db:push` reconciles directly from TS to DB.
  */
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
-import { resolve, join, basename } from "node:path";
+import { resolve, join } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..", "..");
 const SCHEMA_DIR = join(ROOT, "lib", "db", "src", "schema");

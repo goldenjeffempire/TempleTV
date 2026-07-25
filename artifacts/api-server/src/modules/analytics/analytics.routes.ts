@@ -6,6 +6,39 @@ import { nanoid } from "nanoid";
 import { db, schema } from "../../infrastructure/db.js";
 import { requireAuth } from "../../middleware/auth.js";
 
+/**
+ * Derive an ISO-3166-1 alpha-2 country code for the request from CDN/edge
+ * geo headers. Temple TV's public origins sit behind Cloudflare, which injects
+ * `CF-IPCountry`; we also honour the common headers set by other edges so the
+ * pipeline works regardless of the fronting CDN. Returns an uppercase 2-letter
+ * code, or null when unknown/unroutable (e.g. `XX`, `T1` Tor, local IPs).
+ *
+ * No IP→geo library or database is used — geolocation is delegated to the edge
+ * that already resolves it, keeping the dependency graph lean and avoiding
+ * shipping/refreshing a GeoIP dataset.
+ */
+function deriveCountry(headers: Record<string, unknown>): string | null {
+  const candidates = [
+    "cf-ipcountry", // Cloudflare
+    "x-vercel-ip-country", // Vercel
+    "x-appengine-country", // Google App Engine
+    "fastly-geo-country", // Fastly
+    "x-country-code", // generic / some proxies
+  ];
+  for (const key of candidates) {
+    const raw = headers[key];
+    const val = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof val !== "string") continue;
+    const code = val.trim().toUpperCase();
+    // Valid ISO alpha-2 only. Cloudflare uses "XX" (unknown) and "T1" (Tor);
+    // both are excluded so they don't pollute the geo breakdown.
+    if (/^[A-Z]{2}$/.test(code) && code !== "XX" && code !== "T1") {
+      return code;
+    }
+  }
+  return null;
+}
+
 const WatchEventBodySchema = z.object({
   /**
    * Stable, anonymous per-device identifier.  Clients should persist this in
@@ -93,6 +126,9 @@ export async function analyticsRoutes(app: FastifyInstance) {
                 isLive: isLive ?? false,
                 startedAt: new Date(),
                 lastHeartbeatAt: new Date(),
+                // Edge-provided geolocation (Cloudflare et al.) for the
+                // admin "Viewers by Country" analytics. Null when unknown.
+                country: deriveCountry(req.headers as Record<string, unknown>),
               })
               .onConflictDoNothing()
               .returning({ id: sessions.id });
