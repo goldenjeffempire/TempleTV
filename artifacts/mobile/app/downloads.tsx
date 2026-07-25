@@ -292,7 +292,7 @@ export default function DownloadsScreen() {
                 No downloads yet
               </Text>
               <Text style={[styles.emptySubtitle, { color: c.mutedForeground }]}>
-                Download server-hosted videos to watch them offline. Look for the download icon on video cards.
+                Download server-hosted videos to watch them offline. Open a sermon and tap the Download button in the player.
               </Text>
               <Pressable
                 style={[styles.browseBtn, { backgroundColor: c.primary }]}

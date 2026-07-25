@@ -65,6 +65,7 @@ import { LiveBadge } from "@/components/LiveBadge";
 import { StreamStatusBadge } from "@/components/StreamStatusBadge";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
 import { useFavorites } from "@/hooks/useFavorites";
+import { useDownloadContext } from "@/context/DownloadContext";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
 import { useWatchProgress } from "@/hooks/useWatchProgress";
 import { useBroadcastSync } from "@/hooks/useBroadcastSync";
@@ -954,6 +955,90 @@ export default function PlayerScreen() {
     });
   }, [videoId, title, thumbnailUrl, youtubeId, description, duration, category, preacher, isYoutube, hlsUrl, toggleFavorite]);
 
+  // ── Offline downloads ──────────────────────────────────────────────────────
+  // The download engine (services/downloadManager.ts) + management screen
+  // (app/downloads.tsx) already exist; this wires the "start download" entry
+  // point that was missing. Only a direct server-hosted MP4 (localVideoUrl) is
+  // downloadable — HLS manifests and YouTube are excluded (DownloadResumable
+  // saves a single file, and offline playback reads that file back).
+  const { addDownload, isDownloaded, getDownloadItem, cancelDownload } = useDownloadContext();
+  const downloadMp4Url = params.localVideoUrl || "";
+  const canDownload = isVod && !isYoutube && !!downloadMp4Url;
+  const downloadItem = getDownloadItem(videoId);
+  const alreadyDownloaded = isDownloaded(videoId);
+  const isDownloadingNow =
+    downloadItem?.status === "downloading" || downloadItem?.status === "queued";
+
+  const handleDownloadPress = useCallback(() => {
+    if (alreadyDownloaded) {
+      Alert.alert(
+        "Downloaded",
+        "This video is saved for offline viewing. Remove the download?",
+        [
+          { text: "Keep", style: "cancel" },
+          {
+            text: "Remove",
+            style: "destructive",
+            onPress: () => { void cancelDownload(videoId); },
+          },
+        ],
+      );
+      return;
+    }
+    if (isDownloadingNow) {
+      Alert.alert(
+        "Downloading",
+        "This video is downloading. Cancel the download?",
+        [
+          { text: "Continue", style: "cancel" },
+          {
+            text: "Cancel download",
+            style: "destructive",
+            onPress: () => { void cancelDownload(videoId); },
+          },
+        ],
+      );
+      return;
+    }
+    void (async () => {
+      try {
+        await addDownload({
+          id: videoId,
+          title,
+          thumbnailUrl,
+          youtubeId,
+          description,
+          duration,
+          category: category as Sermon["category"],
+          preacher,
+          date: new Date().toISOString(),
+          videoSource: "local",
+          localVideoUrl: downloadMp4Url,
+        });
+        Alert.alert("Download started", "Find it under Settings → Downloads to watch offline.");
+      } catch {
+        Alert.alert(
+          "Download failed",
+          "Couldn't start the download. Check your storage space and connection, then try again.",
+        );
+      }
+    })();
+  }, [
+    alreadyDownloaded,
+    isDownloadingNow,
+    cancelDownload,
+    addDownload,
+    videoId,
+    title,
+    thumbnailUrl,
+    youtubeId,
+    description,
+    duration,
+    category,
+    preacher,
+    downloadMp4Url,
+  ]);
+
   const navigateToRelated = useCallback((s: Sermon) => {
     // Keep the shared queue pointer in sync so Prev/Next on the next render
     // pivot around the newly-loaded item rather than the previous one.
@@ -1563,6 +1648,56 @@ export default function PlayerScreen() {
               </View>
               <Text style={[styles.actionLabel, { color: c.mutedForeground }]}>
                 {Platform.OS === "ios" ? "AirPlay" : "Cast"}
+              </Text>
+            </Pressable>
+          )}
+
+          {/* Download for offline — VOD, server-hosted MP4 only (not YouTube/HLS/live) */}
+          {canDownload && (
+            <Pressable
+              onPress={handleDownloadPress}
+              style={styles.actionItem}
+              accessibilityLabel={
+                alreadyDownloaded
+                  ? "Downloaded — tap to remove"
+                  : isDownloadingNow
+                    ? "Downloading — tap to cancel"
+                    : "Download for offline viewing"
+              }
+              accessibilityRole="button"
+            >
+              <View
+                style={[
+                  styles.actionIconWrap,
+                  {
+                    backgroundColor: alreadyDownloaded ? c.primary + "20" : c.card,
+                    borderColor: alreadyDownloaded ? c.primary + "50" : c.border,
+                  },
+                ]}
+              >
+                <Feather
+                  name={
+                    alreadyDownloaded
+                      ? "check-circle"
+                      : isDownloadingNow
+                        ? "loader"
+                        : "download"
+                  }
+                  size={20}
+                  color={alreadyDownloaded ? c.primary : c.foreground}
+                />
+              </View>
+              <Text
+                style={[
+                  styles.actionLabel,
+                  { color: alreadyDownloaded ? c.primary : c.mutedForeground },
+                ]}
+              >
+                {alreadyDownloaded
+                  ? "Downloaded"
+                  : isDownloadingNow
+                    ? `Downloading ${Math.round((downloadItem?.progress ?? 0) * 100)}%`
+                    : "Download"}
               </Text>
             </Pressable>
           )}
