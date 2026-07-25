@@ -142,7 +142,10 @@ function scheduleProactiveRefresh(): void {
   const delay = Math.max(60_000, expiryMs - Date.now() - PROACTIVE_REFRESH_BEFORE_MS);
   proactiveRefreshTimer = setTimeout(() => {
     proactiveRefreshTimer = null;
-    performRefresh().catch(() => {});
+    // Route through refreshAccessToken() so a proactive refresh that races a
+    // concurrent 401-triggered refresh collapses into a single network call
+    // (single-flight dedup) instead of two competing rotations.
+    refreshAccessToken().catch(() => {});
   }, delay);
 }
 
@@ -231,8 +234,10 @@ export async function authFetch(input: RequestInfo | URL, init?: RequestInit): P
 if (typeof window !== "undefined") {
   if (getRefreshToken() && !getAccessToken()) {
     // No access token in storage — refresh immediately so subsequent API calls
-    // have a valid bearer token without waiting for the first 401.
-    performRefresh().catch(() => {});
+    // have a valid bearer token without waiting for the first 401. Route
+    // through refreshAccessToken() so this cold-start refresh shares the same
+    // single-flight slot as any 401 that fires while it is in progress.
+    refreshAccessToken().catch(() => {});
   } else if (isLoggedIn()) {
     scheduleProactiveRefresh();
   }
