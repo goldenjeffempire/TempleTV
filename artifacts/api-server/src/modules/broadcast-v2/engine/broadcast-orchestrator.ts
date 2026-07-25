@@ -2236,7 +2236,9 @@ class BroadcastOrchestrator extends EventEmitter {
         // newCycleDuration naturally maps to the right position in the new
         // item set without any additional arithmetic.
         this.cycleStartedAtMs = this._bootAnchorPreserved;
-        logger.info(
+        // Log at debug level: on YouTube-only deployments this fires on every
+        // orchestrator tick (queue permanently empty), so info would flood logs.
+        logger.debug(
           { cycleStartedAtMs: this.cycleStartedAtMs, itemCount: this.items.length },
           "[broadcast-v2] boot: preserved cycle anchor applied — broadcast continues from correct position after transient queue disruption",
         );
