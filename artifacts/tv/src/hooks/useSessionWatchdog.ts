@@ -36,8 +36,6 @@ function softReload(): void {
 export function useSessionWatchdog(): void {
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let suspended = false;
-    let suspendedAt: number | null = null;
 
     function arm(): void {
       if (timer !== null) clearTimeout(timer);
@@ -50,17 +48,13 @@ export function useSessionWatchdog(): void {
     arm();
 
     const offResumed = onResumed(() => {
-      suspended = false;
       // Extend the session window by however long the TV was in standby
       // so a device that suspends at hour 23 and resumes 2 hours later
       // gets another full ~24-hour window before soft-resetting.
       arm();
-      suspendedAt = null;
     });
 
     const offSuspended = onSuspended(() => {
-      suspended = true;
-      suspendedAt = Date.now();
       // Pause the timer while suspended — idle standby time should not
       // count toward the session runtime limit.
       if (timer !== null) {
