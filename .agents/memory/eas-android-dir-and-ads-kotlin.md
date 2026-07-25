@@ -17,3 +17,8 @@ The package reads `sdkVersions.android.googleMobileAds` from its own package.jso
 Also, v14.11.0 fails on RN 0.86 with `Unresolved reference 'currentActivity'` (unqualified base-class API removed).
 
 **How to apply:** with Expo SDK 57 / Kotlin 2.1.20, pin `react-native-google-mobile-ads@16.3.4` (play-services-ads 25.0.0). Check the mapping with `npm view react-native-google-mobile-ads@<v> sdkVersions.android.googleMobileAds` before any bump.
+
+## v16 config-plugin key rename (startup crash)
+- rn-google-mobile-ads v16 plugin expects camelCase option keys in app.json (`androidAppId`, `iosAppId`, `skAdNetworkItems`, `userTrackingUsageDescription`, `delayAppMeasurementInit`). v14-style snake_case keys are silently ignored → no `com.google.android.gms.ads.APPLICATION_ID` in AndroidManifest → SDK crashes app at launch.
+- v16 hook `show()` is synchronous (returns void) — `.catch()` on it is a type error; wrap in try/catch.
+- UMP: `AdsConsent.gatherConsent()` (= requestInfoUpdate + loadAndShowConsentFormIfRequired) must run before `MobileAds().initialize()`; consent failure must be non-fatal.
