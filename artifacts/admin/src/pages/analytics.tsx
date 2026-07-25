@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   BarChart2, Eye, Clock, Film, Tv2, Smartphone, Monitor,
-  TrendingUp, CheckCircle2, RefreshCw, Download, Users, Zap, Radio,
+  TrendingUp, CheckCircle2, RefreshCw, Download, Users, Zap, Radio, Globe,
 } from "lucide-react";
 import { exportRowsAsCsv } from "@/lib/csv-export";
 import { toast } from "sonner";
@@ -62,6 +62,13 @@ class ChartErrorBoundary extends Component<{ children: ReactNode; label?: string
 }
 
 type RangeKey = "7d" | "30d" | "90d";
+
+interface GeoAnalytics {
+  countries: Array<{ country: string; sessions: number }>;
+  totalWithGeo: number;
+  unknown: number;
+  generatedAt: string;
+}
 
 interface AnalyticsOverview {
   totalViews: number;
@@ -135,6 +142,23 @@ function fmtDate(dateStr: string): string {
   try { return format(parseISO(dateStr), "MMM d"); } catch { return dateStr; }
 }
 
+/** ISO-3166 alpha-2 → flag emoji via Unicode regional indicator symbols. */
+function flagEmoji(cc: string): string {
+  const code = cc.trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(code)) return "🌐";
+  return String.fromCodePoint(...[...code].map((ch) => 127397 + ch.charCodeAt(0)));
+}
+
+const _regionNames =
+  typeof Intl !== "undefined" && "DisplayNames" in Intl
+    ? new Intl.DisplayNames(["en"], { type: "region" })
+    : null;
+
+/** ISO-3166 alpha-2 → human country name (falls back to the raw code). */
+function countryName(cc: string): string {
+  try { return _regionNames?.of(cc.toUpperCase()) ?? cc; } catch { return cc; }
+}
+
 function fmtBucketTs(ts: string, gran: "hour" | "4h" | "day"): string {
   try {
     const d = new Date(ts);
@@ -203,6 +227,13 @@ export default function AnalyticsPage() {
   const { data: platData, isLoading: platLoading, isError: platError, refetch: refetchPlat } = useQuery({
     queryKey: ["analytics-platform-trends", range],
     queryFn: ({ signal }) => api.get<DailyPlatformTrends>(`/admin/analytics/platform-trends?range=${range}`, { signal }),
+    staleTime: 60_000,
+    placeholderData: keepPreviousData,
+  });
+
+  const { data: geoData, isLoading: geoLoading, isError: geoError, refetch: refetchGeo } = useQuery({
+    queryKey: ["analytics-geo", range],
+    queryFn: ({ signal }) => api.get<GeoAnalytics>(`/admin/analytics/geo?range=${range}`, { signal }),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   });
@@ -780,6 +811,96 @@ export default function AnalyticsPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Viewers by country — edge-derived geolocation */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Globe size={16} className="text-primary" />
+              Viewers by Country
+            </CardTitle>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void refetchGeo()}
+              aria-label="Refresh geographic analytics"
+            >
+              <RefreshCw size={14} />
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <ChartErrorBoundary>
+            {geoError ? (
+              <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
+                Couldn&apos;t load geographic analytics.
+              </div>
+            ) : geoLoading && !geoData ? (
+              <div className="space-y-2">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Skeleton key={i} className="h-6 w-full" />
+                ))}
+              </div>
+            ) : !geoData || geoData.countries.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-32 text-sm text-muted-foreground gap-1">
+                <Globe size={20} className="opacity-40" />
+                <span>No geographic data yet for this range.</span>
+                {geoData && geoData.unknown > 0 ? (
+                  <span className="text-[11px]">
+                    {geoData.unknown.toLocaleString()} session(s) had no resolvable region.
+                  </span>
+                ) : null}
+              </div>
+            ) : (
+              (() => {
+                const maxSessions = Math.max(...geoData.countries.map((x) => x.sessions), 1);
+                const denom = geoData.totalWithGeo || 1;
+                return (
+                  <>
+                    <div className="flex items-center gap-4 mb-3 text-xs text-muted-foreground">
+                      <span>
+                        <strong className="text-foreground">{geoData.totalWithGeo.toLocaleString()}</strong> located sessions
+                      </span>
+                      <span>
+                        <strong className="text-foreground">{geoData.countries.length}</strong> countries
+                      </span>
+                      {geoData.unknown > 0 ? (
+                        <span>{geoData.unknown.toLocaleString()} unknown</span>
+                      ) : null}
+                    </div>
+                    <div className="space-y-1.5">
+                      {geoData.countries.slice(0, 12).map((row) => {
+                        const pct = Math.round((row.sessions / denom) * 100);
+                        const barPct = Math.round((row.sessions / maxSessions) * 100);
+                        return (
+                          <div key={row.country} className="flex items-center gap-2 text-sm">
+                            <span className="w-6 text-base leading-none" aria-hidden>{flagEmoji(row.country)}</span>
+                            <span className="w-32 shrink-0 truncate" title={countryName(row.country)}>
+                              {countryName(row.country)}
+                            </span>
+                            <div className="flex-1 h-2.5 rounded-full bg-muted overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-primary"
+                                style={{ width: `${barPct}%` }}
+                              />
+                            </div>
+                            <span className="w-12 shrink-0 text-right tabular-nums">{row.sessions.toLocaleString()}</span>
+                            <span className="w-10 shrink-0 text-right tabular-nums text-muted-foreground text-xs">{pct}%</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-2">
+                      Region resolved at the CDN edge (Cloudflare) on session start. Full IP address is never stored.
+                    </p>
+                  </>
+                );
+              })()
+            )}
+          </ChartErrorBoundary>
+        </CardContent>
+      </Card>
     </div>
   );
 }

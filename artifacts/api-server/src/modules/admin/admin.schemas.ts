@@ -123,3 +123,19 @@ export const DailyPlatformTrendsSchema = z.object({
   days: z.array(DailyPlatformBucketSchema),
   generatedAt: z.string(),
 });
+
+// ── Geographic analytics (viewers by country) ──────────────────────────────
+export const GeoCountryBucketSchema = z.object({
+  /** ISO-3166-1 alpha-2 country code (uppercase). */
+  country: z.string().length(2),
+  sessions: z.number().int().nonnegative(),
+});
+
+export const GeoAnalyticsSchema = z.object({
+  countries: z.array(GeoCountryBucketSchema),
+  /** Total sessions that carried a resolved country in the range. */
+  totalWithGeo: z.number().int().nonnegative(),
+  /** Sessions in the range with no resolvable country (edge header absent). */
+  unknown: z.number().int().nonnegative(),
+  generatedAt: z.string(),
+});
