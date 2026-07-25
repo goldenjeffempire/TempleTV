@@ -61,6 +61,7 @@ import { NotificationOptInModal } from "@/components/NotificationOptInModal";
 import { reportClientError } from "@/lib/errorReporter";
 import { LiveBroadcastSupervisor } from "@/components/LiveBroadcastSupervisor";
 import { PersistentAudioPlayer } from "@/components/PersistentAudioPlayer";
+import { AppOpenAdController } from "@/components/ads/AppOpenAdController";
 import { AuthGateModal } from "@/components/AuthGateModal";
 import { PlayerProvider } from "@/context/PlayerContext";
 import { AuthProvider } from "@/context/AuthContext";
@@ -175,25 +176,12 @@ import { markStartupPhase } from "@/lib/startupLifecycle";
 async function setupMobileAds() {
   if (Platform.OS === "web") return;
   try {
-    const ads = await import("react-native-google-mobile-ads");
-    const MobileAds = ads.default;
-
-    // ── UMP consent flow (GDPR/CCPA) ────────────────────────────────────
-    // gatherConsent() = requestInfoUpdate() + loadAndShowConsentFormIfRequired().
-    // It shows Google's consent form only when required by the user's region
-    // and returns immediately otherwise. Failures (no network, form config
-    // missing in AdMob console) must never block SDK initialization — per
-    // Google's guidance we still initialize and the SDK serves limited/NPA
-    // ads based on the last known consent state.
-    try {
-      await ads.AdsConsent.gatherConsent();
-    } catch (consentErr) {
-      if (__DEV__) {
-        console.warn("[ads] UMP consent flow failed (non-fatal):", consentErr);
-      }
-    }
-
-    await MobileAds().initialize();
+    // Delegates to the hardened ads bootstrap: UMP consent (AdsConsent
+    // .gatherConsent) → request config (COPPA/TFUA, max content rating) →
+    // MobileAds().initialize(). Encapsulates the inline flow that previously
+    // lived here. Never throws.
+    const { initializeMobileAds } = await import("@/services/ads/mobileAds");
+    await initializeMobileAds();
   } catch {
     // Non-critical — ads will not load but the broadcast plays normally.
   }
@@ -929,6 +917,12 @@ function RootLayout() {
                   <StatusBar style="auto" />
                   <ProvidersReadyMarker />
                   <RootLayoutNav />
+                  {/*
+                   * App Open ad controller — shows on foreground resume only,
+                   * suppressed while the fullscreen live player route is active
+                   * so it can never interrupt or restart live playback.
+                   */}
+                  <AppOpenAdController isBlocked={segments.includes("player")} />
                   <PersistentAudioPlayer />
                   {/*
                    * AuthGateModal is rendered at the root so it can be
