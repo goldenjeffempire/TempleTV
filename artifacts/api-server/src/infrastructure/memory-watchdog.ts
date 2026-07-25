@@ -497,11 +497,10 @@ function sample() {
     consecutiveArrayBuffersOver++;
     if (consecutiveArrayBuffersOver >= CONSECUTIVE_SLOPE_FOR_ALERT && !arrayBuffersAlertActive) {
       arrayBuffersAlertActive = true;
-      // Trigger GC + expire stale cache entries first.  The HLS segment cache
-      // trim is also attempted for back-compat (it is a no-op on the MP4-only
-      // pipeline but harmless).  Running GC here gives the allocator a chance
-      // to reclaim Buffers that are no longer referenced before escalating to
-      // an ops-alert — reducing false-positive alerts from transient spikes.
+      // Trigger GC + expire stale cache entries first.  On the MP4-only
+      // pipeline the HLS segment cache trim below is a harmless no-op; the
+      // real relief comes from GC + expired-entry purge, which reclaim
+      // Buffers held by the upload pipeline and media-proxy.
       // NOTE: gcFn is declared later in sample(); use global.gc directly here.
       purgeExpiredCacheEntries();
       (global as { gc?: () => void }).gc?.();
@@ -531,7 +530,7 @@ function sample() {
       adminEventBus.push("ops-alert", {
         level: "warn",
         code: "memory-arraybuffers-growth",
-        message: `ArrayBuffers growing at ${Math.round(abGrowthRate * 10) / 10} MB/min (threshold: ${ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN} MB/min) — HLS cache auto-trimmed; check segment cache or upload pipeline`,
+        message: `ArrayBuffers growing at ${Math.round(abGrowthRate * 10) / 10} MB/min (threshold: ${ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN} MB/min) — GC triggered + cache purged; check upload pipeline or media-proxy buffer pressure`,
         growthMbPerMin: Math.round(abGrowthRate * 10) / 10,
         threshold: ARRAY_BUFFERS_GROWTH_ALERT_MB_PER_MIN,
       });

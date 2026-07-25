@@ -631,7 +631,7 @@ export function ensureBroadcastV2Started(): Promise<void> {
  *     promptly (each connection is in sseCounter — ending them decrements
  *     the counter so the drain loop exits cleanly instead of timing out).
  *  3. Stop all supervised workers (media-scanner, orphan-cleanup,
- *     queue-validator, faststart-recovery, viewer-count-updater) — each
+ *     queue-validator, viewer-count-updater, queue-self-healing) — each
  *     runs on a timer and may hold open DB connections.
  *  4. Stop the orchestrator — clears its 7 internal timers (tick,
  *     checkpoint, trim, keepAlive, selfHealEmpty, selfHealStale,

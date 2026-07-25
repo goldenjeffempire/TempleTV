@@ -71,7 +71,7 @@ const CRITICAL_WORKERS = [
   "broadcast-health-monitor",
   "queue-integrity-validator",
   "media-integrity-scanner",
-  "faststart-recovery",
+  // "faststart-recovery" removed — faststart pipeline fully removed (MP4-only platform)
   "content-rotation",
   "queue-health-guard",
   "queue-self-healing",

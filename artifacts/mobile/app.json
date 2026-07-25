@@ -7,7 +7,7 @@
     "icon": "./assets/images/icon.png",
     "scheme": "templetv",
     "userInterfaceStyle": "light",
-    "description": "Stream live worship, sermons, and teachings from Temple TV JCTM Broadcasting — Jesus Christ Temple Ministry.",
+    "description": "Stream live worship, sermons, and teachings from Temple TV JCTM Broadcasting \u2014 Jesus Christ Temple Ministry.",
     "owner": "mobileapptemples-team",
     "primaryColor": "#6A0DAD",
     "assetBundlePatterns": [
@@ -86,7 +86,7 @@
     },
     "android": {
       "package": "com.templetv.jctm",
-      "versionCode": 115,
+      "versionCode": 116,
       "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon-foreground.png",
@@ -256,11 +256,11 @@
       [
         "react-native-google-mobile-ads",
         {
-          "android_app_id": "ca-app-pub-3940256099942544~3347511713",
-          "ios_app_id": "ca-app-pub-3940256099942544~1458002511",
-          "sk_ad_network_items": [],
-          "user_tracking_usage_description": "Temple TV uses this identifier to show relevant ads that support our free broadcast ministry.",
-          "delay_app_measurement_init": true
+          "androidAppId": "ca-app-pub-3940256099942544~3347511713",
+          "iosAppId": "ca-app-pub-3940256099942544~1458002511",
+          "skAdNetworkItems": [],
+          "userTrackingUsageDescription": "Temple TV uses this identifier to show relevant ads that support our free broadcast ministry.",
+          "delayAppMeasurementInit": true
         }
       ]
     ],
