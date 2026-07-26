@@ -40,7 +40,9 @@ const DELAY_INIT_KEY = "com.google.android.gms.ads.DELAY_APP_MEASUREMENT_INIT";
  */
 function withAdmobAndroid(config) {
   return withAndroidManifest(config, (cfg) => {
-    const appId = process.env.ADMOB_ANDROID_APP_ID;
+    const appId =
+      process.env.ADMOB_ANDROID_APP_ID ||
+      process.env.EXPO_PUBLIC_ADMOB_ANDROID_APP_ID;
 
     const app = cfg.modResults.manifest?.application?.[0];
     if (!app) return cfg;
@@ -106,7 +108,9 @@ function withAdmobAndroid(config) {
  */
 function withAdmobIos(config) {
   return withInfoPlist(config, (cfg) => {
-    const appId = process.env.ADMOB_IOS_APP_ID;
+    const appId =
+      process.env.ADMOB_IOS_APP_ID ||
+      process.env.EXPO_PUBLIC_ADMOB_IOS_APP_ID;
 
     if (appId) {
       cfg.modResults[IOS_INFO_KEY] = appId;
