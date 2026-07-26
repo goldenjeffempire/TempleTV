@@ -54,6 +54,14 @@ profile's `"env"` section with the real IDs from step 1 and 2.
 Profiles to update: `production-aab`, `production`, `production-ios`,
 `production-android`.
 
+> **Placeholder protection built in:** `adConfig.ts` and `app.config.ts` both
+> detect `REPLACE_WITH_*` strings and treat them as absent. A placeholder App ID
+> causes `app.config.ts` to throw a hard build error (`APP_ENV=production`), so
+> you can never accidentally publish a binary with the unfilled sentinel. A
+> placeholder Ad Unit ID silently disables that format (returns `null`) instead
+> of sending an invalid ID to the SDK — preventing invalid-traffic policy flags.
+> You will still see a warning in EAS build logs for any format without a real ID.
+
 **Recommended approach — EAS Secrets (more secure than eas.json env):**
 
 ```bash
@@ -118,7 +126,7 @@ Frequency caps (in-memory, per-session):
 - [ ] App IDs created in AdMob console for both Android and iOS.
 - [ ] All ad unit IDs created and filled in `eas.json` / EAS secrets.
 - [ ] Test build run on a real device with test ad unit IDs — all formats load.
-- [ ] Verify `EXPO_PUBLIC_ADMOB_ENABLED=true` is set in production env (or ads
+- [ ] Verify `EXPO_PUBLIC_ADS_ENABLED=true` is set in production env (or ads
       are enabled unconditionally by default — check `adConfig.ts` `ADS_ENABLED`).
 - [ ] UMP consent form appears on first launch on a device with EU locale.
 - [ ] No ads shown during live broadcast.

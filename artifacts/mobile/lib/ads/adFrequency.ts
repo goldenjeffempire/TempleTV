@@ -89,9 +89,14 @@ export class FrequencyCapper {
  * Full-jitter exponential backoff. Returns a delay in milliseconds for the
  * given zero-based retry attempt.
  *
- *   base * 2^attempt, capped at maxDelayMs, then randomised in [0, cap] so a
- *   fleet of clients recovering from an outage does not thundering-herd the ad
- *   server.
+ *   base * 2^attempt, capped at maxDelayMs, then randomised in [minFloor, cap]
+ *   so a fleet of clients recovering from an outage does not thundering-herd
+ *   the ad server.
+ *
+ * The minimum return value is `floor(baseDelayMs / 4)` (500 ms for the default
+ * 2 s base). Without this floor, full-jitter can produce a 0 ms delay on the
+ * very first retry when `rng()` is close to 0, causing the SDK to be hammered
+ * in a tight synchronous loop.
  *
  * @param attempt     zero-based attempt index (0 = first retry)
  * @param baseDelayMs base delay (default 2s)
@@ -109,5 +114,8 @@ export function nextBackoffDelay(
   const exp = Math.min(safeAttempt, 30);
   const uncapped = baseDelayMs * 2 ** exp;
   const cap = Math.min(uncapped, maxDelayMs);
-  return Math.floor(rng() * cap);
+  // Always return at least baseDelayMs/4 so that even the first retry (where
+  // full-jitter could otherwise yield 0 ms) still waits a meaningful interval.
+  const minFloor = Math.floor(baseDelayMs / 4);
+  return Math.max(minFloor, Math.floor(rng() * cap));
 }
