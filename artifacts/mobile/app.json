@@ -88,7 +88,7 @@
     },
     "android": {
       "package": "com.templetv.jctm",
-      "versionCode": 116,
+      "versionCode": 117,
       "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon-foreground.png",
@@ -264,7 +264,8 @@
           "userTrackingUsageDescription": "Temple TV uses this identifier to show relevant ads that support our free broadcast ministry.",
           "delayAppMeasurementInit": true
         }
-      ]
+      ],
+      "./plugins/with-admob-app-id.js"
     ],
     "extra": {
       "router": {

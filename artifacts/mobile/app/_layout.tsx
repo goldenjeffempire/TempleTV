@@ -62,6 +62,7 @@ import { reportClientError } from "@/lib/errorReporter";
 import { LiveBroadcastSupervisor } from "@/components/LiveBroadcastSupervisor";
 import { PersistentAudioPlayer } from "@/components/PersistentAudioPlayer";
 import { AppOpenAdController } from "@/components/ads/AppOpenAdController";
+import { InterstitialAdController } from "@/components/ads/InterstitialAdController";
 import { AuthGateModal } from "@/components/AuthGateModal";
 import { PlayerProvider } from "@/context/PlayerContext";
 import { AuthProvider } from "@/context/AuthContext";
@@ -911,6 +912,7 @@ function RootLayout() {
             <DownloadProvider>
             <RadioStreamProvider>
             <PlayerProvider>
+              <InterstitialAdController>
               <LiveBroadcastSupervisor />
               <GestureHandlerRootView style={{ flex: 1 }}>
                 <SafeKeyboardProvider>
@@ -966,6 +968,7 @@ function RootLayout() {
                   <PlayFlexibleUpdateOverlay />
                 </SafeKeyboardProvider>
               </GestureHandlerRootView>
+              </InterstitialAdController>
             </PlayerProvider>
             </RadioStreamProvider>
             </DownloadProvider>

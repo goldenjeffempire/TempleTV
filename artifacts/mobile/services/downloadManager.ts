@@ -497,6 +497,15 @@ class DownloadManager {
     void this.processQueue();
   }
 
+  /**
+   * Per-video timestamp of the last notify() that fired from onProgress.
+   * Limits UI re-renders to at most one per PROGRESS_THROTTLE_MS per active
+   * download, preventing the O(listeners × downloads × freq) snapshot churn
+   * that caused OOM on multi-GB downloads with many active subscribers.
+   */
+  private readonly _lastProgressNotify = new Map<string, number>();
+  private static readonly PROGRESS_THROTTLE_MS = 250;
+
   private onProgress(
     videoId: string,
     progress: FileSystem.DownloadProgressData,
@@ -508,19 +517,33 @@ class DownloadManager {
       totalBytesExpectedToWrite > 0
         ? totalBytesWritten / totalBytesExpectedToWrite
         : 0;
+
+    // Always update in-memory state for accuracy.
     this.items.set(videoId, {
       ...item,
       progress: Math.min(pct, 1),
       downloadedBytes: totalBytesWritten,
       totalBytes: totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : null,
     });
+
+    // Throttle subscriber notifications: fire at most once per
+    // PROGRESS_THROTTLE_MS per video so large concurrent downloads don't flood
+    // React's render queue with thousands of state updates per second.
+    const now = Date.now();
+    const last = this._lastProgressNotify.get(videoId) ?? 0;
+    if (now - last < DownloadManager.PROGRESS_THROTTLE_MS) return;
+    this._lastProgressNotify.set(videoId, now);
+
     this.notify();
   }
 
   private notify(): void {
+    // getAll() returns a flat array copy — not the full item Map snapshot —
+    // so each listener receives its own defensive copy without re-reading BYTEA
+    // data or large metadata objects.
     const snapshot = this.getAll();
     for (const l of this.listeners) {
-      try { l(snapshot); } catch { /* ignore */ }
+      try { l(snapshot); } catch { /* ignore listener errors */ }
     }
   }
 

@@ -157,3 +157,5 @@
 - [Player FSM FATAL backoff base is 10s not 30s](player-fatal-backoff-10s.md) — FATAL_AUTO_RECOVERY_MS=10_000 in machine.ts; tests previously documented 30s schedule (wrong); correct schedule: 10→20→40→80→160→240s.
 - [FailoverHandler React Native network events](failover-handler-rn-network.md) — window 'online'/'offline' silently never fire on RN Hermes; use notifyOnline()/notifyOffline() from NetInfo + bindDomEvents:false.
 - [Schedule bridge one-time entry exactly-once](schedule-bridge-one-time-claim.md) — must claim-deactivate in DB BEFORE firing handleEntry; `claimOneTimeFiring()` returns bool; only fire when true.
+- [AdMob production wiring — mobile app](admob-production-wiring.md) — config plugin pattern, all ad format hooks, FrequencyCapper class name, inner/outer split in InterstitialAdController, publisher pub-6817509745706083.
+- [DownloadManager progress throttle — OOM fix](download-manager-progress-throttle.md) — onProgress must throttle notify() to ≤4fps per video; in-memory state still updates every callback.
