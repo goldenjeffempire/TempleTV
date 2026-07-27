@@ -67,6 +67,12 @@ export function safeNavPush(
 ): void {
   const startTs = navLogger.logAttempt(pathname, params as Record<string, unknown> | undefined, source);
 
+  // Mark a push as in-flight for 1 500 ms. NativeTabLayout's useLayoutEffect
+  // reads this via isNavPushActive() and skips its competing router.replace("/")
+  // redirect when a push is already in progress — preventing the "Open Player"
+  // tap from bouncing the user back to Home on iOS 18+.
+  navPushActiveUntil = Date.now() + 1_500;
+
   const attempt = (n: number): void => {
     try {
       router.push({ pathname: pathname as never, params: params as never });

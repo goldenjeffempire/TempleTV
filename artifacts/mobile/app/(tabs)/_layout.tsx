@@ -3,6 +3,7 @@ import { Tabs, router } from "expo-router";
 import { SymbolView } from "expo-symbols";
 import { Feather } from "@expo/vector-icons";
 import React, { useLayoutEffect } from "react";
+import { isNavPushActive } from "@/lib/safeNavPush";
 import {
   Platform,
   StyleSheet,
@@ -62,6 +63,15 @@ let hasRedirectedToDefaultTab = false;
 function NativeTabLayout() {
   useLayoutEffect(() => {
     if (hasRedirectedToDefaultTab) return;
+    if (isNavPushActive()) {
+      // A safeNavPush is already in flight (e.g. the user tapped "Open Player"
+      // just as the tabs group remounted during the modal presentation
+      // animation). Issuing router.replace("/") here would race the push and
+      // bounce the user back to Home. Mark as done without redirecting so the
+      // push wins and the player screen opens correctly.
+      hasRedirectedToDefaultTab = true;
+      return;
+    }
     hasRedirectedToDefaultTab = true;
     // Navigate to the Watch / Home tab ("/" resolves to (tabs)/index).
     router.replace("/");
