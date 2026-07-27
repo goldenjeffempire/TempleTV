@@ -26,8 +26,15 @@ import {
 } from "@/lib/ads/adTelemetry";
 
 // Module-level so the cap survives component remounts within a session.
+//
+// Policy: App Open ads must not be shown more often than once per 30 minutes.
+// Google's own guidelines recommend at least 4 hours between impressions for
+// general-audience apps, but 30 minutes is the floor we enforce in code.
+// maxPerSession: 6 caps total daily exposure (30 min × 6 = 3 h minimum spread
+// across a full day's usage) while still allowing reasonable foreground-resume
+// coverage for users who open the app frequently.
 const capper = new FrequencyCapper({
-  appOpen: { cooldownMs: 4 * 60 * 1000, maxPerSession: 12 },
+  appOpen: { cooldownMs: 30 * 60 * 1_000, maxPerSession: 6 },
 });
 
 interface AppOpenAdControllerProps {

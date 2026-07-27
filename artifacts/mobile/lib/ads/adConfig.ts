@@ -94,9 +94,15 @@ const PROD_UNIT_ENV: Record<AdFormat, string> = {
   native: "EXPO_PUBLIC_ADMOB_NATIVE_UNIT_ID",
 };
 
-/** Production ad unit id for a format (empty string when not configured). */
+/**
+ * Production ad unit id for a format (empty string when not configured or when
+ * the env var still holds a "REPLACE_WITH_*" build-time placeholder). The
+ * placeholder check prevents an unfilled eas.json entry from being forwarded
+ * to the AdMob SDK as a real unit ID — an empty string causes the caller to
+ * return null (disabled) instead.
+ */
 export function getProdAdUnitId(format: AdFormat): string {
-  return envStr(PROD_UNIT_ENV[format]);
+  return envStrSafe(PROD_UNIT_ENV[format]);
 }
 
 /**
@@ -108,6 +114,11 @@ export function getProdAdUnitId(format: AdFormat): string {
  * @returns the unit id to use, or `null` when ads should not load for this
  *          format (disabled globally, or no production id configured in a
  *          release build).
+ *
+ * Defense-in-depth: if the caller supplies a raw env string that is still a
+ * "REPLACE_WITH_*" placeholder (e.g. directly from process.env rather than via
+ * `getProdAdUnitId`), it is treated as absent so the format is disabled rather
+ * than sending an invalid unit ID to the SDK.
  */
 export function pickAdUnitId(
   prodUnitId: string,
@@ -115,7 +126,8 @@ export function pickAdUnitId(
 ): string | null {
   if (!ADS_ENABLED) return null;
   if (IS_DEV) return testUnitId || null;
-  return prodUnitId ? prodUnitId : null;
+  const safeProd = isPlaceholder(prodUnitId) ? "" : prodUnitId;
+  return safeProd ? safeProd : null;
 }
 
 /** Convenience wrapper: resolve directly from the format + injected test id. */
@@ -126,6 +138,29 @@ export function resolveAdUnitId(
   return pickAdUnitId(getProdAdUnitId(format), testUnitId);
 }
 
+// ── Placeholder detection ────────────────────────────────────────────────────
+/**
+ * Returns true for values that are clearly build-time placeholders rather than
+ * real AdMob identifiers. The eas.json production profiles ship with
+ * "REPLACE_WITH_*" sentinel strings that remind the operator to fill in the
+ * real IDs before building. These strings are non-empty (truthy) so they would
+ * otherwise be forwarded to the SDK as valid IDs, causing silent no-fill and
+ * potentially triggering AdMob invalid-traffic detection.
+ *
+ * If a value starts with "REPLACE_WITH_" or matches "REPLACE_*" it is treated
+ * as absent (empty string), which causes pickAdUnitId/getAndroidAppId to fall
+ * through to the safe test-ID or null path.
+ */
+function isPlaceholder(value: string): boolean {
+  return value.startsWith("REPLACE_WITH_") || value.startsWith("REPLACE_");
+}
+
+/** Resolve an env string, returning "" when it is a build-time placeholder. */
+function envStrSafe(name: string): string {
+  const v = envStr(name);
+  return isPlaceholder(v) ? "" : v;
+}
+
 // ── AdMob App ID (native SDK bootstrap identifier) ──────────────────────────
 // Google's official *sample* App IDs — safe to compile with; they let the SDK
 // initialise in development without a real account. Overridden by the env vars
@@ -134,11 +169,11 @@ export const TEST_ANDROID_APP_ID = "ca-app-pub-3940256099942544~3347511713";
 export const TEST_IOS_APP_ID = "ca-app-pub-3940256099942544~1458002511";
 
 export function getAndroidAppId(): string {
-  return envStr("EXPO_PUBLIC_ADMOB_ANDROID_APP_ID") || TEST_ANDROID_APP_ID;
+  return envStrSafe("EXPO_PUBLIC_ADMOB_ANDROID_APP_ID") || TEST_ANDROID_APP_ID;
 }
 
 export function getIosAppId(): string {
-  return envStr("EXPO_PUBLIC_ADMOB_IOS_APP_ID") || TEST_IOS_APP_ID;
+  return envStrSafe("EXPO_PUBLIC_ADMOB_IOS_APP_ID") || TEST_IOS_APP_ID;
 }
 
 /** True when the native SDK would be configured with a real publisher app ID. */

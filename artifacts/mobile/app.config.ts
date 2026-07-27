@@ -22,15 +22,26 @@ const GMA_PLUGIN = "react-native-google-mobile-ads";
 const SAMPLE_ANDROID_APP_ID = "ca-app-pub-3940256099942544~3347511713";
 const SAMPLE_IOS_APP_ID = "ca-app-pub-3940256099942544~1458002511";
 
+/** Returns true when the value is a build-time placeholder rather than a real ID. */
+function isPlaceholder(value: string): boolean {
+  return value.startsWith("REPLACE_WITH_") || value.startsWith("REPLACE_");
+}
+
 function readAppId(name: string, sampleId: string): string {
-  const value = process.env[name]?.trim();
+  const raw = process.env[name]?.trim() ?? "";
+  // Reject unfilled eas.json placeholders ("REPLACE_WITH_*") the same way we
+  // treat a missing env var — they must never reach the native plugin because
+  // the GMA plugin bakes the value into the compiled AndroidManifest/Info.plist
+  // at build time and an invalid App ID will break SDK initialization at runtime.
+  const value = isPlaceholder(raw) ? "" : raw;
   if (value) return value;
 
   const appEnv = (process.env.APP_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
   if (appEnv === "production") {
     throw new Error(
       `[mobile config] ${name} is required for production builds. ` +
-        "The Google sample App ID must never ship in a release binary.",
+        "The Google sample App ID must never ship in a release binary. " +
+        "Set it as an EAS secret or fill in the eas.json placeholder.",
     );
   }
 
