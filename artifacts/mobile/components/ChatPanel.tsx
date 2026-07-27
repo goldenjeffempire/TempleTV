@@ -22,6 +22,7 @@ import React, {
   useState,
 } from "react";
 import {
+  Alert,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -37,6 +38,7 @@ import { Feather } from "@expo/vector-icons";
 import { useChat } from "@/lib/chat/useChat";
 import type { ChatMessage, ChatRole } from "@/lib/chat/types";
 import { useColors } from "@/hooks/useColors";
+import { getApiBase } from "@/lib/apiBase";
 
 const LIVE_CHANNEL_ID = "temple-tv-live";
 const QUICK_EMOJIS = ["🙏", "🔥", "❤️", "😂", "👏", "🙌", "💯", "✨"];
@@ -56,9 +58,48 @@ const ROLE_PREFIX: Record<ChatRole, string> = {
   guest: "",
 };
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Format a timestamp as a short relative string: "just now", "2m", "1h", "Mon" */
+function formatRelativeTime(ms: number): string {
+  const diffSecs = Math.floor((Date.now() - ms) / 1000);
+  if (diffSecs < 30) return "just now";
+  if (diffSecs < 3600) return `${Math.floor(diffSecs / 60)}m`;
+  if (diffSecs < 86400) return `${Math.floor(diffSecs / 3600)}h`;
+  const d = new Date(ms);
+  return d.toLocaleDateString(undefined, { weekday: "short" });
+}
+
+/** Fire-and-forget REST report/moderation call; errors are swallowed intentionally. */
+async function apiModAction(
+  path: string,
+  method: "POST" | "DELETE",
+  token?: string | null,
+): Promise<void> {
+  const base = getApiBase();
+  if (!base) return;
+  try {
+    await fetch(`${base}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+  } catch {
+    // Swallow — moderation calls are best-effort
+  }
+}
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function ConnectionBadge({ state }: { state: string }) {
+function ConnectionBadge({
+  state,
+  onRetry,
+}: {
+  state: string;
+  onRetry?: () => void;
+}) {
   const color =
     state === "open"
       ? "#22c55e"
@@ -73,6 +114,24 @@ function ConnectionBadge({ state }: { state: string }) {
         : state === "reconnecting"
           ? "Reconnecting…"
           : "Offline";
+
+  const isOffline = state === "closed";
+
+  if (isOffline && onRetry) {
+    return (
+      <TouchableOpacity
+        style={styles.retryBtn}
+        onPress={onRetry}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityLabel="Tap to reconnect chat"
+      >
+        <Feather name="refresh-cw" size={10} color="#ef4444" />
+        <Text style={styles.retryText}>Tap to reconnect</Text>
+      </TouchableOpacity>
+    );
+  }
+
   return (
     <View style={styles.badge}>
       <View style={[styles.badgeDot, { backgroundColor: color }]} />
@@ -84,9 +143,15 @@ function ConnectionBadge({ state }: { state: string }) {
 interface MessageRowProps {
   msg: ChatMessage;
   onReact: (messageId: string, emoji: string) => void;
+  onLongPress: (msg: ChatMessage) => void;
+  isModerator: boolean;
 }
 
-const MessageRow = React.memo(function MessageRow({ msg, onReact }: MessageRowProps) {
+const MessageRow = React.memo(function MessageRow({
+  msg,
+  onReact,
+  onLongPress,
+}: MessageRowProps) {
   const nameColor = ROLE_COLORS[msg.role] ?? ROLE_COLORS.guest;
   const prefix = ROLE_PREFIX[msg.role] ?? "";
   const sortedReactions = useMemo(
@@ -98,18 +163,24 @@ const MessageRow = React.memo(function MessageRow({ msg, onReact }: MessageRowPr
   );
 
   return (
-    <View
-      style={[
+    <Pressable
+      onLongPress={() => onLongPress(msg)}
+      delayLongPress={400}
+      style={({ pressed }) => [
         styles.msgRow,
         msg.isHighlighted && styles.msgRowHighlighted,
+        pressed && styles.msgRowPressed,
       ]}
+      accessibilityRole="text"
+      accessibilityHint="Hold to report or moderate this message"
     >
-      <Text style={[styles.msgName, { color: nameColor }]}>
-        {prefix}
-        {msg.displayName}
-        {" "}
-        <Text style={styles.msgBody}>{msg.body}</Text>
-      </Text>
+      <View style={styles.msgHeader}>
+        <Text style={[styles.msgName, { color: nameColor }]}>
+          {prefix}{msg.displayName}
+        </Text>
+        <Text style={styles.msgTimestamp}>{formatRelativeTime(msg.createdAtMs)}</Text>
+      </View>
+      <Text style={styles.msgBody}>{msg.body}</Text>
       {sortedReactions.length > 0 && (
         <View style={styles.reactionsRow}>
           {sortedReactions.map(([emoji, count]) => (
@@ -126,7 +197,7 @@ const MessageRow = React.memo(function MessageRow({ msg, onReact }: MessageRowPr
           ))}
         </View>
       )}
-    </View>
+    </Pressable>
   );
 });
 
@@ -150,6 +221,7 @@ export function ChatPanel({ visible, onClose, token }: ChatPanelProps) {
     lastAckAtMs,
     send,
     react,
+    reconnect,
   } = useChat({ channelId: LIVE_CHANNEL_ID, token });
 
   const [text, setText] = useState("");
@@ -157,6 +229,8 @@ export function ChatPanel({ visible, onClose, token }: ChatPanelProps) {
   const [unreadCount, setUnreadCount] = useState(0);
   const [isPinDismissed, setIsPinDismissed] = useState(false);
   const [slowRemaining, setSlowRemaining] = useState(0);
+  // Client-side block list — hides messages from blocked users for this session
+  const [blockedUserIds, setBlockedUserIds] = useState<Set<string>>(new Set());
 
   const listRef = useRef<FlatList>(null);
   const isAtBottomRef = useRef(true);
@@ -237,14 +311,91 @@ export function ChatPanel({ visible, onClose, token }: ChatPanelProps) {
     [react],
   );
 
+  const handleLongPress = useCallback(
+    (msg: ChatMessage) => {
+      const isMod = identity?.isModerator ?? false;
+      const isOwnMsg = identity?.sessionId === msg.userId;
+
+      const options: Array<{ text: string; style?: "cancel" | "destructive"; onPress?: () => void }> = [];
+
+      if (!isOwnMsg) {
+        options.push({
+          text: "Report Message",
+          onPress: () => {
+            void apiModAction(`/api/v1/chat/messages/${msg.id}/report`, "POST", token);
+            Alert.alert("Reported", "Thank you — our team will review this message.");
+          },
+        });
+        options.push({
+          text: "Block User",
+          style: "destructive",
+          onPress: () => {
+            if (msg.userId) {
+              setBlockedUserIds((prev) => {
+                const next = new Set(prev);
+                next.add(msg.userId!);
+                return next;
+              });
+            }
+          },
+        });
+      }
+
+      if (isMod) {
+        options.push({
+          text: "Delete Message",
+          style: "destructive",
+          onPress: () => {
+            void apiModAction(`/api/v1/chat/messages/${msg.id}`, "DELETE", token);
+          },
+        });
+        if (msg.userId) {
+          options.push({
+            text: "Mute User (1 h)",
+            style: "destructive",
+            onPress: () => {
+              void apiModAction(
+                `/api/v1/chat/users/${msg.userId}/mute`,
+                "POST",
+                token,
+              );
+            },
+          });
+        }
+      }
+
+      options.push({ text: "Cancel", style: "cancel" });
+
+      Alert.alert(
+        isMod ? "Moderation" : "Message Options",
+        `"${msg.displayName}": ${msg.body.slice(0, 60)}${msg.body.length > 60 ? "…" : ""}`,
+        options,
+      );
+    },
+    [identity, token],
+  );
+
+  const isModerator = identity?.isModerator ?? false;
+
   const renderItem = useCallback(
     ({ item }: { item: ChatMessage }) => (
-      <MessageRow msg={item} onReact={handleReact} />
+      <MessageRow
+        msg={item}
+        onReact={handleReact}
+        onLongPress={handleLongPress}
+        isModerator={isModerator}
+      />
     ),
-    [handleReact],
+    [handleReact, handleLongPress, isModerator],
   );
 
   const keyExtractor = useCallback((m: ChatMessage) => m.id, []);
+
+  // Filter client-side blocked users
+  const visibleMessages = useMemo(
+    () => messages.filter((m) => !m.userId || !blockedUserIds.has(m.userId)),
+    [messages, blockedUserIds],
+  );
 
   const isSendDisabled = !text.trim() || slowRemaining > 0;
   const showPinBanner = !!pinnedMessage && !isPinDismissed;
@@ -270,7 +421,7 @@ export function ChatPanel({ visible, onClose, token }: ChatPanelProps) {
             )}
           </View>
           <View style={styles.headerRight}>
-            <ConnectionBadge state={state} />
+            <ConnectionBadge state={state} onRetry={reconnect} />
             <Pressable onPress={onClose} hitSlop={8} style={styles.closeBtn}>
               <Feather name="x" size={18} color="rgba(255,255,255,0.7)" />
             </Pressable>
@@ -305,7 +456,7 @@ export function ChatPanel({ visible, onClose, token }: ChatPanelProps) {
 
         {/* ── Messages ────────────────────────────────────────────────────── */}
         <View style={styles.listContainer}>
-          {messages.length === 0 ? (
+          {visibleMessages.length === 0 ? (
             <View style={styles.empty}>
               <Feather
                 name="message-circle"
@@ -319,11 +470,21 @@ export function ChatPanel({ visible, onClose, token }: ChatPanelProps) {
                     ? "Chat unavailable"
                     : "Connecting to chat…"}
               </Text>
+              {state === "closed" && (
+                <TouchableOpacity
+                  style={styles.emptyRetryBtn}
+                  onPress={reconnect}
+                  activeOpacity={0.7}
+                >
+                  <Feather name="refresh-cw" size={13} color="#a855f7" />
+                  <Text style={styles.emptyRetryText}>Tap to reconnect</Text>
+                </TouchableOpacity>
+              )}
             </View>
           ) : (
             <FlatList
               ref={listRef}
-              data={messages}
+              data={visibleMessages}
               keyExtractor={keyExtractor}
               renderItem={renderItem}
               style={styles.list}
@@ -538,9 +699,10 @@ const styles = StyleSheet.create({
 
   // Messages
   msgRow: {
-    paddingVertical: 3,
-    paddingLeft: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 4,
     borderLeftWidth: 0,
+    borderRadius: 4,
   },
   msgRowHighlighted: {
     borderLeftWidth: 3,
@@ -550,16 +712,29 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     marginVertical: 1,
   },
+  msgRowPressed: {
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
+  msgHeader: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: 6,
+    marginBottom: 1,
+  },
   msgName: {
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 12,
+    fontWeight: "600",
     flexShrink: 1,
-    flexWrap: "wrap",
+  },
+  msgTimestamp: {
+    fontSize: 10,
+    color: "rgba(255,255,255,0.28)",
   },
   msgBody: {
-    fontWeight: "400",
-    color: "rgba(255,255,255,0.85)",
     fontSize: 13,
+    lineHeight: 18,
+    color: "rgba(255,255,255,0.85)",
+    flexWrap: "wrap",
   },
 
   // Reactions
@@ -613,6 +788,41 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "rgba(255,255,255,0.5)",
     textAlign: "center",
+  },
+  emptyRetryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(168,85,247,0.4)",
+    backgroundColor: "rgba(168,85,247,0.1)",
+  },
+  emptyRetryText: {
+    color: "#a855f7",
+    fontSize: 13,
+    fontWeight: "600",
+  },
+
+  // Connection retry button (in header)
+  retryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+    backgroundColor: "rgba(239,68,68,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(239,68,68,0.3)",
+  },
+  retryText: {
+    fontSize: 10,
+    color: "#ef4444",
+    fontWeight: "600",
   },
 
   // Emoji tray

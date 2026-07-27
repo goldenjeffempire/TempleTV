@@ -16,6 +16,8 @@ const EMPTY_SNAPSHOT: ChatSnapshot = {
 export interface UseChatResult extends ChatSnapshot {
   send: (body: string) => void;
   react: (messageId: string, emoji: string) => void;
+  /** Force an immediate reconnect, resetting exponential backoff. */
+  reconnect: () => void;
 }
 
 /**
@@ -64,5 +66,10 @@ export function useChat(options: ChatClientOptions = {}): UseChatResult {
     [client],
   );
 
-  return { ...snapshot, send, react };
+  const reconnect = useCallback(
+    () => { client.forceReconnect(); },
+    [client],
+  );
+
+  return { ...snapshot, send, react, reconnect };
 }

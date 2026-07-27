@@ -114,6 +114,19 @@ export class ChatClient {
     this.setState("closed");
   }
 
+  /**
+   * Force an immediate reconnect, resetting the backoff counter.
+   * Safe to call at any connection state — clears any pending retry timer first.
+   */
+  forceReconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempts = 0;
+    this.start();
+  }
+
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
     listener(this.snapshot());

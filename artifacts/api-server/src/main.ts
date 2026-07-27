@@ -7,7 +7,7 @@ import { logger } from "./infrastructure/logger.js";
 import { broadcastEngine } from "./modules/broadcast/queue.engine.js";
 import { channelRegistry } from "./modules/channels/channel-registry.js";
 import { overrideBus } from "./modules/live-overrides/override-bus.js";
-import { closeDb, db, deactivateUnresolvableQueueRows, scheduleStaleDataCleanup, runPreBuildBootSequence, runPostBuildBootSequence } from "./infrastructure/db.js";
+import { closeDb, db, pgPool, deactivateUnresolvableQueueRows, scheduleStaleDataCleanup, runPreBuildBootSequence, runPostBuildBootSequence } from "./infrastructure/db.js";
 import { closeRedis } from "./infrastructure/redis.js";
 import { sseCounter } from "./infrastructure/sse-counter.js";
 import { transcoderDispatcher } from "./modules/transcoder/transcoder.dispatcher.js";
@@ -387,6 +387,35 @@ async function runBroadcastDaemon(): Promise<never> {
   };
   await daemonApp.register(mountBroadcast, { prefix: "/api/v1" });
   await daemonApp.register(mountBroadcast, { prefix: "/api" });
+
+  // ── Single-instance advisory lock ────────────────────────────────────────
+  // Prevent two broadcast daemons from running simultaneously on the same DB.
+  // pg_try_advisory_lock is session-level: the lock is held until the connection
+  // closes (process exit). A second daemon startup attempt will see acquired=false
+  // and exit cleanly rather than racing the first instance.
+  const DAEMON_ADVISORY_LOCK_ID = 7_878_787_878; // fixed ID — must never change
+  try {
+    const lockRes = await pgPool.query<{ acquired: boolean }>(
+      "SELECT pg_try_advisory_lock($1::bigint) AS acquired",
+      [DAEMON_ADVISORY_LOCK_ID],
+    );
+    const acquired = (lockRes.rows[0] as { acquired?: boolean } | undefined)?.acquired;
+    if (!acquired) {
+      logger.fatal(
+        { lockId: DAEMON_ADVISORY_LOCK_ID },
+        "[broadcast-daemon] another daemon instance already holds the advisory lock — refusing to start (duplicate-worker guard)",
+      );
+      process.exit(1);
+    }
+    logger.info(
+      { lockId: DAEMON_ADVISORY_LOCK_ID },
+      "[broadcast-daemon] advisory lock acquired — duplicate-worker guard active",
+    );
+  } catch (err) {
+    // Non-fatal: log and proceed if the lock check itself fails (e.g. pgBouncer
+    // in transaction mode, which disallows session-level advisory locks).
+    logger.warn({ err }, "[broadcast-daemon] advisory lock check failed — proceeding without duplicate-worker guard");
+  }
 
   // ── Start broadcast engine + memory watchdog ──────────────────────────────
   await ensureBroadcastV2Started();
