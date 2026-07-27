@@ -19,6 +19,11 @@
  *
  *  4. __DEV__ console logs  — Logged by navLogger; no extra work needed here.
  *
+ *  5. navPushActiveUntil stamp — A module-level timestamp updated on every
+ *     safeNavPush call so that layout effects that fire concurrently (e.g. the
+ *     NativeTabLayout initial-redirect on iOS 18+) can detect an in-flight push
+ *     and skip competing navigation actions. See (tabs)/_layout.tsx.
+ *
  * Usage:
  *   safeNavPush("/player", { isLive: "true" }, "hero-cta");
  *   safeNavReplace("/", {}, "auth-redirect");
@@ -26,6 +31,23 @@
 
 import { router } from "expo-router";
 import { navLogger } from "@/lib/navLogger";
+
+/**
+ * Timestamp (ms) until which a safeNavPush is considered "in flight".
+ * Cleared 1 500 ms after the push is dispatched — enough for any
+ * navigation animation to settle and for layout effects triggered by
+ * the navigation to have run. Exported so that NativeTabLayout's
+ * initial-redirect useLayoutEffect can check whether a push is active
+ * before issuing a competing router.replace.
+ *
+ * @internal — only consumed by (tabs)/_layout.tsx; not part of the public API.
+ */
+export let navPushActiveUntil = 0;
+
+/** Returns true while a safeNavPush is considered in-flight. */
+export function isNavPushActive(): boolean {
+  return Date.now() < navPushActiveUntil;
+}
 
 export type NavParams = Record<string, string | number | boolean | undefined>;
 
