@@ -81,6 +81,7 @@ import type { Sermon } from "@/types";
 import { ChatPanel } from "@/components/ChatPanel";
 import { FloatingReactions, type FloatingReactionsHandle } from "@/components/FloatingReactions";
 import { getApiBase } from "@/lib/apiBase";
+import { useAuth } from "@/context/AuthContext";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import { usePageSeo } from "@/hooks/usePageSeo";
 import { usePlayer } from "@/context/PlayerContext";
@@ -109,6 +110,7 @@ const SITE_ORIGIN: string = process.env.EXPO_PUBLIC_DOMAIN
 
 export default function PlayerScreen() {
   const apiBase = getApiBase() ?? "";
+  const { token: authToken } = useAuth();
   const params = useLocalSearchParams<{
     id?: string;
     title?: string;
@@ -1822,7 +1824,7 @@ export default function PlayerScreen() {
 
       {/* ── Live Chat Panel — floats over full screen ─────────────────── */}
       {/* Chat panel is hidden during PiP — the window is too small for interaction. */}
-      <ChatPanel visible={isLive && showChat && !isInPip} onClose={() => setShowChat(false)} />
+      <ChatPanel visible={isLive && showChat && !isInPip} onClose={() => setShowChat(false)} token={authToken} />
 
       {/* ── Fullscreen Modal ──────────────────────────────────────────────
           Renders the active player in a full-device overlay so the video
