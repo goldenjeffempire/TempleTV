@@ -31,6 +31,7 @@ import React, {
   useSyncExternalStore,
 } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   AppState,
