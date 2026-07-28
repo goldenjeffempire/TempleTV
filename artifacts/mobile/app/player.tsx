@@ -1553,6 +1553,20 @@ export default function PlayerScreen() {
                 </View>
               ) : (
                 <>
+                  {/* ── Prominent broadcast title ───────────────────────────── */}
+                  {/* Shows the currently-airing program name below the player.
+                      liveTitle derives from the V2 snapshot (override title →
+                      queue item title → route param bootstrap) so it updates
+                      live as the broadcast advances between items. */}
+                  {liveTitle ? (
+                    <Text
+                      style={[styles.liveChannelName, { color: c.foreground }]}
+                      numberOfLines={3}
+                    >
+                      {liveTitle}
+                    </Text>
+                  ) : null}
+
                   {/* Override mode badge */}
                   {isBroadcastV2 && v2Mode === "override" && v2Override && (
                     <View style={styles.modeBadgeRow}>
@@ -1576,7 +1590,7 @@ export default function PlayerScreen() {
                     </View>
                   )}
 
-                  {/* Sub-row: badge + ministry + quality badge + viewer count */}
+                  {/* Sub-row: LIVE badge + ministry + quality badge + viewer count */}
                   <View style={styles.liveSubRow}>
                     <LiveBadge size="small" />
                     <Text style={[styles.liveMinistry, { color: c.mutedForeground }]}>
@@ -1626,7 +1640,7 @@ export default function PlayerScreen() {
                         <Text style={[styles.viewerChipText, { color: c.mutedForeground }]}>
                           {sync.viewerCount >= 1000
                             ? `${(sync.viewerCount / 1000).toFixed(1)}k`
-                            : String(sync.viewerCount)}
+                            : String(sync.viewerCount)}{" watching"}
                         </Text>
                       </View>
                     )}
@@ -1886,11 +1900,28 @@ export default function PlayerScreen() {
           </View>
         )}
 
-        {/* ── Live: Reactions + Prayer ──────────────────────────────────── */}
+        {/* ── Live: Inline Chat + Reactions + Prayer ────────────────────── */}
         {isLive && (
           <View style={styles.liveSection}>
 
-            {/* Reactions card — no title, just the emoji grid */}
+            {/* ── Inline live chat — visible by default, below the player ── */}
+            {/* Rendered before reactions so the primary interactive surface    */}
+            {/* (chat) is immediately visible without scrolling, matching the   */}
+            {/* YouTube Live / Twitch split-screen layout pattern. PiP is       */}
+            {/* excluded — the window is too small for text interaction.         */}
+            {showChat && !isInPip && (
+              <View style={[styles.inlineChatWrap, { borderColor: c.border }]}>
+                <ChatPanel
+                  inline
+                  visible
+                  onClose={() => setShowChat(false)}
+                  token={authToken}
+                />
+              </View>
+            )}
+
+            {/* Reactions card — always visible so quick reactions are a
+                single tap away even when chat is hidden */}
             <View style={[styles.card, { backgroundColor: c.card, borderColor: c.border }]}>
               <View style={styles.reactionsHeaderRow}>
                 <Text style={[styles.reactionsTitle, { color: c.foreground }]}>
@@ -1930,9 +1961,7 @@ export default function PlayerScreen() {
         )}
       </ScrollView>
 
-      {/* ── Live Chat Panel — floats over full screen ─────────────────── */}
-      {/* Chat panel is hidden during PiP — the window is too small for interaction. */}
-      <ChatPanel visible={isLive && showChat && !isInPip} onClose={() => setShowChat(false)} token={authToken} />
+      {/* Chat panel is rendered inline inside the live section below — see liveSection */}
 
       {/* ── Fullscreen Modal ──────────────────────────────────────────────
           Renders the active player in a full-device overlay so the video
@@ -2382,8 +2411,18 @@ const styles = StyleSheet.create({
   descToggle: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 2 },
   descToggleText: { fontSize: 13, fontWeight: "600" },
 
-  // ── Live section (reactions + prayer) ───────────────────────────────────────
+  // ── Live section (chat + reactions + prayer) ────────────────────────────────
   liveSection: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 8, gap: 12 },
+
+  // Inline chat container — fixed height so the FlatList inside renders correctly
+  // within the outer ScrollView.  380 px comfortably fits ~6 chat messages and the
+  // input row without being so tall that it pushes reactions/prayer below the fold.
+  inlineChatWrap: {
+    height: 380,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: "hidden",
+  },
   card: { borderRadius: 16, borderWidth: StyleSheet.hairlineWidth, padding: 16, gap: 14 },
   cardTitle: { fontSize: 14, fontWeight: "700", letterSpacing: 0.1 },
 
