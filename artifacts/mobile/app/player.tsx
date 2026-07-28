@@ -1253,7 +1253,15 @@ export default function PlayerScreen() {
               onEnd={() => { /* live YouTube override — no autoplay countdown */ }}
               onProgress={handleProgress}
             />
-          ) : isLive && isHls ? (
+          ) : isBroadcastV2 || (isLive && isHls) ? (
+            /* isBroadcastV2: V2 engine resolves the URL internally from its
+               WS snapshot — initialUrl is accepted but intentionally discarded
+               by BroadcastHlsPlayer (see component JSDoc). This branch fires
+               even when hlsUrl="" (the common case when navigating from the
+               home hero via navigateToLive("", ...)), which previously caused
+               the player shell to fall through to the hasNoSource state for all
+               non-YouTube broadcasts. Adding isBroadcastV2 here ensures the
+               V2PlayerContainer always mounts for V2 live routes. */
             <BroadcastHlsPlayer
               initialUrl={hlsUrl}
               initialPositionMs={livePositionMs}
@@ -1860,7 +1868,10 @@ export default function PlayerScreen() {
                 onEnd={() => { /* live YouTube override — no autoplay countdown */ }}
                 onProgress={handleProgress}
               />
-            ) : isLive && isHls ? (
+            ) : isBroadcastV2 || (isLive && isHls) ? (
+              /* Same fix as the inline player: isBroadcastV2 ensures the V2
+                 engine mounts in fullscreen even when hlsUrl="" (navigateToLive
+                 always passes empty hlsUrl from the home hero). */
               <BroadcastHlsPlayer
                 initialUrl={hlsUrl}
                 initialPositionMs={livePositionMs}
