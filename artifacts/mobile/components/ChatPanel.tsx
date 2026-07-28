@@ -207,9 +207,16 @@ interface ChatPanelProps {
   visible: boolean;
   onClose: () => void;
   token?: string | null;
+  /**
+   * When true, render as an inline flex container (fills the parent's
+   * remaining space) instead of an absolute-positioned floating overlay.
+   * Used by the live broadcast split-screen layout so chat is always visible
+   * below the player without covering the video.
+   */
+  inline?: boolean;
 }
 
-export function ChatPanel({ visible, onClose, token }: ChatPanelProps) {
+export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanelProps) {
   const c = useColors();
   const {
     state,
@@ -402,6 +409,170 @@ export function ChatPanel({ visible, onClose, token }: ChatPanelProps) {
   const isSubscriberOnly = settings?.subscriberOnly && !identity;
 
   if (!visible) return null;
+
+  // Inline mode: renders as a flex child filling the parent container.
+  // Floating mode: renders as an absolute-positioned overlay (original behaviour).
+  if (inline) {
+    return (
+      <KeyboardAvoidingView
+        style={styles.inlinePanel}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+        {/* ── Header ──────────────────────────────────────────────────────── */}
+        <View style={styles.header}>
+          <View style={styles.headerLeft}>
+            <Text style={styles.headerTitle}>Live Chat</Text>
+            {viewers > 0 && (
+              <View style={styles.viewerPill}>
+                <Feather name="users" size={10} color="rgba(255,255,255,0.6)" />
+                <Text style={styles.viewerCount}>{viewers.toLocaleString()}</Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.headerRight}>
+            <ConnectionBadge state={state} onRetry={reconnect} />
+            {/* No close button in inline mode — the chat panel is always present */}
+          </View>
+        </View>
+
+        {/* ── Pinned message banner ────────────────────────────────────────── */}
+        {showPinBanner && (
+          <View style={styles.pinnedBanner}>
+            <Feather name="bookmark" size={11} color="#f59e0b" />
+            <Text style={styles.pinnedBody} numberOfLines={1}>
+              {pinnedMessage!.body}
+            </Text>
+            <TouchableOpacity onPress={() => setIsPinDismissed(true)} hitSlop={8}>
+              <Feather name="x" size={12} color="rgba(255,255,255,0.4)" />
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* ── Subscriber-only notice ───────────────────────────────────────── */}
+        {isSubscriberOnly && (
+          <View style={styles.subscriberBanner}>
+            <Feather name="lock" size={12} color="#a855f7" />
+            <Text style={styles.subscriberText}>
+              Members only — sign in to chat
+            </Text>
+          </View>
+        )}
+
+        {/* ── Messages ────────────────────────────────────────────────────── */}
+        <View style={styles.listContainer}>
+          {visibleMessages.length === 0 ? (
+            <View style={styles.empty}>
+              <Feather name="message-circle" size={28} color="rgba(255,255,255,0.2)" />
+              <Text style={styles.emptyText}>
+                {state === "open"
+                  ? "Be the first to say something!"
+                  : state === "closed"
+                    ? "Chat unavailable"
+                    : "Connecting to chat…"}
+              </Text>
+              {state === "closed" && (
+                <TouchableOpacity style={styles.emptyRetryBtn} onPress={reconnect} activeOpacity={0.7}>
+                  <Feather name="refresh-cw" size={13} color="#a855f7" />
+                  <Text style={styles.emptyRetryText}>Tap to reconnect</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ) : (
+            <FlatList
+              ref={listRef}
+              data={visibleMessages}
+              keyExtractor={keyExtractor}
+              renderItem={renderItem}
+              style={styles.list}
+              contentContainerStyle={styles.listContent}
+              showsVerticalScrollIndicator={false}
+              onScroll={handleScroll}
+              scrollEventThrottle={100}
+              maxToRenderPerBatch={10}
+              updateCellsBatchingPeriod={50}
+              windowSize={11}
+              initialNumToRender={20}
+              removeClippedSubviews={Platform.OS !== "ios"}
+              onContentSizeChange={() => {
+                if (isAtBottomRef.current) {
+                  listRef.current?.scrollToEnd({ animated: false });
+                }
+              }}
+            />
+          )}
+          {unreadCount > 0 && (
+            <TouchableOpacity style={styles.newMsgPill} onPress={scrollToBottom} activeOpacity={0.8}>
+              <Feather name="arrow-down" size={11} color="#fff" />
+              <Text style={styles.newMsgText}>
+                {unreadCount > 99 ? "99+" : unreadCount} new
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* ── Emoji tray ───────────────────────────────────────────────────── */}
+        {showEmoji && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.emojiTray}
+            contentContainerStyle={styles.emojiTrayContent}
+            keyboardShouldPersistTaps="always"
+          >
+            {QUICK_EMOJIS.map((e) => (
+              <TouchableOpacity key={e} onPress={() => handleEmojiPress(e)} style={styles.emojiBtn} activeOpacity={0.7}>
+                <Text style={styles.emojiText}>{e}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
+
+        {/* ── Input row ────────────────────────────────────────────────────── */}
+        <View style={styles.inputRow}>
+          <TouchableOpacity onPress={() => setShowEmoji((v) => !v)} style={styles.emojiToggle} activeOpacity={0.7}>
+            <Text style={styles.emojiToggleIcon}>{showEmoji ? "⌨️" : "😊"}</Text>
+          </TouchableOpacity>
+          <View style={styles.inputWrap}>
+            <TextInput
+              ref={inputRef}
+              style={styles.input}
+              value={text}
+              onChangeText={setText}
+              placeholder={settings?.subscriberOnly && !identity ? "Sign in to chat…" : "Say something…"}
+              placeholderTextColor="rgba(255,255,255,0.3)"
+              returnKeyType="send"
+              onSubmitEditing={handleSend}
+              maxLength={500}
+              multiline={false}
+              editable={!isSubscriberOnly}
+              accessibilityLabel="Chat message input"
+            />
+            {slowRemaining > 0 && (
+              <View style={styles.slowBadge}>
+                <Text style={styles.slowText}>⏱ {slowRemaining}s</Text>
+              </View>
+            )}
+          </View>
+          <Pressable
+            onPress={handleSend}
+            disabled={isSendDisabled}
+            style={({ pressed }) => [
+              styles.sendBtn,
+              {
+                backgroundColor: !isSendDisabled ? c.primary : "rgba(255,255,255,0.08)",
+                opacity: pressed ? 0.7 : 1,
+              },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Send message"
+            accessibilityState={{ disabled: isSendDisabled }}
+          >
+            <Feather name="send" size={16} color={!isSendDisabled ? "#fff" : "rgba(255,255,255,0.3)"} />
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
+    );
+  }
 
   return (
     <View style={styles.overlay}>
@@ -628,6 +799,13 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 16,
     borderTopWidth: 1,
     borderColor: "rgba(168,85,247,0.3)",
+  },
+  // Inline variant: fills parent flex space (no absolute overlay)
+  inlinePanel: {
+    flex: 1,
+    backgroundColor: "rgba(10,0,20,0.98)",
+    borderTopWidth: 1,
+    borderTopColor: "rgba(168,85,247,0.25)",
   },
 
   // Header

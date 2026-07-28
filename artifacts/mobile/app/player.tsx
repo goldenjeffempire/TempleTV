@@ -511,7 +511,9 @@ export default function PlayerScreen() {
         },
   );
 
-  const [showChat, setShowChat]         = useState(false);
+  // Default chat open for live broadcasts — chat is the primary interactive
+  // surface during a live service; users can hide it via the button if needed.
+  const [showChat, setShowChat]         = useState(isLive);
   const [descExpanded, setDescExpanded] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
@@ -699,6 +701,10 @@ export default function PlayerScreen() {
   const playerHeight = isLandscape
     ? height
     : Math.min(Math.round(width / videoAspectRatio), MAX_PORTRAIT_HEIGHT);
+  // Live broadcasts use a compact 16:9 player so the chat panel below is
+  // immediately visible without scrolling — matching the split-screen layout
+  // of professional streaming platforms (YouTube Live, Twitch).
+  const livePlayerHeight = Math.round(width * 9 / 16);
   const handleAspectRatioChange = useCallback((ratio: number) => {
     // Clamp to sane range — ignore garbage values from corrupt streams.
     if (ratio > 0.1 && ratio < 10) setVideoAspectRatio(ratio);
@@ -1231,8 +1237,10 @@ export default function PlayerScreen() {
         removeClippedSubviews={Platform.OS === "android"}
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 32 }}
       >
-        {/* ── 16:9 Player Shell ─────────────────────────────────────────── */}
-        <View style={[styles.playerShell, { height: playerHeight }]}>
+        {/* ── Player Shell ──────────────────────────────────────────────── */}
+        {/* Live broadcasts: compact 16:9 height so chat is immediately visible.
+            VOD: adaptive height based on video aspect ratio, max 60% of screen. */}
+        <View style={[styles.playerShell, { height: isLive ? livePlayerHeight : playerHeight }]}>
           {isBroadcastV2 && v2YouTubeOverrideVideoId ? (
             /* V2 YouTube override — swaps inline to YoutubePlayer the moment
                the server snapshot arrives with override.kind="youtube" (e.g.
@@ -1398,6 +1406,98 @@ export default function PlayerScreen() {
               so the back/badge/fullscreen controls still receive touches. Only
               mounted during live broadcasts; idle during VOD playback. */}
           {isLive && <FloatingReactions ref={reactionsRef} />}
+
+          {/* ── Live in-player info overlay ─────────────────────────────
+              A bottom-anchored gradient showing: broadcast title,
+              real-time viewer count, quick reaction buttons, and
+              contextual mode badges — all without leaving the video.
+              pointerEvents="box-none" on the outer container lets the
+              existing fullscreen/PiP buttons underneath receive touches;
+              children (reaction Pressables) respond normally. */}
+          {isLive && !isInPip && (
+            <LinearGradient
+              colors={["transparent", "rgba(0,0,0,0.82)"]}
+              locations={[0.15, 1]}
+              style={styles.liveInfoOverlay}
+              pointerEvents="box-none"
+            >
+              <View style={styles.liveInfoOverlayContent} pointerEvents="box-none">
+                {/* Row 1: status badges */}
+                <View style={styles.liveInfoBadgeRow} pointerEvents="none">
+                  {/* Reconnecting / offline */}
+                  {isBroadcastV2 && !v2Connected && (
+                    <StreamStatusBadge
+                      state={isOnline ? "reconnecting" : "offline"}
+                      variant="compact"
+                    />
+                  )}
+                  {/* Override mode badge */}
+                  {isBroadcastV2 && v2Mode === "override" && v2Override && (
+                    <View style={styles.liveInfoModeBadge}>
+                      <Feather name="zap" size={9} color="#fff" />
+                      <Text style={styles.liveInfoModeText}>LIVE OVERRIDE</Text>
+                    </View>
+                  )}
+                  {/* Failover badge */}
+                  {isBroadcastV2 && v2Mode === "failover" && (
+                    <View style={[styles.liveInfoModeBadge, { backgroundColor: "rgba(239,68,68,0.85)" }]}>
+                      <Feather name="alert-triangle" size={9} color="#fff" />
+                      <Text style={styles.liveInfoModeText}>FAILOVER</Text>
+                    </View>
+                  )}
+                </View>
+
+                {/* Row 2: broadcast title */}
+                {liveTitle ? (
+                  <Text style={styles.liveInfoTitle} numberOfLines={2} pointerEvents="none">
+                    {liveTitle}
+                  </Text>
+                ) : null}
+
+                {/* Row 3: viewer count + reactions */}
+                <View style={styles.liveInfoBottomRow}>
+                  {/* Viewer count pill */}
+                  {sync.viewerCount != null && sync.viewerCount > 0 && (
+                    <View style={styles.liveInfoViewers} pointerEvents="none">
+                      <Feather name="users" size={10} color="rgba(255,255,255,0.9)" />
+                      <Text style={styles.liveInfoViewerText}>
+                        {sync.viewerCount >= 1000
+                          ? `${(sync.viewerCount / 1000).toFixed(1)}k`
+                          : String(sync.viewerCount)}{" watching"}
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* Spacer */}
+                  <View style={{ flex: 1 }} pointerEvents="none" />
+
+                  {/* Quick reactions — right-aligned inside the video */}
+                  {(
+                    [
+                      { emoji: "🙏", apiKey: "amen" as ReactionType },
+                      { emoji: "🔥", apiKey: "fire" as ReactionType },
+                      { emoji: "✨", apiKey: "hallelujah" as ReactionType },
+                      { emoji: "🕊️", apiKey: "hallelujah" as ReactionType },
+                    ]
+                  ).map(({ emoji, apiKey }) => (
+                    <Pressable
+                      key={emoji}
+                      onPress={() => handleReaction(emoji, apiKey)}
+                      hitSlop={6}
+                      style={({ pressed }) => [
+                        styles.liveInfoReactBtn,
+                        { opacity: pressed ? 0.55 : 1 },
+                      ]}
+                      accessibilityRole="button"
+                      accessibilityLabel={`React with ${emoji}`}
+                    >
+                      <Text style={styles.liveInfoReactEmoji}>{emoji}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              </View>
+            </LinearGradient>
+          )}
 
           {/* Autoplay countdown overlay — covers the player surface when a
               VOD ends and another item is queued. Self-hides on Cancel /
@@ -2379,5 +2479,85 @@ const styles = StyleSheet.create({
   },
   fsSpeedPillTextActive: {
     color: "#111",
+  },
+
+  // ── Live in-player info overlay ──────────────────────────────────────────────
+  // Bottom-anchored gradient inside the playerShell showing broadcast title,
+  // viewer count, mode badges, and quick reaction buttons over the video.
+  liveInfoOverlay: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    justifyContent: "flex-end",
+  },
+  liveInfoOverlayContent: {
+    paddingHorizontal: 12,
+    paddingBottom: 46, // leave room for fullscreen button (bottom: 12)
+    gap: 5,
+  },
+  liveInfoBadgeRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexWrap: "wrap",
+  },
+  liveInfoTitle: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "700",
+    lineHeight: 21,
+    letterSpacing: -0.2,
+    textShadowColor: "rgba(0,0,0,0.6)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
+  liveInfoBottomRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  liveInfoViewers: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(0,0,0,0.50)",
+    borderRadius: 20,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  liveInfoViewerText: {
+    color: "rgba(255,255,255,0.92)",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  liveInfoModeBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    backgroundColor: "rgba(245,158,11,0.85)",
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  liveInfoModeText: {
+    color: "#fff",
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+  },
+  liveInfoReactBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "rgba(0,0,0,0.45)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.20)",
+  },
+  liveInfoReactEmoji: {
+    fontSize: 20,
   },
 });
