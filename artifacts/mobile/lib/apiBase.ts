@@ -70,22 +70,26 @@ export function getApiBase(): string {
     return window.location.origin;
   }
 
-  // Native-only startup warning: if we reach here on a non-web platform,
-  // push notifications, API calls, and WS connections will all fail silently
-  // because every URL will be a bare path with no host. Emit once per module
-  // load (the cache ensures subsequent calls skip this block) so developers
-  // see it immediately rather than when the first request fails.
-  if (
-    __DEV__ &&
-    typeof window === "undefined"
-  ) {
-    console.warn(
-      "[apiBase] getApiBase() returned \"\" — no EXPO_PUBLIC_API_URL or EXPO_PUBLIC_DOMAIN set.\n" +
-      "All API calls will use bare paths and fail on native. Set one of:\n" +
-      "  EXPO_PUBLIC_API_URL=https://api.templetv.org.ng  (production / preview / device builds)\n" +
-      "  EXPO_PUBLIC_API_URL=http://10.0.2.2:8080         (Android emulator, dev profile)\n" +
-      "  EXPO_PUBLIC_DOMAIN=<your-dev-server-domain>      (custom dev environment)",
-    );
+  // Native hard-coded fallback: when no env var is configured and there is no
+  // window.location (i.e. this is a native/Expo build), default to the known
+  // production API rather than returning "" and silently breaking every request.
+  // This prevents the blank-screen symptom that appears when .env.development or
+  // .env.local is missing from a fresh checkout on a native dev build.
+  // The value is intentionally the same URL as .env.production so that a native
+  // dev build against a missing env file degrades gracefully to "works but hits
+  // production" rather than "completely broken with no error UI".
+  if (typeof window === "undefined") {
+    const fallback = "https://api.templetv.org.ng";
+    if (__DEV__ && typeof console !== "undefined") {
+      console.warn(
+        "[apiBase] getApiBase() falling back to hardcoded production URL — " +
+        "no EXPO_PUBLIC_API_URL or EXPO_PUBLIC_DOMAIN set.\n" +
+        "To silence this warning, ensure .env.development (or .env.local) contains:\n" +
+        "  EXPO_PUBLIC_API_URL=https://api.templetv.org.ng",
+      );
+    }
+    _cachedBase = fallback;
+    return fallback;
   }
 
   _cachedBase = "";
