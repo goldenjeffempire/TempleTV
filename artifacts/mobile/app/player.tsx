@@ -142,7 +142,7 @@ export default function PlayerScreen() {
   // connection as V2PlayerContainer, zero extra connections). Reads live
   // state: current/next item, mode, off-air reason, source quality, and
   // whether the transport is currently connected.
-  const { snapshot: v2Snapshot, connected: v2Connected } = useV2BroadcastNative({
+  const { snapshot: v2Snapshot, connected: v2Connected, forceRebind } = useV2BroadcastNative({
     baseUrl: `${apiBase}/api/broadcast-v2`,
   });
 
@@ -1519,14 +1519,23 @@ export default function PlayerScreen() {
             /* Live broadcast — V2-driven channel identity + live status */
             <View style={styles.liveMeta}>
               {/* Reconnecting banner — shown while the V2 transport is
-                  re-establishing its WS/SSE connection after a drop */}
+                  re-establishing its WS/SSE connection after a drop.
+                  Pressable: tap to force an immediate reconnect attempt
+                  (bypasses the exponential backoff). Shows "Tap to retry"
+                  sub-label only when device is online (offline → no point). */}
               {isBroadcastV2 && !v2Connected && (
-                <View style={styles.reconnectBannerWrap}>
+                <Pressable
+                  onPress={isOnline ? forceRebind : undefined}
+                  style={styles.reconnectBannerWrap}
+                  accessibilityRole={isOnline ? "button" : undefined}
+                  accessibilityLabel={isOnline ? "Tap to retry connection" : undefined}
+                >
                   <StreamStatusBadge
                     state={isOnline ? "reconnecting" : "offline"}
                     variant="banner"
+                    subLabel={isOnline ? "Tap to retry" : "No network connection"}
                   />
-                </View>
+                </Pressable>
               )}
 
               {/* Off-air state — shown when the V2 queue has no current item */}
