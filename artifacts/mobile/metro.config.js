@@ -81,6 +81,30 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
     return { type: "empty" };
   }
 
+  // On web, stub react-native's native DevTools setup chain.
+  //
+  // react-native 0.86 added ReactDevToolsSettingsManager as a relative
+  // internal file inside the package, but the pnpm-hoisted copy of the
+  // package doesn't always include the full src/ tree. This causes Metro's
+  // web bundler to fail with "Unable to resolve ReactDevToolsSettingsManager"
+  // whenever any import chain reaches react-native/Libraries/Core/setUpReactDevTools.
+  //
+  // On web the native devtools setup is unnecessary — the Chrome/Firefox
+  // React DevTools browser extension handles DevTools inspection. Returning
+  // empty stubs for these three modules on web eliminates the crash without
+  // affecting native builds (they are excluded from the `platform !== "web"`
+  // guard below so their real resolution is untouched on iOS/Android).
+  if (platform === "web") {
+    if (
+      moduleName.includes("ReactDevToolsSettingsManager") ||
+      moduleName.includes("setUpReactDevTools") ||
+      moduleName === "react-devtools-core" ||
+      moduleName.startsWith("react-devtools-core/")
+    ) {
+      return { type: "empty" };
+    }
+  }
+
   if (platform !== "web") {
     if (
       moduleName === "hls.js" ||
