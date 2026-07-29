@@ -39,6 +39,11 @@ export interface PendingMessage {
   retryAtMs?: number;
 }
 
+export interface TypingUser {
+  userId: string | null;
+  displayName: string;
+}
+
 export interface ChatSnapshot {
   state: ChatConnectionState;
   identity: ChatIdentity | null;
@@ -50,6 +55,11 @@ export interface ChatSnapshot {
   pinnedMessage: ChatMessage | null;
   /** Epoch-ms of the last server `ack` frame — used to compute slow-mode countdown. */
   lastAckAtMs: number;
+  /**
+   * Users currently typing, as reported by the server's "typing" events.
+   * Empty when the server does not support typing indicators.
+   */
+  typingUsers: TypingUser[];
 }
 
 const DEFAULT_BUFFER = 80;
@@ -89,6 +99,12 @@ export class ChatClient {
   private pingInterval: ReturnType<typeof setInterval> | null = null;
   private lastServerActivityAt = 0;
   private readonly PING_INTERVAL_MS = 25_000;
+  // Typing indicator state — userId → { displayName, expiresAt }
+  // Entries expire after TYPING_TTL_MS of silence (server should send
+  // isTyping=false when the user stops, but TTL guards against dropped frames).
+  private typingMap = new Map<string, { displayName: string; expiresAt: number }>();
+  private typingCleanupTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly TYPING_TTL_MS = 5_000;
 
   constructor(opts: ChatClientOptions = {}) {
     this.opts = opts;
@@ -103,6 +119,7 @@ export class ChatClient {
   stop(): void {
     this.closedByUser = true;
     this.stopPing();
+    this.stopTypingCleanup();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -112,6 +129,17 @@ export class ChatClient {
     }
     this.ws = null;
     this.setState("closed");
+  }
+
+  /**
+   * Notify the server that the current user is or is not typing.
+   * Fire-and-forget — no-op when not connected. Gracefully ignored by
+   * servers that do not support typing indicators.
+   */
+  sendTyping(isTyping: boolean): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const frame: ChatClientFrame = { type: "typing", isTyping };
+    try { this.ws.send(JSON.stringify(frame)); } catch { /* noop */ }
   }
 
   /**
@@ -172,8 +200,47 @@ export class ChatClient {
       settings: this.settings,
       pinnedMessage: this.pinnedMessage,
       lastAckAtMs: this.lastAckAtMs,
+      typingUsers: this.getTypingUsers(),
     };
     return this.cachedSnapshot;
+  }
+
+  private getTypingUsers(): TypingUser[] {
+    const now = Date.now();
+    const out: TypingUser[] = [];
+    for (const [uid, entry] of this.typingMap) {
+      if (entry.expiresAt > now) {
+        out.push({ userId: uid === "__anon__" ? null : uid, displayName: entry.displayName });
+      }
+    }
+    return out;
+  }
+
+  private startTypingCleanup(): void {
+    if (this.typingCleanupTimer) return;
+    this.typingCleanupTimer = setInterval(() => {
+      const now = Date.now();
+      let changed = false;
+      for (const [uid, entry] of this.typingMap) {
+        if (entry.expiresAt <= now) {
+          this.typingMap.delete(uid);
+          changed = true;
+        }
+      }
+      if (changed) {
+        this.cachedSnapshot = null;
+        const snap = this.snapshot();
+        for (const l of this.listeners) l(snap);
+      }
+    }, 1_000);
+  }
+
+  private stopTypingCleanup(): void {
+    if (this.typingCleanupTimer) {
+      clearInterval(this.typingCleanupTimer);
+      this.typingCleanupTimer = null;
+    }
+    this.typingMap.clear();
   }
 
   private connect(): void {
@@ -297,6 +364,26 @@ export class ChatClient {
         this.viewers = frame.viewers;
         this.emit();
         return;
+
+      case "typing": {
+        const key = frame.userId ?? "__anon__";
+        if (frame.isTyping) {
+          this.typingMap.set(key, {
+            displayName: frame.displayName,
+            expiresAt: Date.now() + this.TYPING_TTL_MS,
+          });
+          this.startTypingCleanup();
+        } else {
+          this.typingMap.delete(key);
+        }
+        // Don't call emit() here to avoid a render per keystroke from
+        // every typing user — the cleanup interval fires at 1 s resolution
+        // which is sufficient for this low-priority indicator.
+        this.cachedSnapshot = null;
+        const snap = this.snapshot();
+        for (const l of this.listeners) l(snap);
+        return;
+      }
 
       case "ack":
         this.lastAckAtMs = Date.now();

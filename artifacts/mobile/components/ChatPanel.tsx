@@ -221,14 +221,18 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
   const {
     state,
     messages,
+    pending,
     viewers,
     identity,
     settings,
     pinnedMessage,
     lastAckAtMs,
+    lastError,
+    typingUsers,
     send,
     react,
     reconnect,
+    sendTyping,
   } = useChat({ channelId: LIVE_CHANNEL_ID, token });
 
   const [text, setText] = useState("");
@@ -238,6 +242,14 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
   const [slowRemaining, setSlowRemaining] = useState(0);
   // Client-side block list — hides messages from blocked users for this session
   const [blockedUserIds, setBlockedUserIds] = useState<Set<string>>(new Set());
+  // Error toast — surfaced when the server rejects a send (rate_limited, muted,
+  // banned, duplicate, etc.). Auto-dismissed after 4 s for transient errors.
+  const [errorToastMsg, setErrorToastMsg] = useState<string | null>(null);
+  const errorToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Typing debounce — fires sendTyping(true) after the first keystroke and
+  // sendTyping(false) after 2 s of inactivity (or on send).
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isTypingRef = useRef(false);
 
   const listRef = useRef<FlatList>(null);
   const isAtBottomRef = useRef(true);
@@ -264,6 +276,40 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
       setUnreadCount((n) => n + delta);
     }
   }, [messages.length, visible]);
+
+  // Error toast: show server error messages to the user; auto-dismiss
+  // transient errors (rate limited, duplicate, etc.) after 4 s.
+  useEffect(() => {
+    if (!lastError) return;
+    const isPersistent =
+      lastError.code === "muted" ||
+      lastError.code === "banned" ||
+      lastError.code === "blocked";
+    setErrorToastMsg(lastError.message);
+    if (!isPersistent) {
+      if (errorToastTimerRef.current) clearTimeout(errorToastTimerRef.current);
+      errorToastTimerRef.current = setTimeout(() => {
+        setErrorToastMsg(null);
+      }, 4_000);
+    }
+    return () => {
+      if (errorToastTimerRef.current) {
+        clearTimeout(errorToastTimerRef.current);
+        errorToastTimerRef.current = null;
+      }
+    };
+  }, [lastError]);
+
+  // Clean up typing + error timers on unmount
+  useEffect(() => {
+    return () => {
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      if (errorToastTimerRef.current) clearTimeout(errorToastTimerRef.current);
+      // Notify server we stopped typing
+      sendTyping(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Slow-mode countdown tick
   useEffect(() => {
@@ -300,13 +346,48 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
     isAtBottomRef.current = true;
   }, []);
 
+  const handleTextChange = useCallback((val: string) => {
+    setText(val);
+    // Typing indicator: notify server user is typing (debounced)
+    if (val.trim()) {
+      if (!isTypingRef.current) {
+        isTypingRef.current = true;
+        sendTyping(true);
+      }
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = setTimeout(() => {
+        isTypingRef.current = false;
+        sendTyping(false);
+        typingTimerRef.current = null;
+      }, 2_000);
+    } else {
+      if (isTypingRef.current) {
+        isTypingRef.current = false;
+        sendTyping(false);
+      }
+      if (typingTimerRef.current) {
+        clearTimeout(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
+    }
+  }, [sendTyping]);
+
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
     if (!trimmed || slowRemaining > 0) return;
+    // Clear typing state immediately on send
+    if (isTypingRef.current) {
+      isTypingRef.current = false;
+      sendTyping(false);
+    }
+    if (typingTimerRef.current) {
+      clearTimeout(typingTimerRef.current);
+      typingTimerRef.current = null;
+    }
     send(trimmed);
     setText("");
     setShowEmoji(false);
-  }, [text, send, slowRemaining]);
+  }, [text, send, slowRemaining, sendTyping]);
 
   const handleEmojiPress = useCallback((emoji: string) => {
     setText((t) => t + emoji);
@@ -407,6 +488,12 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
   const isSendDisabled = !text.trim() || slowRemaining > 0;
   const showPinBanner = !!pinnedMessage && !isPinDismissed;
   const isSubscriberOnly = settings?.subscriberOnly && !identity;
+  // Client-side send failures (e.g. "Not connected — reconnecting…")
+  // Shown above the input so the user can tap to retry.
+  const failedMessages = useMemo(
+    () => pending.filter((p) => p.status === "error"),
+    [pending],
+  );
 
   if (!visible) return null;
 
@@ -527,9 +614,42 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
           </ScrollView>
         )}
 
-        {/* ── Input row ────────────────────────────────────────────────────── */}
+        {/* ── Typing indicator ─────────────────────────────────────────── */}
+        {typingUsers.length > 0 && (
+          <View style={styles.typingRow} accessibilityLiveRegion="polite">
+            <Text style={styles.typingText}>
+              {typingUsers.length === 1
+                ? `${typingUsers[0]!.displayName} is typing…`
+                : typingUsers.length === 2
+                ? `${typingUsers[0]!.displayName} and ${typingUsers[1]!.displayName} are typing…`
+                : "Several people are typing…"}
+            </Text>
+          </View>
+        )}
+
+        {/* ── Error toast ──────────────────────────────────────────────── */}
+        {errorToastMsg && (
+          <Pressable
+            style={styles.errorToast}
+            onPress={() => setErrorToastMsg(null)}
+            accessibilityRole="alert"
+            accessibilityLabel={`Chat error: ${errorToastMsg}. Tap to dismiss.`}
+          >
+            <Feather name="alert-circle" size={12} color="#fca5a5" />
+            <Text style={styles.errorToastText} numberOfLines={2}>{errorToastMsg}</Text>
+            <Feather name="x" size={12} color="rgba(255,255,255,0.4)" />
+          </Pressable>
+        )}
+
+        {/* ── Input row ─────────────────────────────────────────────────── */}
         <View style={styles.inputRow}>
-          <TouchableOpacity onPress={() => setShowEmoji((v) => !v)} style={styles.emojiToggle} activeOpacity={0.7}>
+          <TouchableOpacity
+            onPress={() => setShowEmoji((v) => !v)}
+            style={styles.emojiToggle}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel={showEmoji ? "Switch to keyboard" : "Open emoji picker"}
+          >
             <Text style={styles.emojiToggleIcon}>{showEmoji ? "⌨️" : "😊"}</Text>
           </TouchableOpacity>
           <View style={styles.inputWrap}>
@@ -537,7 +657,7 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
               ref={inputRef}
               style={styles.input}
               value={text}
-              onChangeText={setText}
+              onChangeText={handleTextChange}
               placeholder={settings?.subscriberOnly && !identity ? "Sign in to chat…" : "Say something…"}
               placeholderTextColor="rgba(255,255,255,0.3)"
               returnKeyType="send"
@@ -546,6 +666,7 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
               multiline={false}
               editable={!isSubscriberOnly}
               accessibilityLabel="Chat message input"
+              accessibilityHint="Type a message and press send or return"
             />
             {slowRemaining > 0 && (
               <View style={styles.slowBadge}>
@@ -714,12 +835,41 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
         )}
 
         {/* ── Input row ────────────────────────────────────────────────────── */}
+        {/* ── Typing indicator ────────────────────────────────────────────── */}
+        {typingUsers.length > 0 && (
+          <View style={styles.typingRow} accessibilityLiveRegion="polite">
+            <Text style={styles.typingText}>
+              {typingUsers.length === 1
+                ? `${typingUsers[0]!.displayName} is typing…`
+                : typingUsers.length === 2
+                ? `${typingUsers[0]!.displayName} and ${typingUsers[1]!.displayName} are typing…`
+                : "Several people are typing…"}
+            </Text>
+          </View>
+        )}
+
+        {/* ── Error toast ─────────────────────────────────────────────────── */}
+        {errorToastMsg && (
+          <Pressable
+            style={styles.errorToast}
+            onPress={() => setErrorToastMsg(null)}
+            accessibilityRole="alert"
+            accessibilityLabel={`Chat error: ${errorToastMsg}. Tap to dismiss.`}
+          >
+            <Feather name="alert-circle" size={12} color="#fca5a5" />
+            <Text style={styles.errorToastText} numberOfLines={2}>{errorToastMsg}</Text>
+            <Feather name="x" size={12} color="rgba(255,255,255,0.4)" />
+          </Pressable>
+        )}
+
         <View style={styles.inputRow}>
           {/* Emoji toggle */}
           <TouchableOpacity
             onPress={() => setShowEmoji((v) => !v)}
             style={styles.emojiToggle}
             activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel={showEmoji ? "Switch to keyboard" : "Open emoji picker"}
           >
             <Text style={styles.emojiToggleIcon}>
               {showEmoji ? "⌨️" : "😊"}
@@ -731,7 +881,7 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
               ref={inputRef}
               style={styles.input}
               value={text}
-              onChangeText={setText}
+              onChangeText={handleTextChange}
               placeholder={
                 settings?.subscriberOnly && !identity
                   ? "Sign in to chat…"
@@ -744,6 +894,7 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
               multiline={false}
               editable={!isSubscriberOnly}
               accessibilityLabel="Chat message input"
+              accessibilityHint="Type a message and press send or return"
             />
             {/* Slow-mode indicator */}
             {slowRemaining > 0 && (
@@ -1054,6 +1205,33 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     color: "#fff",
     fontSize: 14,
+  },
+  typingRow: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  typingText: {
+    color: "rgba(255,255,255,0.4)",
+    fontSize: 11,
+    fontStyle: "italic",
+  },
+  errorToast: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginHorizontal: 8,
+    marginBottom: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    backgroundColor: "rgba(239,68,68,0.15)",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(239,68,68,0.3)",
+  },
+  errorToastText: {
+    flex: 1,
+    color: "#fca5a5",
+    fontSize: 12,
   },
   slowBadge: {
     backgroundColor: "rgba(245,158,11,0.2)",

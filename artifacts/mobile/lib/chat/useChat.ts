@@ -11,6 +11,7 @@ const EMPTY_SNAPSHOT: ChatSnapshot = {
   settings: null,
   pinnedMessage: null,
   lastAckAtMs: 0,
+  typingUsers: [],
 };
 
 export interface UseChatResult extends ChatSnapshot {
@@ -18,6 +19,11 @@ export interface UseChatResult extends ChatSnapshot {
   react: (messageId: string, emoji: string) => void;
   /** Force an immediate reconnect, resetting exponential backoff. */
   reconnect: () => void;
+  /**
+   * Notify the server that the current user is typing (or stopped typing).
+   * No-op when disconnected; gracefully ignored by servers without typing support.
+   */
+  sendTyping: (isTyping: boolean) => void;
 }
 
 /**
@@ -71,5 +77,10 @@ export function useChat(options: ChatClientOptions = {}): UseChatResult {
     [client],
   );
 
-  return { ...snapshot, send, react, reconnect };
+  const sendTyping = useCallback(
+    (isTyping: boolean) => { client.sendTyping(isTyping); },
+    [client],
+  );
+
+  return { ...snapshot, send, react, reconnect, sendTyping };
 }
