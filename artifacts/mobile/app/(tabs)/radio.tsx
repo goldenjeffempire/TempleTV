@@ -372,7 +372,7 @@ export default function RadioScreen() {
               },
             ]}
             accessibilityRole="button"
-            accessibilityLabel={isRadioOn ? "Stop radio" : "Listen live"}
+            accessibilityLabel={isConnecting ? "Connecting to stream" : isRadioOn ? "Stop radio" : "Listen live"}
             accessibilityState={{ selected: isRadioOn }}
           >
             {isConnecting ? (

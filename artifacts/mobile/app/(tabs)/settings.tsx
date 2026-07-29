@@ -45,7 +45,7 @@ import { FeedbackModal } from "@/components/FeedbackModal";
 import { useUpdate } from "@/context/UpdateContext";
 
 const APP_VERSION =
-  Constants.expoConfig?.version ?? "1.0.5";
+  Constants.expoConfig?.version ?? "1.0.57";
 
 function ToggleSwitch({ value, onToggle, label }: { value: boolean; onToggle: () => void; label?: string }) {
   const c = useColors();

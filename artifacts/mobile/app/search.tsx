@@ -404,7 +404,7 @@ export default function SearchScreen() {
                   </Text>
                   <Pressable
                     onPress={() => deleteRecent(q)}
-                    hitSlop={10}
+                    hitSlop={16}
                     style={styles.recentDelete}
                     accessibilityRole="button"
                     accessibilityLabel={`Remove ${q} from recent searches`}

@@ -627,7 +627,7 @@ export default function ChannelsTab() {
     // permanently block every future channel tap until app restart. Release
     // the latch on a timer regardless of what navigation actually happened.
     if (tuningReleaseTimerRef.current) clearTimeout(tuningReleaseTimerRef.current);
-    tuningReleaseTimerRef.current = setTimeout(() => setTuningId(null), 4_000);
+    tuningReleaseTimerRef.current = setTimeout(() => setTuningId(null), 8_000);
   }, [tuningId]);
 
   // ── Channels section content ───────────────────────────────────────────────

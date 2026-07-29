@@ -288,7 +288,7 @@ export default function LoginScreen() {
                   <Text style={styles.label}>EMAIL ADDRESS</Text>
                   <AnimatedInput
                     icon="mail"
-                    placeholder="you@example.com"
+                    placeholder="Email address"
                     value={email}
                     onChangeText={setEmail}
                     keyboardType="email-address"

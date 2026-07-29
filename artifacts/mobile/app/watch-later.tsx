@@ -88,7 +88,7 @@ export default function WatchLaterScreen() {
       <View style={[styles.container, { backgroundColor: c.background }]}>
         <AppHeader
           title={watchLater.length > 0 ? `Watch Later (${watchLater.length})` : "Watch Later"}
-          onBack={() => router.back()}
+          onBack={() => router.canGoBack() ? router.back() : router.replace("/(tabs)" as never)}
           rightLabel={watchLater.length > 0 ? {
             text: "Clear All",
             onPress: handleClearAll,
