@@ -247,7 +247,10 @@ export function MiniPlayer() {
     }, 600);
 
     if (isLive) {
-      navigateToPlayer({ live: "true", title: "Live Broadcast", preacher: "JCTM" });
+      // IMPORTANT: player.tsx reads `params.isLive` (not `params.live`).
+      // Using the wrong key (`live`) leaves isLive=false in player.tsx, causing
+      // isBroadcastV2=false + hasNoSource=true → "This video is unavailable".
+      navigateToPlayer({ isLive: "true", title: "Live Broadcast", preacher: "JCTM" });
     } else if (isBroadcastMode) {
       navigateToPlayer({ broadcastMode: "true" });
     } else if (currentSermon) {

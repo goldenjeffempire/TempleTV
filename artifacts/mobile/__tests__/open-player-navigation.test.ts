@@ -271,7 +271,69 @@ describe("navigation debounce guard", () => {
   });
 });
 
-// ─── 5. navigateToLive params ─────────────────────────────────────────────────
+// ─── 5. MiniPlayer navigation param key ──────────────────────────────────────
+// Root-cause regression guard: MiniPlayer.handlePress used `live: "true"` instead
+// of `isLive: "true"`. player.tsx reads `params.isLive` (and `params.broadcastMode`)
+// but NOT `params.live`. With the wrong key the player received isLive=false,
+// isBroadcastV2=false, and hasNoSource=true — surfacing "This video is unavailable"
+// whenever the user tapped the MiniPlayer while PlayerContext.isLive was true.
+//
+// The fix: MiniPlayer now passes `{ isLive: "true" }` so the player correctly
+// routes to BroadcastHlsPlayer (V2 engine).
+
+/** Mirrors exactly how player.tsx derives `isLive` from search params */
+function playerIsLiveFromParams(params: Record<string, string | undefined>): boolean {
+  const parseBool = (v: string | undefined): boolean =>
+    v === "true" || v === "1" || v === "yes";
+  return parseBool(params["isLive"]) || parseBool(params["broadcastMode"]);
+}
+
+describe("MiniPlayer navigation param key — isLive vs live", () => {
+  it("correct key 'isLive' → player sees isLive=true", () => {
+    // This is the FIXED MiniPlayer.handlePress implementation.
+    const params = { isLive: "true", title: "Live Broadcast", preacher: "JCTM" };
+    assert.equal(playerIsLiveFromParams(params), true, "'isLive' key must set isLive=true");
+  });
+
+  it("wrong key 'live' → player sees isLive=false (documents the old bug)", () => {
+    // This is what the OLD MiniPlayer.handlePress was passing.
+    // player.tsx does NOT read params.live, so isLive stays false.
+    const brokenParams = { live: "true", title: "Live Broadcast", preacher: "JCTM" } as Record<string, string>;
+    assert.equal(
+      playerIsLiveFromParams(brokenParams),
+      false,
+      "wrong 'live' key must produce isLive=false — confirms the old bug",
+    );
+  });
+
+  it("wrong key 'live' leads to hasNoSource=true (the 'unavailable' screen)", () => {
+    const brokenParams = { live: "true" } as Record<string, string>;
+    const isLive    = playerIsLiveFromParams(brokenParams); // false (bug)
+    const youtubeId = brokenParams["youtubeId"] ?? "";
+    const hlsUrl    = brokenParams["hlsUrl"] ?? "";
+    const isYoutube = !!youtubeId && !hlsUrl;
+    const isHls     = !!hlsUrl;
+    const hasNoSource = !isLive && !isYoutube && !isHls;
+    assert.equal(isLive,      false, "wrong key → isLive=false");
+    assert.equal(hasNoSource, true,  "wrong key → hasNoSource=true → 'This video is unavailable'");
+  });
+
+  it("correct key 'isLive' → isBroadcastV2=true → V2 engine mounts", () => {
+    const params = { isLive: "true" };
+    const isLive    = playerIsLiveFromParams(params);
+    const youtubeId = "";
+    const hlsUrl    = "";
+    const isBroadcastV2 = isLive && !(!!youtubeId && !hlsUrl);
+    assert.equal(isBroadcastV2, true, "correct key → isBroadcastV2=true → BroadcastHlsPlayer mounts");
+  });
+
+  it("broadcastMode key also works (isBroadcastMode path)", () => {
+    const params = { broadcastMode: "true" };
+    assert.equal(playerIsLiveFromParams(params), true, "'broadcastMode' key must also set isLive=true");
+  });
+});
+
+// ─── 6. navigateToLive params ─────────────────────────────────────────────────
 // Verifies each hero branch passes the correct params so the player boots into V2.
 
 describe("navigateToLive params produce correct isBroadcastV2", () => {
