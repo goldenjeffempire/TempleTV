@@ -642,6 +642,17 @@ export default function PlayerScreen() {
   const reactionsRef   = useRef<FloatingReactionsHandle>(null);
   const fsReactionsRef = useRef<FloatingReactionsHandle>(null);
 
+  // ── Reaction rate-limiting ────────────────────────────────────────────────
+  // Each emoji is debounced to one API call per REACTION_DEBOUNCE_MS (2 s).
+  // Without this, a user holding a reaction button can flood /api/broadcast/reaction
+  // with dozens of calls per second in a 24/7 session, burning server quota and
+  // making analytics meaningless. The local FloatingReactions animation still
+  // fires immediately (no debounce on the visual feedback) — only the API call
+  // is rate-limited. Each emoji has its own independent cooldown so tapping 🙏
+  // then 🔥 immediately still fires both correctly.
+  const REACTION_DEBOUNCE_MS = 2_000;
+  const reactionLastFiredRef = useRef<Map<string, number>>(new Map());
+
   const scheduleFsHide = useCallback(() => {
     if (fsHideTimerRef.current) clearTimeout(fsHideTimerRef.current);
     fsHideTimerRef.current = setTimeout(() => {
@@ -796,7 +807,16 @@ export default function PlayerScreen() {
   // Fires a reaction: sends it to the API + emits a floating emoji particle
   // over whichever player surface is currently active (inline vs fullscreen).
   const handleReaction = useCallback((emoji: string, apiKey: ReactionType) => {
-    sendReaction(apiKey);
+    // Rate-limit: allow at most one API call per emoji every 2 s.
+    // The floating particle animates immediately regardless — only the
+    // server call is gated so rapid taps don't flood the endpoint.
+    const now = Date.now();
+    const last = reactionLastFiredRef.current.get(emoji) ?? 0;
+    const apiAllowed = now - last >= REACTION_DEBOUNCE_MS;
+    if (apiAllowed) {
+      reactionLastFiredRef.current.set(emoji, now);
+      sendReaction(apiKey);
+    }
     if (isFullscreen) {
       fsReactionsRef.current?.emit(emoji);
     } else {
@@ -1731,11 +1751,28 @@ export default function PlayerScreen() {
 
           {/* Share */}
           <Pressable
-            onPress={() =>
-              isLive
-                ? Share.share({ title: "Live Broadcast", message: "Watch JCTM Live — Jesus Christ Temple Ministry" })
-                : Share.share({ title, message: `Watch "${title}" on JCTM Broadcasting` })
-            }
+            onPress={() => {
+              // Include a real link so recipients can open the content directly.
+              // iOS uses `url` for the sheet preview card; Android uses `message`.
+              const siteOrigin = "https://templetv.org.ng";
+              if (isLive) {
+                void Share.share({
+                  title: "Watch JCTM Live",
+                  message: `Watch Jesus Christ Temple Ministry live now\n${siteOrigin}/live`,
+                  url: `${siteOrigin}/live`,
+                });
+              } else {
+                const videoUrl =
+                  videoId && videoId !== "live"
+                    ? `${siteOrigin}/watch/${videoId}`
+                    : siteOrigin;
+                void Share.share({
+                  title,
+                  message: `Watch "${title}" on JCTM Broadcasting\n${videoUrl}`,
+                  url: videoUrl,
+                });
+              }
+            }}
             style={styles.actionItem}
             accessibilityLabel="Share"
             accessibilityRole="button"
@@ -2143,6 +2180,19 @@ export default function PlayerScreen() {
                   ) : (
                     <View style={{ flex: 1 }} />
                   )}
+                  {/* Viewer count — shown in fullscreen for live broadcasts.
+                      Mirrors the same chip shown in the inline info block so
+                      the user can see engagement without dropping out of fullscreen. */}
+                  {isLive && sync.viewerCount != null && sync.viewerCount > 0 && (
+                    <View style={styles.fsViewerChip}>
+                      <Feather name="users" size={11} color="rgba(255,255,255,0.85)" />
+                      <Text style={styles.fsViewerChipText}>
+                        {sync.viewerCount >= 1000
+                          ? `${(sync.viewerCount / 1000).toFixed(1)}k`
+                          : String(sync.viewerCount)}
+                      </Text>
+                    </View>
+                  )}
                   {isLive && (
                     <View style={styles.fsLiveBadgeWrap}>
                       <LiveBadge />
@@ -2343,6 +2393,16 @@ const styles = StyleSheet.create({
   fsIconBtn: { width: 38, height: 38, alignItems: "center", justifyContent: "center" },
   fsTitleText: { flex: 1, color: "#fff", fontSize: 14, fontWeight: "600", letterSpacing: 0.1 },
   fsLiveBadgeWrap: { flexShrink: 0 },
+  fsViewerChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "rgba(0,0,0,0.40)",
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  fsViewerChipText: { color: "rgba(255,255,255,0.85)", fontSize: 11, fontWeight: "600" },
 
   fsBottomGradient: { position: "absolute", bottom: 0, left: 0, right: 0, height: 140, justifyContent: "flex-end" },
   fsBottomBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: 14, gap: 10 },

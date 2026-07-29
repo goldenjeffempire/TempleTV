@@ -70,24 +70,30 @@ function formatRelativeTime(ms: number): string {
   return d.toLocaleDateString(undefined, { weekday: "short" });
 }
 
-/** Fire-and-forget REST report/moderation call; errors are swallowed intentionally. */
+/**
+ * Execute a moderation REST call and return whether it succeeded.
+ * Callers decide whether to surface failures to the user — destructive
+ * actions (delete, mute) always show an alert on failure so moderators
+ * know their action didn't land; report/block are silent best-effort.
+ */
 async function apiModAction(
   path: string,
   method: "POST" | "DELETE",
   token?: string | null,
-): Promise<void> {
+): Promise<boolean> {
   const base = getApiBase();
-  if (!base) return;
+  if (!base) return false;
   try {
-    await fetch(`${base}${path}`, {
+    const res = await fetch(`${base}${path}`, {
       method,
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
     });
+    return res.ok;
   } catch {
-    // Swallow — moderation calls are best-effort
+    return false;
   }
 }
 
@@ -145,6 +151,11 @@ interface MessageRowProps {
   onReact: (messageId: string, emoji: string) => void;
   onLongPress: (msg: ChatMessage) => void;
   isModerator: boolean;
+  /** Bumped every 30 s so relative timestamps ("just now" → "2m") stay fresh
+   *  even when the message object itself hasn't changed. React.memo compares
+   *  props by reference, so without this the cell would never re-render and
+   *  "just now" would persist for the entire session. */
+  clockTick: number;
 }
 
 const MessageRow = React.memo(function MessageRow({
@@ -240,8 +251,12 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
   const [unreadCount, setUnreadCount] = useState(0);
   const [isPinDismissed, setIsPinDismissed] = useState(false);
   const [slowRemaining, setSlowRemaining] = useState(0);
-  // Client-side block list — hides messages from blocked users for this session
+  // Client-side block list — hides messages from blocked users.
+  // Persisted to AsyncStorage so it survives app restarts.
   const [blockedUserIds, setBlockedUserIds] = useState<Set<string>>(new Set());
+  // Clock tick every 30 s — busts React.memo on MessageRow so relative
+  // timestamps ("just now" → "2m" → "1h") update throughout a live session.
+  const [clockTick, setClockTick] = useState(0);
   // Error toast — surfaced when the server rejects a send (rate_limited, muted,
   // banned, duplicate, etc.). Auto-dismissed after 4 s for transient errors.
   const [errorToastMsg, setErrorToastMsg] = useState<string | null>(null);
@@ -264,6 +279,43 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
       setIsPinDismissed(false);
     }
   }, [pinnedMessage?.id]);
+
+  // ── Clock tick for timestamp refresh ────────────────────────────────────────
+  // Increments every 30 s so MessageRow (React.memo'd) re-renders its relative
+  // timestamp: "just now" → "1m" → "2m" etc. Without this, memo prevents any
+  // re-render and the displayed timestamp never advances.
+  useEffect(() => {
+    const iv = setInterval(() => setClockTick((t) => t + 1), 30_000);
+    return () => clearInterval(iv);
+  }, []);
+
+  // ── Block list persistence ───────────────────────────────────────────────────
+  // Load persisted blocks from AsyncStorage on first mount so the list survives
+  // app restarts. Save whenever the set changes (write is async, fire-and-forget).
+  const BLOCKED_USERS_KEY = "@templetv/chat_blocked_users";
+  useEffect(() => {
+    void (async () => {
+      try {
+        const AsyncStorage = (await import("@react-native-async-storage/async-storage")).default;
+        const raw = await AsyncStorage.getItem(BLOCKED_USERS_KEY);
+        if (raw) {
+          const ids: string[] = JSON.parse(raw);
+          if (ids.length > 0) setBlockedUserIds(new Set(ids));
+        }
+      } catch { /* ignore corrupt/missing storage on first launch */ }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (blockedUserIds.size === 0) return;
+    void (async () => {
+      try {
+        const AsyncStorage = (await import("@react-native-async-storage/async-storage")).default;
+        await AsyncStorage.setItem(BLOCKED_USERS_KEY, JSON.stringify([...blockedUserIds]));
+      } catch { /* storage write failure is non-fatal */ }
+    })();
+  }, [blockedUserIds]);
 
   // Auto-scroll + unread counter
   useEffect(() => {
@@ -410,6 +462,7 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
         options.push({
           text: "Report Message",
           onPress: () => {
+            // Report is best-effort; show acknowledgement immediately.
             void apiModAction(`/api/v1/chat/messages/${msg.id}/report`, "POST", token);
             Alert.alert("Reported", "Thank you — our team will review this message.");
           },
@@ -424,6 +477,11 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
                 next.add(msg.userId!);
                 return next;
               });
+              // Confirmation so the user knows it worked (and that it persists).
+              Alert.alert(
+                "User Blocked",
+                `You won't see messages from ${msg.displayName} anymore. This applies on this device.`,
+              );
             }
           },
         });
@@ -434,7 +492,16 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
           text: "Delete Message",
           style: "destructive",
           onPress: () => {
-            void apiModAction(`/api/v1/chat/messages/${msg.id}`, "DELETE", token);
+            // Moderators need to know if the action failed — a silent no-op
+            // looks identical to success and erodes trust in the tool.
+            void apiModAction(`/api/v1/chat/messages/${msg.id}`, "DELETE", token).then((ok) => {
+              if (!ok) {
+                Alert.alert(
+                  "Action Failed",
+                  "Could not delete the message. You may not have permission, or the message may already be gone.",
+                );
+              }
+            });
           },
         });
         if (msg.userId) {
@@ -446,7 +513,16 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
                 `/api/v1/chat/users/${msg.userId}/mute`,
                 "POST",
                 token,
-              );
+              ).then((ok) => {
+                if (ok) {
+                  Alert.alert("User Muted", `${msg.displayName} has been muted for 1 hour.`);
+                } else {
+                  Alert.alert(
+                    "Action Failed",
+                    "Could not mute this user. Please try again or check your moderator permissions.",
+                  );
+                }
+              });
             },
           });
         }
@@ -472,9 +548,10 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
         onReact={handleReact}
         onLongPress={handleLongPress}
         isModerator={isModerator}
+        clockTick={clockTick}
       />
     ),
-    [handleReact, handleLongPress, isModerator],
+    [handleReact, handleLongPress, isModerator, clockTick],
   );
 
   const keyExtractor = useCallback((m: ChatMessage) => m.id, []);
