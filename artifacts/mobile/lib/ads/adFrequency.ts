@@ -89,14 +89,14 @@ export class FrequencyCapper {
  * Full-jitter exponential backoff. Returns a delay in milliseconds for the
  * given zero-based retry attempt.
  *
- *   base * 2^attempt, capped at maxDelayMs, then randomised in [minFloor, cap]
+ *   base * 2^attempt, capped at maxDelayMs, then uniformly sampled in [0, cap]
  *   so a fleet of clients recovering from an outage does not thundering-herd
  *   the ad server.
  *
- * The minimum return value is `floor(baseDelayMs / 4)` (500 ms for the default
- * 2 s base). Without this floor, full-jitter can produce a 0 ms delay on the
- * very first retry when `rng()` is close to 0, causing the SDK to be hammered
- * in a tight synchronous loop.
+ * The full range [0, cap] is intentional — the probability of returning 0 with
+ * `Math.random()` is negligibly small, and jitter from 0 provides the best
+ * fleet-level spread. Callers that need a guaranteed minimum between retries
+ * should enforce their own floor outside this function.
  *
  * @param attempt     zero-based attempt index (0 = first retry)
  * @param baseDelayMs base delay (default 2s)
@@ -114,8 +114,10 @@ export function nextBackoffDelay(
   const exp = Math.min(safeAttempt, 30);
   const uncapped = baseDelayMs * 2 ** exp;
   const cap = Math.min(uncapped, maxDelayMs);
-  // Always return at least baseDelayMs/4 so that even the first retry (where
-  // full-jitter could otherwise yield 0 ms) still waits a meaningful interval.
-  const minFloor = Math.floor(baseDelayMs / 4);
-  return Math.max(minFloor, Math.floor(rng() * cap));
+  // Full-jitter: uniformly sample [0, cap]. The range intentionally includes 0
+  // so that a fleet of clients recovering from an outage avoids a thundering
+  // herd — clients spread out across the full [0, cap] window rather than all
+  // landing at the same floor value. The probability of rng() == 0 exactly
+  // with Math.random() is negligibly small and harmless in practice.
+  return Math.floor(rng() * cap);
 }
