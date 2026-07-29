@@ -502,6 +502,7 @@ const HeroSection = React.memo(function HeroSection({
           hasYoutubeOverride,
           youtubeOverrideVideoId,
           hasFallback: !!fallbackSermon,
+          isWatchLiveCTAVisible,
           thumbUrl,
         },
       );
@@ -528,20 +529,32 @@ const HeroSection = React.memo(function HeroSection({
       // the player into a static YoutubePlayer that can't follow override
       // changes and never sets PlayerContext.isBroadcastMode=true.
       navigateToLive("", activeBroadcastTitle, 0, undefined, thumbUrl ?? undefined);
-    } else if (fallbackSermon) {
+    } else if (fallbackSermon && isWatchLiveCTAVisible) {
+      // Only navigate to a fallback sermon when the broadcast is genuinely
+      // idle or in an error state (isWatchLiveCTAVisible = true).  This is
+      // the "Watch Now" scenario — no live broadcast is running so playing the
+      // most recent sermon is the right action.
+      //
+      // IMPORTANT: do NOT fall through here when "Open Player" is the visible
+      // CTA (isWatchLiveCTAVisible = false).  In that state the broadcast FSM
+      // is loading, live, or reconnecting — the V2 snapshot may not have
+      // populated the override fields yet (e.g. LIVE_OVERRIDE_ACTIVE fires
+      // before lastServerSnapshot.override.url is set).  Navigating to a
+      // sermon here would take the user to VOD instead of the live player.
       navigateToSermon(fallbackSermon);
     } else {
-      // Neither a live broadcast nor a VOD fallback is loaded yet. This happens
-      // during the initial WS bootstrap (first ~2 s) or when the API is
-      // temporarily unreachable. Navigate to the live broadcast player anyway —
-      // it will show its own "Connecting…" or "Off Air" state rather than
-      // leaving the user stranded on the home screen.
+      // No uploaded broadcast, no YouTube override confirmed in the snapshot,
+      // and either there is no fallback sermon or the broadcast is already
+      // loading/live/reconnecting.  Always open the live broadcast player — it
+      // shows its own "Connecting…" or "Off Air" state rather than stranding
+      // the user on the home screen.
       if (__DEV__) {
         console.warn(
-          "[HeroSection] handleTuneIn — no content known yet; navigating to live player as fallback",
+          "[HeroSection] handleTuneIn — navigating to live player (no specific source resolved yet)",
+          { hasUploadedBroadcast, hasYoutubeOverride, isWatchLiveCTAVisible },
         );
       }
-      navigateToLive("", "Live Broadcast", 0, undefined, undefined);
+      navigateToLive("", activeBroadcastTitle || "Live Broadcast", 0, undefined, thumbUrl ?? undefined);
     }
   }, [
     hasUploadedBroadcast,
@@ -549,6 +562,7 @@ const HeroSection = React.memo(function HeroSection({
     youtubeOverrideVideoId,
     activeBroadcastTitle,
     fallbackSermon,
+    isWatchLiveCTAVisible,
     thumbUrl,
   ]);
 
