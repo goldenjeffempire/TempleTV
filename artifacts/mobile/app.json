@@ -23,7 +23,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.templetv.app",
       "googleServicesFile": "./GoogleService-Info.plist",
-      "buildNumber": "202607291200",
+      "buildNumber": "202607291201",
       "requireFullScreen": false,
       "config": {
         "usesNonExemptEncryption": false
@@ -86,7 +86,7 @@
     },
     "android": {
       "package": "com.templetv.jctm",
-      "versionCode": 121,
+      "versionCode": 122,
       "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon-foreground.png",

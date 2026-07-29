@@ -407,7 +407,7 @@ const HeroSection = React.memo(function HeroSection({
           if (finished) setShowSkeletonLayer(false);
         });
       }
-    }, 8_000);
+    }, 4_000);
     return () => clearTimeout(t);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

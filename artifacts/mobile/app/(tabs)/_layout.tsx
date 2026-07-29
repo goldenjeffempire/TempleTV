@@ -108,7 +108,7 @@ function NativeTabLayout() {
               selected: "square.grid.2x2.fill",
             }}
           />
-          <Label>Channel</Label>
+          <Label>Channels</Label>
         </NativeTabs.Trigger>
 
         <NativeTabs.Trigger name="radio">
@@ -215,7 +215,7 @@ function ClassicTabLayout() {
           name="channels"
           options={{
             headerShown: false,
-            title: "Channel",
+            title: "Channels",
             tabBarLabel: "",
             tabBarItemStyle: { paddingTop: 0 },
             tabBarIcon: ({ focused }) => (

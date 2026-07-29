@@ -1,5 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import {
+  Keyboard,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableWithoutFeedback,
+  View,
+} from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
 import { submitPrayerRequest } from "@/services/api";
@@ -8,6 +16,7 @@ export function PrayerSection() {
   const c = useColors();
   const [submitted, setSubmitted] = useState(false);
   const [sending, setSending] = useState(false);
+  const [message, setMessage] = useState("");
   const isMountedRef = useRef(true);
   useEffect(() => {
     isMountedRef.current = true;
@@ -34,49 +43,78 @@ export function PrayerSection() {
     );
   }
 
-  return (
-    <View style={[styles.prayerCard, { backgroundColor: c.card, borderColor: c.border }]}>
-      <View style={styles.prayerHeader}>
-        <View style={[styles.prayerIconWrap, { backgroundColor: c.primary + "18" }]}>
-          <Text style={{ fontSize: 20 }}>🕊️</Text>
-        </View>
-        <View style={{ flex: 1, gap: 3 }}>
-          <Text style={[styles.prayerTitle, { color: c.foreground }]}>
-            Send a Prayer Request
-          </Text>
-          <Text style={[styles.prayerSubtitle, { color: c.mutedForeground }]}>
-            Our team will pray for you during the service
-          </Text>
-        </View>
-      </View>
+  const handleSubmit = () => {
+    Keyboard.dismiss();
+    setSending(true);
+    const prayerText = message.trim() || "Prayer Request";
+    submitPrayerRequest(prayerText, "Prayer Request")
+      .then((ok) => {
+        if (!isMountedRef.current) return;
+        setSending(false);
+        if (ok) setSubmitted(true);
+      })
+      .catch(() => {
+        if (!isMountedRef.current) return;
+        setSending(false);
+      });
+  };
 
-      <Pressable
-        onPress={() => {
-          setSending(true);
-          submitPrayerRequest(null, "Prayer Request")
-            .then((ok) => {
-              if (!isMountedRef.current) return;
-              setSending(false);
-              if (ok) setSubmitted(true);
-            })
-            .catch(() => {
-              if (!isMountedRef.current) return;
-              setSending(false);
-            });
-        }}
-        style={({ pressed }: { pressed: boolean }) => [
-          styles.prayerBtn,
-          { backgroundColor: c.primary, opacity: sending || pressed ? 0.76 : 1 },
-        ]}
-        accessibilityRole="button"
-        accessibilityLabel="Send prayer request"
-      >
-        <Feather name="send" size={15} color="#fff" />
-        <Text style={styles.prayerBtnText}>
-          {sending ? "Sending…" : "Send Prayer Request"}
-        </Text>
-      </Pressable>
-    </View>
+  return (
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+      <View style={[styles.prayerCard, { backgroundColor: c.card, borderColor: c.border }]}>
+        <View style={styles.prayerHeader}>
+          <View style={[styles.prayerIconWrap, { backgroundColor: c.primary + "18" }]}>
+            <Text style={{ fontSize: 20 }}>🕊️</Text>
+          </View>
+          <View style={{ flex: 1, gap: 3 }}>
+            <Text style={[styles.prayerTitle, { color: c.foreground }]}>
+              Send a Prayer Request
+            </Text>
+            <Text style={[styles.prayerSubtitle, { color: c.mutedForeground }]}>
+              Our team will pray for you during the service
+            </Text>
+          </View>
+        </View>
+
+        <TextInput
+          style={[
+            styles.prayerInput,
+            {
+              backgroundColor: c.muted,
+              color: c.foreground,
+              borderColor: c.border,
+            },
+          ]}
+          placeholder="Share your prayer request (optional)…"
+          placeholderTextColor={c.mutedForeground}
+          value={message}
+          onChangeText={setMessage}
+          multiline
+          numberOfLines={3}
+          maxLength={400}
+          returnKeyType="done"
+          blurOnSubmit
+          accessible
+          accessibilityLabel="Prayer request message"
+        />
+
+        <Pressable
+          onPress={handleSubmit}
+          disabled={sending}
+          style={({ pressed }: { pressed: boolean }) => [
+            styles.prayerBtn,
+            { backgroundColor: c.primary, opacity: sending || pressed ? 0.76 : 1 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Send prayer request"
+        >
+          <Feather name="send" size={15} color="#fff" />
+          <Text style={styles.prayerBtnText}>
+            {sending ? "Sending…" : "Send Prayer Request"}
+          </Text>
+        </Pressable>
+      </View>
+    </TouchableWithoutFeedback>
   );
 }
 
@@ -90,6 +128,16 @@ const styles = StyleSheet.create({
   },
   prayerTitle: { fontSize: 15, fontWeight: "800", letterSpacing: -0.2 },
   prayerSubtitle: { fontSize: 12, lineHeight: 17, marginTop: 2 },
+  prayerInput: {
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 14,
+    lineHeight: 20,
+    minHeight: 80,
+    textAlignVertical: "top",
+  },
   prayerBtn: {
     flexDirection: "row", alignItems: "center", justifyContent: "center",
     gap: 8, paddingVertical: 13, borderRadius: 12,

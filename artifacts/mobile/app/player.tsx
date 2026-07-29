@@ -1455,15 +1455,15 @@ export default function PlayerScreen() {
                   {/* Override mode badge */}
                   {isBroadcastV2 && v2Mode === "override" && v2Override && (
                     <View style={styles.liveInfoModeBadge}>
-                      <Feather name="zap" size={9} color="#fff" />
-                      <Text style={styles.liveInfoModeText}>LIVE OVERRIDE</Text>
+                      <Feather name="star" size={9} color="#fff" />
+                      <Text style={styles.liveInfoModeText}>SPECIAL EVENT</Text>
                     </View>
                   )}
                   {/* Failover badge */}
                   {isBroadcastV2 && v2Mode === "failover" && (
                     <View style={[styles.liveInfoModeBadge, { backgroundColor: "rgba(239,68,68,0.85)" }]}>
-                      <Feather name="alert-triangle" size={9} color="#fff" />
-                      <Text style={styles.liveInfoModeText}>FAILOVER</Text>
+                      <Feather name="radio" size={9} color="#fff" />
+                      <Text style={styles.liveInfoModeText}>BACKUP STREAM</Text>
                     </View>
                   )}
                 </View>
@@ -2657,9 +2657,9 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
   },
   liveInfoReactBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 46,
+    height: 46,
+    borderRadius: 23,
     backgroundColor: "rgba(0,0,0,0.45)",
     alignItems: "center",
     justifyContent: "center",
@@ -2667,6 +2667,6 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.20)",
   },
   liveInfoReactEmoji: {
-    fontSize: 20,
+    fontSize: 22,
   },
 });

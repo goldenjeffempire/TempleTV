@@ -651,7 +651,7 @@ export default function ChannelsTab() {
         <Feather name="wifi-off" size={24} color={colors.mutedForeground} />
         <Text style={[styles.errorTitle, { color: colors.text }]}>Could not load channels</Text>
         <Text style={[styles.errorDetail, { color: colors.mutedForeground }]}>
-          {error}
+          {"We couldn't load the channels. Please check your internet connection and try again."}
         </Text>
         <Pressable
           onPress={refetch}
