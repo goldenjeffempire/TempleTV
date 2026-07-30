@@ -355,23 +355,14 @@ const HeroSection = React.memo(function HeroSection({
     isFatal,
   } = useMediaPlayerState();
 
-  // ── Reconnecting escape hatch ───────────────────────────────────────────────
-  // When the FSM is recovering (STALL_REBIND_MS = 20 s), the hero normally
-  // shows NO button — only the StreamStatusBadge. This is fine for brief
-  // reconnects (< 1 s) but leaves the user stranded if recovery takes longer.
-  // After 5 s of continuous reconnecting, reveal the "Open Player" button so
-  // the user can navigate to the player screen, which has its own reconnection
-  // UI (retry countdown, status badge, quality indicator). The timer resets
-  // every time the reconnecting state leaves (recovered or went fatal).
-  const [reconnectingEscapeVisible, setReconnectingEscapeVisible] = useState(false);
-  useEffect(() => {
-    if (!isReconnecting) {
-      setReconnectingEscapeVisible(false);
-      return;
-    }
-    const t = setTimeout(() => setReconnectingEscapeVisible(true), 5_000);
-    return () => clearTimeout(t);
-  }, [isReconnecting]);
+  // NOTE: The previous "reconnecting escape hatch" that delayed the "Open Player"
+  // button by 5 s during reconnection has been removed. The button is now always
+  // visible whenever the broadcast is live, loading, OR reconnecting.  Hiding
+  // the button during reconnection left users with no visible tap target for up
+  // to 5 s; the outer hero Pressable still navigated, but without a button
+  // label users had no affordance.  The player screen has its own superior
+  // reconnection UI (retry countdown, status badge, quality indicator) so
+  // there is no value in delaying navigation.
 
   // ── Hero skeleton (initial broadcast connection) ───────────────────────────
   // Show the skeleton only during the very first connection attempt — once we
@@ -576,6 +567,48 @@ const HeroSection = React.memo(function HeroSection({
     thumbUrl,
   ]);
 
+  // ── "Open Player" dedicated handler ──────────────────────────────────────────
+  // The "Open Player" button has its own handler that is ALWAYS a direct
+  // navigation to the live broadcast player — it never branches to a sermon or
+  // any other screen.  This eliminates any ambiguity from the shared
+  // handleTuneIn's multi-branch logic (Watch Live / Watch Now / Open Player)
+  // which could theoretically route to VOD if isWatchLiveCTAVisible were stale
+  // at the moment the tap was processed.
+  //
+  // The handler reuses the shared lastTuneInMs ref so that if both this and
+  // the outer-hero Pressable's handleTuneIn fire on the same gesture (possible
+  // on older Android), only one navigation is dispatched.
+  const handleOpenPlayer = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTuneInMs.current < 600) {
+      if (__DEV__) {
+        console.log("[HeroSection] handleOpenPlayer debounced (< 600 ms since last call)");
+      }
+      return;
+    }
+    lastTuneInMs.current = now;
+
+    if (__DEV__) {
+      console.log(
+        "[HeroSection] handleOpenPlayer — navigating to live broadcast player",
+        { activeBroadcastTitle, thumbUrl, hasUploadedBroadcast, hasYoutubeOverride },
+      );
+    }
+
+    // Always navigate to the live player regardless of broadcast state.
+    // The player screen is the authoritative source of truth (connecting /
+    // live / off-air / reconnecting) and has far richer status UI than the
+    // home hero can provide.
+    navigateToLive(
+      "",
+      activeBroadcastTitle || "Live Broadcast",
+      0,
+      undefined,
+      thumbUrl ?? undefined,
+      "hero-open-player",
+    );
+  }, [activeBroadcastTitle, thumbUrl, hasUploadedBroadcast, hasYoutubeOverride]);
+
   return (
     <Pressable
       onPress={handleTuneIn}
@@ -716,8 +749,8 @@ const HeroSection = React.memo(function HeroSection({
               Priority order:
               1. isFatal → "Reconnect" button calls forceRebind() to fully reload transport.
               2. isWatchLiveCTAVisible (idle / offline / error) → "Watch Live" / "Watch Now".
-              3. Active broadcast, not reconnecting → quiet "Open Player" secondary button.
-              While reconnecting, no button is shown — the StreamStatusBadge provides feedback. */}
+              3. Live / loading / reconnecting → "Open Player" (handleOpenPlayer — always
+                 navigates directly to the broadcast player, no VOD branching). */}
           {isFatal ? (
             // isFatal: FSM reached FATAL state. forceRebind() reconnects the
             // transport. We ALSO navigate to the player immediately — the
@@ -763,14 +796,20 @@ const HeroSection = React.memo(function HeroSection({
                 {hasActiveBroadcast ? "Watch Live" : "Watch Now"}
               </Text>
             </Pressable>
-          ) : !watchNowDisabled && !isWatchLiveCTAVisible && (!isReconnecting || reconnectingEscapeVisible) ? (
-            // "Open Player" — shown when the broadcast is live/loading (not
-            // idle/error where "Watch Live" is more appropriate). Also shown
-            // after 5 s of continuous reconnecting (reconnectingEscapeVisible)
-            // so the user is never permanently stranded without a navigation
-            // affordance during a slow recovery (STALL_REBIND_MS = 20 s).
+          ) : !watchNowDisabled && !isWatchLiveCTAVisible ? (
+            // "Open Player" — shown when the broadcast is live, loading, OR
+            // reconnecting (i.e. any non-idle, non-error state). Previously the
+            // button was hidden during reconnecting and only revealed after 5 s;
+            // this left users with no visible tap target while the outer hero
+            // Pressable still navigated. Showing it immediately ensures the user
+            // always has a clear affordance. The player screen provides its own
+            // superior reconnection UI (retry countdown, status badge, quality
+            // indicator). Uses handleOpenPlayer — a dedicated, direct handler
+            // that always navigates to the live player without the multi-branch
+            // logic of handleTuneIn (which can route to VOD in some states).
             <Pressable
-              onPress={handleTuneIn}
+              onPress={handleOpenPlayer}
+              hitSlop={8}
               style={({ pressed }) => [
                 styles.heroBtnSecondary,
                 { borderColor: "rgba(255,255,255,0.45)", opacity: pressed ? 0.78 : 1 },

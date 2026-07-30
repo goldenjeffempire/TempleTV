@@ -63,20 +63,6 @@
     "typescript-eslint": "^8.33.1"
   },
   "pnpm": {
-    "patchedDependencies": {
-      "react-native-track-player@4.1.2": "patches/react-native-track-player@4.1.2.patch",
-      "react-native-screens@4.25.2": "patches/react-native-screens@4.25.2.patch",
-      "react-native-gesture-handler@2.32.0": "patches/react-native-gesture-handler@2.32.0.patch",
-      "react-native-webview@13.16.1": "patches/react-native-webview@13.16.1.patch",
-      "react-native-svg@15.15.4": "patches/react-native-svg@15.15.4.patch",
-      "@react-native-async-storage/async-storage@2.2.0": "patches/@react-native-async-storage+async-storage@2.2.0.patch",
-      "expo-updates@57.0.7": "patches/expo-updates@57.0.7.patch",
-      "expo-linking@57.0.3": "patches/expo-linking@57.0.3.patch",
-      "expo-router@57.0.6": "patches/expo-router@57.0.6.patch",
-      "@sentry/react-native@7.11.0": "patches/@sentry+react-native@7.11.0.patch",
-      "expo-modules-core@57.0.5": "patches/expo-modules-core@57.0.5.patch",
-      "@expo/ui@57.0.6": "patches/@expo__ui@57.0.6.patch"
-    },
     "overrides": {
       "shell-quote": "file:./stubs/shell-quote",
       "@types/react": "19.2.14",
