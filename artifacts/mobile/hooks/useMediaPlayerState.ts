@@ -139,7 +139,7 @@ export interface MediaPlayerState {
 
 export function useMediaPlayerState(): MediaPlayerState {
   const { isOnline } = useNetworkContext();
-  const { isLive, isBroadcastMode, currentSermon } = usePlayer();
+  const { isLive, currentSermon } = usePlayer();
 
   const apiBase = getApiBase() ?? "";
   const { snapshot } = useV2BroadcastNative({
@@ -238,5 +238,5 @@ export function useMediaPlayerState(): MediaPlayerState {
       currentTitle,
       currentThumbnailUrl,
     };
-  }, [isOnline, snapshot, isLive, isBroadcastMode, currentSermon]);
+  }, [isOnline, snapshot, isLive, currentSermon]);
 }

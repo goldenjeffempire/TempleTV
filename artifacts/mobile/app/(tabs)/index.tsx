@@ -37,7 +37,7 @@ import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
 import { Stack } from "expo-router";
-import { safeNavPush, isNavPushActive } from "@/lib/safeNavPush";
+import { safeNavPush } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
@@ -476,26 +476,24 @@ const HeroSection = React.memo(function HeroSection({
     : "Live Broadcast";
 
   // ── Navigation debounce guard ─────────────────────────────────────────────
-  // Prevents double-navigation that can occur when BOTH the outer hero
-  // Pressable AND the inner CTA button fire (e.g. touch lands exactly on the
-  // boundary, or RN gesture system propagates to parent in an edge case).
-  // A double router.push() pushes /player twice onto the stack, requiring two
-  // back-presses to return home. The 600 ms window comfortably covers the
-  // animation frame after the first push completes.
+  // 600 ms window prevents a double-navigation from rapid successive taps or
+  // (on older Android) both the outer hero Pressable and the inner CTA button
+  // resolving on the same gesture. React Native Pressable components don't
+  // propagate touches to parents, so the double-fire scenario is rare — but
+  // the debounce is cheap insurance. A double router.push() would push /player
+  // twice onto the stack, requiring two back-presses to return home.
+  //
+  // NOTE: We intentionally do NOT use isNavPushActive() here. That flag is
+  // global — any safeNavPush call anywhere in the app (LiveBroadcastSupervisor,
+  // video card, notification tap) sets navPushActiveUntil for 1 500 ms, which
+  // would silently block a legitimate user tap on "Open Player". The 600 ms
+  // debounce is sufficient for all same-gesture double-fire scenarios. The
+  // isNavPushActive() guard in NativeTabLayout's useLayoutEffect — which is what
+  // actually needs it to prevent the iOS 18+ bounce-back race — is unaffected.
   const lastTuneInMs = useRef(0);
 
   const handleTuneIn = useCallback(() => {
-    // Guard 1: safeNavPush already in-flight (set for 1 500 ms after every push
-    // attempt). Prevents a double-push if the hero Pressable AND the inner CTA
-    // button both fire on the same tap, or if a previous retry is still pending.
-    if (isNavPushActive()) {
-      if (__DEV__) {
-        console.log("[HeroSection] handleTuneIn skipped — safeNavPush already in flight (isNavPushActive)");
-      }
-      return;
-    }
-
-    // Guard 2: debounce — 600 ms window prevents a double-navigation that can
+    // Debounce guard — 600 ms window prevents a double-navigation that can
     // occur when both the outer hero Pressable AND the inner CTA button fire
     // on the same tap boundary, or when the user taps rapidly.
     const now = Date.now();
