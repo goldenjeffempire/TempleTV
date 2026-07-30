@@ -38,3 +38,13 @@ diff --git a/android/build.gradle b/android/build.gradle
  
          versionCode 300
          versionName '3.0'
+diff --git a/android/src/main/AndroidManifest.xml b/android/src/main/AndroidManifest.xml
+--- a/android/src/main/AndroidManifest.xml
++++ b/android/src/main/AndroidManifest.xml
+@@ -1,5 +1,4 @@
+ <?xml version="1.0" encoding="utf-8"?>
+-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+-          package="com.doublesymmetry.trackplayer">
++<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+ 
+     <uses-permission android:name="android.permission.WAKE_LOCK" />

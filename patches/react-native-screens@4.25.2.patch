@@ -38,3 +38,66 @@ diff --git a/android/build.gradle b/android/build.gradle
          // For some reason gradle only complains about the duplicated version of libreact_render libraries
          // while there are more libraries copied in intermediates folder of the lib build directory, we exclude
          // only the ones that make the build fail (ideally we should only include librnscreens_modules but we
+diff --git a/android/src/main/java/com/swmansion/rnscreens/RNScreensPackage.kt b/android/src/main/java/com/swmansion/rnscreens/RNScreensPackage.kt
+--- a/android/src/main/java/com/swmansion/rnscreens/RNScreensPackage.kt
++++ b/android/src/main/java/com/swmansion/rnscreens/RNScreensPackage.kt
+@@ -1,4 +1,5 @@
++@file:Suppress("DEPRECATION", "PARAMETER_NAME_CHANGED_ON_OVERRIDE")
+ package com.swmansion.rnscreens
+ 
+ import com.facebook.react.BaseReactPackage
+ import com.facebook.react.bridge.NativeModule
+diff --git a/android/src/main/java/com/swmansion/rnscreens/Screen.kt b/android/src/main/java/com/swmansion/rnscreens/Screen.kt
+--- a/android/src/main/java/com/swmansion/rnscreens/Screen.kt
++++ b/android/src/main/java/com/swmansion/rnscreens/Screen.kt
+@@ -1,4 +1,5 @@
++@file:Suppress("DEPRECATION", "UNCHECKED_CAST")
+ package com.swmansion.rnscreens
+ 
+ import android.annotation.SuppressLint
+ import android.content.pm.ActivityInfo
+diff --git a/android/src/main/java/com/swmansion/rnscreens/ScreenContainer.kt b/android/src/main/java/com/swmansion/rnscreens/ScreenContainer.kt
+--- a/android/src/main/java/com/swmansion/rnscreens/ScreenContainer.kt
++++ b/android/src/main/java/com/swmansion/rnscreens/ScreenContainer.kt
+@@ -1,4 +1,5 @@
++@file:Suppress("DEPRECATION")
+ package com.swmansion.rnscreens
+ 
+ import android.content.Context
+ import android.content.ContextWrapper
+diff --git a/android/src/main/java/com/swmansion/rnscreens/ScreenFragment.kt b/android/src/main/java/com/swmansion/rnscreens/ScreenFragment.kt
+--- a/android/src/main/java/com/swmansion/rnscreens/ScreenFragment.kt
++++ b/android/src/main/java/com/swmansion/rnscreens/ScreenFragment.kt
+@@ -1,4 +1,5 @@
++@file:Suppress("DEPRECATION")
+ package com.swmansion.rnscreens
+ 
+ import android.annotation.SuppressLint
+ import android.app.Activity
+diff --git a/android/src/main/java/com/swmansion/rnscreens/ScreenModalFragment.kt b/android/src/main/java/com/swmansion/rnscreens/ScreenModalFragment.kt
+--- a/android/src/main/java/com/swmansion/rnscreens/ScreenModalFragment.kt
++++ b/android/src/main/java/com/swmansion/rnscreens/ScreenModalFragment.kt
+@@ -1,4 +1,5 @@
++@file:Suppress("DEPRECATION")
+ package com.swmansion.rnscreens
+ 
+ import android.app.Activity
+ import android.app.Dialog
+diff --git a/android/src/main/java/com/swmansion/rnscreens/ScreenStack.kt b/android/src/main/java/com/swmansion/rnscreens/ScreenStack.kt
+--- a/android/src/main/java/com/swmansion/rnscreens/ScreenStack.kt
++++ b/android/src/main/java/com/swmansion/rnscreens/ScreenStack.kt
+@@ -1,4 +1,5 @@
++@file:Suppress("DEPRECATION")
+ package com.swmansion.rnscreens
+ 
+ import android.content.Context
+ import android.graphics.Canvas
+diff --git a/android/src/main/java/com/swmansion/rnscreens/ScreenStackFragment.kt b/android/src/main/java/com/swmansion/rnscreens/ScreenStackFragment.kt
+--- a/android/src/main/java/com/swmansion/rnscreens/ScreenStackFragment.kt
++++ b/android/src/main/java/com/swmansion/rnscreens/ScreenStackFragment.kt
+@@ -1,4 +1,5 @@
++@file:Suppress("DEPRECATION")
+ package com.swmansion.rnscreens
+ 
+ import android.animation.Animator
+ import android.annotation.SuppressLint

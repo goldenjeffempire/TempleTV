@@ -16,3 +16,39 @@ diff --git a/android/build.gradle b/android/build.gradle
          buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
      }
  
+diff --git a/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt b/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt
+--- a/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt
++++ b/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManagerImpl.kt
+@@ -1,4 +1,5 @@
++@file:Suppress("DEPRECATION", "ALWAYS_TRUE")
+ package com.reactnativecommunity.webview
+ 
+ import android.app.DownloadManager
+ import android.content.pm.ActivityInfo
+diff --git a/android/src/main/java/com/reactnativecommunity/webview/events/TopCustomMenuSelectionEvent.kt b/android/src/main/java/com/reactnativecommunity/webview/events/TopCustomMenuSelectionEvent.kt
+--- a/android/src/main/java/com/reactnativecommunity/webview/events/TopCustomMenuSelectionEvent.kt
++++ b/android/src/main/java/com/reactnativecommunity/webview/events/TopCustomMenuSelectionEvent.kt
+@@ -1,4 +1,5 @@
++@file:Suppress("DEPRECATION")
+ package com.reactnativecommunity.webview.events
+ 
+ import com.facebook.react.bridge.WritableMap
+ import com.facebook.react.uimanager.events.Event
+diff --git a/android/src/main/java/com/reactnativecommunity/webview/events/TopHttpErrorEvent.kt b/android/src/main/java/com/reactnativecommunity/webview/events/TopHttpErrorEvent.kt
+--- a/android/src/main/java/com/reactnativecommunity/webview/events/TopHttpErrorEvent.kt
++++ b/android/src/main/java/com/reactnativecommunity/webview/events/TopHttpErrorEvent.kt
+@@ -1,4 +1,5 @@
++@file:Suppress("DEPRECATION")
+ package com.reactnativecommunity.webview.events
+ 
+ import com.facebook.react.bridge.WritableMap
+ import com.facebook.react.uimanager.events.Event
+diff --git a/android/src/main/java/com/reactnativecommunity/webview/events/TopLoadingErrorEvent.kt b/android/src/main/java/com/reactnativecommunity/webview/events/TopLoadingErrorEvent.kt
+--- a/android/src/main/java/com/reactnativecommunity/webview/events/TopLoadingErrorEvent.kt
++++ b/android/src/main/java/com/reactnativecommunity/webview/events/TopLoadingErrorEvent.kt
+@@ -1,4 +1,5 @@
++@file:Suppress("DEPRECATION")
+ package com.reactnativecommunity.webview.events
+ 
+ import com.facebook.react.bridge.WritableMap
+ import com.facebook.react.uimanager.events.Event
