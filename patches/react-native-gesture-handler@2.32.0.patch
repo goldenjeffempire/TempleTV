@@ -21,7 +21,7 @@ diff --git a/android/build.gradle b/android/build.gradle
          buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
          buildConfigField "int", "REACT_NATIVE_MINOR_VERSION", REACT_NATIVE_MINOR_VERSION.toString()
  
-@@ -177,7 +177,7 @@
+@@ -177,8 +177,8 @@
          }
      }
  

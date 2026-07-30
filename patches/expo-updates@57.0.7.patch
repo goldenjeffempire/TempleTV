@@ -10,7 +10,7 @@ diff --git a/android/build.gradle b/android/build.gradle
        pickFirst "**/libfbjni.so"
        pickFirst "**/libc++_shared.so"
  
-@@ -122,7 +122,7 @@
+@@ -122,8 +122,8 @@
        resources.excludes.add("META-INF/LICENSE-notice.md")
      }
    }

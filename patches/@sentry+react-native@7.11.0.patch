@@ -24,7 +24,7 @@ diff --git a/android/build.gradle b/android/build.gradle
 diff --git a/android/src/main/AndroidManifest.xml b/android/src/main/AndroidManifest.xml
 --- a/android/src/main/AndroidManifest.xml
 +++ b/android/src/main/AndroidManifest.xml
-@@ -1,5 +1,4 @@
+@@ -1,6 +1,5 @@
 -<manifest xmlns:android="http://schemas.android.com/apk/res/android"
 -    package="io.sentry.react">
 +<manifest xmlns:android="http://schemas.android.com/apk/res/android">

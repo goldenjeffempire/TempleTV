@@ -10,7 +10,7 @@ diff --git a/android/build.gradle b/android/build.gradle
      namespace "com.horcrux.svg"
      def agpVersion = com.android.Version.ANDROID_GRADLE_PLUGIN_VERSION
      if (agpVersion.tokenize('.')[0].toInteger() >= 8) {
-@@ -103,14 +103,14 @@
+@@ -103,15 +103,15 @@
      }
  
      defaultConfig {

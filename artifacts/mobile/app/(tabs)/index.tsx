@@ -37,7 +37,7 @@ import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
 import { Stack } from "expo-router";
-import { safeNavPush } from "@/lib/safeNavPush";
+import { safeNavPush, isNavPushActive } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
@@ -485,6 +485,19 @@ const HeroSection = React.memo(function HeroSection({
   const lastTuneInMs = useRef(0);
 
   const handleTuneIn = useCallback(() => {
+    // Guard 1: safeNavPush already in-flight (set for 1 500 ms after every push
+    // attempt). Prevents a double-push if the hero Pressable AND the inner CTA
+    // button both fire on the same tap, or if a previous retry is still pending.
+    if (isNavPushActive()) {
+      if (__DEV__) {
+        console.log("[HeroSection] handleTuneIn skipped — safeNavPush already in flight (isNavPushActive)");
+      }
+      return;
+    }
+
+    // Guard 2: debounce — 600 ms window prevents a double-navigation that can
+    // occur when both the outer hero Pressable AND the inner CTA button fire
+    // on the same tap boundary, or when the user taps rapidly.
     const now = Date.now();
     if (now - lastTuneInMs.current < 600) {
       if (__DEV__) {
@@ -559,7 +572,6 @@ const HeroSection = React.memo(function HeroSection({
   }, [
     hasUploadedBroadcast,
     hasYoutubeOverride,
-    youtubeOverrideVideoId,
     activeBroadcastTitle,
     fallbackSermon,
     isWatchLiveCTAVisible,

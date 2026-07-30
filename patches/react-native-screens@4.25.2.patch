@@ -95,7 +95,7 @@ diff --git a/android/src/main/java/com/swmansion/rnscreens/ScreenStack.kt b/andr
 diff --git a/android/src/main/java/com/swmansion/rnscreens/ScreenStackFragment.kt b/android/src/main/java/com/swmansion/rnscreens/ScreenStackFragment.kt
 --- a/android/src/main/java/com/swmansion/rnscreens/ScreenStackFragment.kt
 +++ b/android/src/main/java/com/swmansion/rnscreens/ScreenStackFragment.kt
-@@ -1,4 +1,5 @@
+@@ -1,5 +1,6 @@
 +@file:Suppress("DEPRECATION")
  package com.swmansion.rnscreens
  

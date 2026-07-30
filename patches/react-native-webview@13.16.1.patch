@@ -46,7 +46,7 @@ diff --git a/android/src/main/java/com/reactnativecommunity/webview/events/TopHt
 diff --git a/android/src/main/java/com/reactnativecommunity/webview/events/TopLoadingErrorEvent.kt b/android/src/main/java/com/reactnativecommunity/webview/events/TopLoadingErrorEvent.kt
 --- a/android/src/main/java/com/reactnativecommunity/webview/events/TopLoadingErrorEvent.kt
 +++ b/android/src/main/java/com/reactnativecommunity/webview/events/TopLoadingErrorEvent.kt
-@@ -1,4 +1,5 @@
+@@ -1,5 +1,6 @@
 +@file:Suppress("DEPRECATION")
  package com.reactnativecommunity.webview.events
  

@@ -99,9 +99,6 @@ patchedDependencies:
   react-native-gesture-handler@2.32.0:
     hash: 70af705618782965c824390bb23eaf64fde220da3903200c50189192e9d2bdc1
     path: patches/react-native-gesture-handler@2.32.0.patch
-  react-native-safe-area-context@5.7.0:
-    hash: a719e03d9aeff28fbdcdcdd765f8d9b83e4d8c32c6e2411c80624f2cc24efe3b
-    path: patches/react-native-safe-area-context@5.7.0.patch
   react-native-screens@4.25.2:
     hash: 9a351fac182b1e3392c62adcee46ec7c5749c5499656fd4b5dfe3545bfb38a8c
     path: patches/react-native-screens@4.25.2.patch
@@ -680,7 +677,7 @@ importers:
         version: 4.5.0(react-native-worklets@0.10.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
       react-native-safe-area-context:
         specifier: ~5.7.0
-        version: 5.7.0(patch_hash=a719e03d9aeff28fbdcdcdd765f8d9b83e4d8c32c6e2411c80624f2cc24efe3b)(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
+        version: 5.7.0(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
       react-native-screens:
         specifier: ~4.25.2
         version: 4.25.2(patch_hash=9a351fac182b1e3392c62adcee46ec7c5749c5499656fd4b5dfe3545bfb38a8c)(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
@@ -13521,7 +13518,7 @@ snapshots:
       react-is: 19.2.5
       react-native: 0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3)
       react-native-drawer-layout: 4.2.7(react-native-gesture-handler@2.32.0(patch_hash=70af705618782965c824390bb23eaf64fde220da3903200c50189192e9d2bdc1)(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native-reanimated@4.5.0(react-native-worklets@0.10.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
-      react-native-safe-area-context: 5.7.0(patch_hash=a719e03d9aeff28fbdcdcdd765f8d9b83e4d8c32c6e2411c80624f2cc24efe3b)(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
+      react-native-safe-area-context: 5.7.0(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
       react-native-screens: 4.25.2(patch_hash=9a351fac182b1e3392c62adcee46ec7c5749c5499656fd4b5dfe3545bfb38a8c)(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
       server-only: 0.0.1
       sf-symbols-typescript: 2.2.0
@@ -15131,7 +15128,7 @@ snapshots:
       react-native-worklets: 0.10.0(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
       semver: 7.7.4
 
-  react-native-safe-area-context@5.7.0(patch_hash=a719e03d9aeff28fbdcdcdd765f8d9b83e4d8c32c6e2411c80624f2cc24efe3b)(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3):
+  react-native-safe-area-context@5.7.0(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3):
     dependencies:
       react: 19.2.3
       react-native: 0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3)
