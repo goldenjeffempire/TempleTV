@@ -307,6 +307,14 @@ const HeroSection = React.memo(function HeroSection({
     baseUrl: `${apiBase}/api/broadcast-v2`,
   });
   const v2Server = v2Snapshot.lastServerSnapshot;
+  // True once the V2 server has delivered at least one snapshot (i.e. we know
+  // the current channel state). False during the brief BOOTSTRAP/SYNCING window
+  // on cold start before the first WebSocket frame arrives.
+  // Used to gate the "Watch Now → VOD sermon" branch in handleTuneIn: if the
+  // server hasn't confirmed that the channel is empty, we must NOT route to a
+  // fallback sermon — the YouTube shuffle may already be active and the FSM
+  // simply hasn't populated lastServerSnapshot.override.url yet.
+  const v2Connected = v2Server !== null;
 
   // ── Broadcast source classification ──────────────────────────────────────────
   // hasUploadedBroadcast: a non-YouTube item is currently live in the queue.
@@ -531,18 +539,29 @@ const HeroSection = React.memo(function HeroSection({
       // the player into a static YoutubePlayer that can't follow override
       // changes and never sets PlayerContext.isBroadcastMode=true.
       navigateToLive("", activeBroadcastTitle, 0, undefined, thumbUrl ?? undefined);
-    } else if (fallbackSermon && isWatchLiveCTAVisible) {
-      // Only navigate to a fallback sermon when the broadcast is genuinely
-      // idle or in an error state (isWatchLiveCTAVisible = true).  This is
-      // the "Watch Now" scenario — no live broadcast is running so playing the
-      // most recent sermon is the right action.
+    } else if (fallbackSermon && isWatchLiveCTAVisible && v2Connected) {
+      // Only navigate to a fallback sermon when ALL three conditions hold:
+      //   1. A fallback sermon exists to play.
+      //   2. The broadcast CTA is visible (idle / error) — not loading/live.
+      //   3. v2Connected: the V2 server has delivered at least one snapshot,
+      //      confirming the channel is genuinely empty rather than still
+      //      bootstrapping.
       //
-      // IMPORTANT: do NOT fall through here when "Open Player" is the visible
-      // CTA (isWatchLiveCTAVisible = false).  In that state the broadcast FSM
-      // is loading, live, or reconnecting — the V2 snapshot may not have
-      // populated the override fields yet (e.g. LIVE_OVERRIDE_ACTIVE fires
-      // before lastServerSnapshot.override.url is set).  Navigating to a
-      // sermon here would take the user to VOD instead of the live player.
+      // Without guard (3), on YouTube-only deployments the following sequence
+      // caused "Watch Live" to silently open a VOD sermon instead of the player:
+      //
+      //   Cold start → FSM in BOOTSTRAP → v2Server=null → hasYoutubeOverride=false
+      //   → falls into this branch → navigateToSermon(fallbackSermon)
+      //   → user ends up on a sermon, not the live player.
+      //
+      // With guard (3), we only enter the VOD path when the server has confirmed
+      // there is no active broadcast. Pre-snapshot: fall through to the live
+      // player below — it shows its own "Connecting…" state if needed.
+      //
+      // ALSO do NOT fall through here when "Open Player" is the visible CTA
+      // (isWatchLiveCTAVisible = false). In that state the broadcast FSM is
+      // loading, live, or reconnecting — navigating to a sermon would take the
+      // user to VOD instead of the live player.
       navigateToSermon(fallbackSermon);
     } else {
       // No uploaded broadcast, no YouTube override confirmed in the snapshot,
@@ -565,6 +584,7 @@ const HeroSection = React.memo(function HeroSection({
     fallbackSermon,
     isWatchLiveCTAVisible,
     thumbUrl,
+    v2Connected,
   ]);
 
   // ── "Open Player" dedicated handler ──────────────────────────────────────────
@@ -607,7 +627,17 @@ const HeroSection = React.memo(function HeroSection({
       thumbUrl ?? undefined,
       "hero-open-player",
     );
-  }, [activeBroadcastTitle, thumbUrl, hasUploadedBroadcast, hasYoutubeOverride]);
+  // navigateToLive is a module-level function (not a useCallback) so it is a
+  // stable reference and does not need to be listed as a dep. The only values
+  // captured from the closure are activeBroadcastTitle and thumbUrl — both are
+  // primitive/string, and their staleness would only affect the title/thumbnail
+  // passed to the player (a cosmetic concern, not a navigation failure).
+  // hasUploadedBroadcast and hasYoutubeOverride were previously listed here but
+  // are never referenced in the handler body — they caused handleOpenPlayer to be
+  // recreated on every broadcast state change during the BOOTSTRAP→LIVE_OVERRIDE_ACTIVE
+  // transition, creating a stale-handler window exactly when users are most
+  // likely to tap the button.
+  }, [activeBroadcastTitle, thumbUrl]);
 
   return (
     <Pressable
