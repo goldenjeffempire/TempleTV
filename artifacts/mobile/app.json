@@ -2,12 +2,12 @@
   "expo": {
     "name": "Temple TV",
     "slug": "temple-tv-mobile",
-    "version": "1.0.58",
+    "version": "1.0.59",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "templetv",
     "userInterfaceStyle": "light",
-    "description": "Stream live worship, sermons, and teachings from Temple TV JCTM Broadcasting \u2014 Jesus Christ Temple Ministry.",
+    "description": "Stream live worship, sermons, and teachings from Temple TV JCTM Broadcasting — Jesus Christ Temple Ministry.",
     "owner": "mobileapptemples-team",
     "primaryColor": "#6A0DAD",
     "assetBundlePatterns": [
@@ -86,7 +86,7 @@
     },
     "android": {
       "package": "com.templetv.jctm",
-      "versionCode": 124,
+      "versionCode": 125,
       "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon-foreground.png",
