@@ -897,6 +897,34 @@ const HeroSection = React.memo(function HeroSection({
         </Animated.View>
       )}
 
+      {/* ── Fullscreen icon — bottom-right corner of hero ───────────────────
+          A persistent affordance to open the broadcast player fullscreen.
+          Visible whenever the hero preview is active (i.e. the full-screen
+          player is not already open). Calls handleOpenPlayer directly — the
+          same dedicated handler as the bottom CTA button — so all navigation
+          guards (600 ms debounce, safeNavPush retry, Sentry telemetry) apply
+          automatically.
+
+          Positioned in the bottom-right corner of the video area, just above
+          the live progress bar. zIndex 15 puts it above the gradient layers
+          (no explicit zIndex) but below the skeleton overlay (zIndex 20).
+          pointerEvents auto — the Pressable claims the responder at this
+          position; nothing behind it is affected. */}
+      {!isBroadcastMode && (
+        <Pressable
+          onPress={handleOpenPlayer}
+          hitSlop={12}
+          style={({ pressed }) => [
+            styles.heroFullscreenBtn,
+            { opacity: pressed ? 0.6 : 1 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Open broadcast player fullscreen"
+        >
+          <Feather name="maximize-2" size={13} color="rgba(255,255,255,0.92)" />
+        </Pressable>
+      )}
+
       {/* ── Live progress bar — bottom edge of hero ─────────────────────────
           Shows broadcast position (elapsed / total duration) so viewers see at
           a glance how far into the current item the broadcast is. Hidden when
@@ -1454,6 +1482,23 @@ const styles = StyleSheet.create({
   heroLogo: {
     height: 30,
     width: 92,
+  },
+  // Fullscreen icon — bottom-right corner of hero, above the progress bar.
+  // Matches the mute button's pill style but smaller (30×30) and positioned
+  // at the bottom-right so it doesn't clash with the top-right mute button.
+  heroFullscreenBtn: {
+    position: "absolute",
+    bottom: 10,
+    right: 10,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: "rgba(0,0,0,0.50)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 15,
   },
 
   // ── Hero content (bottom gradient zone) ─────────────────────────────────────
