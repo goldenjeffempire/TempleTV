@@ -131,6 +131,10 @@ export default function PlayerScreen() {
     duration?: string;
     category?: string;
     description?: string;
+    /** When "true", the player enters landscape fullscreen automatically on mount.
+     *  Set by the hero fullscreen icon so users land directly in an immersive
+     *  fullscreen broadcast without an extra tap. */
+    openFullscreen?: string;
   }>();
 
   const insets = useSafeAreaInsets();
@@ -312,6 +316,12 @@ export default function PlayerScreen() {
   // the YouTube live path — that is handled by the LiveBroadcastSupervisor
   // which already calls playLive() and sets PlayerContext.isLive=true.
   const isBroadcastV2 = isLive && !( !!( params.youtubeId ?? params.videoId ) && !hlsUrl );
+  // When true, the player enters landscape fullscreen automatically on mount.
+  // Set by the hero fullscreen icon (maximize-2 button) so tapping the icon
+  // lands the user directly in an immersive fullscreen broadcast.
+  // YouTube and YouTube override surfaces are excluded — they have their own
+  // native fullscreen control and our overlay would conflict.
+  const shouldAutoFullscreen = parseBoolParam(params.openFullscreen);
 
   // ── Player mount telemetry ────────────────────────────────────────────────
   // Confirms to navLogger that the navigation succeeded and the player screen
@@ -844,6 +854,27 @@ export default function PlayerScreen() {
         })
         .catch(() => {});
     }
+  }, []);
+
+  // ── Auto-fullscreen on mount ─────────────────────────────────────────────
+  // When openFullscreen=true (set by the hero maximize icon), enter landscape
+  // fullscreen automatically after the screen renders. A 350 ms delay lets the
+  // navigation slide animation complete and the player shell lay out before
+  // locking the orientation — entering fullscreen too early on iOS can leave the
+  // modal in portrait until the next touch.
+  // YouTube and YouTube-override paths are excluded: the native YouTube player
+  // manages fullscreen internally; our overlay would conflict with its controls.
+  useEffect(() => {
+    if (!shouldAutoFullscreen) return;
+    // Exclude YouTube paths — they have their own native fullscreen control.
+    const isYoutubeLocal = !!params.youtubeId && !hlsUrl;
+    if (isYoutubeLocal) return;
+
+    const t = setTimeout(() => {
+      enterFullscreen();
+    }, 350);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Clean up timer whenever fullscreen is closed (e.g. Android back button).
