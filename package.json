@@ -63,6 +63,9 @@
     "typescript-eslint": "^8.33.1"
   },
   "pnpm": {
+    "patchedDependencies": {
+      "react-native-track-player@4.1.2": "patches/react-native-track-player@4.1.2.patch"
+    },
     "overrides": {
       "shell-quote": "file:./stubs/shell-quote",
       "@types/react": "19.2.14",
