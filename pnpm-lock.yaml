@@ -74,6 +74,11 @@ overrides:
   yaml: '>=2.8.3'
   esbuild: '>=0.25.0'
 
+patchedDependencies:
+  react-native-track-player@4.1.2:
+    hash: 65be528776c50bd99dd24a8294361fbe0f52b291d78100e94dd9d12d5746e552
+    path: patches/react-native-track-player@4.1.2.patch
+
 importers:
 
   .:
@@ -506,7 +511,7 @@ importers:
         version: 1.2.1
       react-native-track-player:
         specifier: ^4.1.2
-        version: 4.1.2(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
+        version: 4.1.2(patch_hash=65be528776c50bd99dd24a8294361fbe0f52b291d78100e94dd9d12d5746e552)(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
       react-native-webview:
         specifier: 13.16.1
         version: 13.16.1(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
@@ -15112,7 +15117,7 @@ snapshots:
       react-native: 0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3)
       warn-once: 0.1.1
 
-  react-native-track-player@4.1.2(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3):
+  react-native-track-player@4.1.2(patch_hash=65be528776c50bd99dd24a8294361fbe0f52b291d78100e94dd9d12d5746e552)(react-native@0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3):
     dependencies:
       react: 19.2.3
       react-native: 0.86.0(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3)

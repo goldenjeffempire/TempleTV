@@ -43,8 +43,8 @@ diff --git a/android/src/main/AndroidManifest.xml b/android/src/main/AndroidMani
 +++ b/android/src/main/AndroidManifest.xml
 @@ -1,6 +1,5 @@
  <?xml version="1.0" encoding="utf-8"?>
--<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
 -          package="com.doublesymmetry.trackplayer">
-+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
  
      <uses-permission android:name="android.permission.WAKE_LOCK" />
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
