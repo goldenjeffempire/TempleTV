@@ -1,3 +1,4 @@
+- [pnpm patch + lockfile sync — EAS and Render both fail](pnpm-patch-lockfile-sync.md) — after any patch change, run pnpm install and commit both patch + lockfile; missing patchedDependencies in lockfile = Kotlin build error on EAS + LOCKFILE_CONFIG_MISMATCH on Render.
 - [EAS root .easignore + google-mobile-ads Kotlin pinning](eas-android-dir-and-ads-kotlin.md) — root .easignore governs monorepo uploads (must exclude artifacts/mobile/android/); rn-google-mobile-ads 16.3.4 max for Kotlin 2.1.x projects.
 - [Stale patch causes EAS frozen-lockfile failure](stale-patch-eas-failure.md) — patch applied locally via cache but fails on EAS clean store; verify every patch still applies to raw npm source before building.
 - [Safe nav push pattern — player navigation](safe-nav-push-pattern.md) — safeNavPush sets navPushActiveUntil+1500ms; NativeTabLayout checks isNavPushActive() before router.replace("/"); both sides required to prevent iOS 18+ bounce-back bug.
