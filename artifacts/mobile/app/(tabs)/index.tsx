@@ -100,6 +100,7 @@ function navigateToLive(
   youtubeId?: string,
   thumbnailUrl?: string,
   source = "home-hero",
+  openFullscreen = false,
 ) {
   safeNavPush(
     "/player",
@@ -111,6 +112,7 @@ function navigateToLive(
       thumbnailUrl: thumbnailUrl ?? "",
       isLive: "true",
       startPositionSecs: String(Math.max(0, Math.round(positionSecs))),
+      ...(openFullscreen ? { openFullscreen: "true" } : {}),
     },
     source,
   );
@@ -307,14 +309,6 @@ const HeroSection = React.memo(function HeroSection({
     baseUrl: `${apiBase}/api/broadcast-v2`,
   });
   const v2Server = v2Snapshot.lastServerSnapshot;
-  // True once the V2 server has delivered at least one snapshot (i.e. we know
-  // the current channel state). False during the brief BOOTSTRAP/SYNCING window
-  // on cold start before the first WebSocket frame arrives.
-  // Used to gate the "Watch Now → VOD sermon" branch in handleTuneIn: if the
-  // server hasn't confirmed that the channel is empty, we must NOT route to a
-  // fallback sermon — the YouTube shuffle may already be active and the FSM
-  // simply hasn't populated lastServerSnapshot.override.url yet.
-  const v2Connected = v2Server !== null;
 
   // ── Broadcast source classification ──────────────────────────────────────────
   // hasUploadedBroadcast: a non-YouTube item is currently live in the queue.
@@ -506,98 +500,34 @@ const HeroSection = React.memo(function HeroSection({
 
     if (__DEV__) {
       console.log(
-        "[HeroSection] handleTuneIn",
-        {
-          hasUploadedBroadcast,
-          hasYoutubeOverride,
-          youtubeOverrideVideoId,
-          hasFallback: !!fallbackSermon,
-          isWatchLiveCTAVisible,
-          thumbUrl,
-        },
+        "[HeroSection] handleTuneIn — navigating to live player",
+        { hasUploadedBroadcast, hasYoutubeOverride, activeBroadcastTitle, thumbUrl },
       );
     }
 
-    if (hasUploadedBroadcast) {
-      // Non-YouTube upload is live in the broadcast queue — navigate with
-      // its HLS/MP4 stream.  Let the player derive the URL from the V2
-      // snapshot (hlsUrl="" is fine; the player reads it from the WS session).
-      navigateToLive("", activeBroadcastTitle, 0, undefined, thumbUrl ?? undefined);
-    } else if (hasYoutubeOverride) {
-      // YouTube shuffle fallback is the active broadcast source.  Navigate
-      // WITHOUT a youtubeId param so that in player.tsx:
-      //
-      //   isBroadcastV2 = isLive && !(!!youtubeId && !hlsUrl)  →  true
-      //
-      // With isBroadcastV2=true the player subscribes to the V2 singleton
-      // and derives v2YouTubeOverrideVideoId reactively.  Because the hero
-      // has been running the same WS session for seconds, lastServerSnapshot
-      // is already populated when the player mounts — v2YouTubeOverrideVideoId
-      // is non-null on the FIRST render, so there is no blank-screen delay.
-      //
-      // Passing youtubeId here would have forced isBroadcastV2=false, locking
-      // the player into a static YoutubePlayer that can't follow override
-      // changes and never sets PlayerContext.isBroadcastMode=true.
-      navigateToLive("", activeBroadcastTitle, 0, undefined, thumbUrl ?? undefined);
-    } else if (fallbackSermon && isWatchLiveCTAVisible && v2Connected) {
-      // Only navigate to a fallback sermon when ALL three conditions hold:
-      //   1. A fallback sermon exists to play.
-      //   2. The broadcast CTA is visible (idle / error) — not loading/live.
-      //   3. v2Connected: the V2 server has delivered at least one snapshot,
-      //      confirming the channel is genuinely empty rather than still
-      //      bootstrapping.
-      //
-      // Without guard (3), on YouTube-only deployments the following sequence
-      // caused "Watch Live" to silently open a VOD sermon instead of the player:
-      //
-      //   Cold start → FSM in BOOTSTRAP → v2Server=null → hasYoutubeOverride=false
-      //   → falls into this branch → navigateToSermon(fallbackSermon)
-      //   → user ends up on a sermon, not the live player.
-      //
-      // With guard (3), we only enter the VOD path when the server has confirmed
-      // there is no active broadcast. Pre-snapshot: fall through to the live
-      // player below — it shows its own "Connecting…" state if needed.
-      //
-      // ALSO do NOT fall through here when "Open Player" is the visible CTA
-      // (isWatchLiveCTAVisible = false). In that state the broadcast FSM is
-      // loading, live, or reconnecting — navigating to a sermon would take the
-      // user to VOD instead of the live player.
-      navigateToSermon(fallbackSermon);
-    } else {
-      // No uploaded broadcast, no YouTube override confirmed in the snapshot,
-      // and either there is no fallback sermon or the broadcast is already
-      // loading/live/reconnecting.  Always open the live broadcast player — it
-      // shows its own "Connecting…" or "Off Air" state rather than stranding
-      // the user on the home screen.
-      if (__DEV__) {
-        console.warn(
-          "[HeroSection] handleTuneIn — navigating to live player (no specific source resolved yet)",
-          { hasUploadedBroadcast, hasYoutubeOverride, isWatchLiveCTAVisible },
-        );
-      }
-      navigateToLive("", activeBroadcastTitle || "Live Broadcast", 0, undefined, thumbUrl ?? undefined);
-    }
+    // Always navigate to the live broadcast player regardless of broadcast state.
+    // The player screen is the authoritative UI — it shows Connecting / Live /
+    // Off Air / Reconnecting states correctly, which is always the right destination
+    // when a user taps the hero section.
+    navigateToLive(
+      "",
+      activeBroadcastTitle || "Live Broadcast",
+      0,
+      undefined,
+      thumbUrl ?? undefined,
+    );
   }, [
     hasUploadedBroadcast,
     hasYoutubeOverride,
     activeBroadcastTitle,
-    fallbackSermon,
-    isWatchLiveCTAVisible,
     thumbUrl,
-    v2Connected,
   ]);
 
   // ── "Open Player" dedicated handler ──────────────────────────────────────────
-  // The "Open Player" button has its own handler that is ALWAYS a direct
-  // navigation to the live broadcast player — it never branches to a sermon or
-  // any other screen.  This eliminates any ambiguity from the shared
-  // handleTuneIn's multi-branch logic (Watch Live / Watch Now / Open Player)
-  // which could theoretically route to VOD if isWatchLiveCTAVisible were stale
-  // at the moment the tap was processed.
-  //
-  // The handler reuses the shared lastTuneInMs ref so that if both this and
-  // the outer-hero Pressable's handleTuneIn fire on the same gesture (possible
-  // on older Android), only one navigation is dispatched.
+  // Always navigates directly to the live broadcast player. Never routes to VOD.
+  // Shares the lastTuneInMs debounce ref with handleTuneIn so that a double-tap
+  // (outer hero Pressable + inner button on the same gesture) dispatches only one
+  // navigation.
   const handleOpenPlayer = useCallback(() => {
     const now = Date.now();
     if (now - lastTuneInMs.current < 600) {
@@ -611,14 +541,10 @@ const HeroSection = React.memo(function HeroSection({
     if (__DEV__) {
       console.log(
         "[HeroSection] handleOpenPlayer — navigating to live broadcast player",
-        { activeBroadcastTitle, thumbUrl, hasUploadedBroadcast, hasYoutubeOverride },
+        { activeBroadcastTitle, thumbUrl },
       );
     }
 
-    // Always navigate to the live player regardless of broadcast state.
-    // The player screen is the authoritative source of truth (connecting /
-    // live / off-air / reconnecting) and has far richer status UI than the
-    // home hero can provide.
     navigateToLive(
       "",
       activeBroadcastTitle || "Live Broadcast",
@@ -627,17 +553,57 @@ const HeroSection = React.memo(function HeroSection({
       thumbUrl ?? undefined,
       "hero-open-player",
     );
-  // navigateToLive is a module-level function (not a useCallback) so it is a
-  // stable reference and does not need to be listed as a dep. The only values
-  // captured from the closure are activeBroadcastTitle and thumbUrl — both are
-  // primitive/string, and their staleness would only affect the title/thumbnail
-  // passed to the player (a cosmetic concern, not a navigation failure).
-  // hasUploadedBroadcast and hasYoutubeOverride were previously listed here but
-  // are never referenced in the handler body — they caused handleOpenPlayer to be
-  // recreated on every broadcast state change during the BOOTSTRAP→LIVE_OVERRIDE_ACTIVE
-  // transition, creating a stale-handler window exactly when users are most
-  // likely to tap the button.
   }, [activeBroadcastTitle, thumbUrl]);
+
+  // ── Hero fullscreen handler ───────────────────────────────────────────────────
+  // Opens the broadcast player — with auto-fullscreen for uploaded MP4/HLS
+  // broadcasts, and without it for YouTube override/shuffle sessions.
+  //
+  // The `openFullscreen=true` param tells the player screen to call
+  // enterFullscreen() after it mounts, landing the user directly in landscape
+  // fullscreen for an immersive broadcast experience.
+  //
+  // YouTube-override broadcasts (v2Override.kind="youtube") are excluded from
+  // auto-fullscreen because:
+  //   1. Our custom fullscreen Modal embeds a YoutubePlayer which has its own
+  //      native fullscreen button — entering both simultaneously conflicts.
+  //   2. On YouTube-only deployments (ytShuffleFallback always active), the
+  //      override snapshot arrives ~100 ms after player mount, BEFORE the
+  //      350 ms auto-fullscreen timer fires — so the modal would open and
+  //      show a YouTube player without standard fullscreen chrome.
+  // In these cases we navigate to the player normally; the YouTube player's
+  // built-in fullscreen button provides the same experience.
+  const handleHeroFullscreen = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTuneInMs.current < 600) {
+      if (__DEV__) {
+        console.log("[HeroSection] handleHeroFullscreen debounced");
+      }
+      return;
+    }
+    lastTuneInMs.current = now;
+
+    if (__DEV__) {
+      console.log(
+        "[HeroSection] handleHeroFullscreen",
+        { hasYoutubeOverride, hasUploadedBroadcast },
+      );
+    }
+
+    // YouTube override → open player normally (no auto-fullscreen) so the
+    // YouTube player's own fullscreen button handles the experience.
+    const wantAutoFullscreen = hasUploadedBroadcast && !hasYoutubeOverride;
+
+    navigateToLive(
+      "",
+      activeBroadcastTitle || "Live Broadcast",
+      0,
+      undefined,
+      thumbUrl ?? undefined,
+      "hero-fullscreen",
+      wantAutoFullscreen,
+    );
+  }, [hasUploadedBroadcast, hasYoutubeOverride, activeBroadcastTitle, thumbUrl]);
 
   return (
     <Pressable
@@ -777,18 +743,16 @@ const HeroSection = React.memo(function HeroSection({
 
           {/* ── CTA / Reconnect button ──
               Priority order:
-              1. isFatal → "Reconnect" button calls forceRebind() to fully reload transport.
-              2. isWatchLiveCTAVisible (idle / offline / error) → "Watch Live" / "Watch Now".
-              3. Live / loading / reconnecting → "Open Player" (handleOpenPlayer — always
-                 navigates directly to the broadcast player, no VOD branching). */}
+              1. isFatal → "Reconnect" restores the transport + opens the player.
+              2. Live / loading / reconnecting → "Open Player" (solid primary button).
+              3. Idle / offline → "Watch Live" (primary button, navigates to player).
+              All non-Reconnect paths call handleOpenPlayer — a single, direct
+              handler that always navigates to the broadcast player regardless of
+              broadcast state. The player screen is the authoritative UI for showing
+              connecting / live / off-air / reconnecting states. */}
           {isFatal ? (
-            // isFatal: FSM reached FATAL state. forceRebind() reconnects the
-            // transport. We ALSO navigate to the player immediately — the
-            // player screen has a superior reconnection UI (retry countdown,
-            // quality badge, FATAL error overlay with status detail) compared
-            // to the home screen which only shows the StreamStatusBadge. The
-            // player's own BroadcastHlsPlayer watchdog will drive recovery;
-            // leaving the user on the home screen wastes the recovery window.
+            // FATAL: forceRebind() restarts the WS transport + navigate to the
+            // player which has its own retry-countdown and error overlay.
             <Pressable
               onPress={() => {
                 forceRebind();
@@ -811,46 +775,40 @@ const HeroSection = React.memo(function HeroSection({
               <Feather name="refresh-cw" size={13} color="#fff" />
               <Text style={styles.heroBtnText}>Reconnect</Text>
             </Pressable>
-          ) : !watchNowDisabled && isWatchLiveCTAVisible ? (
+          ) : !isWatchLiveCTAVisible ? (
+            // Broadcast is live / loading / reconnecting — solid primary CTA.
             <Pressable
-              onPress={handleTuneIn}
+              onPress={handleOpenPlayer}
+              hitSlop={8}
+              style={({ pressed }) => [
+                styles.heroBtn,
+                { backgroundColor: c.primary, opacity: pressed ? 0.85 : 1 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Open broadcast player"
+            >
+              <Feather name="play" size={13} color="#fff" />
+              <Text style={styles.heroBtnText}>Open Player</Text>
+            </Pressable>
+          ) : (
+            // Idle / offline — still navigate to the broadcast player so the
+            // user can see the off-air state or wait for the broadcast to start.
+            <Pressable
+              onPress={handleOpenPlayer}
+              hitSlop={8}
               style={({ pressed }) => [
                 styles.heroBtn,
                 { backgroundColor: c.primary, opacity: pressed ? 0.88 : 1 },
               ]}
               accessibilityRole="button"
-              accessibilityLabel={hasActiveBroadcast ? "Watch live broadcast" : "Watch sermon"}
+              accessibilityLabel={hasActiveBroadcast ? "Watch live broadcast" : "Watch broadcast player"}
             >
               <Feather name="play" size={13} color="#fff" />
               <Text style={styles.heroBtnText}>
                 {hasActiveBroadcast ? "Watch Live" : "Watch Now"}
               </Text>
             </Pressable>
-          ) : !watchNowDisabled && !isWatchLiveCTAVisible ? (
-            // "Open Player" — shown when the broadcast is live, loading, OR
-            // reconnecting (i.e. any non-idle, non-error state). Previously the
-            // button was hidden during reconnecting and only revealed after 5 s;
-            // this left users with no visible tap target while the outer hero
-            // Pressable still navigated. Showing it immediately ensures the user
-            // always has a clear affordance. The player screen provides its own
-            // superior reconnection UI (retry countdown, status badge, quality
-            // indicator). Uses handleOpenPlayer — a dedicated, direct handler
-            // that always navigates to the live player without the multi-branch
-            // logic of handleTuneIn (which can route to VOD in some states).
-            <Pressable
-              onPress={handleOpenPlayer}
-              hitSlop={8}
-              style={({ pressed }) => [
-                styles.heroBtnSecondary,
-                { borderColor: "rgba(255,255,255,0.45)", opacity: pressed ? 0.78 : 1 },
-              ]}
-              accessibilityRole="button"
-              accessibilityLabel="Open broadcast player"
-            >
-              <Feather name="maximize-2" size={13} color="#fff" />
-              <Text style={styles.heroBtnSecondaryText}>Open Player</Text>
-            </Pressable>
-          ) : null}
+          )}
         </View>
       </LinearGradient>
 
@@ -898,32 +856,27 @@ const HeroSection = React.memo(function HeroSection({
       )}
 
       {/* ── Fullscreen icon — bottom-right corner of hero ───────────────────
-          A persistent affordance to open the broadcast player fullscreen.
-          Visible whenever the hero preview is active (i.e. the full-screen
-          player is not already open). Calls handleOpenPlayer directly — the
-          same dedicated handler as the bottom CTA button — so all navigation
-          guards (600 ms debounce, safeNavPush retry, Sentry telemetry) apply
-          automatically.
+          Opens the broadcast player in landscape fullscreen mode on mount.
+          Passing openFullscreen=true tells the player screen to call
+          enterFullscreen() automatically, giving users an immersive full-screen
+          experience with a single tap.
 
-          Positioned in the bottom-right corner of the video area, just above
-          the live progress bar. zIndex 15 puts it above the gradient layers
-          (no explicit zIndex) but below the skeleton overlay (zIndex 20).
-          pointerEvents auto — the Pressable claims the responder at this
-          position; nothing behind it is affected. */}
-      {!isBroadcastMode && (
-        <Pressable
-          onPress={handleOpenPlayer}
-          hitSlop={12}
-          style={({ pressed }) => [
-            styles.heroFullscreenBtn,
-            { opacity: pressed ? 0.6 : 1 },
-          ]}
-          accessibilityRole="button"
-          accessibilityLabel="Open broadcast player fullscreen"
-        >
-          <Feather name="maximize-2" size={13} color="rgba(255,255,255,0.92)" />
-        </Pressable>
-      )}
+          Always visible (not gated on isBroadcastMode) so users always have
+          this affordance on the home screen. Positioned in the bottom-right
+          corner, just above the live progress bar. zIndex 15 sits above the
+          gradient layers but below the skeleton overlay (zIndex 20). */}
+      <Pressable
+        onPress={handleHeroFullscreen}
+        hitSlop={14}
+        style={({ pressed }) => [
+          styles.heroFullscreenBtn,
+          { opacity: pressed ? 0.55 : 1 },
+        ]}
+        accessibilityRole="button"
+        accessibilityLabel="Open broadcast player in fullscreen"
+      >
+        <Feather name="maximize-2" size={14} color="rgba(255,255,255,0.95)" />
+      </Pressable>
 
       {/* ── Live progress bar — bottom edge of hero ─────────────────────────
           Shows broadcast position (elapsed / total duration) so viewers see at
