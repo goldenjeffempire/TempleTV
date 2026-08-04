@@ -856,21 +856,43 @@ export default function PlayerScreen() {
     }
   }, []);
 
+  // ── Stable ref for the latest V2 YouTube override ID ────────────────────
+  // The auto-fullscreen timer fires 350 ms after mount, by which time the
+  // first V2 WS snapshot has usually arrived (typically <200 ms on a good
+  // connection). A ref lets the timer closure read the *current* value at
+  // the moment it fires rather than the stale value captured at mount.
+  const v2YouTubeOverrideRef = useRef<string | null>(v2YouTubeOverrideVideoId);
+  // Keep the ref in sync with every render without an extra useEffect.
+  v2YouTubeOverrideRef.current = v2YouTubeOverrideVideoId;
+
   // ── Auto-fullscreen on mount ─────────────────────────────────────────────
   // When openFullscreen=true (set by the hero maximize icon), enter landscape
   // fullscreen automatically after the screen renders. A 350 ms delay lets the
   // navigation slide animation complete and the player shell lay out before
   // locking the orientation — entering fullscreen too early on iOS can leave the
   // modal in portrait until the next touch.
-  // YouTube and YouTube-override paths are excluded: the native YouTube player
-  // manages fullscreen internally; our overlay would conflict with its controls.
+  //
+  // Excluded surfaces — both have their own native fullscreen controls that
+  // conflict with our custom Modal:
+  //   • Direct YouTube routes (params.youtubeId set)
+  //   • V2 YouTube-override / ytShuffleFallback (v2YouTubeOverrideRef resolves
+  //     to a video ID by the time the 350 ms timer fires)
+  //
+  // For YouTube-only deployments (ytShuffleFallback always active), the WS
+  // snapshot arrives ~100 ms after mount — well before 350 ms — so the ref
+  // will hold the override video ID when the timer fires, reliably skipping
+  // the modal and letting the YouTube player manage its own fullscreen.
   useEffect(() => {
     if (!shouldAutoFullscreen) return;
-    // Exclude YouTube paths — they have their own native fullscreen control.
+    // Exclude direct YouTube VOD/live routes.
     const isYoutubeLocal = !!params.youtubeId && !hlsUrl;
     if (isYoutubeLocal) return;
 
     const t = setTimeout(() => {
+      // Re-check V2 YouTube override at fire time: if the WS snapshot has
+      // arrived and identified a YouTube override, skip our custom modal so
+      // the YouTube player's native fullscreen handles the experience.
+      if (v2YouTubeOverrideRef.current) return;
       enterFullscreen();
     }, 350);
     return () => clearTimeout(t);

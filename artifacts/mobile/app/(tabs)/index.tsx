@@ -556,10 +556,23 @@ const HeroSection = React.memo(function HeroSection({
   }, [activeBroadcastTitle, thumbUrl]);
 
   // ── Hero fullscreen handler ───────────────────────────────────────────────────
-  // Opens the broadcast player in fullscreen/landscape mode immediately on mount.
-  // The `openFullscreen=true` param tells the player screen to call enterFullscreen()
-  // after it mounts, giving users an immersive full-screen broadcast experience
-  // with a single tap of the maximize icon.
+  // Opens the broadcast player — with auto-fullscreen for uploaded MP4/HLS
+  // broadcasts, and without it for YouTube override/shuffle sessions.
+  //
+  // The `openFullscreen=true` param tells the player screen to call
+  // enterFullscreen() after it mounts, landing the user directly in landscape
+  // fullscreen for an immersive broadcast experience.
+  //
+  // YouTube-override broadcasts (v2Override.kind="youtube") are excluded from
+  // auto-fullscreen because:
+  //   1. Our custom fullscreen Modal embeds a YoutubePlayer which has its own
+  //      native fullscreen button — entering both simultaneously conflicts.
+  //   2. On YouTube-only deployments (ytShuffleFallback always active), the
+  //      override snapshot arrives ~100 ms after player mount, BEFORE the
+  //      350 ms auto-fullscreen timer fires — so the modal would open and
+  //      show a YouTube player without standard fullscreen chrome.
+  // In these cases we navigate to the player normally; the YouTube player's
+  // built-in fullscreen button provides the same experience.
   const handleHeroFullscreen = useCallback(() => {
     const now = Date.now();
     if (now - lastTuneInMs.current < 600) {
@@ -571,8 +584,15 @@ const HeroSection = React.memo(function HeroSection({
     lastTuneInMs.current = now;
 
     if (__DEV__) {
-      console.log("[HeroSection] handleHeroFullscreen — opening player in fullscreen");
+      console.log(
+        "[HeroSection] handleHeroFullscreen",
+        { hasYoutubeOverride, hasUploadedBroadcast },
+      );
     }
+
+    // YouTube override → open player normally (no auto-fullscreen) so the
+    // YouTube player's own fullscreen button handles the experience.
+    const wantAutoFullscreen = hasUploadedBroadcast && !hasYoutubeOverride;
 
     navigateToLive(
       "",
@@ -581,9 +601,9 @@ const HeroSection = React.memo(function HeroSection({
       undefined,
       thumbUrl ?? undefined,
       "hero-fullscreen",
-      true, // openFullscreen=true → player auto-enters landscape fullscreen on mount
+      wantAutoFullscreen,
     );
-  }, [activeBroadcastTitle, thumbUrl]);
+  }, [hasUploadedBroadcast, hasYoutubeOverride, activeBroadcastTitle, thumbUrl]);
 
   return (
     <Pressable
