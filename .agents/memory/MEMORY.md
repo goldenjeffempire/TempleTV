@@ -1,3 +1,4 @@
+- [EAS local credentials — JKS required, PKCS12 alias not resolved](eas-local-credentials-jks-required.md) — PKCS12 (.p12) keystore fails EAS alias lookup even when keytool reads it fine; convert to JKS first.
 - [EAS submission fails when pnpm peer-hash variants block hoisting](eas-pnpm-hoist-conflict.md) — multiple expo/expo-router peer-hash variants prevent hoisting; fix: pnpm install --ignore-scripts before eas build.
 - [pnpm patch + lockfile sync — EAS and Render both fail](pnpm-patch-lockfile-sync.md) — after any patch change, run pnpm install and commit both patch + lockfile; missing patchedDependencies in lockfile = Kotlin build error on EAS + LOCKFILE_CONFIG_MISMATCH on Render.
 - [EAS root .easignore + google-mobile-ads Kotlin pinning](eas-android-dir-and-ads-kotlin.md) — root .easignore governs monorepo uploads (must exclude artifacts/mobile/android/); rn-google-mobile-ads 16.3.4 max for Kotlin 2.1.x projects.
