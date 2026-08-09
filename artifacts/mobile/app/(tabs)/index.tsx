@@ -606,14 +606,7 @@ const HeroSection = React.memo(function HeroSection({
   }, [hasUploadedBroadcast, hasYoutubeOverride, activeBroadcastTitle, thumbUrl]);
 
   return (
-    <Pressable
-      onPress={handleTuneIn}
-      disabled={watchNowDisabled}
-      style={{ width, height: totalHeroHeight }}
-      accessibilityRole="button"
-      accessibilityLabel={hasActiveBroadcast ? "Watch Now — live broadcast" : "Watch latest sermon"}
-      accessibilityState={{ disabled: watchNowDisabled }}
-    >
+    <View style={{ width, height: totalHeroHeight }}>
       {/* Base layer — ambient blurred fill covers any letterbox/pillarbox areas
           produced by the contained sharp thumbnail, so there are no harsh
           black bars. Mirrors the pattern used in V2PlayerContainer's poster. */}
@@ -623,6 +616,7 @@ const HeroSection = React.memo(function HeroSection({
           style={[StyleSheet.absoluteFill, { opacity: 0.5 }]}
           contentFit="cover"
           blurRadius={25}
+          pointerEvents="none"
           accessible={false}
         />
       )}
@@ -633,6 +627,7 @@ const HeroSection = React.memo(function HeroSection({
           source={{ uri: thumbUrl }}
           style={StyleSheet.absoluteFill}
           contentFit="contain"
+          pointerEvents="none"
         />
       )}
 
@@ -652,6 +647,19 @@ const HeroSection = React.memo(function HeroSection({
           suppressEventsOverride={isBroadcastMode}
         />
       </View>
+
+      {/* Full-hero tap target sits behind every visual layer. Keeping this as a
+          sibling (rather than the parent of the CTA) is important on native:
+          nested Pressables can compete for the same responder and make the
+          visible "Open Player" button appear inert on some Android/iOS builds. */}
+      <Pressable
+        onPress={handleTuneIn}
+        disabled={watchNowDisabled}
+        style={StyleSheet.absoluteFill}
+        accessibilityRole="button"
+        accessibilityLabel={hasActiveBroadcast ? "Watch Now — live broadcast" : "Watch latest sermon"}
+        accessibilityState={{ disabled: watchNowDisabled }}
+      />
 
       {/* ── Mute / Unmute toggle — top-right corner ──────────────────────────
           Only shown when there is an active non-YouTube broadcast playing (so
@@ -712,6 +720,7 @@ const HeroSection = React.memo(function HeroSection({
         style={[StyleSheet.absoluteFill, { justifyContent: "flex-end" }]}
         start={{ x: 0, y: 0 }}
         end={{ x: 0, y: 1 }}
+        pointerEvents="box-none"
       >
         <View style={styles.heroContent}>
           {/* ── Badges row ── */}
@@ -908,7 +917,7 @@ const HeroSection = React.memo(function HeroSection({
           <SkeletonHero />
         </Animated.View>
       )}
-    </Pressable>
+    </View>
   );
 });
 
