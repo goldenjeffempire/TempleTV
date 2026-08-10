@@ -469,12 +469,10 @@ const HeroSection = React.memo(function HeroSection({
     : "Live Broadcast";
 
   // ── Navigation debounce guard ─────────────────────────────────────────────
-  // 600 ms window prevents a double-navigation from rapid successive taps or
-  // (on older Android) both the outer hero Pressable and the inner CTA button
-  // resolving on the same gesture. React Native Pressable components don't
-  // propagate touches to parents, so the double-fire scenario is rare — but
-  // the debounce is cheap insurance. A double router.push() would push /player
-  // twice onto the stack, requiring two back-presses to return home.
+  // 600 ms prevents duplicate /player entries from rapid taps. The CTA is the
+  // only player navigation responder; the old full-hero Pressable competed
+  // with the visible CTA on native builds and could make the button appear
+  // inert when both responders participated in the same gesture.
   //
   // NOTE: We intentionally do NOT use isNavPushActive() here. That flag is
   // global — any safeNavPush call anywhere in the app (LiveBroadcastSupervisor,
@@ -485,49 +483,11 @@ const HeroSection = React.memo(function HeroSection({
   // actually needs it to prevent the iOS 18+ bounce-back race — is unaffected.
   const lastTuneInMs = useRef(0);
 
-  const handleTuneIn = useCallback(() => {
-    // Debounce guard — 600 ms window prevents a double-navigation that can
-    // occur when both the outer hero Pressable AND the inner CTA button fire
-    // on the same tap boundary, or when the user taps rapidly.
-    const now = Date.now();
-    if (now - lastTuneInMs.current < 600) {
-      if (__DEV__) {
-        console.log("[HeroSection] handleTuneIn debounced (< 600 ms since last call)");
-      }
-      return;
-    }
-    lastTuneInMs.current = now;
-
-    if (__DEV__) {
-      console.log(
-        "[HeroSection] handleTuneIn — navigating to live player",
-        { hasUploadedBroadcast, hasYoutubeOverride, activeBroadcastTitle, thumbUrl },
-      );
-    }
-
-    // Always navigate to the live broadcast player regardless of broadcast state.
-    // The player screen is the authoritative UI — it shows Connecting / Live /
-    // Off Air / Reconnecting states correctly, which is always the right destination
-    // when a user taps the hero section.
-    navigateToLive(
-      "",
-      activeBroadcastTitle || "Live Broadcast",
-      0,
-      undefined,
-      thumbUrl ?? undefined,
-    );
-  }, [
-    hasUploadedBroadcast,
-    hasYoutubeOverride,
-    activeBroadcastTitle,
-    thumbUrl,
-  ]);
-
   // ── "Open Player" dedicated handler ──────────────────────────────────────────
   // Always navigates directly to the live broadcast player. Never routes to VOD.
-  // Shares the lastTuneInMs debounce ref with handleTuneIn so that a double-tap
-  // (outer hero Pressable + inner button on the same gesture) dispatches only one
-  // navigation.
+  // This is intentionally the only handler used by the hero's open/watch CTA.
+  // The player route owns connection state, so this remains usable while the
+  // broadcast snapshot is loading, reconnecting, or temporarily unavailable.
   const handleOpenPlayer = useCallback(() => {
     const now = Date.now();
     if (now - lastTuneInMs.current < 600) {
@@ -554,6 +514,11 @@ const HeroSection = React.memo(function HeroSection({
       "hero-open-player",
     );
   }, [activeBroadcastTitle, thumbUrl]);
+
+  const handleReconnect = useCallback(() => {
+    forceRebind();
+    handleOpenPlayer();
+  }, [forceRebind, handleOpenPlayer]);
 
   // ── Hero fullscreen handler ───────────────────────────────────────────────────
   // Opens the broadcast player — with auto-fullscreen for uploaded MP4/HLS
@@ -647,19 +612,6 @@ const HeroSection = React.memo(function HeroSection({
           suppressEventsOverride={isBroadcastMode}
         />
       </View>
-
-      {/* Full-hero tap target sits behind every visual layer. Keeping this as a
-          sibling (rather than the parent of the CTA) is important on native:
-          nested Pressables can compete for the same responder and make the
-          visible "Open Player" button appear inert on some Android/iOS builds. */}
-      <Pressable
-        onPress={handleTuneIn}
-        disabled={watchNowDisabled}
-        style={StyleSheet.absoluteFill}
-        accessibilityRole="button"
-        accessibilityLabel={hasActiveBroadcast ? "Watch Now — live broadcast" : "Watch latest sermon"}
-        accessibilityState={{ disabled: watchNowDisabled }}
-      />
 
       {/* ── Mute / Unmute toggle — top-right corner ──────────────────────────
           Only shown when there is an active non-YouTube broadcast playing (so
@@ -763,21 +715,12 @@ const HeroSection = React.memo(function HeroSection({
             // FATAL: forceRebind() restarts the WS transport + navigate to the
             // player which has its own retry-countdown and error overlay.
             <Pressable
-              onPress={() => {
-                forceRebind();
-                navigateToLive(
-                  "",
-                  activeBroadcastTitle,
-                  0,
-                  undefined,
-                  thumbUrl ?? undefined,
-                  "hero-reconnect",
-                );
-              }}
+              onPress={handleReconnect}
               style={({ pressed }) => [
                 styles.heroBtn,
                 { backgroundColor: "#DC2626", opacity: pressed ? 0.85 : 1 },
               ]}
+              testID="hero-open-player-button"
               accessibilityRole="button"
               accessibilityLabel="Reconnect to live broadcast"
             >
@@ -793,6 +736,7 @@ const HeroSection = React.memo(function HeroSection({
                 styles.heroBtn,
                 { backgroundColor: c.primary, opacity: pressed ? 0.85 : 1 },
               ]}
+              testID="hero-open-player-button"
               accessibilityRole="button"
               accessibilityLabel="Open broadcast player"
             >
@@ -809,6 +753,7 @@ const HeroSection = React.memo(function HeroSection({
                 styles.heroBtn,
                 { backgroundColor: c.primary, opacity: pressed ? 0.88 : 1 },
               ]}
+              testID="hero-open-player-button"
               accessibilityRole="button"
               accessibilityLabel={hasActiveBroadcast ? "Watch live broadcast" : "Watch broadcast player"}
             >
