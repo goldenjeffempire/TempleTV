@@ -27,7 +27,21 @@ function isPlaceholder(value: string): boolean {
   return value.startsWith("REPLACE_WITH_") || value.startsWith("REPLACE_");
 }
 
-function readAppId(name: string, sampleId: string): string {
+/**
+ * Read an AdMob App ID from the environment.
+ *
+ * @param name     - env var name (EXPO_PUBLIC_ADMOB_*_APP_ID)
+ * @param sampleId - fallback sample ID for non-production builds
+ * @param platform - "android" | "ios" — only enforce the production guard when
+ *                   EAS_BUILD_PLATFORM matches (or is unset). This lets an
+ *                   Android-only build proceed even when the iOS App ID hasn't
+ *                   been created yet, and vice-versa.
+ */
+function readAppId(
+  name: string,
+  sampleId: string,
+  platform?: "android" | "ios",
+): string {
   const raw = process.env[name]?.trim() ?? "";
   // Reject unfilled eas.json placeholders ("REPLACE_WITH_*") the same way we
   // treat a missing env var — they must never reach the native plugin because
@@ -37,9 +51,21 @@ function readAppId(name: string, sampleId: string): string {
   if (value) return value;
 
   const appEnv = (process.env.APP_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
-  if (appEnv === "production") {
+  // EAS sets EAS_BUILD_PLATFORM to "android" or "ios" during cloud builds.
+  const buildPlatform = (process.env.EAS_BUILD_PLATFORM ?? "").toLowerCase() as
+    | "android"
+    | "ios"
+    | "";
+
+  // Only throw when we are actually building for this platform. If the build
+  // platform is the *other* platform (or not set), fall back to the sample ID
+  // so builds aren't blocked by a missing credential for a platform not in scope.
+  const isRelevantPlatform =
+    !platform || !buildPlatform || buildPlatform === platform;
+
+  if (appEnv === "production" && isRelevantPlatform) {
     throw new Error(
-      `[mobile config] ${name} is required for production builds. ` +
+      `[mobile config] ${name} is required for production ${platform ?? ""} builds. ` +
         "The Google sample App ID must never ship in a release binary. " +
         "Set it as an EAS secret or fill in the eas.json placeholder.",
     );
@@ -52,10 +78,12 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   const androidAppId = readAppId(
     "EXPO_PUBLIC_ADMOB_ANDROID_APP_ID",
     SAMPLE_ANDROID_APP_ID,
+    "android",
   );
   const iosAppId = readAppId(
     "EXPO_PUBLIC_ADMOB_IOS_APP_ID",
     SAMPLE_IOS_APP_ID,
+    "ios",
   );
 
   const plugins: PluginEntry[] = (config.plugins ?? []).map((entry): PluginEntry => {
