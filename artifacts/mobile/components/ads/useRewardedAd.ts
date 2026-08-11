@@ -130,14 +130,14 @@ export function useRewardedAd({
       const ad = m.RewardedAd.createForAdRequest(unitId, defaultRequestOptions());
       adRef.current = ad;
 
-      const unLoaded = ad.addAdEventListener(m.AdEventType.LOADED, () => {
+      const unLoaded = ad.addAdEventListener(m.AdEventType.LOADED ?? "loaded", () => {
         if (!isMountedRef.current) return;
         attemptRef.current = 0;
         setIsLoaded(true);
         reportAdEvent("ad_loaded", { format: "rewarded", adUnitId: unitId });
       });
 
-      const unClosed = ad.addAdEventListener(m.AdEventType.CLOSED, () => {
+      const unClosed = ad.addAdEventListener(m.AdEventType.CLOSED ?? "closed", () => {
         if (!isMountedRef.current) return;
         setIsLoaded(false);
         adRef.current = null;

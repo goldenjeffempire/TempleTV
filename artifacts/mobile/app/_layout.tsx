@@ -10,7 +10,7 @@ import {
 import { Feather } from "@expo/vector-icons";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Constants from "expo-constants";
-import { router, Stack, useRootNavigationState, useSegments } from "expo-router";
+import { Stack, useRootNavigationState, useSegments } from "expo-router";
 import { safeNavPush, safeNavReplace } from "@/lib/safeNavPush";
 import { navLogger } from "@/lib/navLogger";
 import * as SplashScreen from "expo-splash-screen";

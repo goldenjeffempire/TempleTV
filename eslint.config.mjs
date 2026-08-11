@@ -153,4 +153,38 @@ export default tseslint.config(
       "no-console": "off",
     },
   },
+
+  // ── Mobile Metro / Expo config scripts ──────────────────────────────────
+  // These files execute in Node during Expo prebuild and bundling. They use
+  // CommonJS because Expo's config-plugin loader requires it, so lint them as
+  // Node scripts instead of applying browser-source rules.
+  {
+    files: [
+      "artifacts/mobile/metro.config.js",
+      "artifacts/mobile/babel.config.js",
+      "artifacts/mobile/plugins/**/*.js",
+      "artifacts/mobile/modules/**/plugins/**/*.js",
+      "artifacts/mobile/scripts/**/*.{js,cjs}",
+      "artifacts/mobile/server/**/*.js",
+    ],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      "no-console": "off",
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
+
+  // ── Mobile web push service worker ───────────────────────────────────────
+  {
+    files: ["artifacts/mobile/public/sw-*.js"],
+    languageOptions: {
+      globals: {
+        self: "readonly",
+      },
+    },
+  },
 );

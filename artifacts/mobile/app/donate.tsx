@@ -7,6 +7,7 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 
 import React, { useEffect, useRef, useState } from "react";
 import {
+  Alert,
   Linking,
   Pressable,
   ScrollView,
@@ -14,7 +15,7 @@ import {
   Text,
   View,
 } from "react-native";
-import { router, Stack } from "expo-router";
+import { Stack } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -46,40 +47,6 @@ const USD_ACCOUNT = {
 };
 
 type FeatherName = React.ComponentProps<typeof Feather>["name"];
-
-interface DonationTier {
-  label: string;
-  description: string;
-  icon: FeatherName;
-  color: string;
-}
-
-const TIERS: DonationTier[] = [
-  {
-    label: "Seed Faith — ₦1,000",
-    description: "Plant a seed of faith in the ministry",
-    icon: "heart",
-    color: "#E91E63",
-  },
-  {
-    label: "Supporter — ₦5,000",
-    description: "Support the broadcast of the Word",
-    icon: "radio",
-    color: "#9C27B0",
-  },
-  {
-    label: "Partner — ₦10,000",
-    description: "Partner with JCTM to reach more souls",
-    icon: "users",
-    color: "#3F51B5",
-  },
-  {
-    label: "Kingdom Builder — ₦25,000",
-    description: "Help fund equipment and platform expansion",
-    icon: "star",
-    color: "#FF9800",
-  },
-];
 
 const GIVING_LINKS: { label: string; url: string; icon: FeatherName }[] = [
   { label: "Give via Paystack", url: "https://paystack.com/pay/jctm-giving", icon: "credit-card" },

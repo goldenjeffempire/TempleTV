@@ -1,6 +1,6 @@
 import { Platform } from "react-native";
 import { secureStorage } from "@/lib/secureStorage";
-import { STORAGE_KEYS, SECURE_KEYS } from "@/constants/config";
+import { SECURE_KEYS } from "@/constants/config";
 import { getApiBase } from "@/lib/apiBase";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
 
@@ -279,7 +279,7 @@ async function persistAuthResponse(data: AuthResponse): Promise<void> {
     secureStorage.setItem(SECURE_KEYS.authToken, data.accessToken ?? data.token),
     data.refreshToken
       ? secureStorage.setItem(SECURE_KEYS.authRefreshToken, data.refreshToken)
-      : Promise.resolve(),
+      : secureStorage.removeItem(SECURE_KEYS.authRefreshToken),
   ]);
 }
 
@@ -438,13 +438,14 @@ export async function apiSyncFavorite(action: "add" | "remove", video: {
   videoThumbnail: string;
   videoCategory: string;
 }): Promise<void> {
-  if (action === "add") {
-    await authFetch("/api/user/favorites", {
+  const res = action === "add"
+    ? await authFetch("/api/user/favorites", {
       method: "POST",
       body: JSON.stringify(video),
-    });
-  } else {
-    await authFetch(`/api/user/favorites/${video.videoId}`, { method: "DELETE" });
+    })
+    : await authFetch(`/api/user/favorites/${video.videoId}`, { method: "DELETE" });
+  if (!res.ok) {
+    throw new Error(await extractApiError(res, "Failed to sync favorite"));
   }
 }
 
@@ -455,14 +456,20 @@ export async function apiSyncHistory(video: {
   videoCategory: string;
   progressSecs?: number;
 }): Promise<void> {
-  await authFetch("/api/user/history", {
+  const res = await authFetch("/api/user/history", {
     method: "POST",
     body: JSON.stringify(video),
   });
+  if (!res.ok) {
+    throw new Error(await extractApiError(res, "Failed to sync watch history"));
+  }
 }
 
 export async function apiClearHistory(): Promise<void> {
-  await authFetch("/api/user/history", { method: "DELETE" });
+  const res = await authFetch("/api/user/history", { method: "DELETE" });
+  if (!res.ok) {
+    throw new Error(await extractApiError(res, "Failed to clear watch history"));
+  }
 }
 
 export interface CloudFavorite {

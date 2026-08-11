@@ -123,14 +123,14 @@ export function useRewardedInterstitialAd({
       );
       adRef.current = ad;
 
-      const unLoaded = ad.addAdEventListener(m.AdEventType.LOADED, () => {
+      const unLoaded = ad.addAdEventListener(m.AdEventType.LOADED ?? "loaded", () => {
         if (!isMountedRef.current) return;
         attemptRef.current = 0;
         setIsLoaded(true);
         reportAdEvent("ad_loaded", { format: "rewardedInterstitial", adUnitId: unitId });
       });
 
-      const unClosed = ad.addAdEventListener(m.AdEventType.CLOSED, () => {
+      const unClosed = ad.addAdEventListener(m.AdEventType.CLOSED ?? "closed", () => {
         if (!isMountedRef.current) return;
         setIsLoaded(false);
         adRef.current = null;

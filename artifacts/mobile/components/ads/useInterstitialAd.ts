@@ -133,14 +133,14 @@ export function useInterstitialAd({
       );
       adRef.current = ad;
 
-      const unLoaded = ad.addAdEventListener(m.AdEventType.LOADED, () => {
+      const unLoaded = ad.addAdEventListener(m.AdEventType.LOADED ?? "loaded", () => {
         if (!isMountedRef.current) return;
         attemptRef.current = 0;
         setIsLoaded(true);
         reportAdEvent("ad_loaded", { format: "interstitial", adUnitId: unitId });
       });
 
-      const unClosed = ad.addAdEventListener(m.AdEventType.CLOSED, () => {
+      const unClosed = ad.addAdEventListener(m.AdEventType.CLOSED ?? "closed", () => {
         if (!isMountedRef.current) return;
         setIsLoaded(false);
         adRef.current = null;
@@ -150,12 +150,12 @@ export function useInterstitialAd({
         }, 500);
       });
 
-      const unOpened = ad.addAdEventListener(m.AdEventType.OPENED, () => {
+      const unOpened = ad.addAdEventListener(m.AdEventType.OPENED ?? "opened", () => {
         reportAdEvent("ad_opened", { format: "interstitial", adUnitId: unitId });
       });
 
       const unClicked = ad.addAdEventListener(
-        m.AdEventType.CLICKED,
+        m.AdEventType.CLICKED ?? "clicked",
         () => {
           reportAdEvent("ad_clicked", {
             format: "interstitial",

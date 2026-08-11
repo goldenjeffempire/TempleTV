@@ -150,12 +150,11 @@ export default function SettingsScreen() {
 
   const { user, isLoggedIn, signOut } = useAuth();
   const { stopPlayback } = usePlayer();
-  const { history, clearHistory } = useWatchHistory();
+  const { history } = useWatchHistory();
   const { favorites } = useFavorites();
   const {
     prefs: notifPrefs,
     save: saveNotifPrefs,
-    hasSeenOptIn,
   } = useNotificationPreferences();
 
   const [notifGranted, setNotifGranted] = useState(false);
@@ -263,17 +262,6 @@ export default function SettingsScreen() {
       },
     ]);
   }, [signOut, stopPlayback]);
-
-  const handleClearHistory = useCallback(() => {
-    Alert.alert("Clear Watch History", "This will remove all watched videos from your history.", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Clear",
-        style: "destructive",
-        onPress: clearHistory,
-      },
-    ]);
-  }, [clearHistory]);
 
   return (
     <View style={[styles.container, { backgroundColor: c.background }]}>

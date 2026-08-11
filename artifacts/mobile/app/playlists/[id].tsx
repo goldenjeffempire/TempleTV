@@ -25,7 +25,7 @@ import {
 import { StatusBar } from "expo-status-bar";
 import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
-import { router, Stack, useLocalSearchParams } from "expo-router";
+import { Stack, useLocalSearchParams } from "expo-router";
 import { safeNavPush } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";

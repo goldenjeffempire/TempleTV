@@ -31,7 +31,6 @@ import React, {
   useSyncExternalStore,
 } from "react";
 import {
-  ActivityIndicator,
   Alert,
   Animated,
   AppState,
@@ -131,6 +130,8 @@ export default function PlayerScreen() {
     duration?: string;
     category?: string;
     description?: string;
+    /** Initial YouTube override known by the hero before the V2 snapshot arrives. */
+    initialYoutubeOverrideId?: string;
     /** When "true", the player enters landscape fullscreen automatically on mount.
      *  Set by the hero fullscreen icon so users land directly in an immersive
      *  fullscreen broadcast without an extra tap. */

@@ -355,7 +355,6 @@ const HeroSection = React.memo(function HeroSection({
   const {
     mediaState,
     isWatchLiveCTAVisible,
-    isReconnecting,
     isFatal,
   } = useMediaPlayerState();
 
@@ -449,18 +448,6 @@ const HeroSection = React.memo(function HeroSection({
       : youtubeOverrideVideoId
       ? `https://img.youtube.com/vi/${youtubeOverrideVideoId}/hqdefault.jpg`
       : fallbackSermon?.thumbnailUrl ?? null;
-
-  // Never permanently disable navigation: even during BOOTSTRAP or when the
-  // API is temporarily unreachable the user should always be able to open the
-  // player — it will show the broadcast engine's own state (connecting / off-air)
-  // rather than stranding them on the home screen.
-  //
-  // Previously this was `!hasActiveBroadcast && !fallbackSermon`, which blocked
-  // navigation during the first 8 s (WS bootstrap) and whenever the API was
-  // unreachable (dev mode missing EXPO_PUBLIC_API_URL, or production outage).
-  // The player screen is the authoritative source of truth for what's on air;
-  // the home screen should never be a gatekeeper.
-  const watchNowDisabled = false;
 
   // Derive the display title for the active broadcast so the player has a
   // meaningful title even for YouTube override sessions.
@@ -854,7 +841,6 @@ const HeroSection = React.memo(function HeroSection({
             style={[
               styles.heroProgressFill,
               // Use % width — flexbox resolves it correctly on RN.
-              // eslint-disable-next-line react-native/no-inline-styles
               { width: `${Math.round(heroProgress * 100)}%` },
             ]}
           />

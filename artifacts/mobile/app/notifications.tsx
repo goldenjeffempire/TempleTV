@@ -183,7 +183,7 @@ export default function NotificationsScreen() {
       setTotal(data.total);
       setPage(pg);
       setError(null);
-    } catch (err) {
+    } catch {
       setError("Couldn't load notifications. Check your connection.");
     }
   }, []);

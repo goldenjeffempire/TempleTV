@@ -122,7 +122,7 @@ function formatDuration(raw: string | null | undefined): string {
   return raw;
 }
 
-function apiVideoToSermon(v: ApiVideo, fallbackIndex: number): Sermon {
+function apiVideoToSermon(v: ApiVideo, _fallbackIndex: number): Sermon {
   const isLocal = v.videoSource === "local";
   const category = mapCategory(v.category) || inferCategory(v.title);
   return {
@@ -275,7 +275,7 @@ export function useVideos(): UseVideosResult {
         throw new Error("Malformed videos response: expected array");
       }
       if (gen !== loadGenRef.current) return; // superseded by a newer load()
-      const allMapped = firstPage.videos.map((v, i) => apiVideoToSermon(v, i));
+      const allMapped = firstPage.videos.map(apiVideoToSermon);
       setSermons([...allMapped]);
       hasDataRef.current = true;
       setIsStale(false);
@@ -634,7 +634,7 @@ export function usePaginatedVideos(opts: {
     // fetchPage never passes ifNoneMatch so this path is unreachable in
     // practice, but the null guard satisfies the updated return-type contract.
     if (!resp) throw new Error("Unexpected empty catalog response");
-    const mapped = resp.videos.map((v, i) => apiVideoToSermon(v, (pageNum - 1) * PAGE_SIZE + i));
+    const mapped = resp.videos.map(apiVideoToSermon);
     if (replace) {
       setSermons(mapped);
     } else {

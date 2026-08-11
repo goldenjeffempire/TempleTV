@@ -258,7 +258,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         /* ignore restore errors — stay logged out */
       } finally {
         markStartupPhase("auth_restore_done");
-        setIsLoading(false);
+        if (mountedRef.current) setIsLoading(false);
       }
     };
     restore();
