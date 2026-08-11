@@ -362,11 +362,24 @@ describe("navigateToLive params produce correct isBroadcastV2", () => {
   });
 
   it("YouTube override (hasYoutubeOverride=true) WITHOUT youtubeId param → V2 engine", () => {
-    // Branch: navigateToLive("", activeBroadcastTitle, 0, undefined, thumb)
-    // Intentionally omits youtubeId so isBroadcastV2=true and the player
-    // derives v2YouTubeOverrideVideoId reactively from the WS snapshot.
+    // Branch: navigateToLive("", activeBroadcastTitle, 0, undefined, thumb,
+    // "hero-open-player", false, initialYoutubeOverrideId). `youtubeId` must
+    // stay empty so V2 remains authoritative; the separate bootstrap value
+    // avoids waiting for the first V2 snapshot before rendering YouTube.
     const d = deriveFromParams({ isLive: "true", hlsUrl: "", youtubeId: "" });
     assert.equal(d.isBroadcastV2, true, "YouTube override via V2 engine (reactive)");
+  });
+
+  it("YouTube override bootstrap ID preserves V2 routing", () => {
+    const params = {
+      isLive: "true",
+      hlsUrl: "",
+      youtubeId: "",
+      initialYoutubeOverrideId: "dQw4w9WgXcQ",
+    };
+    const d = deriveFromParams(params);
+    assert.equal(d.isBroadcastV2, true, "bootstrap metadata must not bypass V2");
+    assert.equal(params.initialYoutubeOverrideId, "dQw4w9WgXcQ");
   });
 
   it("YouTube override WITH youtubeId → NOT V2 (old broken path, must not be used)", () => {

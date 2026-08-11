@@ -364,6 +364,7 @@ interface NavigateToLiveParams {
   title: string;
   hlsUrl: string;
   youtubeId: string;
+  initialYoutubeOverrideId?: string;
   thumbnailUrl: string;
   isLive: string;
   startPositionSecs: string;
@@ -375,6 +376,7 @@ function buildNavigateToLiveParams(
   positionSecs: number,
   youtubeId?: string,
   thumbnailUrl?: string,
+  initialYoutubeOverrideId?: string,
 ): NavigateToLiveParams {
   return {
     id: "live",
@@ -384,13 +386,15 @@ function buildNavigateToLiveParams(
     thumbnailUrl: thumbnailUrl ?? "",
     isLive: "true",
     startPositionSecs: String(Math.max(0, Math.round(positionSecs))),
+    ...(initialYoutubeOverrideId ? { initialYoutubeOverrideId } : {}),
   };
 }
 
 describe("navigateToLive params — YouTube-only deployment", () => {
-  it("youtubeId is populated when override video ID is passed", () => {
-    const params = buildNavigateToLiveParams("", "Live Broadcast", 0, YT_ID, undefined);
-    assert.equal(params.youtubeId, YT_ID);
+  it("bootstrap ID is populated without changing the V2 youtubeId param", () => {
+    const params = buildNavigateToLiveParams("", "Live Broadcast", 0, undefined, undefined, YT_ID);
+    assert.equal(params.youtubeId, "");
+    assert.equal(params.initialYoutubeOverrideId, YT_ID);
     assert.equal(params.isLive, "true");
     assert.equal(params.hlsUrl, "");
   });
@@ -476,18 +480,20 @@ describe("YouTube-only deployment — full tap-to-player scenario", () => {
     assert.equal(thumb, `https://img.youtube.com/vi/${YT_ID}/hqdefault.jpg`);
   });
 
-  it("Step 6: navigateToLive params include youtubeId and thumbnail", () => {
+  it("Step 6: navigateToLive params include bootstrap ID and thumbnail", () => {
     const id = extractYouTubeId(ytOverrideServer.override.url);
     const thumb = id ? buildYtThumbnailUrl(id) : undefined;
     const params = buildNavigateToLiveParams(
       "",
       ytOverrideServer.override.title,
       0,
-      id ?? undefined,
+      undefined,
       thumb,
+      id ?? undefined,
     );
 
-    assert.equal(params.youtubeId, YT_ID);
+    assert.equal(params.youtubeId, "");
+    assert.equal(params.initialYoutubeOverrideId, YT_ID);
     assert.equal(params.title, "Evening Worship");
     assert.equal(params.isLive, "true");
     assert.equal(params.hlsUrl, "");

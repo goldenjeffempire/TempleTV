@@ -101,6 +101,7 @@ function navigateToLive(
   thumbnailUrl?: string,
   source = "home-hero",
   openFullscreen = false,
+  initialYoutubeOverrideId?: string,
 ) {
   safeNavPush(
     "/player",
@@ -113,6 +114,7 @@ function navigateToLive(
       isLive: "true",
       startPositionSecs: String(Math.max(0, Math.round(positionSecs))),
       ...(openFullscreen ? { openFullscreen: "true" } : {}),
+      ...(initialYoutubeOverrideId ? { initialYoutubeOverrideId } : {}),
     },
     source,
   );
@@ -512,8 +514,10 @@ const HeroSection = React.memo(function HeroSection({
       undefined,
       thumbUrl ?? undefined,
       "hero-open-player",
+      false,
+      youtubeOverrideVideoId ?? undefined,
     );
-  }, [activeBroadcastTitle, thumbUrl]);
+  }, [activeBroadcastTitle, thumbUrl, youtubeOverrideVideoId]);
 
   const handleReconnect = useCallback(() => {
     forceRebind();
@@ -567,8 +571,15 @@ const HeroSection = React.memo(function HeroSection({
       thumbUrl ?? undefined,
       "hero-fullscreen",
       wantAutoFullscreen,
+      youtubeOverrideVideoId ?? undefined,
     );
-  }, [hasUploadedBroadcast, hasYoutubeOverride, activeBroadcastTitle, thumbUrl]);
+  }, [
+    hasUploadedBroadcast,
+    hasYoutubeOverride,
+    activeBroadcastTitle,
+    thumbUrl,
+    youtubeOverrideVideoId,
+  ]);
 
   return (
     <View style={{ width, height: totalHeroHeight }}>

@@ -300,6 +300,7 @@ export default function PlayerScreen() {
   const videoId      = params.id ?? "live";
   const title        = params.title ?? "Now Playing";
   const youtubeId    = params.youtubeId ?? params.videoId ?? "";
+  const initialYoutubeOverrideId = params.initialYoutubeOverrideId ?? "";
   // Use || (not ??) so an empty-string hlsUrl falls through to localVideoUrl.
   // This enables MP4-first playback: when the caller passes localVideoUrl
   // only (no HLS master yet), the player plays MP4 directly rather than
@@ -398,12 +399,18 @@ export default function PlayerScreen() {
   //
   // Handles both youtube.com/watch?v= and youtu.be/ URL formats.
   const v2YouTubeOverrideVideoId = useMemo(() => {
-    if (v2Override?.kind !== "youtube" || typeof v2Override.url !== "string" || !v2Override.url) {
-      return null;
+    if (v2Override?.kind === "youtube" && typeof v2Override.url === "string" && v2Override.url) {
+      const m = v2Override.url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+      return m?.[1] ?? null;
     }
-    const m = v2Override.url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
-    return m?.[1] ?? null;
-  }, [v2Override?.kind, v2Override?.url]);
+
+    // The hero already knows the active override. Use that value only until
+    // the player receives its first authoritative V2 snapshot; after that,
+    // an empty or non-YouTube override correctly clears the bootstrap value.
+    return v2ServerSnap === null && /^[A-Za-z0-9_-]{11}$/.test(initialYoutubeOverrideId)
+      ? initialYoutubeOverrideId
+      : null;
+  }, [initialYoutubeOverrideId, v2Override?.kind, v2Override?.url, v2ServerSnap]);
 
   // Sync PlayerContext.isBroadcastMode with whether the V2 broadcast engine
   // is active. Without this, the MiniPlayer and any context consumer that
