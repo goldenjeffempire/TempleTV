@@ -6,7 +6,7 @@ import { subscribeBroadcastEvents } from "@/services/broadcast";
 import { checkLiveStatus } from "@/services/youtube";
 import { getApiBase } from "@/lib/apiBase";
 import { BROADCAST_TITLE, BROADCAST_PREACHER } from "@/lib/broadcastIdentity";
-import { safeNavPush } from "@/lib/safeNavPush";
+import { safeNavPush, isNavPushActive } from "@/lib/safeNavPush";
 
 /**
  * LiveBroadcastSupervisor — monitors for genuine LIVE events and navigates
@@ -105,6 +105,18 @@ export function LiveBroadcastSupervisor() {
       }
       if (onPlayer()) {
         // User is already on the player — do not push again.
+        return;
+      }
+      // Guard: another safeNavPush is in-flight (e.g. user tapped "Open Player"
+      // while this async check was resolving). Expo Router receiving a second
+      // push during a modal animation can reset the stack to the home screen.
+      // Wait for the in-flight navigation to settle before pushing again.
+      if (isNavPushActive()) {
+        if (__DEV__) {
+          console.log(
+            "[LiveBroadcastSupervisor] nav blocked — another push in-flight (isNavPushActive)",
+          );
+        }
         return;
       }
       lastNavAtRef.current = now;

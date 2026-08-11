@@ -623,6 +623,15 @@ function RootLayoutNav() {
           ...noHeader,
           presentation: "modal",
           animation: "slide_from_bottom",
+          // Disable gesture-driven dismissal on every platform.
+          // On Android 13+ the predictive-back system can interpret a tap
+          // near the bottom edge (where "Open Player" lives) as a back
+          // gesture mid-animation and dismiss the modal before it finishes
+          // opening. On iOS, a downward swipe on "modal" presentation is the
+          // default dismiss gesture — disabling it prevents accidental swipe-
+          // downs from closing the live player while a service is airing.
+          // Users exit via the explicit close / back button inside the player.
+          gestureEnabled: false,
         }}
       />
       <Stack.Screen
