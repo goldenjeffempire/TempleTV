@@ -658,7 +658,13 @@ const HeroSection = React.memo(function HeroSection({
         pointerEvents="none"
       />
 
-      {/* ── Bottom gradient — text-legibility behind badges + CTA ─────────── */}
+      {/* ── Bottom gradient — purely visual, no interactive children ───────────
+          IMPORTANT: keep pointerEvents="none" here. On Android production builds,
+          expo-linear-gradient does not reliably forward pointerEvents="box-none"
+          to the underlying native view — the gradient's native box silently
+          absorbs all touches before they reach children, making every Pressable
+          inside appear completely unresponsive. The badges and CTA button are
+          rendered in a plain View sibling (below) that Android handles correctly. */}
       <LinearGradient
         colors={[
           "transparent",
@@ -667,9 +673,29 @@ const HeroSection = React.memo(function HeroSection({
           "rgba(0,0,0,0.92)",
         ]}
         locations={[0, 0.25, 0.62, 1]}
-        style={[StyleSheet.absoluteFill, { justifyContent: "flex-end" }]}
+        style={StyleSheet.absoluteFill}
         start={{ x: 0, y: 0 }}
         end={{ x: 0, y: 1 }}
+        pointerEvents="none"
+      />
+
+      {/* ── Hero interactive content — badges + CTA ──────────────────────────
+          Separated from the LinearGradient so touch delivery relies only on a
+          plain React Native View, which correctly implements pointerEvents on
+          every Android API level. pointerEvents="box-none" lets the View's own
+          background (transparent) pass touches through while its children (the
+          Pressables) still receive them normally.
+
+          Priority order:
+          1. isFatal → "Reconnect" restores the transport + opens the player.
+          2. Live / loading / reconnecting → "Open Player" (solid primary button).
+          3. Idle / offline → "Watch Live" (primary button, navigates to player).
+          All non-Reconnect paths call handleOpenPlayer — a single, direct
+          handler that always navigates to the broadcast player regardless of
+          broadcast state. The player screen is the authoritative UI for showing
+          connecting / live / off-air / reconnecting states. */}
+      <View
+        style={[StyleSheet.absoluteFill, { justifyContent: "flex-end" }]}
         pointerEvents="box-none"
       >
         <View style={styles.heroContent}>
@@ -700,15 +726,6 @@ const HeroSection = React.memo(function HeroSection({
             )}
           </View>
 
-          {/* ── CTA / Reconnect button ──
-              Priority order:
-              1. isFatal → "Reconnect" restores the transport + opens the player.
-              2. Live / loading / reconnecting → "Open Player" (solid primary button).
-              3. Idle / offline → "Watch Live" (primary button, navigates to player).
-              All non-Reconnect paths call handleOpenPlayer — a single, direct
-              handler that always navigates to the broadcast player regardless of
-              broadcast state. The player screen is the authoritative UI for showing
-              connecting / live / off-air / reconnecting states. */}
           {isFatal ? (
             // FATAL: forceRebind() restarts the WS transport + navigate to the
             // player which has its own retry-countdown and error overlay.
@@ -762,7 +779,7 @@ const HeroSection = React.memo(function HeroSection({
             </Pressable>
           )}
         </View>
-      </LinearGradient>
+      </View>
 
       {/* ── Floating logo overlay ─────────────────────────────────────────────
           Positioned inside the hero, below the notch/status-bar area.
