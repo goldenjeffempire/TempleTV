@@ -1320,8 +1320,23 @@ export default function PlayerScreen() {
     stopCountdown();
   }, [videoId, stopCountdown]);
 
+  // ── Debug mount banner (REMOVE after root cause confirmed) ─────────────────
+  // Bright green bar that appears the instant PlayerScreen renders and
+  // auto-hides after 5 s.  If the user sees it → screen IS mounting.
+  // If it never appears → navigation is blocked before the screen renders.
+  const [showDebugBanner, setShowDebugBanner] = React.useState(true);
+  React.useEffect(() => {
+    const t = setTimeout(() => setShowDebugBanner(false), 5000);
+    return () => clearTimeout(t);
+  }, []);
+
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
+      {showDebugBanner && (
+        <View style={styles.debugBanner} pointerEvents="none">
+          <Text style={styles.debugBannerText}>▶ PLAYER SCREEN LOADED — v132</Text>
+        </View>
+      )}
       {/*
        * Re-declare the same options that _layout.tsx sets for this screen.
        *
@@ -1339,16 +1354,24 @@ export default function PlayerScreen() {
        * immediately slide back down (the back-preview animation playing out),
        * making it look like the navigation failed.
        */}
+      {/*
+       * IMPORTANT: Do NOT set `animation` here.
+       * `navigation.setOptions({ animation })` called from within a mounted
+       * NativeStack screen is unsupported in React Navigation 7 — setting the
+       * entrance animation after the screen is already rendered can cause the
+       * screen to malfunction or silently dismiss on Android. The `animation`
+       * is correctly set at the layout level in _layout.tsx Stack.Screen and
+       * must NOT be repeated here.
+       *
+       * Only options that are safe to change after mount belong here:
+       * gestureEnabled, headerShown, title, etc.
+       */}
       <Stack.Screen
         options={{
           headerShown: false,
           header: () => null,
           title: "",
           gestureEnabled: false,
-          // Keep in sync with the player Stack.Screen in _layout.tsx.
-          // slide_from_bottom gives the broadcast player an "opening from
-          // the stage floor" feel consistent across both iOS and Android.
-          animation: "slide_from_bottom",
         }}
       />
       <StatusBar style="light" />
@@ -2481,6 +2504,24 @@ const styles = StyleSheet.create({
   // always opaque from the very first frame (eliminating any window where the
   // home screen could bleed through a transparent player card on Android).
   root: { flex: 1, backgroundColor: "#0a0a0a" },
+
+  // ── Debug banner (REMOVE after root cause confirmed) ──────────────────────
+  debugBanner: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 99999,
+    backgroundColor: "#00c853",
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    alignItems: "center",
+  },
+  debugBannerText: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 14,
+  },
 
   pageHeader: {
     flexDirection: "row",
