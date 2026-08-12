@@ -35,6 +35,7 @@ import {
   Animated,
   AppState,
   type AppStateStatus,
+  BackHandler,
   Image,
   Modal,
   Platform,
@@ -48,7 +49,7 @@ import {
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
-import { router, Stack, useLocalSearchParams } from "expo-router";
+import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { parseBoolParam, parseNumberParam } from "@/lib/params";
 import { navLogger } from "@/lib/navLogger";
 import { safeNavReplace } from "@/lib/safeNavPush";
@@ -373,6 +374,44 @@ export default function PlayerScreen() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Android back-button guard ──────────────────────────────────────────────
+  // Android has two mechanisms that can dismiss a screen without user intent:
+  //
+  // 1. Hardware back button — pressing the physical/virtual back button.
+  //    Without an explicit handler, RN forwards this to React Navigation
+  //    which pops the screen. We want to control this ourselves so we can
+  //    use the same logic as the in-screen "← back" button.
+  //
+  // 2. Predictive back gesture (Android 13+) — swiping from the screen edge
+  //    triggers a system-level back animation preview, and if gestureEnabled
+  //    is not forcefully propagated through every option-merge path it can
+  //    silently dismiss the player mid-animation.
+  //
+  // useFocusEffect: activates only while the player screen is focused and
+  // cleans up the handler automatically when the screen loses focus (e.g.
+  // when the user navigates to a child modal from within the player).
+  useFocusEffect(
+    useCallback(() => {
+      if (Platform.OS !== "android") return;
+
+      const handler = BackHandler.addEventListener("hardwareBackPress", () => {
+        // Mirror the in-screen back button's logic — go back in history
+        // if possible, otherwise fall back to the Watch tab home screen.
+        if (router.canGoBack()) {
+          router.back();
+        } else {
+          router.replace("/");
+        }
+        // Return true to signal that we handled the event and prevent
+        // the default Android back behavior (which would also pop the
+        // screen, but bypasses our safeNav telemetry).
+        return true;
+      });
+
+      return () => handler.remove();
+    }, []),
+  );
 
   // Derived V2 live metadata — conditional on isBroadcastV2 so VOD screens
   // never read stale broadcast state.
@@ -1283,7 +1322,35 @@ export default function PlayerScreen() {
 
   return (
     <View style={[styles.root, { backgroundColor: c.background }]}>
-      <Stack.Screen options={{ headerShown: false, header: () => null, title: "" }} />
+      {/*
+       * Re-declare the same options that _layout.tsx sets for this screen.
+       *
+       * In React Navigation 7 / Expo Router SDK 57, <Stack.Screen options={…}>
+       * rendered inside the route component calls navigation.setOptions() which
+       * MERGES with the navigator-level options. However, in some edge cases on
+       * Android the merge favours the component-level object, silently dropping
+       * keys it doesn't include (gestureEnabled, animation). Repeating those
+       * keys here makes the screen self-contained: even if the navigator-level
+       * options are lost for any reason, the screen still behaves correctly.
+       *
+       * gestureEnabled: false — critical on Android 13+ where the predictive-
+       * back system animates a back-preview even for card screens if this is
+       * not explicitly false. Without it, the player can appear to open and
+       * immediately slide back down (the back-preview animation playing out),
+       * making it look like the navigation failed.
+       */}
+      <Stack.Screen
+        options={{
+          headerShown: false,
+          header: () => null,
+          title: "",
+          gestureEnabled: false,
+          // Keep in sync with the player Stack.Screen in _layout.tsx.
+          // slide_from_bottom gives the broadcast player an "opening from
+          // the stage floor" feel consistent across both iOS and Android.
+          animation: "slide_from_bottom",
+        }}
+      />
       <StatusBar style="light" />
 
       {/* ── Page header: back button + title ───────────────────────── */}
@@ -2407,7 +2474,13 @@ export default function PlayerScreen() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
+  // Hardcode a near-black fallback so the player is NEVER transparent on first
+  // render — even before useColors() resolves the theme's background token.
+  // The dynamic { backgroundColor: c.background } applied inline takes over
+  // once the theme is available, but the fallback guarantees the screen is
+  // always opaque from the very first frame (eliminating any window where the
+  // home screen could bleed through a transparent player card on Android).
+  root: { flex: 1, backgroundColor: "#0a0a0a" },
 
   pageHeader: {
     flexDirection: "row",

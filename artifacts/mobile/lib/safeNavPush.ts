@@ -67,11 +67,17 @@ export function safeNavPush(
 ): void {
   const startTs = navLogger.logAttempt(pathname, params as Record<string, unknown> | undefined, source);
 
-  // Mark a push as in-flight for 1 500 ms. NativeTabLayout's useLayoutEffect
+  // Mark a push as in-flight for 3 000 ms. NativeTabLayout's useLayoutEffect
   // reads this via isNavPushActive() and skips its competing router.replace("/")
   // redirect when a push is already in progress — preventing the "Open Player"
   // tap from bouncing the user back to Home on iOS 18+.
-  navPushActiveUntil = Date.now() + 1_500;
+  //
+  // 3 000 ms (up from 1 500 ms): on slower Android devices the push animation
+  // (slide_from_bottom, 300–500 ms) plus React Navigation's commit cycle can
+  // exceed 1 500 ms before segments update to include "player". A wider window
+  // ensures LiveBroadcastSupervisor's isNavPushActive() check always blocks
+  // concurrent auto-navigation during the full opening transition.
+  navPushActiveUntil = Date.now() + 3_000;
 
   const attempt = (n: number): void => {
     try {
