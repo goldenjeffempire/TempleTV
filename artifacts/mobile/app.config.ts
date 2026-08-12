@@ -63,7 +63,15 @@ function readAppId(
   const isRelevantPlatform =
     !platform || !buildPlatform || buildPlatform === platform;
 
-  if (appEnv === "production" && isRelevantPlatform) {
+  // Only enforce the production guard when running on an EAS build server.
+  // EAS CLI also calls `expo config --json` locally (before uploading) with the
+  // profile's env vars applied — including APP_ENV=production and the
+  // REPLACE_WITH_* placeholder values from eas.json. Throwing there would
+  // block build submission even though the real secrets are set on the server.
+  // EAS sets EAS_BUILD=1 on its build workers but NOT during the local
+  // config-reading step, so this guard correctly distinguishes the two cases.
+  const onEasServer = process.env.EAS_BUILD === "1";
+  if (appEnv === "production" && isRelevantPlatform && onEasServer) {
     throw new Error(
       `[mobile config] ${name} is required for production ${platform ?? ""} builds. ` +
         "The Google sample App ID must never ship in a release binary. " +
