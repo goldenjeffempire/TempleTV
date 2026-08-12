@@ -621,16 +621,26 @@ function RootLayoutNav() {
         name="player"
         options={{
           ...noHeader,
-          presentation: "modal",
+          // React Navigation 7 (Expo Router SDK 57) changed modal behaviour on
+          // Android: "modal" now creates an *overlay* where the previous screen
+          // stays rendered and visible underneath. On some Android 13+ devices
+          // the OS predictive-back system then immediately dismisses the modal
+          // overlay — the player briefly slides up and the home screen snaps
+          // back, making it appear as though the player never opened.
+          //
+          // Fix: on Android we omit `presentation` entirely so the player
+          // opens as a standard full-screen card push (no overlay, no
+          // dismissal race). The slide_from_bottom animation still gives the
+          // same visual feel. On iOS we keep "modal" for the native sheet UX.
+          ...(Platform.OS === "ios" ? { presentation: "modal" as const } : {}),
           animation: "slide_from_bottom",
           // Disable gesture-driven dismissal on every platform.
-          // On Android 13+ the predictive-back system can interpret a tap
-          // near the bottom edge (where "Open Player" lives) as a back
-          // gesture mid-animation and dismiss the modal before it finishes
-          // opening. On iOS, a downward swipe on "modal" presentation is the
-          // default dismiss gesture — disabling it prevents accidental swipe-
-          // downs from closing the live player while a service is airing.
-          // Users exit via the explicit close / back button inside the player.
+          // On Android 13+ the predictive-back system can interpret a swipe
+          // from the bottom edge as a back gesture and dismiss the screen mid-
+          // animation. On iOS, a downward swipe on "modal" is the default
+          // dismiss gesture — disabling it prevents accidental swipe-downs
+          // from closing the live player during a service. Users exit via the
+          // explicit close / back button inside the player.
           gestureEnabled: false,
         }}
       />

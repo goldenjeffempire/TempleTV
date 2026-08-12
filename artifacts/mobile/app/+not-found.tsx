@@ -24,15 +24,35 @@
 
 import React, { useEffect } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
-import { router, Stack } from "expo-router";
+import { router, Stack, usePathname } from "expo-router";
 
 export default function NotFoundScreen() {
+  const pathname = usePathname();
+
   useEffect(() => {
+    // Capture to Sentry so we know when +not-found fires (and for which path).
+    // This is our canary: if a player navigation is visible here it means the
+    // player route failed to resolve — either the module crashed at load time
+    // or Expo Router couldn't match the path.
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const Sentry = require("@sentry/react-native") as {
+        captureMessage: (msg: string, level: "warning") => void;
+        addBreadcrumb: (b: { category: string; message: string; level: string }) => void;
+      };
+      Sentry.addBreadcrumb({
+        category: "navigation",
+        message: `+not-found mounted for path: ${pathname}`,
+        level: "warning",
+      });
+      Sentry.captureMessage(`+not-found: unmatched route "${pathname}"`, "warning");
+    } catch { /* Sentry unavailable */ }
+
     // Replace immediately — this runs before the first committed paint on
     // most devices, so users never see this screen at all.
     // "/" resolves to (tabs)/index (Watch/Home) — the app's default screen.
     router.replace("/");
-  }, []);
+  }, [pathname]);
 
   // Render a minimal branded loading indicator in case the redirect takes
   // more than one frame (e.g. slow JS thread on low-end Android devices).
