@@ -27,6 +27,15 @@ type DailyPlatformResult = {
     days: DailyPlatformDay[];
     generatedAt: string;
 };
+type GeoAnalyticsResult = {
+    countries: {
+        country: string;
+        sessions: number;
+    }[];
+    totalWithGeo: number;
+    unknown: number;
+    generatedAt: string;
+};
 export declare const adminService: {
     listUsers(query: z.infer<typeof ListUsersQuerySchema>): Promise<{
         items: {
@@ -120,5 +129,12 @@ export declare const adminService: {
     }>;
     getConcurrentViewers(range: "7d" | "30d" | "90d"): Promise<ConcurrentResult>;
     getDailyPlatformTrends(range: "7d" | "30d" | "90d"): Promise<DailyPlatformResult>;
+    /**
+     * Viewers-by-country breakdown for the admin geographic analytics panel.
+     * Aggregates viewer_sessions by the edge-derived `country` column (see
+     * analytics.routes.ts deriveCountry). Returns the top countries by session
+     * count plus a bucket for sessions with no resolvable country.
+     */
+    getGeoAnalytics(range?: "7d" | "30d" | "90d"): Promise<GeoAnalyticsResult>;
 };
 export {};

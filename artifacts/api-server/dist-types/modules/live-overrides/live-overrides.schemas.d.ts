@@ -14,9 +14,9 @@ export declare const LiveOverrideSchema: z.ZodObject<{
     createdAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
     id: string;
+    createdAt: string;
     title: string;
     isActive: boolean;
-    createdAt: string;
     hlsStreamUrl: string | null;
     youtubeVideoId: string | null;
     rtmpIngestKey: string | null;
@@ -27,9 +27,9 @@ export declare const LiveOverrideSchema: z.ZodObject<{
     autoStarted: boolean;
 }, {
     id: string;
+    createdAt: string;
     title: string;
     isActive: boolean;
-    createdAt: string;
     hlsStreamUrl: string | null;
     youtubeVideoId: string | null;
     rtmpIngestKey: string | null;
@@ -56,9 +56,9 @@ export declare const LiveStatusSchema: z.ZodObject<{
         createdAt: z.ZodString;
     }, "strip", z.ZodTypeAny, {
         id: string;
+        createdAt: string;
         title: string;
         isActive: boolean;
-        createdAt: string;
         hlsStreamUrl: string | null;
         youtubeVideoId: string | null;
         rtmpIngestKey: string | null;
@@ -69,9 +69,9 @@ export declare const LiveStatusSchema: z.ZodObject<{
         autoStarted: boolean;
     }, {
         id: string;
+        createdAt: string;
         title: string;
         isActive: boolean;
-        createdAt: string;
         hlsStreamUrl: string | null;
         youtubeVideoId: string | null;
         rtmpIngestKey: string | null;
@@ -85,9 +85,9 @@ export declare const LiveStatusSchema: z.ZodObject<{
     isLive: boolean;
     active: {
         id: string;
+        createdAt: string;
         title: string;
         isActive: boolean;
-        createdAt: string;
         hlsStreamUrl: string | null;
         youtubeVideoId: string | null;
         rtmpIngestKey: string | null;
@@ -101,9 +101,9 @@ export declare const LiveStatusSchema: z.ZodObject<{
     isLive: boolean;
     active: {
         id: string;
+        createdAt: string;
         title: string;
         isActive: boolean;
-        createdAt: string;
         hlsStreamUrl: string | null;
         youtubeVideoId: string | null;
         rtmpIngestKey: string | null;

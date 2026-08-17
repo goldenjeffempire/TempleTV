@@ -13,26 +13,26 @@ export declare const NotificationSchema: z.ZodObject<{
     attempts: z.ZodNumber;
     errorMessage: z.ZodNullable<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
-    id: string;
-    title: string;
     type: string;
     status: string;
-    body: string;
+    id: string;
     createdAt: string;
+    title: string;
     videoId: string | null;
+    body: string;
     sentAt: string;
     sentCount: number;
     attempts: number;
     scheduledAt: string;
     errorMessage: string | null;
 }, {
-    id: string;
-    title: string;
     type: string;
     status: string;
-    body: string;
+    id: string;
     createdAt: string;
+    title: string;
     videoId: string | null;
+    body: string;
     sentAt: string;
     sentCount: number;
     attempts: number;
@@ -64,26 +64,26 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
         attempts: z.ZodNumber;
         errorMessage: z.ZodNullable<z.ZodString>;
     }, "strip", z.ZodTypeAny, {
-        id: string;
-        title: string;
         type: string;
         status: string;
-        body: string;
+        id: string;
         createdAt: string;
+        title: string;
         videoId: string | null;
+        body: string;
         sentAt: string;
         sentCount: number;
         attempts: number;
         scheduledAt: string;
         errorMessage: string | null;
     }, {
-        id: string;
-        title: string;
         type: string;
         status: string;
-        body: string;
+        id: string;
         createdAt: string;
+        title: string;
         videoId: string | null;
+        body: string;
         sentAt: string;
         sentCount: number;
         attempts: number;
@@ -95,40 +95,40 @@ export declare const ListNotificationsResponseSchema: z.ZodObject<{
     offset: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
     limit: number;
-    total: number;
     offset: number;
     items: {
-        id: string;
-        title: string;
         type: string;
         status: string;
-        body: string;
+        id: string;
         createdAt: string;
+        title: string;
         videoId: string | null;
+        body: string;
         sentAt: string;
         sentCount: number;
         attempts: number;
         scheduledAt: string;
         errorMessage: string | null;
     }[];
+    total: number;
 }, {
     limit: number;
-    total: number;
     offset: number;
     items: {
-        id: string;
-        title: string;
         type: string;
         status: string;
-        body: string;
+        id: string;
         createdAt: string;
+        title: string;
         videoId: string | null;
+        body: string;
         sentAt: string;
         sentCount: number;
         attempts: number;
         scheduledAt: string;
         errorMessage: string | null;
     }[];
+    total: number;
 }>;
 export declare const SendPushBodySchema: z.ZodObject<{
     title: z.ZodString;
@@ -137,15 +137,15 @@ export declare const SendPushBodySchema: z.ZodObject<{
     videoId: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     idempotencyKey: z.ZodOptional<z.ZodString>;
 }, "strip", z.ZodTypeAny, {
+    type: "test" | "live" | "new_video" | "announcement" | "app_update";
     title: string;
-    type: "live" | "test" | "new_video" | "announcement" | "app_update";
     body: string;
     videoId?: string | null | undefined;
     idempotencyKey?: string | undefined;
 }, {
     title: string;
     body: string;
-    type?: "live" | "test" | "new_video" | "announcement" | "app_update" | undefined;
+    type?: "test" | "live" | "new_video" | "announcement" | "app_update" | undefined;
     videoId?: string | null | undefined;
     idempotencyKey?: string | undefined;
 }>;
@@ -167,35 +167,35 @@ export declare const SendPushResponseSchema: z.ZodObject<{
     delivered: z.ZodNumber;
     deduplicated: z.ZodBoolean;
 }, "strip", z.ZodTypeAny, {
-    id: string;
-    title: string;
     type: string;
     status: string;
-    body: string;
+    id: string;
     createdAt: string;
+    title: string;
     videoId: string | null;
+    body: string;
     sentAt: string;
     sentCount: number;
     attempts: number;
     scheduledAt: string;
     errorMessage: string | null;
-    delivered: number;
     recipients: number;
+    delivered: number;
     deduplicated: boolean;
 }, {
-    id: string;
-    title: string;
     type: string;
     status: string;
-    body: string;
+    id: string;
     createdAt: string;
+    title: string;
     videoId: string | null;
+    body: string;
     sentAt: string;
     sentCount: number;
     attempts: number;
     scheduledAt: string;
     errorMessage: string | null;
-    delivered: number;
     recipients: number;
+    delivered: number;
     deduplicated: boolean;
 }>;

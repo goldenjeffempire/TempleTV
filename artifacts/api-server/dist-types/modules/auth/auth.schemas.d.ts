@@ -216,17 +216,17 @@ export declare const MeResponseSchema: z.ZodObject<{
     mfaEnabled: z.ZodBoolean;
 }, "strip", z.ZodTypeAny, {
     id: string;
-    createdAt: string;
     email: string;
     displayName: string;
     role: "admin" | "editor" | "user" | "system";
+    createdAt: string;
     mfaEnabled: boolean;
 }, {
     id: string;
-    createdAt: string;
     email: string;
     displayName: string;
     role: "admin" | "editor" | "user" | "system";
+    createdAt: string;
     mfaEnabled: boolean;
 }>;
 /**

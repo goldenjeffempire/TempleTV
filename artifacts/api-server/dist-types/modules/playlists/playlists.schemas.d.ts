@@ -10,21 +10,21 @@ export declare const PlaylistSchema: z.ZodObject<{
     videoCount: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
     id: string;
-    description: string;
     name: string;
+    createdAt: string;
     updatedAt: string;
+    description: string;
     loopMode: string;
     isActive: boolean;
-    createdAt: string;
     videoCount: number;
 }, {
     id: string;
-    description: string;
     name: string;
+    createdAt: string;
     updatedAt: string;
+    description: string;
     loopMode: string;
     isActive: boolean;
-    createdAt: string;
     videoCount: number;
 }>;
 export declare const PlaylistVideoSchema: z.ZodObject<{
@@ -113,9 +113,12 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
     }>, "many">;
 }, "strip", z.ZodTypeAny, {
     id: string;
-    description: string;
     name: string;
+    createdAt: string;
     updatedAt: string;
+    description: string;
+    loopMode: string;
+    isActive: boolean;
     videos: {
         duration: string;
         id: string;
@@ -129,15 +132,15 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
         addedAt: string;
         youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
     }[];
-    loopMode: string;
-    isActive: boolean;
-    createdAt: string;
     videoCount: number;
 }, {
     id: string;
-    description: string;
     name: string;
+    createdAt: string;
     updatedAt: string;
+    description: string;
+    loopMode: string;
+    isActive: boolean;
     videos: {
         duration: string;
         id: string;
@@ -151,9 +154,6 @@ export declare const PlaylistDetailSchema: z.ZodObject<{
         addedAt: string;
         youtubeLiveStatus?: "live" | "rebroadcast" | null | undefined;
     }[];
-    loopMode: string;
-    isActive: boolean;
-    createdAt: string;
     videoCount: number;
 }>;
 export declare const ListPlaylistsResponseSchema: z.ZodObject<{
@@ -168,48 +168,48 @@ export declare const ListPlaylistsResponseSchema: z.ZodObject<{
         videoCount: z.ZodNumber;
     }, "strip", z.ZodTypeAny, {
         id: string;
-        description: string;
         name: string;
+        createdAt: string;
         updatedAt: string;
+        description: string;
         loopMode: string;
         isActive: boolean;
-        createdAt: string;
         videoCount: number;
     }, {
         id: string;
-        description: string;
         name: string;
+        createdAt: string;
         updatedAt: string;
+        description: string;
         loopMode: string;
         isActive: boolean;
-        createdAt: string;
         videoCount: number;
     }>, "many">;
     total: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
-    total: number;
     items: {
         id: string;
-        description: string;
         name: string;
+        createdAt: string;
         updatedAt: string;
+        description: string;
         loopMode: string;
         isActive: boolean;
-        createdAt: string;
         videoCount: number;
     }[];
+    total: number;
 }, {
-    total: number;
     items: {
         id: string;
-        description: string;
         name: string;
+        createdAt: string;
         updatedAt: string;
+        description: string;
         loopMode: string;
         isActive: boolean;
-        createdAt: string;
         videoCount: number;
     }[];
+    total: number;
 }>;
 export declare const CreatePlaylistBodySchema: z.ZodObject<{
     name: z.ZodString;
@@ -217,8 +217,8 @@ export declare const CreatePlaylistBodySchema: z.ZodObject<{
     loopMode: z.ZodDefault<z.ZodEnum<["sequential", "shuffle", "single"]>>;
     isActive: z.ZodDefault<z.ZodBoolean>;
 }, "strip", z.ZodTypeAny, {
-    description: string;
     name: string;
+    description: string;
     loopMode: "shuffle" | "sequential" | "single";
     isActive: boolean;
 }, {
@@ -233,13 +233,13 @@ export declare const UpdatePlaylistBodySchema: z.ZodObject<{
     loopMode: z.ZodOptional<z.ZodDefault<z.ZodEnum<["sequential", "shuffle", "single"]>>>;
     isActive: z.ZodOptional<z.ZodDefault<z.ZodBoolean>>;
 }, "strip", z.ZodTypeAny, {
-    description?: string | undefined;
     name?: string | undefined;
+    description?: string | undefined;
     loopMode?: "shuffle" | "sequential" | "single" | undefined;
     isActive?: boolean | undefined;
 }, {
-    description?: string | undefined;
     name?: string | undefined;
+    description?: string | undefined;
     loopMode?: "shuffle" | "sequential" | "single" | undefined;
     isActive?: boolean | undefined;
 }>;
