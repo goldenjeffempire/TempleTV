@@ -1713,7 +1713,7 @@ export async function runPreBuildBootSequence(): Promise<void> {
     `);
     await run("idx_managed_videos_transcode_pending", `
       CREATE INDEX IF NOT EXISTS idx_managed_videos_transcode_pending
-        ON managed_videos (created_at DESC)
+        ON managed_videos (imported_at DESC)
         WHERE transcoding_status IN ('queued','encoding')
     `);
     await run("idx_managed_videos_youtube_id", `
