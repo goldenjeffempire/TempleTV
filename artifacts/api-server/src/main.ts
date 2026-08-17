@@ -422,13 +422,15 @@ async function runBroadcastDaemon(): Promise<never> {
   startMemoryWatchdog();
 
   // ── Listen ────────────────────────────────────────────────────────────────
-  // Loopback-only: the daemon is an internal implementation detail. Every
-  // real client (browser, TV, mobile) talks to the API server, which proxies
-  // SSE/WS/REST to this port over 127.0.0.1 (daemon-proxy.ts). Binding to
-  // 0.0.0.0 would let a VM deployment's network layer route external traffic
-  // straight to this unauthenticated Fastify instance if a port mapping ever
-  // exposed it — loopback-only closes that off regardless of ports config.
-  await daemonApp.listen({ port: env.PORT, host: "127.0.0.1" });
+  // On Render (pserv) the daemon runs in its own container. The API container
+  // reaches it over Render's private network, which requires binding to
+  // 0.0.0.0 — loopback-only (127.0.0.1) is unreachable from another container.
+  // On single-VM deployments (prod-supervisor.mjs, local dev) 127.0.0.1 is
+  // preferred because the API and daemon share a network namespace and binding
+  // to 0.0.0.0 would expose the unauthenticated daemon to the host network.
+  // Render injects RENDER=true into every service's runtime environment.
+  const daemonHost = process.env.RENDER === "true" ? "0.0.0.0" : "127.0.0.1";
+  await daemonApp.listen({ port: env.PORT, host: daemonHost });
   logger.info(
     { port: env.PORT },
     "[broadcast-daemon] up — broadcast engine live; API should set BROADCAST_DAEMON_URL to proxy here",
