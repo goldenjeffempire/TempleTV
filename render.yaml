@@ -1,828 +1,183 @@
-# ════════════════════════════════════════════════════════════════════════════
-# Temple TV — Render deployment manifest
-# ════════════════════════════════════════════════════════════════════════════
-#
-# Services:
-#
-#   temple-tv-broadcast-daemon   pserv    starter   Broadcast engine
-#   temple-tv-api               web      free      Fastify API + SSE + jobs
-#   temple-tv-admin             static   free      Admin dashboard
-#   temple-tv-web               static   free      Expo Web / PWA
-#   temple-tv-tv                static   free      TV / Tizen SPA
-#
-# Architecture:
-#
-# Browser / Mobile / TV
-#          │
-#          ▼
-#   temple-tv-api
-#          │
-#          │ private network
-#          ▼
-#   temple-tv-broadcast-daemon
-#
-# ════════════════════════════════════════════════════════════════════════════
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# Shared environment-variable groups
-# ────────────────────────────────────────────────────────────────────────────
-
-envVarGroups:
-
-  # Cross-service credentials.
-  - name: temple-tv-shared-secrets
-    envVars:
-
-      - key: DATABASE_URL
-        sync: false
-
-      - key: JWT_ACCESS_SECRET
-        sync: false
-
-      - key: JWT_REFRESH_SECRET
-        sync: false
-
-      - key: REDIS_URL
-        sync: false
-
-      - key: SENTRY_DSN
-        sync: false
-
-      - key: SENTRY_RELEASE
-        sync: false
-
-
-  # Public routing configuration.
-  #
-  # Set these values in the Render dashboard.
-  #
-  # Recommended:
-  #
-  # CORS_ORIGINS=
-  # https://templetv.org.ng,https://www.templetv.org.ng
-  #
-  # APP_BASE_URL=
-  # https://templetv.org.ng
-  #
-  - name: temple-tv-domains
-    envVars:
-
-      - key: CORS_ORIGINS
-        sync: false
-
-      - key: APP_BASE_URL
-        sync: false
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# Services
-# ════════════════════════════════════════════════════════════════════════════
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# temple-tv-api
-#
-# Fastify API + SSE proxy + notification dispatcher
-#
-# Port: 8080
-# Plan: free
-# ════════════════════════════════════════════════════════════════════════════
-
-services:
-
-  - type: web
-    name: temple-tv-api
-    runtime: node
-    plan: free
-    region: frankfurt
-    branch: main
-    rootDir: .
-    autoDeploy: true
-    pullRequestPreviewsEnabled: false
+- type: web
+  name: temple-tv-api
+  runtime: node
+  plan: free
+  region: frankfurt
+  branch: main
+  rootDir: .
+  autoDeploy: true
+  pullRequestPreviewsEnabled: false
 
-    # ────────────────────────────────────────────────────────────────────────
-    # Build filter
-    # ────────────────────────────────────────────────────────────────────────
+  buildFilter:
+    paths:
+      - artifacts/api-server/**
+      - lib/db/**
+      - lib/api-spec/**
+      - lib/broadcast-types/**
+      - lib/broadcast-sync/**
+      - pnpm-lock.yaml
+      - package.json
+      - scripts/**
+      - render.yaml
 
-    buildFilter:
-      paths:
-        - artifacts/api-server/**
-        - lib/db/**
-        - lib/api-spec/**
-        - lib/broadcast-types/**
-        - lib/broadcast-sync/**
-        - pnpm-lock.yaml
-        - package.json
-        - scripts/**
-        - render.yaml
+  buildCommand: >
+    bash ./scripts/render-install.sh &&
+    pnpm run verify:render &&
+    pnpm --filter @workspace/db run push-force &&
+    pnpm --filter @workspace/api-server run build
 
-    # ────────────────────────────────────────────────────────────────────────
-    # Build
-    # ────────────────────────────────────────────────────────────────────────
+  startCommand: pnpm --filter @workspace/api-server run start:render-free
 
-    buildCommand: >
-      bash ./scripts/render-install.sh &&
-      pnpm run verify:render &&
-      pnpm --filter @workspace/db run push-force &&
-      pnpm --filter @workspace/api-server run build
+  healthCheckPath: /api/healthz
 
-    # ────────────────────────────────────────────────────────────────────────
-    # Start
-    # ────────────────────────────────────────────────────────────────────────
+  envVars:
+    - fromGroup: temple-tv-shared-secrets
 
-    startCommand: pnpm --filter @workspace/api-server run start:render-free
+    - fromGroup: temple-tv-domains
 
-    # API health endpoint.
-    healthCheckPath: /api/healthz
+    - key: NODE_ENV
+      value: production
 
-    # ────────────────────────────────────────────────────────────────────────
-    # Environment
-    # ────────────────────────────────────────────────────────────────────────
+    - key: PORT
+      value: "8080"
 
-    envVars:
+    - key: RUN_MODE
+      value: all
 
-      # Shared secrets.
-      - fromGroup: temple-tv-shared-secrets
+    - key: TRANSCODER_DISABLE
+      value: "true"
 
-      # Public domain configuration.
-      - fromGroup: temple-tv-domains
+    - key: HLS_MAX_CONCURRENT
+      value: "3"
 
-      # Runtime.
-      - key: NODE_ENV
-        value: production
+    - key: DB_POOL_MAX
+      value: "5"
 
-      - key: PORT
-        value: "8080"
+    - key: HLS_SEGMENT_CACHE_MB
+      value: "8"
 
-      - key: RUN_MODE
-        value: all
+    - key: MALLOC_ARENA_MAX
+      value: "2"
 
-      # ─────────────────────────────────────────────────────────────────────
-      # Free-tier transcoder protection
-      # ─────────────────────────────────────────────────────────────────────
+    - key: NODE_OPTIONS
+      value: "--max-old-space-size=256 --max-http-header-size=16384"
 
-      - key: TRANSCODER_DISABLE
-        value: "true"
+    - key: MEMORY_WARN_RSS_MB
+      value: "380"
 
-      # ─────────────────────────────────────────────────────────────────────
-      # HLS concurrency
-      # ─────────────────────────────────────────────────────────────────────
+    - key: MEMORY_RESTART_RSS_MB
+      value: "430"
 
-      - key: HLS_MAX_CONCURRENT
-        value: "3"
+    - key: MEMORY_ABSOLUTE_MAX_RSS_MB
+      value: "460"
 
-      # ─────────────────────────────────────────────────────────────────────
-      # Database pool
-      # ─────────────────────────────────────────────────────────────────────
+    - key: SHUTDOWN_DRAIN_MS
+      value: "10000"
 
-      - key: DB_POOL_MAX
-        value: "5"
+    - key: SHUTDOWN_PRECLOSE_DELAY_MS
+      value: "10000"
 
-      # ─────────────────────────────────────────────────────────────────────
-      # HLS segment cache
-      # ─────────────────────────────────────────────────────────────────────
+    - key: SHUTDOWN_FORCE_EXIT_BUDGET_MS
+      value: "28000"
 
-      - key: HLS_SEGMENT_CACHE_MB
-        value: "8"
+    - key: QUEUE_MIN_ITEMS
+      value: "5"
 
-      # ─────────────────────────────────────────────────────────────────────
-      # Memory containment
-      # ─────────────────────────────────────────────────────────────────────
+    - key: BROADCAST_DEADAIR_FALLBACK_URL
+      sync: false
 
-      - key: MALLOC_ARENA_MAX
-        value: "2"
+    - key: BROADCAST_DEADAIR_FALLBACK_AFTER_MS
+      sync: false
 
-      - key: NODE_OPTIONS
-        value: "--max-old-space-size=256 --max-http-header-size=16384"
+    - key: STORAGE_HEALTH_INTERVAL_MS
+      value: "120000"
 
-      - key: MEMORY_WARN_RSS_MB
-        value: "380"
+    - key: HTTP_KEEPALIVE_MS
+      value: "75000"
 
-      - key: MEMORY_RESTART_RSS_MB
-        value: "430"
+    - key: HTTP_HEADERS_TIMEOUT_MS
+      value: "80000"
 
-      - key: MEMORY_ABSOLUTE_MAX_RSS_MB
-        value: "460"
+    - key: SCHEDULED_NOTIF_POLL_MS
+      value: "30000"
 
-      # ─────────────────────────────────────────────────────────────────────
-      # Graceful shutdown
-      # ─────────────────────────────────────────────────────────────────────
+    - key: SCHEDULED_NOTIF_MAX_ATTEMPTS
+      value: "5"
 
-      - key: SHUTDOWN_DRAIN_MS
-        value: "10000"
+    - key: CORS_ORIGINS_EXTRA
+      value: ""
 
-      - key: SHUTDOWN_PRECLOSE_DELAY_MS
-        value: "10000"
+    - key: API_ORIGIN
+      value: https://api.templetv.org.ng
 
-      - key: SHUTDOWN_FORCE_EXIT_BUDGET_MS
-        value: "28000"
+    - key: ADMIN_API_TOKEN
+      generateValue: true
 
-      # ─────────────────────────────────────────────────────────────────────
-      # Queue monitoring
-      # ─────────────────────────────────────────────────────────────────────
+    - key: SEED_ADMIN_EMAIL
+      sync: false
 
-      - key: QUEUE_MIN_ITEMS
-        value: "5"
+    - key: SEED_ADMIN_PASSWORD
+      sync: false
 
-      # ─────────────────────────────────────────────────────────────────────
-      # Dead-air protection
-      # ─────────────────────────────────────────────────────────────────────
+    - key: YOUTUBE_API_KEY
+      sync: false
 
-      - key: BROADCAST_DEADAIR_FALLBACK_URL
-        sync: false
+    - key: YOUTUBE_WEBHOOK_SECRET
+      sync: false
 
-      - key: BROADCAST_DEADAIR_FALLBACK_AFTER_MS
-        sync: false
+    - key: YOUTUBE_SYNC_INTERVAL_MINS
+      value: "30"
 
-      # ─────────────────────────────────────────────────────────────────────
-      # Storage monitoring
-      # ─────────────────────────────────────────────────────────────────────
+    - key: CLIENT_ERROR_SINK_URL
+      sync: false
 
-      - key: STORAGE_HEALTH_INTERVAL_MS
-        value: "120000"
+    - key: CLIENT_ERROR_SINK_TOKEN
+      sync: false
 
-      # ─────────────────────────────────────────────────────────────────────
-      # HTTP server tuning
-      # ─────────────────────────────────────────────────────────────────────
+    - key: SMTP_HOST
+      sync: false
 
-      - key: HTTP_KEEPALIVE_MS
-        value: "75000"
+    - key: SMTP_PORT
+      value: "587"
 
-      - key: HTTP_HEADERS_TIMEOUT_MS
-        value: "80000"
+    - key: SMTP_SECURE
+      value: "false"
 
-      # ─────────────────────────────────────────────────────────────────────
-      # Notification dispatcher
-      # ─────────────────────────────────────────────────────────────────────
+    - key: SMTP_USER
+      sync: false
 
-      - key: SCHEDULED_NOTIF_POLL_MS
-        value: "30000"
+    - key: SMTP_PASS
+      sync: false
 
-      - key: SCHEDULED_NOTIF_MAX_ATTEMPTS
-        value: "5"
+    - key: SMTP_FROM_NAME
+      value: "Temple TV | JCTM"
 
-      # ─────────────────────────────────────────────────────────────────────
-      # CORS
-      # ─────────────────────────────────────────────────────────────────────
+    - key: VAPID_PUBLIC_KEY
+      sync: false
 
-      - key: CORS_ORIGINS_EXTRA
-        value: ""
+    - key: VAPID_PRIVATE_KEY
+      sync: false
 
-      # ─────────────────────────────────────────────────────────────────────
-      # API origin
-      # ─────────────────────────────────────────────────────────────────────
+    - key: EXPO_ACCESS_TOKEN
+      sync: false
 
-      - key: API_ORIGIN
-        value: https://api.templetv.org.ng
+    - key: REQUIRE_HLS_TOKEN
+      sync: false
 
-      # ─────────────────────────────────────────────────────────────────────
-      # Admin API token
-      # ─────────────────────────────────────────────────────────────────────
+    - key: HLS_TOKEN_SECRET
+      sync: false
 
-      - key: ADMIN_API_TOKEN
-        generateValue: true
+    - key: CDN_BASE_URL
+      sync: false
 
-      # ─────────────────────────────────────────────────────────────────────
-      # Admin seed
-      # ─────────────────────────────────────────────────────────────────────
+    - key: BROADCAST_DAEMON_HOST
+      fromService:
+        name: temple-tv-broadcast-daemon
+        type: pserv
+        property: host
 
-      - key: SEED_ADMIN_EMAIL
-        sync: false
-
-      - key: SEED_ADMIN_PASSWORD
-        sync: false
-
-      # Optional force-reset flag.
-      # Uncomment temporarily if your application supports it.
-      #
-      # - key: SEED_ADMIN_FORCE
-      #   value: "true"
-
-      # ─────────────────────────────────────────────────────────────────────
-      # YouTube
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: YOUTUBE_API_KEY
-        sync: false
-
-      - key: YOUTUBE_WEBHOOK_SECRET
-        sync: false
-
-      - key: YOUTUBE_SYNC_INTERVAL_MINS
-        value: "30"
-
-      # ─────────────────────────────────────────────────────────────────────
-      # Client error reporting
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: CLIENT_ERROR_SINK_URL
-        sync: false
-
-      - key: CLIENT_ERROR_SINK_TOKEN
-        sync: false
-
-      # ─────────────────────────────────────────────────────────────────────
-      # SMTP
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: SMTP_HOST
-        sync: false
-
-      - key: SMTP_PORT
-        value: "587"
-
-      - key: SMTP_SECURE
-        value: "false"
-
-      - key: SMTP_USER
-        sync: false
-
-      - key: SMTP_PASS
-        sync: false
-
-      - key: SMTP_FROM_NAME
-        value: "Temple TV | JCTM"
-
-      # ─────────────────────────────────────────────────────────────────────
-      # Web Push / VAPID
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: VAPID_PUBLIC_KEY
-        sync: false
-
-      - key: VAPID_PRIVATE_KEY
-        sync: false
-
-      # ─────────────────────────────────────────────────────────────────────
-      # Expo push
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: EXPO_ACCESS_TOKEN
-        sync: false
-
-      # ─────────────────────────────────────────────────────────────────────
-      # HLS token authentication
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: REQUIRE_HLS_TOKEN
-        sync: false
-
-      - key: HLS_TOKEN_SECRET
-        sync: false
-
-      # ─────────────────────────────────────────────────────────────────────
-      # CDN
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: CDN_BASE_URL
-        sync: false
-
-      # ─────────────────────────────────────────────────────────────────────
-      # Broadcast daemon private-network connection
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: BROADCAST_DAEMON_HOST
-        fromService:
-          name: temple-tv-broadcast-daemon
-          type: pserv
-          property: host
-
-      - key: BROADCAST_DAEMON_PORT
-        fromService:
-          name: temple-tv-broadcast-daemon
-          type: pserv
-          property: port
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# temple-tv-broadcast-daemon
-#
-# Long-lived BroadcastOrchestrator / queue engine
-#
-# Port: 9000
-# Plan: starter
-# ════════════════════════════════════════════════════════════════════════════
-
-  - type: pserv
-    name: temple-tv-broadcast-daemon
-    runtime: node
-    plan: starter
-    region: frankfurt
-    branch: main
-    rootDir: .
-    autoDeploy: true
-    pullRequestPreviewsEnabled: false
-
-    # ────────────────────────────────────────────────────────────────────────
-    # Build filter
-    # ────────────────────────────────────────────────────────────────────────
-
-    buildFilter:
-      paths:
-        - artifacts/api-server/**
-        - lib/db/**
-        - lib/broadcast-types/**
-        - lib/broadcast-sync/**
-        - pnpm-lock.yaml
-        - package.json
-        - scripts/**
-        - render.yaml
-
-    # ────────────────────────────────────────────────────────────────────────
-    # Build
-    # ────────────────────────────────────────────────────────────────────────
-
-    buildCommand: >
-      bash ./scripts/render-install.sh &&
-      pnpm run verify:render &&
-      pnpm --filter @workspace/db run push-force &&
-      pnpm --filter @workspace/api-server run build
-
-    # ────────────────────────────────────────────────────────────────────────
-    # Start
-    # ────────────────────────────────────────────────────────────────────────
-
-    startCommand: pnpm --filter @workspace/api-server run start:render-daemon
-
-    # IMPORTANT:
-    # Private services do NOT support healthCheckPath.
-    #
-    # Do not add:
-    #
-    # healthCheckPath: /healthz
-
-    # ────────────────────────────────────────────────────────────────────────
-    # Environment
-    # ────────────────────────────────────────────────────────────────────────
-
-    envVars:
-
-      # Shared PostgreSQL / JWT / Redis / Sentry credentials.
-      - fromGroup: temple-tv-shared-secrets
-
-      # Runtime.
-      - key: NODE_ENV
-        value: production
-
-      - key: PORT
-        value: "9000"
-
-      - key: RUN_MODE
-        value: broadcast
-
-      # ─────────────────────────────────────────────────────────────────────
-      # Memory containment
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: MALLOC_ARENA_MAX
-        value: "2"
-
-      - key: NODE_OPTIONS
-        value: "--max-old-space-size=300 --max-http-header-size=16384"
-
-      - key: MEMORY_WARN_RSS_MB
-        value: "380"
-
-      - key: MEMORY_RESTART_RSS_MB
-        value: "430"
-
-      - key: MEMORY_ABSOLUTE_MAX_RSS_MB
-        value: "450"
-
-      # ─────────────────────────────────────────────────────────────────────
-      # Graceful shutdown
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: SHUTDOWN_DRAIN_MS
-        value: "5000"
-
-      - key: SHUTDOWN_PRECLOSE_DELAY_MS
-        value: "5000"
-
-      - key: SHUTDOWN_FORCE_EXIT_BUDGET_MS
-        value: "25000"
-
-      # ─────────────────────────────────────────────────────────────────────
-      # Database
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: DB_POOL_MAX
-        value: "8"
-
-      # ─────────────────────────────────────────────────────────────────────
-      # Broadcast engine
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: API_ORIGIN
-        value: https://api.templetv.org.ng
-
-      - key: QUEUE_MIN_ITEMS
-        value: "5"
-
-      # ─────────────────────────────────────────────────────────────────────
-      # Dead-air fallback
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: BROADCAST_DEADAIR_FALLBACK_URL
-        sync: false
-
-      - key: BROADCAST_DEADAIR_FALLBACK_AFTER_MS
-        sync: false
-
-      # ─────────────────────────────────────────────────────────────────────
-      # YouTube
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: YOUTUBE_API_KEY
-        sync: false
-
-      - key: YOUTUBE_WEBHOOK_SECRET
-        sync: false
-
-      - key: YOUTUBE_SYNC_INTERVAL_MINS
-        value: "30"
-
-      # ─────────────────────────────────────────────────────────────────────
-      # HLS token authentication
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: REQUIRE_HLS_TOKEN
-        sync: false
-
-      - key: HLS_TOKEN_SECRET
-        sync: false
-
-      - key: INTERNAL_HLS_BYPASS_SECRET
-        sync: false
-
-      # ─────────────────────────────────────────────────────────────────────
-      # HTTP / SSE tuning
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: HTTP_KEEPALIVE_MS
-        value: "75000"
-
-      - key: HTTP_HEADERS_TIMEOUT_MS
-        value: "80000"
-
-      # ─────────────────────────────────────────────────────────────────────
-      # Client error reporting
-      # ─────────────────────────────────────────────────────────────────────
-
-      - key: CLIENT_ERROR_SINK_URL
-        sync: false
-
-      - key: CLIENT_ERROR_SINK_TOKEN
-        sync: false
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# temple-tv-admin
-#
-# Vite admin dashboard
-# Static site / global CDN
-# ════════════════════════════════════════════════════════════════════════════
-
-  - type: web
-    name: temple-tv-admin
-    env: static
-    branch: main
-    rootDir: .
-    autoDeploy: true
-    pullRequestPreviewsEnabled: false
-
-    buildFilter:
-      paths:
-        - artifacts/admin/**
-        - lib/player-core/**
-        - lib/api-client-react/**
-        - lib/api-zod/**
-        - lib/api-spec/**
-        - lib/broadcast-types/**
-        - lib/broadcast-sync/**
-        - pnpm-lock.yaml
-        - package.json
-        - render.yaml
-
-    buildCommand: >
-      bash ./scripts/render-install.sh &&
-      pnpm run verify:render &&
-      pnpm --filter @workspace/admin run build
-
-    staticPublishPath: ./artifacts/admin/dist/public
-
-    envVars:
-
-      - key: VITE_API_URL
-        value: https://api.templetv.org.ng
-
-      - key: BASE_PATH
-        value: /
-
-    headers:
-
-      - path: /*
-        name: Strict-Transport-Security
-        value: "max-age=63072000; includeSubDomains; preload"
-
-      - path: /*
-        name: X-Frame-Options
-        value: DENY
-
-      - path: /*
-        name: X-Content-Type-Options
-        value: nosniff
-
-      - path: /*
-        name: Referrer-Policy
-        value: strict-origin-when-cross-origin
-
-      - path: /*
-        name: Permissions-Policy
-        value: "camera=(), microphone=(), geolocation=(), interest-cohort=()"
-
-      - path: /*
-        name: Cross-Origin-Opener-Policy
-        value: same-origin
-
-      - path: /index.html
-        name: Cache-Control
-        value: "no-store, no-cache, must-revalidate"
-
-      - path: /assets/*
-        name: Cache-Control
-        value: "public, max-age=31536000, immutable"
-
-    routes:
-
-      - type: rewrite
-        source: /*
-        destination: /index.html
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# temple-tv-web
-#
-# Expo Web / Mobile PWA
-# Static site / global CDN
-# ════════════════════════════════════════════════════════════════════════════
-
-  - type: web
-    name: temple-tv-web
-    env: static
-    branch: main
-    rootDir: .
-    autoDeploy: true
-    pullRequestPreviewsEnabled: false
-
-    buildFilter:
-      paths:
-        - artifacts/mobile/**
-        - lib/player-core/**
-        - lib/api-client-react/**
-        - lib/api-zod/**
-        - lib/api-spec/**
-        - lib/broadcast-types/**
-        - lib/broadcast-sync/**
-        - pnpm-lock.yaml
-        - package.json
-        - render.yaml
-
-    buildCommand: >
-      bash ./scripts/render-install.sh &&
-      pnpm run verify:render &&
-      pnpm --filter @workspace/mobile run build:web
-
-    staticPublishPath: ./artifacts/mobile/web-dist
-
-    envVars:
-
-      - key: EXPO_PUBLIC_API_URL
-        value: https://api.templetv.org.ng
-
-      - key: EXPO_PUBLIC_DOMAIN
-        value: api.templetv.org.ng
-
-      - key: BASE_PATH
-        value: /
-
-    headers:
-
-      - path: /*
-        name: Strict-Transport-Security
-        value: "max-age=63072000; includeSubDomains; preload"
-
-      - path: /*
-        name: X-Frame-Options
-        value: SAMEORIGIN
-
-      - path: /*
-        name: X-Content-Type-Options
-        value: nosniff
-
-      - path: /*
-        name: Referrer-Policy
-        value: strict-origin-when-cross-origin
-
-      - path: /*
-        name: Permissions-Policy
-        value: "camera=(), microphone=(), geolocation=(), interest-cohort=()"
-
-      - path: /index.html
-        name: Cache-Control
-        value: "no-store, no-cache, must-revalidate"
-
-      - path: /_expo/static/*
-        name: Cache-Control
-        value: "public, max-age=31536000, immutable"
-
-      - path: /assets/*
-        name: Cache-Control
-        value: "public, max-age=31536000, immutable"
-
-    routes:
-
-      - type: rewrite
-        source: /*
-        destination: /index.html
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# temple-tv-tv
-#
-# Vite TV / Tizen SPA
-# Static site / global CDN
-# ════════════════════════════════════════════════════════════════════════════
-
-  - type: web
-    name: temple-tv-tv
-    env: static
-    branch: main
-    rootDir: .
-    autoDeploy: true
-    pullRequestPreviewsEnabled: false
-
-    buildFilter:
-      paths:
-        - artifacts/tv/**
-        - lib/player-core/**
-        - lib/api-client-react/**
-        - lib/api-zod/**
-        - lib/api-spec/**
-        - lib/broadcast-types/**
-        - lib/broadcast-sync/**
-        - pnpm-lock.yaml
-        - package.json
-        - render.yaml
-
-    buildCommand: >
-      bash ./scripts/render-install.sh &&
-      pnpm run verify:render &&
-      pnpm --filter @workspace/tv run build
-
-    staticPublishPath: ./artifacts/tv/dist/public
-
-    envVars:
-
-      - key: VITE_API_URL
-        value: https://api.templetv.org.ng
-
-      - key: BASE_PATH
-        value: /
-
-    headers:
-
-      - path: /*
-        name: Strict-Transport-Security
-        value: "max-age=63072000; includeSubDomains; preload"
-
-      - path: /*
-        name: X-Frame-Options
-        value: SAMEORIGIN
-
-      - path: /*
-        name: X-Content-Type-Options
-        value: nosniff
-
-      - path: /*
-        name: Referrer-Policy
-        value: strict-origin-when-cross-origin
-
-      - path: /*
-        name: Permissions-Policy
-        value: "camera=(), microphone=(), geolocation=(), interest-cohort=()"
-
-      - path: /index.html
-        name: Cache-Control
-        value: "no-store, no-cache, must-revalidate"
-
-      - path: /assets/*
-        name: Cache-Control
-        value: "public, max-age=31536000, immutable"
-
-    routes:
-
-      - type: rewrite
-        source: /*
-        destination: /index.html
+    - key: BROADCAST_DAEMON_PORT
+      fromService:
+        name: temple-tv-broadcast-daemon
+        type: pserv
+        property: port
