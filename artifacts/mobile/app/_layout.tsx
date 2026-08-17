@@ -962,7 +962,7 @@ function RootLayout() {
                    * suppressed while the fullscreen live player route is active
                    * so it can never interrupt or restart live playback.
                    */}
-                  <AppOpenAdController isBlocked={segments.includes("player")} />
+                  <AppOpenAdController isBlocked={(segments as string[]).includes("player")} />
                   <PersistentAudioPlayer />
                   {/*
                    * AuthGateModal is rendered at the root so it can be

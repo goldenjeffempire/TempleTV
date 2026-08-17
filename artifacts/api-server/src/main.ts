@@ -391,19 +391,38 @@ async function runBroadcastDaemon(): Promise<never> {
   // ── Single-instance advisory lock ────────────────────────────────────────
   // Prevent two broadcast daemons from running simultaneously on the same DB.
   // pg_try_advisory_lock is session-level: the lock is held until the connection
-  // closes (process exit). A second daemon startup attempt will see acquired=false
-  // and exit cleanly rather than racing the first instance.
+  // closes (process exit). A second daemon startup attempt will see acquired=false.
+  //
+  // During a Render rolling deploy, the new pserv instance starts before the old
+  // one is terminated, so the lock will be held transiently. We retry with
+  // exponential backoff (up to ~90 s total) to give the old instance time to
+  // shut down and release the lock before we give up.
   const DAEMON_ADVISORY_LOCK_ID = 7_878_787_878; // fixed ID — must never change
+  const LOCK_RETRY_DELAYS_MS = [2000, 4000, 8000, 12000, 15000, 15000, 15000, 15000]; // ~86 s total
   try {
-    const lockRes = await pgPool.query<{ acquired: boolean }>(
-      "SELECT pg_try_advisory_lock($1::bigint) AS acquired",
-      [DAEMON_ADVISORY_LOCK_ID],
-    );
-    const acquired = (lockRes.rows[0] as { acquired?: boolean } | undefined)?.acquired;
+    let acquired = false;
+    for (let attempt = 0; attempt <= LOCK_RETRY_DELAYS_MS.length; attempt++) {
+      const lockRes = await pgPool.query<{ acquired: boolean }>(
+        "SELECT pg_try_advisory_lock($1::bigint) AS acquired",
+        [DAEMON_ADVISORY_LOCK_ID],
+      );
+      acquired = (lockRes.rows[0] as { acquired?: boolean } | undefined)?.acquired ?? false;
+      if (acquired) break;
+
+      const delay = LOCK_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) break; // exhausted retries
+
+      logger.warn(
+        { lockId: DAEMON_ADVISORY_LOCK_ID, attempt: attempt + 1, retryInMs: delay },
+        "[broadcast-daemon] advisory lock held by another instance — waiting for rolling-deploy handoff before retrying",
+      );
+      await new Promise((r) => setTimeout(r, delay));
+    }
+
     if (!acquired) {
       logger.fatal(
         { lockId: DAEMON_ADVISORY_LOCK_ID },
-        "[broadcast-daemon] another daemon instance already holds the advisory lock — refusing to start (duplicate-worker guard)",
+        "[broadcast-daemon] another daemon instance holds the advisory lock and did not release it within the retry window — refusing to start",
       );
       process.exit(1);
     }
