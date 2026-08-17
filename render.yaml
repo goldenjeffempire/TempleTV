@@ -261,7 +261,6 @@ services:
   - type: web
     name: temple-tv-admin
     env: static
-    region: frankfurt
     branch: main
     rootDir: .
     autoDeploy: true
@@ -307,7 +306,6 @@ services:
   - type: web
     name: temple-tv-tv
     env: static
-    region: frankfurt
     branch: main
     rootDir: .
     autoDeploy: true
