@@ -66,11 +66,19 @@ function internalProbeHeaders(): Record<string, string> {
 function toLocalhostProbeUrl(url: string): string {
   try {
     const u = new URL(url);
+    // When REPLIT_DEV_DOMAIN is set, API_ORIGIN is the REMOTE production server
+    // (e.g. https://api.templetv.org.ng), not this dev process.  Including it in
+    // ownHostnames would cause prod-sync'd items — whose localVideoUrl was
+    // absolutised to api.templetv.org.ng — to be rewritten to
+    // http://127.0.0.1:PORT/… where the local API returns 404 (blob only in the
+    // Neon production DB).  This is the same guard applied in
+    // BroadcastOrchestrator.toLocalhostProbeUrl() and queue-integrity-validator.ts.
+    const replitDevDomain = process.env["REPLIT_DEV_DOMAIN"];
     const ownHostnames = [
-      env.API_ORIGIN,
+      (!replitDevDomain ? env.API_ORIGIN : undefined),
       process.env["RENDER_EXTERNAL_URL"],
       process.env["DEV_DOMAIN"],
-      process.env["REPLIT_DEV_DOMAIN"],
+      replitDevDomain,
     ]
       .filter(Boolean)
       .map((h) => {
