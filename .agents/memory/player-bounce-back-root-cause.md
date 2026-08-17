@@ -82,9 +82,31 @@ checks again, `isNavPushActive()=false` AND `onPlayer()` might still be false
 - `NativeTabLayout` (iOS 18+ liquid glass) has router.replace("/") guard,
   already protected by `isNavPushActive()`.
 
+### Layer 5 — slide_from_bottom triggers Android predictive-back BEFORE first frame
+`animation: "slide_from_bottom"` on a NativeStack card screen (non-modal) on
+Android 13+ causes the OS predictive-back gesture system to classify the screen
+as a dismissible bottom-sheet. The OS fires the back gesture DURING the opening
+animation — before the first JS frame renders — snapping the screen back to home.
+This happens even with `gestureEnabled:false` because the OS-level interception
+runs before React Navigation's gesture handler is installed.
+
+**Fix:** Platform-specific animation in _layout.tsx:
+```
+animation: Platform.OS === "ios" ? "slide_from_bottom" : "slide_from_right"
+```
+"slide_from_right" is the standard Android card animation; the OS gesture system
+never classifies right-to-left card transitions as dismissible bottom-sheets.
+
+**Why this was the day-0 root cause:** This affects ALL video types (not just live)
+because it's a navigation-layer bug that fires before player.tsx renders at all.
+The debug banner in player.tsx never appeared because the screen was dismissed
+during the opening animation before the first JS frame.
+
 ## Build History
 - Build 127: LinearGradient/View fix (wrong diagnosis). Player still broken.
 - Build 128: isNavPushActive() guard + gestureEnabled:false. Partially fixed Layer 1.
 - Build 129: card presentation on Android (no modal). Fixed Layer 2. v1.0.63/129.
 - Build 130: BackHandler + component-level gestureEnabled + backgroundColor +
   navPushActiveUntil=3s. Fixed Layers 3+4+bonus. v1.0.63/130.
+- Build 132: Debug banner added (v132) to determine if player mounts.
+- Build 133: slide_from_right on Android (Layer 5 fix). Banner updated to v133.

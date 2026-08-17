@@ -630,10 +630,29 @@ function RootLayoutNav() {
           //
           // Fix: on Android we omit `presentation` entirely so the player
           // opens as a standard full-screen card push (no overlay, no
-          // dismissal race). The slide_from_bottom animation still gives the
-          // same visual feel. On iOS we keep "modal" for the native sheet UX.
+          // dismissal race). On iOS we keep "modal" for the native sheet UX.
           ...(Platform.OS === "ios" ? { presentation: "modal" as const } : {}),
-          animation: "slide_from_bottom",
+          // Platform-specific animation — critical for Android navigation:
+          //
+          // iOS: "slide_from_bottom" matches the native modal sheet gesture.
+          //      gestureEnabled:false prevents accidental swipe-down dismissal.
+          //
+          // Android: "slide_from_bottom" is the root cause of the day-0
+          //   navigation bug. Android 13+'s predictive-back gesture system
+          //   classifies bottom-slide NativeStack screens as dismissible
+          //   bottom-sheets and fires a back gesture DURING the opening
+          //   animation — before the first JS frame renders — causing the
+          //   screen to snap back to home. This happens even when
+          //   gestureEnabled:false is set, because the OS-level predictive-back
+          //   intercepts the motion before React Navigation's gesture handler
+          //   has been installed.
+          //
+          //   Fix: use "slide_from_right" on Android (the standard card push
+          //   animation). The OS back-gesture system does NOT classify right-
+          //   to-left card transitions as dismissible bottom-sheets, so the
+          //   predictive-back gesture does not fire during the opening
+          //   animation and the screen renders normally.
+          animation: Platform.OS === "ios" ? "slide_from_bottom" : "slide_from_right",
           // Disable gesture-driven dismissal on every platform.
           // On Android 13+ the predictive-back system can interpret a swipe
           // from the bottom edge as a back gesture and dismiss the screen mid-

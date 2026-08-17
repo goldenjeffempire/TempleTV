@@ -1334,37 +1334,29 @@ export default function PlayerScreen() {
     <View style={[styles.root, { backgroundColor: c.background }]}>
       {showDebugBanner && (
         <View style={styles.debugBanner} pointerEvents="none">
-          <Text style={styles.debugBannerText}>▶ PLAYER SCREEN LOADED — v132</Text>
+          <Text style={styles.debugBannerText}>▶ PLAYER SCREEN LOADED — v133</Text>
         </View>
       )}
       {/*
-       * Re-declare the same options that _layout.tsx sets for this screen.
+       * Re-declare gestureEnabled at the component level as a belt-and-
+       * suspenders guard against React Navigation 7's setOptions() merge
+       * behaviour on Android (which can silently drop navigator-level options
+       * that the component-level call doesn't include).
        *
-       * In React Navigation 7 / Expo Router SDK 57, <Stack.Screen options={…}>
-       * rendered inside the route component calls navigation.setOptions() which
-       * MERGES with the navigator-level options. However, in some edge cases on
-       * Android the merge favours the component-level object, silently dropping
-       * keys it doesn't include (gestureEnabled, animation). Repeating those
-       * keys here makes the screen self-contained: even if the navigator-level
-       * options are lost for any reason, the screen still behaves correctly.
+       * gestureEnabled: false — prevents Android 13+'s predictive-back system
+       * from animating a back-preview on the card screen after it has rendered.
+       * The root-cause fix (slide_from_right animation in _layout.tsx) already
+       * prevents the OS from misidentifying this as a dismissible bottom-sheet
+       * BEFORE the first frame; this guard covers any gesture re-enable that
+       * could occur after setOptions() merges on mount.
        *
-       * gestureEnabled: false — critical on Android 13+ where the predictive-
-       * back system animates a back-preview even for card screens if this is
-       * not explicitly false. Without it, the player can appear to open and
-       * immediately slide back down (the back-preview animation playing out),
-       * making it look like the navigation failed.
-       */}
-      {/*
        * IMPORTANT: Do NOT set `animation` here.
        * `navigation.setOptions({ animation })` called from within a mounted
        * NativeStack screen is unsupported in React Navigation 7 — setting the
-       * entrance animation after the screen is already rendered can cause the
+       * entrance animation after the screen is already rendered causes the
        * screen to malfunction or silently dismiss on Android. The `animation`
-       * is correctly set at the layout level in _layout.tsx Stack.Screen and
-       * must NOT be repeated here.
-       *
-       * Only options that are safe to change after mount belong here:
-       * gestureEnabled, headerShown, title, etc.
+       * is set correctly at the layout level in _layout.tsx and must NOT be
+       * repeated here.
        */}
       <Stack.Screen
         options={{
