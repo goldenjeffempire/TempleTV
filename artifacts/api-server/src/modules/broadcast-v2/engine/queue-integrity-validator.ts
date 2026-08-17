@@ -36,6 +36,39 @@ import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 
 
 /**
+ * Return true when `url` is hosted on this server.
+ *
+ * On Replit dev REPLIT_DEV_DOMAIN is the own hostname; RENDER_EXTERNAL_URL
+ * on Render.  API_ORIGIN is included only when REPLIT_DEV_DOMAIN is absent —
+ * the same guard used by normalizeQueueUrl() in queue.repo.ts — because on
+ * Replit dev API_ORIGIN points to the remote production server, not this
+ * process.
+ */
+function isOwnOriginUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    const replitDevDomain = process.env["REPLIT_DEV_DOMAIN"];
+    const candidates = [
+      replitDevDomain,
+      process.env["RENDER_EXTERNAL_URL"],
+      process.env["DEV_DOMAIN"],
+      // Exclude API_ORIGIN when on Replit dev — it points to the prod server.
+      !replitDevDomain ? process.env["API_ORIGIN"] : undefined,
+    ]
+      .filter(Boolean)
+      .map((h) => {
+        try {
+          return new URL(/^https?:\/\//i.test(h!) ? h! : `https://${h!}`)
+            .hostname.toLowerCase();
+        } catch { return null; }
+      })
+      .filter(Boolean) as string[];
+    return candidates.some((c) => host === c);
+  } catch { return false; }
+}
+
+/**
  * Derive the storage_blobs key from a localVideoUrl.
  *
  * localVideoUrl formats seen in the wild:
@@ -45,19 +78,26 @@ import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
  *   uploads/2024/01/15/abc.mp4                 → uploads/2024/01/15/abc.mp4 (already a key)
  *
  * Returns null when the URL cannot be mapped to a storage key (e.g. external
- * YouTube URLs, HLS master playlists stored elsewhere, or malformed URLs).
+ * YouTube URLs, HLS master playlists stored elsewhere, prod-sync items whose
+ * blobs live on the remote production server, or malformed URLs).
  */
 function deriveStorageKey(localVideoUrl: string): string | null {
   if (!localVideoUrl || localVideoUrl.trim() === "") return null;
-  // Absolute URL — extract the path segment after /api/v[N]/uploads/ or /api/uploads/
+  // Absolute URL — only check storage for URLs hosted on THIS server.
+  // Prod-sync items have absolute URLs like https://api.templetv.org.ng/api/v1/uploads/...
+  // When running on Replit dev (REPLIT_DEV_DOMAIN set), those blobs are in the
+  // Neon production DB, not the local heliumdb storage_blobs table.  Checking
+  // local storage for them always shows "missing" and wrongly deactivates them.
+  // isOwnOriginUrl() applies the same REPLIT_DEV_DOMAIN guard as queue.repo.ts.
   if (/^https?:\/\//i.test(localVideoUrl)) {
+    if (!isOwnOriginUrl(localVideoUrl)) return null; // External origin — skip local blob check
     const marker1 = "/api/v1/uploads/";
     const idx1 = localVideoUrl.indexOf(marker1);
     if (idx1 !== -1) return "uploads/" + localVideoUrl.slice(idx1 + marker1.length);
     const marker2 = "/api/uploads/";
     const idx2 = localVideoUrl.indexOf(marker2);
     if (idx2 !== -1) return "uploads/" + localVideoUrl.slice(idx2 + marker2.length);
-    return null; // External URL — not in our storage
+    return null; // Own-origin URL but unrecognised path structure
   }
   // Relative URL: /api/v1/uploads/... or /api/uploads/... or bare uploads/...
   const stripped = localVideoUrl.replace(/^\/(?:api\/(?:v\d+\/)?)?/, "");
@@ -564,7 +604,15 @@ class QueueIntegrityValidatorImpl {
               const effectiveUrl = r.q_local_url ?? r.local_video_url;
               if (!effectiveUrl) return [];
               const key = deriveStorageKey(effectiveUrl);
-              if (!key) return [];
+              if (!key) {
+                // deriveStorageKey returns null for external-origin URLs (prod-sync
+                // items whose blob lives on the remote production server, not local
+                // storage_blobs).  These were incorrectly deactivated; re-activate
+                // them immediately — their blob is verified at play time by the
+                // orchestrator probe, not by local storage checks.
+                reactivatableIds.push(r.id);
+                return [];
+              }
               return [{ id: r.id, key }];
             });
 
