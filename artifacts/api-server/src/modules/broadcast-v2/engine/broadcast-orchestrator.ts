@@ -4370,8 +4370,19 @@ class BroadcastOrchestrator extends EventEmitter {
   private toLocalhostProbeUrl(url: string): string {
     try {
       const u = new URL(url);
+      // When REPLIT_DEV_DOMAIN is set, API_ORIGIN points to the PRODUCTION
+      // server (e.g. https://api.templetv.org.ng), not this dev process.
+      // Including it in ownHostnames would cause prod-sync'd items whose
+      // localVideoUrl was absolutized to api.templetv.org.ng to be rewritten
+      // to http://127.0.0.1:PORT/… — where the local dev API returns 404
+      // (blob only exists in the Neon production DB) — falsely deactivating
+      // them as MISSING_BLOB.  This is the same guard already applied in
+      // normalizeQueueUrl() and getOwnBase() in queue.repo.ts.
+      const replitDevDomain = process.env["REPLIT_DEV_DOMAIN"];
       const ownHostnames = [
-        env.API_ORIGIN,
+        // Exclude API_ORIGIN when running inside a Replit workspace —
+        // on Replit, API_ORIGIN is the remote production URL, not own-origin.
+        (!replitDevDomain ? env.API_ORIGIN : undefined),
         process.env["RENDER_EXTERNAL_URL"],
         process.env["DEV_DOMAIN"],
       ]
@@ -4388,7 +4399,6 @@ class BroadcastOrchestrator extends EventEmitter {
       // Also add REPLIT_DEV_DOMAIN so probes for locally-uploaded videos
       // absolutized to https://<REPLIT_DEV_DOMAIN>/api/v1/uploads/{key}
       // are rewritten to loopback instead of going through the Replit proxy.
-      const replitDevDomain = process.env["REPLIT_DEV_DOMAIN"];
       if (replitDevDomain) {
         try {
           const rh = new URL(/^https?:\/\//i.test(replitDevDomain) ? replitDevDomain : `https://${replitDevDomain}`).hostname;
