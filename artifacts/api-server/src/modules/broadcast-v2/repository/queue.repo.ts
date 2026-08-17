@@ -750,6 +750,10 @@ export async function reEnableAllSuspended(): Promise<number> {
     // This guards against "Reload from queue" blowing away deliberate operator
     // choices (e.g. a paused live event, a video flagged for review) when the
     // intent is only to recover from system-generated suspensions.
+    // Exclude items deactivated for "missing_blob" — those remain deactivated
+    // until the blob is actually restored (the integrity validator's reverse
+    // pass re-activates them after confirming the blob exists in storage_blobs).
+    // Re-enabling them here would undo that protection before the blob is present.
     const result = await db
       .update(schema.broadcastQueueTable)
       .set({ isActive: true, validatorDeactivatedReason: null })
@@ -757,6 +761,7 @@ export async function reEnableAllSuspended(): Promise<number> {
         and(
           eq(schema.broadcastQueueTable.isActive, false),
           isNotNull(schema.broadcastQueueTable.validatorDeactivatedReason),
+          ne(schema.broadcastQueueTable.validatorDeactivatedReason, "missing_blob"),
         ),
       )
       .returning({ id: schema.broadcastQueueTable.id });

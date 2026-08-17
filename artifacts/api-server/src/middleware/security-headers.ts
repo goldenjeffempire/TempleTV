@@ -8,7 +8,7 @@
  * API, media, and streaming endpoints.
  */
 
-import type { FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyRequest } from 'fastify';
 import { env } from '../config/env.js';
 import { logger } from '../infrastructure/logger.js';
 

@@ -477,32 +477,43 @@ export const queueSelfHealingWorker = {
             const errCode = videoRow?.transcodingErrorCode;
             const TERMINAL_CODES = ["ASSEMBLY_FAILED", "CORRUPT_SOURCE", "SOURCE_MISSING"] as const;
             if (errCode && (TERMINAL_CODES as ReadonlyArray<string>).includes(errCode)) {
-              await assetHealthRepo.markRepairing(healthRow.queueItemId);
-              const updatedRow = await assetHealthRepo.recordRepairOutcome(
-                healthRow.queueItemId,
-                "failure",
-                `Terminal video error '${errCode}' — re-upload required, URL probing cannot recover this`,
+              // Deactivate the queue item immediately — terminal error codes mean
+              // the blob is gone or irreparably corrupt; URL probing cannot fix it.
+              // We use the validator's canonical "missing_blob" reason so:
+              //   • reEnableAllSuspended() skips this item (see queue.repo.ts)
+              //   • the integrity validator's reverse pass re-activates it once
+              //     the blob is restored (user re-uploads the video).
+              // We do NOT burn repair attempts here — skipping to deactivation
+              // directly avoids the block → 4h-auto-unblock → repeat cycle.
+              await db
+                .update(schema.broadcastQueueTable)
+                .set({ isActive: false, validatorDeactivatedReason: "missing_blob" })
+                .where(eq(schema.broadcastQueueTable.id, healthRow.queueItemId))
+                .catch((deactErr: unknown) =>
+                  logger.warn(
+                    { err: deactErr, itemId: healthRow.queueItemId },
+                    `${LOG_TAG} failed to deactivate terminal-error item (non-fatal)`,
+                  ),
+                );
+              result.blocked++;
+              logger.warn(
+                { itemId: healthRow.queueItemId, title: queueItem.title, errCode, videoId: queueItem.videoId },
+                `${LOG_TAG} item permanently deactivated — terminal video error (${errCode}); re-upload required`,
               );
-              if (updatedRow.state === "blocked") {
-                result.blocked++;
-                logger.warn(
-                  { itemId: healthRow.queueItemId, title: queueItem.title, errCode },
-                  `${LOG_TAG} item permanently blocked — terminal video error code (${errCode})`,
-                );
-                adminEventBus.push("ops-alert", {
-                  level: "warning",
-                  title: "Broadcast Item Blocked (Terminal Error)",
-                  message: `Queue item "${queueItem.title}" blocked — terminal video error (${errCode}). Re-upload to restore.`,
-                  timestamp: new Date().toISOString(),
-                  source: "queue-self-healing",
-                  queueItemId: healthRow.queueItemId,
-                });
-              } else {
-                logger.info(
-                  { itemId: healthRow.queueItemId, title: queueItem.title, errCode, attempts: updatedRow.repairAttempts },
-                  `${LOG_TAG} terminal error code (${errCode}) — skipping URL probe, counting toward block`,
-                );
-              }
+              adminEventBus.push("ops-alert", {
+                level: "warning",
+                title: "Broadcast Item Deactivated — Missing/Corrupt Blob",
+                message:
+                  `"${queueItem.title}" has been deactivated: terminal video error (${errCode}). ` +
+                  "Re-upload the video to restore it to broadcast rotation.",
+                timestamp: new Date().toISOString(),
+                source: "queue-self-healing",
+                queueItemId: healthRow.queueItemId,
+              });
+              adminEventBus.push("broadcast-queue-updated", {
+                reason: "terminal-error-deactivation",
+                queueItemId: healthRow.queueItemId,
+              });
               continue;
             }
           } catch (terminalCheckErr) {
@@ -605,15 +616,14 @@ export const queueSelfHealingWorker = {
                 videoObjectPath,
               );
               if (missing) {
-                // Deactivate queue item permanently
+                // Deactivate queue item permanently using the validator's canonical
+                // "missing_blob" reason so:
+                //   • reEnableAllSuspended() skips this item
+                //   • the integrity validator's reverse pass re-activates it once
+                //     the blob is restored by a re-upload
                 await db
                   .update(schema.broadcastQueueTable)
-                  .set({
-                    isActive: false,
-                    validatorDeactivatedReason:
-                      `MISSING_BLOB — storage blob absent (key: ${key ?? "unknown"}). ` +
-                      "Re-upload the video to restore it to broadcast rotation.",
-                  })
+                  .set({ isActive: false, validatorDeactivatedReason: "missing_blob" })
                   .where(eq(schema.broadcastQueueTable.id, healthRow.queueItemId));
 
                 // Tag the managed_video so isPlayableForBroadcast rejects it
