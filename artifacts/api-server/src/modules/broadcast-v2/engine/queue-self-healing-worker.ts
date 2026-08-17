@@ -19,6 +19,13 @@
  *   R3. Clear bad-URL confidence source-set + force orchestrator reload
  *   → All strategies failed → record failure, reschedule
  *
+ * Missing-blob fast-path (fires before the normal rescheduling):
+ *   When R1 probe returns HTTP 404 AND storage_blobs confirms the blob is absent,
+ *   the item is immediately deactivated (is_active = false) with reason
+ *   "MISSING_BLOB" and the managed_video is tagged SOURCE_MISSING.  A single
+ *   ops-alert fires on first detection; subsequent cycles are silent because the
+ *   item is removed from the active queue and never scanned again.
+ *
  * Auto-suggests a human fix when the item is blocked:
  *   "NO_PLAYABLE_URL" / "ALL_SOURCES_BAD" → "Re-upload video or check CDN"
  *   "MISSING_VIDEO_JOIN"                   → "Re-upload video"
@@ -41,6 +48,59 @@ import {
 import { env } from "../../../config/env.js";
 
 const LOG_TAG = "[queue-self-healing]";
+
+// ── Missing-blob detection helpers ────────────────────────────────────────────
+
+/**
+ * Derive the storage_blobs key from a localVideoUrl (relative or absolute).
+ * Mirrors auto-enqueue.service.ts deriveStorageKeyFromUrl() so the key we
+ * check against storage_blobs matches what was written at upload time.
+ */
+function deriveStorageKey(localVideoUrl: string): string | null {
+  if (!localVideoUrl) return null;
+  if (/^https?:\/\//i.test(localVideoUrl)) {
+    const marker = "/api/v1/uploads/";
+    const idx = localVideoUrl.indexOf(marker);
+    if (idx !== -1) return "uploads/" + localVideoUrl.slice(idx + marker.length);
+    const legacyMarker = "/api/uploads/";
+    const idx2 = localVideoUrl.indexOf(legacyMarker);
+    if (idx2 !== -1) return "uploads/" + localVideoUrl.slice(idx2 + legacyMarker.length);
+    return null;
+  }
+  // Relative URL: /api/v1/uploads/2024/... → uploads/2024/...
+  const stripped = localVideoUrl.replace(/^\/(?:api\/(?:v\d+\/)?)?/, "");
+  return stripped.startsWith("uploads/") ? stripped : null;
+}
+
+/**
+ * Check whether a local video's blob is definitively absent from storage_blobs.
+ *
+ * Returns { missing: true, key } when the key can be derived AND no matching
+ * row exists in storage_blobs.  Returns { missing: false } for any error or
+ * when the key cannot be derived — the caller falls through to the normal
+ * reschedule path so transient DB issues don't cause premature deactivations.
+ *
+ * Accepts an optional objectPath (the authoritative column written at upload
+ * time) which is preferred over the URL-derived key when present.
+ */
+async function confirmBlobMissing(
+  localVideoUrl: string | null,
+  objectPath?: string | null,
+): Promise<{ missing: boolean; key: string | null }> {
+  const key = (objectPath?.trim() || null) ?? deriveStorageKey(localVideoUrl ?? "");
+  if (!key) return { missing: false, key: null };
+  try {
+    const rows = await db
+      .select({ key: schema.storageBlobsTable.key })
+      .from(schema.storageBlobsTable)
+      .where(eq(schema.storageBlobsTable.key, key))
+      .limit(1);
+    return { missing: rows.length === 0, key };
+  } catch {
+    // DB error — don't deactivate speculatively; fall through to normal reschedule
+    return { missing: false, key };
+  }
+}
 
 // ── Repair suggestion map ─────────────────────────────────────────────────────
 
@@ -399,13 +459,21 @@ export const queueSelfHealingWorker = {
         // without wasting 3 cycles × 4 h of fruitless retries.
         // ASSEMBLY_FAILED normally never reaches this path (isPlayableForBroadcast
         // rejects it), but we guard it here for safety.
+        //
+        // We also fetch objectPath here so the missing-blob fast-path (below)
+        // can use the authoritative storage key instead of deriving it from URL.
+        let videoObjectPath: string | null = null;
         if (queueItem.videoId) {
           try {
             const [videoRow] = await db
-              .select({ transcodingErrorCode: schema.videosTable.transcodingErrorCode })
+              .select({
+                transcodingErrorCode: schema.videosTable.transcodingErrorCode,
+                objectPath: schema.videosTable.objectPath,
+              })
               .from(schema.videosTable)
               .where(eq(schema.videosTable.id, queueItem.videoId))
               .limit(1);
+            videoObjectPath = videoRow?.objectPath ?? null;
             const errCode = videoRow?.transcodingErrorCode;
             const TERMINAL_CODES = ["ASSEMBLY_FAILED", "CORRUPT_SOURCE", "SOURCE_MISSING"] as const;
             if (errCode && (TERMINAL_CODES as ReadonlyArray<string>).includes(errCode)) {
@@ -521,6 +589,81 @@ export const queueSelfHealingWorker = {
         }
 
         if (!repaired) {
+          // ── Missing-blob fast-path ────────────────────────────────────
+          // A 404 from our own API is unambiguous: the blob is not in
+          // storage_blobs. Confirm directly against the DB so we don't rely
+          // on the HTTP probe alone (CDN/proxy 404 could be transient).
+          // If the blob is definitively absent: deactivate the queue item
+          // immediately and tag the managed_video as SOURCE_MISSING so the
+          // admin panel shows a clear status.  A single ops-alert fires here;
+          // subsequent scan cycles are silent because the item is no longer
+          // active and will never appear in step 1's activeItems query.
+          if (probeResult.statusCode === 404 && queueItem.localVideoUrl) {
+            try {
+              const { missing, key } = await confirmBlobMissing(
+                queueItem.localVideoUrl,
+                videoObjectPath,
+              );
+              if (missing) {
+                // Deactivate queue item permanently
+                await db
+                  .update(schema.broadcastQueueTable)
+                  .set({
+                    isActive: false,
+                    validatorDeactivatedReason:
+                      `MISSING_BLOB — storage blob absent (key: ${key ?? "unknown"}). ` +
+                      "Re-upload the video to restore it to broadcast rotation.",
+                  })
+                  .where(eq(schema.broadcastQueueTable.id, healthRow.queueItemId));
+
+                // Tag the managed_video so isPlayableForBroadcast rejects it
+                // and the admin Videos panel shows "Source Missing" status.
+                if (queueItem.videoId) {
+                  await db
+                    .update(schema.videosTable)
+                    .set({ transcodingErrorCode: "SOURCE_MISSING" })
+                    .where(eq(schema.videosTable.id, queueItem.videoId))
+                    .catch((tagErr: unknown) =>
+                      logger.warn(
+                        { err: tagErr, videoId: queueItem.videoId },
+                        `${LOG_TAG} failed to tag managed_video as SOURCE_MISSING (non-fatal)`,
+                      ),
+                    );
+                }
+
+                result.blocked++;
+                logger.warn(
+                  { itemId: healthRow.queueItemId, title: queueItem.title, key, videoId: queueItem.videoId },
+                  `${LOG_TAG} item permanently deactivated — blob not found in storage (re-upload required)`,
+                );
+                adminEventBus.push("ops-alert", {
+                  level: "warning",
+                  title: "Broadcast Item Deactivated — Missing Blob",
+                  message:
+                    `"${queueItem.title}" has been deactivated: its storage blob is absent ` +
+                    `from the database (key: ${key ?? "unknown"}). Re-upload the video to ` +
+                    "restore it to broadcast rotation.",
+                  timestamp: new Date().toISOString(),
+                  source: "queue-self-healing",
+                  queueItemId: healthRow.queueItemId,
+                });
+                adminEventBus.push("broadcast-queue-updated", {
+                  reason: "missing-blob-deactivation",
+                  queueItemId: healthRow.queueItemId,
+                });
+                continue; // skip normal reschedule — item is deactivated
+              }
+              // Blob IS present in storage_blobs but probe still returned 404 —
+              // likely a transient API/proxy issue. Fall through to normal R3.
+            } catch (blobCheckErr) {
+              // DB error — don't deactivate speculatively; fall through to R3
+              logger.warn(
+                { err: blobCheckErr, itemId: healthRow.queueItemId },
+                `${LOG_TAG} blob existence check failed (non-fatal — falling through to normal reschedule)`,
+              );
+            }
+          }
+
           // ── R3: Force orchestrator reload and mark failure ────────────
           // Reload pulls fresh data; if the item has been fixed at the DB level
           // (e.g., re-upload updated localVideoUrl), the orchestrator may admit it
