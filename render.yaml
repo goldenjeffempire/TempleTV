@@ -260,9 +260,14 @@ services:
       - key: API_ORIGIN
         value: https://api.templetv.org.ng
 
-  # ── Admin web panel (static site) ───────────────────────────────────────────
-  - type: static
+  # ── Admin web panel ──────────────────────────────────────────────────────────
+  # Served as a Node web service using `serve` (SPA mode) because Render
+  # Blueprints do not support type:static — only web/worker/pserv/cron/redis.
+  - type: web
     name: temple-tv-admin
+    runtime: node
+    plan: free
+    region: frankfurt
     branch: main
     rootDir: .
     autoDeploy: true
@@ -282,12 +287,10 @@ services:
       bash ./scripts/render-install.sh &&
       pnpm --filter @workspace/admin run build
 
-    staticPublishPath: artifacts/admin/dist/public
+    # serve -s: SPA mode — redirects unknown paths to index.html
+    startCommand: npx serve -s artifacts/admin/dist/public -l $PORT
 
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
+    healthCheckPath: /
 
     envVars:
       - key: NODE_ENV
@@ -302,9 +305,12 @@ services:
       - key: VITE_SENTRY_DSN
         sync: false
 
-  # ── TV smart-TV web app (static site) ───────────────────────────────────────
-  - type: static
+  # ── TV smart-TV web app ───────────────────────────────────────────────────
+  - type: web
     name: temple-tv-tv
+    runtime: node
+    plan: free
+    region: frankfurt
     branch: main
     rootDir: .
     autoDeploy: true
@@ -324,12 +330,9 @@ services:
       bash ./scripts/render-install.sh &&
       pnpm --filter @workspace/tv run build
 
-    staticPublishPath: artifacts/tv/dist/public
+    startCommand: npx serve -s artifacts/tv/dist/public -l $PORT
 
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
+    healthCheckPath: /
 
     envVars:
       - key: NODE_ENV
