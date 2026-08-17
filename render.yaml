@@ -1,5 +1,12 @@
-# Temple TV — Render Blueprint
-# Services: api (web) · broadcast-daemon (pserv) · admin (static) · tv (static)
+## Temple TV — Render Blueprint
+## 5 services: api (web) · broadcast-daemon (pserv) · admin (static) · web (static) · tv (static)
+##
+## Shared env-var groups — define secrets ONCE in the Render dashboard:
+##   temple-tv-shared-secrets → DATABASE_URL, JWT_* , REDIS_URL, SENTRY_DSN
+##   temple-tv-domains        → CORS_ORIGINS, APP_BASE_URL
+##
+## After applying this Blueprint, set every `sync: false` key in
+## the Render dashboard Environment Groups / Service Environment tabs.
 
 envVarGroups:
   - name: temple-tv-shared-secrets
@@ -24,7 +31,7 @@ envVarGroups:
 
 services:
 
-  # ── API ──────────────────────────────────────────────────────────────────────
+  # ── API (Fastify + SSE + notification dispatcher) ───────────────────────────
   - type: web
     name: temple-tv-api
     runtime: node
@@ -44,13 +51,18 @@ services:
         - lib/broadcast-sync/**
         - pnpm-lock.yaml
         - package.json
+        - pnpm-workspace.yaml
         - scripts/**
         - render.yaml
 
-    buildCommand: >-
-      bash ./scripts/render-install.sh &&
-      pnpm --filter @workspace/db run push-force &&
+    # DB migration runs in preDeployCommand (after build, before traffic swap)
+    # so DATABASE_URL is available as a live env var — not at build time.
+    buildCommand: |
+      bash ./scripts/render-install.sh && \
+      pnpm run verify:render && \
       pnpm --filter @workspace/api-server run build
+
+    preDeployCommand: pnpm --filter @workspace/db run push-force
 
     startCommand: pnpm --filter @workspace/api-server run start:render-free
 
@@ -113,7 +125,7 @@ services:
       - key: ADMIN_API_TOKEN
         generateValue: true
 
-      # Broadcast daemon link (injected by Render via fromService)
+      # Broadcast daemon injected by Render's fromService wiring
       - key: BROADCAST_DAEMON_HOST
         fromService:
           name: temple-tv-broadcast-daemon
@@ -125,7 +137,7 @@ services:
           type: pserv
           property: port
 
-      # Operator-managed secrets (set in Render dashboard)
+      # Operator-managed secrets — set in Render dashboard
       - key: SEED_ADMIN_EMAIL
         sync: false
       - key: SEED_ADMIN_PASSWORD
@@ -167,8 +179,8 @@ services:
       - key: CLIENT_ERROR_SINK_TOKEN
         sync: false
 
-  # ── Broadcast daemon (pserv — internal only, no public URL) ─────────────────
-  # pserv has no healthCheckPath support; Render monitors via process health.
+  # ── Broadcast daemon (pserv — internal only, never restarted on API deploy) ─
+  # pserv: no healthCheckPath, no region — Render monitors via process health.
   - type: pserv
     name: temple-tv-broadcast-daemon
     runtime: node
@@ -187,12 +199,12 @@ services:
         - lib/broadcast-sync/**
         - pnpm-lock.yaml
         - package.json
+        - pnpm-workspace.yaml
         - scripts/**
         - render.yaml
 
-    buildCommand: >-
-      bash ./scripts/render-install.sh &&
-      pnpm --filter @workspace/db run push-force &&
+    buildCommand: |
+      bash ./scripts/render-install.sh && \
       pnpm --filter @workspace/api-server run build
 
     startCommand: pnpm --filter @workspace/api-server run start:render-daemon
@@ -257,7 +269,8 @@ services:
       - key: CLIENT_ERROR_SINK_TOKEN
         sync: false
 
-  # ── Admin SPA (static site) ──────────────────────────────────────────────────
+  # ── Admin SPA ────────────────────────────────────────────────────────────────
+  # env: static — Render CDN; no region, no PORT envVar allowed.
   - type: web
     name: temple-tv-admin
     env: static
@@ -276,19 +289,34 @@ services:
         - lib/broadcast-sync/**
         - pnpm-lock.yaml
         - package.json
+        - pnpm-workspace.yaml
 
-    buildCommand: >-
-      bash ./scripts/render-install.sh &&
+    buildCommand: |
+      bash ./scripts/render-install.sh && \
+      pnpm run verify:render && \
       pnpm --filter @workspace/admin run build
 
     staticPublishPath: ./artifacts/admin/dist/public
 
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
-
     headers:
+      - path: /*
+        name: Strict-Transport-Security
+        value: "max-age=63072000; includeSubDomains; preload"
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+      - path: /*
+        name: Cross-Origin-Opener-Policy
+        value: same-origin
       - path: /index.html
         name: Cache-Control
         value: no-store, no-cache, must-revalidate
@@ -296,13 +324,86 @@ services:
         name: Cache-Control
         value: public, max-age=31536000, immutable
 
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
     envVars:
       - key: VITE_API_URL
         value: https://api.templetv.org.ng
       - key: VITE_SENTRY_DSN
         sync: false
 
-  # ── Smart TV SPA (static site) ───────────────────────────────────────────────
+  # ── Mobile PWA (Expo Web) ────────────────────────────────────────────────────
+  - type: web
+    name: temple-tv-web
+    env: static
+    branch: main
+    rootDir: .
+    autoDeploy: true
+    pullRequestPreviewsEnabled: false
+
+    buildFilter:
+      paths:
+        - artifacts/mobile/**
+        - lib/api-spec/**
+        - lib/api-client-react/**
+        - lib/api-zod/**
+        - lib/broadcast-types/**
+        - lib/broadcast-sync/**
+        - lib/player-core/**
+        - pnpm-lock.yaml
+        - package.json
+        - pnpm-workspace.yaml
+
+    buildCommand: |
+      bash ./scripts/render-install.sh && \
+      pnpm run verify:render && \
+      pnpm --filter @workspace/mobile run build:web
+
+    staticPublishPath: ./artifacts/mobile/web-dist
+
+    headers:
+      - path: /*
+        name: Strict-Transport-Security
+        value: "max-age=63072000; includeSubDomains; preload"
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+      - path: /index.html
+        name: Cache-Control
+        value: no-store, no-cache, must-revalidate
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+      - path: /_expo/static/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+    envVars:
+      - key: EXPO_PUBLIC_API_URL
+        value: https://api.templetv.org.ng
+      - key: EXPO_PUBLIC_DOMAIN
+        value: api.templetv.org.ng
+      - key: EXPO_PUBLIC_SENTRY_DSN
+        sync: false
+
+  # ── Smart TV SPA ─────────────────────────────────────────────────────────────
   - type: web
     name: temple-tv-tv
     env: static
@@ -319,27 +420,45 @@ services:
         - lib/api-zod/**
         - lib/broadcast-types/**
         - lib/broadcast-sync/**
+        - lib/player-core/**
         - pnpm-lock.yaml
         - package.json
+        - pnpm-workspace.yaml
 
-    buildCommand: >-
-      bash ./scripts/render-install.sh &&
+    buildCommand: |
+      bash ./scripts/render-install.sh && \
+      pnpm run verify:render && \
       pnpm --filter @workspace/tv run build
 
     staticPublishPath: ./artifacts/tv/dist/public
 
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
-
     headers:
+      - path: /*
+        name: Strict-Transport-Security
+        value: "max-age=63072000; includeSubDomains; preload"
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /*
+        name: Permissions-Policy
+        value: "camera=(), microphone=(), geolocation=(), interest-cohort=()"
       - path: /index.html
         name: Cache-Control
         value: no-store, no-cache, must-revalidate
       - path: /assets/*
         name: Cache-Control
         value: public, max-age=31536000, immutable
+
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
 
     envVars:
       - key: VITE_API_URL
