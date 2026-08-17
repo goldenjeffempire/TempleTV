@@ -1,192 +1,132 @@
 # ════════════════════════════════════════════════════════════════════════════
-#  Temple TV — Render deployment manifest (free-tier edition, 2026-05-06)
+# Temple TV — Render deployment manifest (free-tier edition, 2026-05-06)
 # ════════════════════════════════════════════════════════════════════════════
 #
-#  Pipeline-minutes optimisation (2026-05-06)
-#  ───────────────────────────────────────────
-#  Each service now declares a `filter.paths` block so Render only triggers
-#  a rebuild when files relevant to THAT service change. Previously every
-#  commit rebuilt all 4 services regardless of what changed:
+# Five Render services, all in Frankfurt:
 #
-#    Before: 1 commit → 4 builds × ~6 min each = ~24 pipeline minutes
-#    After:  1 commit → typically 1 build × ~3 min        = ~3 pipeline minutes
+#   temple-tv-broadcast-daemon  pserv    starter   Broadcast engine
+#   temple-tv-api               web      free      Fastify API + SSE + jobs
+#   temple-tv-admin             static   free      Admin dashboard
+#   temple-tv-web               static   free      Expo Web / PWA
+#   temple-tv-tv                static   free      TV / Tizen SPA
 #
-#  Path filter rules (a deploy fires when ANY listed path matches a changed file):
-#    temple-tv-api   → artifacts/api-server/**, lib/**, root manifests, scripts
-#    temple-tv-admin → artifacts/admin/**,      lib/api-{client-react,zod,spec}/**
-#    temple-tv-web   → artifacts/mobile/**,     lib/api-{client-react,zod,spec}/**
-#    temple-tv-tv    → artifacts/tv/**,         lib/api-{client-react,zod,spec}/**
+# Architecture:
 #
-#  `pnpm run verify:render` runs in every buildCommand (after install, before
-#  the per-surface build). It omits `tsc --build` (OOMs on 512 MB free-tier
-#  containers) but enforces catalog, types, tsconfig, env-secrets, and
-#  db-schema guardrails. Required by verify-render-yaml.ts Invariant 2.
+#   Browser / Mobile / TV
+#             │
+#             ▼
+#      temple-tv-api
+#             │
+#             │ private network
+#             ▼
+#   temple-tv-broadcast-daemon
 #
+# The broadcast daemon owns the long-lived BroadcastOrchestrator and queue
+# workers. API deployments therefore do not restart the broadcast engine.
 #
-#  Five Render services on one manifest, all in `frankfurt`:
+# Render free-tier limitations:
 #
-#    ┌────────────────────────────────┬──────────┬──────────┬───────────────────────────────────────────┐
-#    │ Service                        │ Type     │ Plan     │ Role                                      │
-#    ├────────────────────────────────┼──────────┼──────────┼───────────────────────────────────────────┤
-#    │ temple-tv-broadcast-daemon     │ pserv    │ starter  │ Broadcast engine (BroadcastOrchestrator + │
-#    │                                │          │ $7/mo    │ queue workers). NEVER restarted on API    │
-#    │                                │          │          │ deploy. Internal-network only.            │
-#    │ temple-tv-api                  │ web      │ free     │ Fastify API + SSE proxy + notification    │
-#    │                                │          │          │ dispatch. Proxies broadcast traffic to    │
-#    │                                │          │          │ daemon via BROADCAST_DAEMON_URL.          │
-#    │ temple-tv-admin                │ static   │ —        │ Vite SPA (admin dashboard)                │
-#    │ temple-tv-web                  │ static   │ —        │ Expo Web (mobile PWA)                     │
-#    │ temple-tv-tv                   │ static   │ —        │ Vite SPA (TV / Tizen)                     │
-#    └────────────────────────────────┴──────────┴──────────┴───────────────────────────────────────────┘
+#   • Web service:       512 MiB RAM / 0.1 vCPU / 1 instance
+#   • Static sites:      Free global CDN
+#   • Private services:  No free tier
+#   • Broadcast daemon:  Starter ($7/month)
 #
-#  Zero-downtime 24/7 broadcast architecture (added Jul 2026)
-#  ────────────────────────────────────────────────────────────
-#  The broadcast daemon is the cornerstone of uninterrupted 24/7 broadcasting.
-#  Before this split, the broadcast engine ran inside the API process (RUN_MODE=all).
-#  Every API code deploy triggered a rolling restart of the API process which also
-#  killed the BroadcastOrchestrator, interrupting the active stream for ~15–30 s.
+# No persistent Render disks are used.
+# No Render-managed PostgreSQL or Redis is required.
 #
-#  After the split:
-#    • temple-tv-broadcast-daemon (pserv) owns the BroadcastOrchestrator and all
-#      queue workers. It only redeploys when broadcast-engine files change
-#      (buildFilter.paths below).
-#    • temple-tv-api proxies all /broadcast-v2 SSE/WS/REST traffic to the daemon
-#      via BROADCAST_DAEMON_HOST + BROADCAST_DAEMON_PORT (fromService wiring).
-#      The API's daemon-proxy.ts buffers SSE frames (30 s reconnect window) and
-#      WS messages (64 message buffer) so clients survive API restarts without
-#      any interruption visible to viewers.
-#    • API deployments now take zero broadcast engine restarts. The daemon keeps
-#      airing the same video at the same position through every API rolling deploy.
+# DATABASE_URL and REDIS_URL are externally supplied credentials.
 #
-#  Free-tier constraint summary
-#  ─────────────────────────────
-#  Render free tier covers:
-#    • Web services  — 1 instance, 512 MiB RAM, 0.1 vCPU (spin-down after
-#                      15 min inactivity; first request cold-starts in ~30 s)
-#    • Static sites  — unlimited, global CDN, always free
-#    • Worker/private services have NO free tier (minimum Starter at $7/month)
-#
-#  Changes from the previous enterprise manifest:
-#    1. temple-tv-transcoder worker REMOVED — Render charges for all worker
-#       services regardless of plan; there is no free tier for workers.
-#    2. RUN_MODE changed from `api` → `all` so the scheduled-notification
-#       dispatcher runs inside the API process (it is lightweight — one Postgres
-#       poll every 30 s — and causes no memory pressure on the free tier). The
-#       broadcast engine does NOT start in the API when BROADCAST_DAEMON_URL
-#       is set (env.ts/main.ts: ensureBroadcastV2Started() is skipped).
-#    3. TRANSCODER_DISABLE=true — ffmpeg transcoding is disabled on the API
-#       process. A 0.1 vCPU / 512 MiB shared instance cannot safely run ffmpeg
-#       alongside a live HTTP/SSE server; the job would OOM-kill the process
-#       mid-encode. The entire rest of the platform (streaming, admin, auth,
-#       SSE broadcast, CRUD, scheduling, push notifications) is fully
-#       operational without the in-process transcoder. Re-enable by upgrading
-#       to a paid worker service (plan: starter or higher) and restoring
-#       RUN_MODE=api + a separate temple-tv-transcoder worker entry.
-#    4. NODE_OPTIONS max-old-space-size: 220 MiB → 256 MiB (May 2026 bump).
-#       Startup burst committed ~250 MiB to V8 heap (179 MiB live objects +
-#       code/large-object overhead), exceeding the 220 MiB cap and causing a
-#       GC-ineffective OOM crash loop. 256 MiB gives V8 enough headroom to GC
-#       during the burst while leaving ~79 MiB margin under the 512 MiB ceiling.
-#    5. No persistent disks — disks require a paid plan; all media I/O goes
-#       via PostgreSQL BYTEA (all media is in the database, not on disk).
-#    6. No managed databases or managed Redis — DATABASE_URL and REDIS_URL are
-#       external credentials supplied by the operator (e.g. Neon free tier
-#       for Postgres, Upstash free tier for Redis). REDIS_URL is optional; the
-#       application falls back to an in-process LRU cache when absent.
-#    7. temple-tv-broadcast-daemon pserv added (Jul 2026) — $7/month Starter
-#       plan. Required to eliminate broadcast restarts on API deploys. The daemon
-#       wires to the API via Render's fromService env-var injection mechanism.
-#
-#  Two shared env-var groups so secrets / public domain names are populated
-#  ONCE in the Render dashboard ("Environment Groups" page) and inherited by
-#  every consuming service:
-#    • temple-tv-shared-secrets → DATABASE_URL, JWT secrets, REDIS_URL, Sentry
-#    • temple-tv-domains        → CORS_ORIGINS, APP_BASE_URL
-#
-#  Note: the former `temple-tv-aws` group (AWS S3 credentials) was removed.
-#  Storage is now pure PostgreSQL BYTEA (storage_blobs table) — no S3/MinIO
-#  dependency. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are not required.
-#
-#  Multi-domain architecture (temple-tv-domains group)
-#  ────────────────────────────────────────────────────
-#  CORS_ORIGINS is a comma-separated allowlist of permitted request origins.
-#  It lives in the Render dashboard (sync: false) so adding a new custom
-#  domain never requires a yaml edit or a forced redeploy — update the group
-#  value in the dashboard and restart the api service.
-#
-#  The API's CORS parser supports three origin formats:
-#    1. Exact origin  → https://templetv.org.ng
-#    2. Wildcard host → https://*.templetv.org.ng   (covers every subdomain)
-#    3. Regex literal → /^https:\/\/templetv\./     (advanced, rarely needed)
-#
-#  Minimum recommended value for production (covers 4+ custom domains):
-#    https://templetv.org.ng,https://www.templetv.org.ng,
-#    https://*.templetv.org.ng
-#
-#  To add a 5th, 6th, or Nth custom domain (e.g. jctm.church):
-#    → Append ,https://jctm.church,https://*.jctm.church to the dashboard value
-#    → No code change required; the API picks up the new value on next restart.
+# Storage is PostgreSQL BYTEA / storage_blobs.
 #
 # ════════════════════════════════════════════════════════════════════════════
 
+
 # ─── Shared environment-variable groups ─────────────────────────────────────
-# Define credentials ONCE in the Render dashboard and every service that lists
-# `fromGroup: <name>` inherits them automatically.
+
 envVarGroups:
-  # Cross-service secrets shared between any services that need to validate
-  # the same JWTs, connect to the same Postgres, and report to Sentry.
-  # JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must each be ≥32-char random
-  # strings. REDIS_URL is optional — omit it and the app uses an in-process
-  # LRU cache (suitable for single-instance free-tier deployments).
+
+  # Cross-service credentials.
+  #
+  # DATABASE_URL:
+  #   PostgreSQL connection string.
+  #
+  # JWT_ACCESS_SECRET:
+  #   At least 32 random characters.
+  #
+  # JWT_REFRESH_SECRET:
+  #   At least 32 random characters.
+  #
+  # REDIS_URL:
+  #   Optional. When absent, the application falls back to an in-process
+  #   LRU cache suitable for the single-instance free-tier deployment.
+  #
+  # SENTRY_DSN:
+  #   Optional Sentry project DSN.
+  #
+  # SENTRY_RELEASE:
+  #   Optional release identifier.
+
   - name: temple-tv-shared-secrets
     envVars:
       - key: DATABASE_URL
         sync: false
+
       - key: JWT_ACCESS_SECRET
         sync: false
+
       - key: JWT_REFRESH_SECRET
         sync: false
+
       - key: REDIS_URL
         sync: false
+
       - key: SENTRY_DSN
         sync: false
+
       - key: SENTRY_RELEASE
         sync: false
 
-  # Public domain / routing configuration — not secrets, but operator-managed
-  # so that adding a new custom domain requires no yaml edit or forced redeploy.
+
+  # Public routing configuration.
   #
-  # CORS_ORIGINS: comma-separated allowlist of allowed request origins.
-  #   Supports three formats per entry:
-  #     • Exact origin   → https://templetv.org.ng
-  #     • Wildcard host  → https://*.templetv.org.ng  (all subdomains)
-  #     • Regex literal  → /^https:\/\/templetv\./    (advanced)
-  #   Minimum recommended value:
-  #     https://templetv.org.ng,https://www.templetv.org.ng,https://*.templetv.org.ng
-  #   To add a new root domain (e.g. jctm.church):
-  #     Append ,https://jctm.church,https://*.jctm.church in the dashboard.
+  # CORS_ORIGINS is intentionally managed in the Render dashboard rather
+  # than committed into render.yaml so new custom domains do not require
+  # a repository change.
   #
-  # APP_BASE_URL: the canonical public-facing URL used to build clickable
-  #   links in outbound emails (password-reset, welcome, verification).
-  #   Set to the primary audience domain, e.g. https://templetv.org.ng.
+  # Recommended production value:
+  #
+  #   https://templetv.org.ng,
+  #   https://www.templetv.org.ng,
+  #   https://*.templetv.org.ng
+  #
+  # Additional domains can be appended without changing this file.
+  #
+  # APP_BASE_URL is the canonical public-facing URL used when generating
+  # links in outbound email.
+
   - name: temple-tv-domains
     envVars:
       - key: CORS_ORIGINS
         sync: false
+
       - key: APP_BASE_URL
         sync: false
 
+
+# ════════════════════════════════════════════════════════════════════════════
+# Services
+# ════════════════════════════════════════════════════════════════════════════
+
 services:
-  # ═══════════════════════════════════════════════════════════════════════
-  #  temple-tv-api — Fastify + SSE + notification dispatcher, port 8080
-  # ═══════════════════════════════════════════════════════════════════════
+
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # temple-tv-api
   #
-  #  Free-tier profile: 512 MiB RAM / 0.1 vCPU / 1 instance.
-  #  The service spins down after 15 minutes of inactivity on the free plan;
-  #  the first inbound request after spin-down incurs a ~30 s cold start.
-  #  For a worship-streaming use-case this is acceptable — broadcasts are
-  #  operator-initiated events, not 24/7 traffic, and the admin operator
-  #  hitting any dashboard page warms the instance before the stream starts.
+  # Fastify API + SSE proxy + notification dispatcher
+  # Port: 8080
+  # Plan: free
+  # ══════════════════════════════════════════════════════════════════════════
 
   - type: web
     name: temple-tv-api
@@ -197,15 +137,12 @@ services:
     rootDir: .
     autoDeploy: true
     pullRequestPreviewsEnabled: false
-    # Free tier is always single-instance. Cross-instance SSE fanout via Redis
-    # is wired but not exercised here. Upgrade to a paid plan and add
-    # numInstances: 2 (or more) when load requires horizontal scale.
 
-    # Only rebuild this service when files relevant to the API change.
-    # Changes to artifacts/admin, artifacts/tv, artifacts/mobile, etc. that
-    # don't touch the API server or its shared libs will skip this build,
-    # saving pipeline minutes and avoiding unnecessary API cold-starts during
-    # rolling deploy windows.
+    # ── Build filter ────────────────────────────────────────────────────────
+    #
+    # Only rebuild the API when API code, database/broadcast shared libraries,
+    # root build manifests, scripts, or the Render manifest changes.
+
     buildFilter:
       paths:
         - artifacts/api-server/**
@@ -218,386 +155,370 @@ services:
         - scripts/**
         - render.yaml
 
-    # ── Build & start ──────────────────────────────────────────────────────
-    # `--prefer-offline` reuses Render's pnpm cache (cuts install from ~90 s
-    # → ~25 s on warm builds). `--frozen-lockfile` guarantees reproducible CI
-    # builds. `--prod=false` overrides Render's default NODE_ENV=production
-    # during install so devDependencies (tsc, vite, @types/*) are present for
-    # the build step — without this flag, tsc fails with TS2688.
+    # ── Build ────────────────────────────────────────────────────────────────
     #
+    # render-install.sh:
+    #   • installs pnpm dependencies
+    #   • uses the Render pnpm cache
+    #   • uses --frozen-lockfile
+    #   • ensures devDependencies are available during the build
+    #
+    # verify:render:
+    #   • validates workspace/catalog configuration
+    #   • validates TypeScript configuration
+    #   • validates environment-secret guardrails
+    #   • validates database schema guardrails
+    #
+    # tsc --build is intentionally not part of verify:render because the
+    # Render free-tier 512 MiB container can OOM during a full project build.
+
     buildCommand: |
       bash ./scripts/render-install.sh && \
       pnpm run verify:render && \
       pnpm --filter @workspace/db run push-force && \
       pnpm --filter @workspace/api-server run build
-    # Free-tier start script: --max-old-space-size=256 — correct for the 512 MiB
-    # Render free-tier cgroup ceiling. On a paid plan (≥ 1 GiB RAM) switch to
-    # start:render-paid (--max-old-space-size=1536) and raise MEMORY_WARN_RSS_MB /
-    # MEMORY_RESTART_RSS_MB / HLS_MAX_CONCURRENT proportionally in the envVars
-    # block below. Also set TRANSCODER_DISABLE=false on paid plans to re-enable
-    # in-process FFmpeg transcoding.
+
+    # Free-tier startup.
+    #
+    # start:render-free must enforce:
+    #
+    #   --max-old-space-size=256
+    #
+    # rather than the larger paid-plan heap.
+
     startCommand: pnpm --filter @workspace/api-server run start:render-free
 
-    # ── Health check ───────────────────────────────────────────────────────
-    # Returns 200 ok / 503 starting / 503 draining / 503 db_down.
-    # Render's LB removes a pod from rotation after 3 consecutive non-200s.
+    # API health endpoint:
+    #
+    #   200 = healthy
+    #   503 = starting
+    #   503 = draining
+    #   503 = database unavailable
+
     healthCheckPath: /api/healthz
 
+
+    # ── Environment ─────────────────────────────────────────────────────────
+
     envVars:
-      # ── Inherited credential groups ───────────────────────────────────────
+
+      # Shared secrets.
       - fromGroup: temple-tv-shared-secrets
-      # ── Domain / CORS configuration (operator-managed in Render dashboard) ─
-      # Adding a new custom domain: update CORS_ORIGINS in the dashboard,
-      # then restart this service — no yaml edit or redeploy required.
+
+      # Public domain configuration.
       - fromGroup: temple-tv-domains
 
+
       # ── Runtime ───────────────────────────────────────────────────────────
+
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 8080
 
-      # RUN_MODE=all runs the Fastify HTTP server AND the in-process background
-      # dispatchers (scheduled-notification poller) in a single process.
-      # The transcoder dispatcher is disabled separately via TRANSCODER_DISABLE
-      # below so ffmpeg never runs on this instance.
+      - key: PORT
+        value: "8080"
+
+      # Runs:
+      #
+      #   • Fastify API
+      #   • scheduled notification dispatcher
+      #
+      # BroadcastOrchestrator is NOT started here when the daemon URL exists.
+
       - key: RUN_MODE
         value: all
 
-      # ── Transcoder: disabled on free tier ─────────────────────────────────
-      # ffmpeg transcoding is incompatible with the free tier's 0.1 vCPU /
-      # 512 MiB constraint — a single encode job saturates the vCPU for
-      # minutes and can exhaust RSS, OOM-killing the live API process.
-      # Media uploaded via the admin panel is stored as-is on S3; operators
-      # should upload pre-encoded HLS content or use a separate paid worker
-      # (see the comment at the top of this file) to re-enable in-process
-      # transcoding. All other platform features are unaffected.
+
+      # ── Free-tier transcoder protection ────────────────────────────────────
+      #
+      # FFmpeg is disabled because:
+      #
+      #   • 0.1 vCPU cannot safely sustain encoding workloads
+      #   • encoding can consume significant RSS
+      #   • an encode job could OOM the API process
+      #
+      # Use a separate paid worker for transcoding.
+
       - key: TRANSCODER_DISABLE
         value: "true"
 
-      # ── HLS concurrency cap ────────────────────────────────────────────────
-      # RSS budget per concurrent HLS stream = 16 MiB (pg BYTEA hex) + 8 MiB
-      # (Node Buffer) = 24 MiB. With ~280 MiB baseline (see DB_POOL_MAX note):
-      #   3 concurrent → ~352 MiB peak  (fits under 512 MiB free-tier ✓✓)
-      #   5 concurrent → ~400 MiB peak  (fits, but leaves only ~30 MiB margin
-      #                                   before MEMORY_RESTART_RSS_MB → too tight
-      #                                   under real-world SSE+WS fan-out load)
-      #  10 concurrent → ~520 MiB peak  (exceeds 512 MiB → OOM kill ✗)
-      # Production monitoring showed 8 active mobile sessions pushing RSS past
-      # the 465 MiB restart threshold into OOM-killer territory; reduced to 3.
-      # If you raise this, also raise MEMORY_RESTART_RSS_MB proportionally:
-      #   MEMORY_RESTART_RSS_MB = 24 × HLS_MAX_CONCURRENT + 280 + 30 (margin)
-      # Upgrade to a paid plan (≥1 GiB RAM) before raising above 5.
+
+      # ── HLS concurrency ───────────────────────────────────────────────────
+
+      # Free-tier maximum concurrent HLS sessions.
+      #
+      # Approximate memory model:
+      #
+      #   baseline          ≈ 280 MiB
+      #   each HLS stream   ≈ 24 MiB
+      #
+      # Three concurrent streams therefore leave reasonable headroom.
+
       - key: HLS_MAX_CONCURRENT
         value: "3"
 
-      # ── DB connection pool ─────────────────────────────────────────────────
-      # Default DB_POOL_MAX is 25. Each open pg connection holds socket buffers
-      # and driver state (~300 KB each on the Node.js side). On the 512 MiB
-      # free-tier 25 open connections add ~8 MB vs 5 connections but more
-      # importantly keep more sockets open when idle, raising RSS at rest.
-      # Cap to 5: sufficient for 3 concurrent HLS streams + background workers
-      # + normal API traffic. Increase to 12–16 on a paid plan with ≥1 GiB RAM.
+
+      # ── Database pool ─────────────────────────────────────────────────────
+
+      # Small pool appropriate for the single 512 MiB instance.
+
       - key: DB_POOL_MAX
         value: "5"
 
-      # ── HLS segment in-process cache ───────────────────────────────────────
-      # HLS_SEGMENT_CACHE_MB caps the in-process LRU for repeated .ts segment
-      # fetches. Default is 32 MiB. 8 MiB is sufficient for a single-channel
-      # 24/7 broadcast at 3 HLS_MAX_CONCURRENT — segments for the current item
-      # stay warm and cache-hit on reconnects. Saves 8 MiB vs the previous
-      # 16 MiB setting, giving more headroom on the free tier.
+
+      # ── HLS segment cache ─────────────────────────────────────────────────
+
       - key: HLS_SEGMENT_CACHE_MB
         value: "8"
 
-      # ── Memory containment ────────────────────────────────────────────────
-      # Layer 1: cap glibc malloc arenas to 2. Default (8× nCPU) causes heap
-      # fragmentation under sustained Buffer churn (AWS SDK + pg pool + zlib).
-      # Capping arenas cuts RSS 30–50 % on this workload.
+
+      # ── Memory containment ─────────────────────────────────────────────────
+
+      # Limit glibc malloc arenas to reduce fragmentation.
+
       - key: MALLOC_ARENA_MAX
         value: "2"
 
-      # Layer 2: hard V8 heap cap sized for free tier.
-      # 256 MiB old-space + ~32 MiB new-space + ~15 MiB code-space = ~303 MiB
-      # V8 committed ceiling. Add ~40 MiB external (pg pool @5 conns, HLS cache
-      # @8 MiB, pino, zlib) + ~30 MiB stacks/OS overhead = ~373 MiB steady-
-      # state RSS, leaving ~139 MiB headroom to the 512 MiB OOM-killer ceiling.
-      # (Jun 2026: tightened from DB_POOL_MAX=8+HLS_CACHE=16 → 5+8 after
-      #  production OOM-loop diagnosis: 8 mobile viewers pushed peak RSS past
-      #  465 MiB restart threshold into OOM-killer territory.)
-      # `--max-http-header-size=16384` accommodates Render's LB headers.
+
+      # V8 heap cap.
       #
-      # IMPORTANT: NODE_OPTIONS is only a hint here. Node CLI flags set in
-      # the start script (start:prod used to use --max-old-space-size=460)
-      # take precedence over NODE_OPTIONS, silently overriding this cap.
-      # The startCommand now uses `start:render-free` (256 MiB) instead of
-      # `start:prod` (460 MiB) to ensure the free-tier heap cap is enforced.
+      # Keep this aligned with start:render-free.
+
       - key: NODE_OPTIONS
         value: "--max-old-space-size=256 --max-http-header-size=16384"
 
-      # Layer 3: observability. WARN at 380 MiB RSS — lead time before the
-      # 352 MiB estimated HLS peak (HLS_MAX_CONCURRENT=3) and the 430 MiB
-      # restart threshold. With corrected baseline ~373 MiB, WARN fires only
-      # when RSS is climbing toward genuine HLS peak load or a memory leak.
+
+      # Memory warning threshold.
+
       - key: MEMORY_WARN_RSS_MB
         value: "380"
 
-      # Layer 4: in-process self-restart at 430 MiB RSS. Graceful drain +
-      # restart safely below the 512 MiB OOM-killer ceiling (~82 MiB margin).
-      # With HLS_MAX_CONCURRENT=3 the estimated peak RSS is ~352 MiB, so 430
-      # only triggers on genuine memory pressure — not on normal HLS peak load.
-      # Formula: 24 × HLS_MAX_CONCURRENT + 280 + 78 margin = 24×3+280+78=430.
-      # The watchdog catches excessive RSS early enough for a clean graceful
-      # restart (SIGTERM → 10 s drain → exit) well before the OOM killer fires.
-      #
-      # !! IMPORTANT: if your Render dashboard shows MEMORY_RESTART_RSS_MB=470
-      # (or any value above 430), reset it to 430 in the Render dashboard under
-      # Environment. At 470 MiB the server waits until RSS is ~557 MiB — already
-      # 45 MiB above Render's 512 MiB hard ceiling — before restarting, causing
-      # the OOM killer to fire first and producing the crash-loop that shows
-      # "Can't reach the server" in the admin panel.
+
+      # Graceful self-restart threshold.
+
       - key: MEMORY_RESTART_RSS_MB
         value: "430"
 
-      # Layer 5: hard RSS ceiling — SIGTERM fires IMMEDIATELY (no 80-second
-      # consecutive-count wait) when RSS hits this value. Prevents the
-      # 470 → 821 MiB balloon seen in production when concurrent uploads +
-      # HLS streams caused sustained memory growth while the watchdog waited
-      # 3 min (18 × 10 s) before acting. 460 MiB is ~90 % of the 512 MiB
-      # Render ceiling, giving a clean 52 MiB margin before the OOM killer.
-      # The 30 MiB gap above MEMORY_RESTART_RSS_MB (430) means small transient
-      # spikes are handled by the graceful 80 s count-down; only truly runaway
-      # allocations hit the hard ceiling.
+
+      # Absolute RSS ceiling.
+      #
+      # At this level the process should immediately begin graceful shutdown
+      # rather than allowing the Render OOM killer to terminate it.
+
       - key: MEMORY_ABSOLUTE_MAX_RSS_MB
         value: "460"
 
-      # ── Graceful shutdown timing ───────────────────────────────────────────
-      # SIGTERM (rolling deploy / scale-in) starts a two-phase drain:
-      #   Phase 1: /api/healthz → 503 draining for SHUTDOWN_DRAIN_MS,
-      #            HTTP server keeps serving in-flight requests.
-      #   Phase 2: server.close() + process.exit(0).
-      #
-      # 10 s gives Render's LB ≥2 confirmed 503 probes (5 s cadence) before
-      # the socket closes, preventing mid-request TCP resets during deploys.
-      # Stays well under the 28 s SHUTDOWN_FORCE_EXIT_BUDGET_MS set below.
+
+      # ── Graceful shutdown ──────────────────────────────────────────────────
+
+      # Health becomes 503/draining before sockets are closed.
+
       - key: SHUTDOWN_DRAIN_MS
         value: "10000"
 
-      # SHUTDOWN_PRECLOSE_DELAY_MS: wait this long after /healthz → 503 before
-      # closing connections. Render's LB health-check runs every 5 s — 10 s
-      # guarantees ≥ 2 consecutive 503 responses so the LB drains all in-flight
-      # requests before the first socket closes. Without this, rolling deploys
-      # and memory-watchdog-triggered SIGTERMs cause TCP resets on active SSE
-      # and WebSocket clients.
       - key: SHUTDOWN_PRECLOSE_DELAY_MS
         value: "10000"
 
-      # SHUTDOWN_FORCE_EXIT_BUDGET_MS: absolute wall-clock budget from SIGTERM
-      # to forced process.exit(). Render sends SIGKILL after 30 s — set to
-      # 28 000 (2 s headroom). Effective drain window:
-      #   28 000 − 10 000 (preclose) = 18 s for SSE/WS/uploads to drain.
-      # Previously hardcoded to 25 000 ms (15 s drain window), which was tight
-      # enough that active chunk uploads always triggered force-exit.
+      # Render's hard termination window is approximately 30 seconds.
+      # Leave approximately two seconds of safety margin.
+
       - key: SHUTDOWN_FORCE_EXIT_BUDGET_MS
         value: "28000"
 
-      # ── Autonomous monitor tuning ──────────────────────────────────────────
-      # QUEUE_MIN_ITEMS: queue-health-guard threshold — if the active broadcast
-      # queue drops below this count the guard triggers a DB rebuild from
-      # managed_videos. Default: 5. Increase for larger libraries (e.g. 10-20).
+
+      # ── Queue monitoring ──────────────────────────────────────────────────
+
       - key: QUEUE_MIN_ITEMS
         value: "5"
 
-      # ── Dead-air prevention ────────────────────────────────────────────────
-      # BROADCAST_DEADAIR_FALLBACK_URL — HLS/RTMP stream URL applied as a
-      # broadcast override when the queue has been completely blocked for
-      # BROADCAST_DEADAIR_FALLBACK_AFTER_MS (default 5 min). Set this to a
-      # looping "Be right back" HLS stream so viewers never see a blank screen.
-      # Auto-clears the moment the queue recovers playable local content.
-      # The YouTube catalog shuffle fallback (enabled by default) also prevents
-      # dead air — BROADCAST_DEADAIR_FALLBACK_URL adds a second layer of
-      # protection if you want to show branded placeholder content instead.
-      # Example: https://your-cdn.com/fallback/be-right-back.m3u8
+
+      # ── Dead-air protection ───────────────────────────────────────────────
+
+      # Optional looping HLS fallback.
+      #
+      # Example:
+      #
+      #   https://your-cdn.example/fallback/be-right-back.m3u8
+
       - key: BROADCAST_DEADAIR_FALLBACK_URL
         sync: false
 
-      # BROADCAST_DEADAIR_FALLBACK_AFTER_MS — how long (ms) the engine waits
-      # with all sources blocked before applying the fallback. Default: 300000
-      # (5 minutes). Lower to 60000 for faster dead-air recovery.
       - key: BROADCAST_DEADAIR_FALLBACK_AFTER_MS
         sync: false
 
-      # STORAGE_HEALTH_INTERVAL_MS: how often the storage health monitor probes
-      # object storage with a write/head/delete cycle. Default: 60000 (60 s).
-      # Raised to 120 s on the free tier to halve storage probe I/O without
-      # meaningfully increasing the detection window.
+
+      # ── Storage monitoring ─────────────────────────────────────────────────
+
       - key: STORAGE_HEALTH_INTERVAL_MS
         value: "120000"
 
-      # ── HTTP server tuning ─────────────────────────────────────────────────
-      # Long-lived SSE clients (broadcast bus, ops events) can sit idle for
-      # 60+ s between server-pushed events. 75 s keep-alive prevents socket
-      # closure between events and the reconnect storm that follows.
+
+      # ── HTTP server tuning ────────────────────────────────────────────────
+
+      # Suitable for long-lived SSE connections.
+
       - key: HTTP_KEEPALIVE_MS
         value: "75000"
+
       - key: HTTP_HEADERS_TIMEOUT_MS
         value: "80000"
 
-      # ── Notification dispatcher tuning ────────────────────────────────────
-      # Poll every 30 s (default) — sub-minute notification accuracy without
-      # thrashing Postgres on the free external DB tier.
+
+      # ── Notification dispatcher ──────────────────────────────────────────
+
       - key: SCHEDULED_NOTIF_POLL_MS
         value: "30000"
+
       - key: SCHEDULED_NOTIF_MAX_ATTEMPTS
         value: "5"
 
-      # ── CORS / public URLs ─────────────────────────────────────────────────
-      # CORS_ORIGINS comes from the temple-tv-domains group (above).
-      # Set it in the Render dashboard — no yaml edit needed to add domains.
-      # Must NOT be '*' in production — the startup guard (F05) enforces this.
-      # Supports exact, wildcard (https://*.templetv.org.ng), and regex formats.
+
+      # ── CORS ───────────────────────────────────────────────────────────────
       #
-      # CORS_ORIGINS_EXTRA: additional comma-separated origins merged at startup.
-      # Onrender.com wildcard removed — all production traffic runs through
-      # admin.templetv.org.ng which is already listed in CORS_ORIGINS.
-      # Retain this key as empty so existing dashboards can override it per-env.
+      # CORS_ORIGINS comes from temple-tv-domains.
+      #
+      # Do not use "*" in production.
+      #
+      # Supported application formats:
+      #
+      #   exact:
+      #     https://templetv.org.ng
+      #
+      #   wildcard:
+      #     https://*.templetv.org.ng
+      #
+      #   regex:
+      #     /^https:\/\/templetv\./
+
       - key: CORS_ORIGINS_EXTRA
         value: ""
 
-      # API_ORIGIN — canonical public base URL of this API process.
-      # REQUIRED in production: used by resolveSource() to absolutize relative
-      # localVideoUrl paths (e.g. /api/v1/uploads/…) stored in managed_videos
-      # so they pass the SSRF allowlist and can be admitted to broadcast.
-      # Without this, locally-uploaded videos silently fail resolveSource()
-      # and the orchestrator falls through to the next queue item.
+
+      # ── API origin ─────────────────────────────────────────────────────────
+      #
+      # Required by resolveSource() to convert relative localVideoUrl values
+      # into absolute URLs.
+
       - key: API_ORIGIN
         value: https://api.templetv.org.ng
 
-      # ── Identity & API tokens ──────────────────────────────────────────────
-      # ADMIN_API_TOKEN is auto-generated by Render per deploy — scoped to
-      # the API service only (the worker is gone, nothing else needs it).
+
+      # ── Admin API token ───────────────────────────────────────────────────
+
       - key: ADMIN_API_TOKEN
         generateValue: true
 
-      # ── Admin seed (auto-creates the first admin account on startup) ────────
-      # Set both values in the Render dashboard once. On every cold start the
-      # server checks whether any elevated account exists; if none does it
-      # creates one with these credentials. Safe to leave set permanently —
-      # the seeder is a no-op once the account exists.
-      # To reset / change the password: also set SEED_ADMIN_FORCE=true in the
-      # dashboard, trigger a manual deploy, then remove SEED_ADMIN_FORCE again.
+
+      # ── Admin seed ────────────────────────────────────────────────────────
+      #
+      # These values are supplied in the Render dashboard.
+      #
+      # If no elevated account exists, startup creates the seed account.
+      #
+      # To force-reset:
+      #
+      #   SEED_ADMIN_FORCE=true
+      #
+      # then deploy once and remove the flag.
+
       - key: SEED_ADMIN_EMAIL
         sync: false
+
       - key: SEED_ADMIN_PASSWORD
         sync: false
 
-      # ── Third-party integrations ───────────────────────────────────────────
+
+      # ── YouTube ───────────────────────────────────────────────────────────
+
       - key: YOUTUBE_API_KEY
         sync: false
-      - key: CLIENT_ERROR_SINK_URL
-        sync: false
-      - key: CLIENT_ERROR_SINK_TOKEN
-        sync: false
 
-      # YOUTUBE_WEBHOOK_SECRET — validates PubSubHubbub POST signatures on
-      # /youtube/webhook. Without this, any party can spoof a sync event.
-      # Generate: openssl rand -hex 32
       - key: YOUTUBE_WEBHOOK_SECRET
         sync: false
 
-      # ── YouTube sync quota management ──────────────────────────────────────
-      # YouTube Data API v3 free-tier quota: 10,000 units/day.
-      # At 15-min intervals (96 syncs/day) a full channel sync exhausts quota
-      # by midday, forcing fallback to RSS (last ~15 videos only).
-      # 30-min intervals (48 syncs/day) consume ~half the quota, keeping the
-      # full API sync available all day. Raise back to 15 if quota is increased
-      # in the Google Cloud Console.
       - key: YOUTUBE_SYNC_INTERVAL_MINS
         value: "30"
 
-      # ── SMTP / outbound email ──────────────────────────────────────────────
-      # Required for: password-reset, welcome emails, push-delivery receipts.
-      # Without SMTP_HOST + SMTP_USER + SMTP_PASS, all outbound mail is silently
-      # disabled. Recommended: use a transactional relay (Brevo/SendGrid/SES).
-      #   SMTP_HOST — relay hostname, e.g. smtp-relay.brevo.com
-      #   SMTP_PORT — 587 (STARTTLS, default) or 465 (TLS)
-      #   SMTP_USER — relay login (often the API key or account email)
-      #   SMTP_PASS — relay password / API key  ← keep this in Secrets tab
-      #   SMTP_FROM_NAME — display name in From header (default: "Temple TV | JCTM")
+
+      # ── Client error reporting ────────────────────────────────────────────
+
+      - key: CLIENT_ERROR_SINK_URL
+        sync: false
+
+      - key: CLIENT_ERROR_SINK_TOKEN
+        sync: false
+
+
+      # ── SMTP ──────────────────────────────────────────────────────────────
+
       - key: SMTP_HOST
         sync: false
+
       - key: SMTP_PORT
         value: "587"
+
       - key: SMTP_SECURE
         value: "false"
+
       - key: SMTP_USER
         sync: false
+
       - key: SMTP_PASS
         sync: false
+
       - key: SMTP_FROM_NAME
         value: "Temple TV | JCTM"
 
-      # ── Web Push / VAPID ───────────────────────────────────────────────────
-      # Required for browser (PWA) push notifications.
-      # Without these, GET /api/push/web-vapid-public-key returns 503 and
-      # web subscribers cannot register. Mobile (Expo) push is unaffected.
-      # Generate: npx web-push generate-vapid-keys --save-to vapid-keys.json
+
+      # ── Web Push / VAPID ──────────────────────────────────────────────────
+
       - key: VAPID_PUBLIC_KEY
         sync: false
+
       - key: VAPID_PRIVATE_KEY
         sync: false
 
-      # ── Expo push notifications ─────────────────────────────────────────────
-      # Authenticates server-side calls to Expo's push API.
-      # Without this, bulk delivery falls back to unauthenticated mode
-      # (lower rate limits). Generate at:
-      # https://expo.dev/accounts/[account]/settings/access-tokens
+
+      # ── Expo push ─────────────────────────────────────────────────────────
+
       - key: EXPO_ACCESS_TOKEN
         sync: false
 
-      # ── HLS token auth ─────────────────────────────────────────────────────
-      # HLS viewer routes (GET/HEAD /api/hls/*) are intentionally public — the
-      # private object-storage bucket is already protected by this server acting
-      # as a proxy. All player surfaces (TV, mobile, web, Chromecast, VLC) can
-      # load manifests and segments without a signed token.
+
+      # ── HLS token authentication ─────────────────────────────────────────
+
+      # REQUIRE_HLS_TOKEN is operator-controlled.
       #
-      # REQUIRE_HLS_TOKEN — set to "false" in the Render dashboard (operator-
-      # controlled). Keeping it sync:false (rather than value:"false") satisfies
-      # the verify:env-secrets rule that any _TOKEN key must never have a
-      # committed literal value.
-      # HLS_TOKEN_SECRET is retained for internal orchestrator probe signing.
+      # Keep it sync:false rather than committing a literal token-like value.
+
       - key: REQUIRE_HLS_TOKEN
         sync: false
+
       - key: HLS_TOKEN_SECRET
         sync: false
 
-      # ── CDN ─────────────────────────────────────────────────────────────────
-      # CDN_BASE_URL — CloudFront / Cloudflare distribution base URL.
-      # Without this, all HLS segment and thumbnail requests hit the origin
-      # API directly. Safe for low viewership; add a CDN when concurrency grows.
-      # Example: https://d111111abcdef8.cloudfront.net
+
+      # ── CDN ───────────────────────────────────────────────────────────────
+
+      # Optional CloudFront / Cloudflare distribution.
+
       - key: CDN_BASE_URL
         sync: false
 
-      # ── Broadcast daemon reference (Render private-network service link) ───
-      # Render assigns internal hostnames with random per-service suffixes
-      # (e.g. temple-tv-broadcast-daemon-2j3e) so the full URL cannot be
-      # hardcoded here. Instead, Render's Blueprint `fromService` mechanism
-      # injects the current hostname and port at deploy time. env.ts assembles
-      # BROADCAST_DAEMON_URL = "http://${host}:${port}" from these two parts.
+
+      # ── Broadcast daemon private-network connection ───────────────────────
       #
-      # How this works end-to-end:
-      #   1. temple-tv-broadcast-daemon (pserv below) boots as RUN_MODE=broadcast.
-      #   2. Render injects its internal host/port into the API service here.
-      #   3. The API resolves BROADCAST_DAEMON_URL and routes all broadcast
-      #      SSE/WS/REST calls to the daemon via daemon-proxy.ts.
-      #   4. API deployments (rolling) never restart the daemon — broadcasts
-      #      continue uninterrupted through every API deploy.
+      # Render injects the private hostname and port.
+      #
+      # The application constructs:
+      #
+      #   http://${BROADCAST_DAEMON_HOST}:${BROADCAST_DAEMON_PORT}
+
       - key: BROADCAST_DAEMON_HOST
         fromService:
           name: temple-tv-broadcast-daemon
           type: pserv
           property: host
+
       - key: BROADCAST_DAEMON_PORT
         fromService:
           name: temple-tv-broadcast-daemon
@@ -605,41 +526,14 @@ services:
           property: port
 
 
-  # ═══════════════════════════════════════════════════════════════════════
-  #  temple-tv-broadcast-daemon — long-lived broadcast engine (RUN_MODE=broadcast)
-  # ═══════════════════════════════════════════════════════════════════════
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # temple-tv-broadcast-daemon
   #
-  #  This is the CORNERSTONE of zero-downtime 24/7 broadcasting.
-  #
-  #  The broadcast daemon owns the BroadcastOrchestrator, all queue workers,
-  #  and the SSE/WS/REST broadcast endpoints. It NEVER restarts during API
-  #  deployments — the API proxies to it via daemon-proxy.ts. This ensures:
-  #
-  #    • Viewers never see a black screen, playlist restart, or buffering
-  #      during a routine API code deploy (which previously killed the engine).
-  #    • The current video, playback position, queue order, and all
-  #      in-memory broadcast state survive every API rolling deploy.
-  #    • The daemon only restarts on explicit daemon code changes (filtered
-  #      by buildFilter.paths below) or operator-initiated restarts.
-  #
-  #  Persistence layers (defence-in-depth):
-  #    1. broadcast_runtime_state (DB) — cycleStartedAtMs + sequence, written
-  #       on every bump() call (item advance, override, queue change).
-  #    2. player_position_checkpoint (DB) — itemId + positionMs, written every
-  #       5 s and immediately on item transitions.
-  #    3. Disk backup — /tmp JSON written alongside every DB checkpoint as
-  #       a last-resort fallback if DB is unavailable at restart time.
-  #    4. flushCheckpointForShutdown() — awaited synchronously on SIGTERM so
-  #       the final playback position is durably committed before exit.
-  #
-  #  Plan: Starter ($7/month) — required because Render has no free tier for
-  #  pserv (private services). Starter = 512 MiB RAM / 0.5 vCPU — sufficient
-  #  for the broadcast engine workload (no HLS serving, no upload handling,
-  #  no FFmpeg: the daemon only manages the queue and pushes SSE/WS frames).
-  #
-  #  Internal network: pserv is only reachable from other Render services in
-  #  the same account. It is NOT publicly accessible (no public hostname, no
-  #  TLS certificate). The API proxies all external traffic to it.
+  # Long-lived BroadcastOrchestrator / queue engine
+  # Port: 9000
+  # Plan: starter
+  # ══════════════════════════════════════════════════════════════════════════
 
   - type: pserv
     name: temple-tv-broadcast-daemon
@@ -651,11 +545,16 @@ services:
     autoDeploy: true
     pullRequestPreviewsEnabled: false
 
-    # Only redeploy the daemon when broadcast-engine files change.
-    # Changes to artifacts/admin, artifacts/tv, artifacts/mobile, or
-    # non-broadcast API code should NOT restart the daemon (that would
-    # interrupt broadcasts unnecessarily). The daemon shares the same
-    # build pipeline as the API, so the dist/ output is reused.
+
+    # ── Build filter ────────────────────────────────────────────────────────
+    #
+    # The daemon should only rebuild when its own broadcast-related code or
+    # shared dependencies change.
+    #
+    # IMPORTANT:
+    # render.yaml is included because changes to service configuration must
+    # trigger a new deployment.
+
     buildFilter:
       paths:
         - artifacts/api-server/**
@@ -667,149 +566,149 @@ services:
         - scripts/**
         - render.yaml
 
-    # ── Build & start ──────────────────────────────────────────────────────
-    # Reuses the same build pipeline as the API server: install, verify,
-    # push DB schema, build dist/. The daemon starts from the same dist/
-    # output — no separate transpile step needed.
+
+    # ── Build ────────────────────────────────────────────────────────────────
+
     buildCommand: |
       bash ./scripts/render-install.sh && \
       pnpm run verify:render && \
       pnpm --filter @workspace/db run push-force && \
       pnpm --filter @workspace/api-server run build
-    # start:render-daemon uses --max-old-space-size=300 MiB — generous for
-    # the daemon's workload (no HLS cache, no upload buffers, no ffmpeg).
-    # Starter plan = 512 MiB RAM; 300 MiB V8 + ~80 MiB external + overhead
-    # stays well under the 512 MiB OOM-killer ceiling.
+
+
+    # Broadcast daemon startup.
+
     startCommand: pnpm --filter @workspace/api-server run start:render-daemon
 
-    # ── Health check ───────────────────────────────────────────────────────
-    # The daemon registers /healthz at its root (not /api/healthz) because
-    # it runs a minimal Fastify instance without the full API route tree.
-    # Returns { status: "ok", mode: "broadcast", ts: <ms> }.
+
+    # Minimal daemon health endpoint.
+
     healthCheckPath: /healthz
 
+
+    # ── Environment ─────────────────────────────────────────────────────────
+
     envVars:
-      # ── Credentials from shared group ─────────────────────────────────────
+
+      # Shared PostgreSQL / JWT / Redis / Sentry credentials.
       - fromGroup: temple-tv-shared-secrets
 
+
       # ── Runtime ───────────────────────────────────────────────────────────
+
       - key: NODE_ENV
         value: production
-      # Port 9000 — internal-network only (not publicly exposed for pserv).
-      # Must match BROADCAST_DAEMON_PORT referenced by the API service above.
+
       - key: PORT
         value: "9000"
-      # RUN_MODE=broadcast starts the minimal daemon path in main.ts that
-      # boots only the broadcast engine, not the full API route tree.
+
       - key: RUN_MODE
         value: broadcast
 
-      # ── Memory containment (starter: 512 MiB / 0.5 vCPU) ─────────────────
+
+      # ── Memory containment ─────────────────────────────────────────────────
+
       - key: MALLOC_ARENA_MAX
         value: "2"
-      # 300 MiB V8 old-space: daemon workload is mostly in-memory queue
-      # (array of ~20–500 JS objects) + EventEmitter frames + pino.
-      # Well below the 512 MiB ceiling and leaves room for DB pool + Node extras.
+
       - key: NODE_OPTIONS
         value: "--max-old-space-size=300 --max-http-header-size=16384"
-      # Warn at 380 MiB — gives early visibility before restart threshold.
+
       - key: MEMORY_WARN_RSS_MB
         value: "380"
-      # Restart at 430 MiB — before Render's 512 MiB OOM-killer fires.
-      # The watchdog triggers a graceful SIGTERM (not an OOM crash), so
-      # flushCheckpointForShutdown() still runs and broadcast position
-      # is preserved across the memory-triggered restart.
+
       - key: MEMORY_RESTART_RSS_MB
         value: "430"
-      # Hard ceiling: immediate SIGTERM at 450 MiB (no 80-second countdown).
+
       - key: MEMORY_ABSOLUTE_MAX_RSS_MB
         value: "450"
 
-      # ── Graceful shutdown timing ───────────────────────────────────────────
-      # The daemon's shutdown path (daemonShutdown in main.ts) is simpler than
-      # the API's: it awaits stopBroadcastV2() (which calls
-      # flushCheckpointForShutdown() — 8 s max) then closes the Fastify app
-      # and DB. Total shutdown window: ~12–15 s.
-      # Render sends SIGKILL after 30 s — we have ample margin.
+
+      # ── Graceful shutdown ─────────────────────────────────────────────────
+
       - key: SHUTDOWN_DRAIN_MS
         value: "5000"
+
       - key: SHUTDOWN_PRECLOSE_DELAY_MS
         value: "5000"
+
       - key: SHUTDOWN_FORCE_EXIT_BUDGET_MS
         value: "25000"
 
-      # ── DB connection pool ─────────────────────────────────────────────────
-      # The daemon uses DB connections for: queue reads, checkpoint writes,
-      # runtime state writes, and all broadcast-v2 worker queries. 8 connections
-      # is generous for the daemon's sequential worker pattern.
+
+      # ── Database ──────────────────────────────────────────────────────────
+
       - key: DB_POOL_MAX
         value: "8"
 
-      # ── Broadcast engine configuration ────────────────────────────────────
-      # API_ORIGIN — required by resolveSource() to absolutize localVideoUrl
-      # paths (/api/v1/uploads/…) so they pass the SSRF allowlist and are
-      # admitted to the broadcast queue. Without this, locally-uploaded videos
-      # silently fail source resolution and the orchestrator skips them.
+
+      # ── Broadcast engine ──────────────────────────────────────────────────
+
       - key: API_ORIGIN
         value: https://api.templetv.org.ng
 
-      # Queue health threshold — daemon keeps at least 5 items active.
       - key: QUEUE_MIN_ITEMS
         value: "5"
 
-      # ── Dead-air prevention ────────────────────────────────────────────────
-      # Optional looping "Be right back" fallback stream — applied after
-      # BROADCAST_DEADAIR_FALLBACK_AFTER_MS of all sources blocked.
+
+      # ── Dead-air fallback ─────────────────────────────────────────────────
+
       - key: BROADCAST_DEADAIR_FALLBACK_URL
         sync: false
+
       - key: BROADCAST_DEADAIR_FALLBACK_AFTER_MS
         sync: false
 
-      # ── YouTube integration ────────────────────────────────────────────────
-      # Required by ytShuffleFallback (activates when local queue is empty)
-      # and YouTube channel sync workers.
+
+      # ── YouTube ───────────────────────────────────────────────────────────
+
       - key: YOUTUBE_API_KEY
         sync: false
+
       - key: YOUTUBE_WEBHOOK_SECRET
         sync: false
+
       - key: YOUTUBE_SYNC_INTERVAL_MINS
         value: "30"
 
-      # ── HLS token auth (for internal orchestrator probe signing) ───────────
-      # The daemon probes broadcast source URLs to detect dead CDN links.
-      # HLS_TOKEN_SECRET signs the probe's Authorization header; REQUIRE_HLS_TOKEN
-      # and INTERNAL_HLS_BYPASS_SECRET let the daemon bypass its own auth check
-      # when probing loopback URLs (probes go through the API proxy).
+
+      # ── HLS token authentication ─────────────────────────────────────────
+
       - key: REQUIRE_HLS_TOKEN
         sync: false
+
       - key: HLS_TOKEN_SECRET
         sync: false
+
       - key: INTERNAL_HLS_BYPASS_SECRET
         sync: false
 
-      # ── HTTP tuning ────────────────────────────────────────────────────────
-      # SSE clients sit idle for 60+ s between broadcasts — 75 s keep-alive
-      # prevents spurious socket closure and the reconnect storm that follows.
+
+      # ── HTTP / SSE tuning ─────────────────────────────────────────────────
+
       - key: HTTP_KEEPALIVE_MS
         value: "75000"
+
       - key: HTTP_HEADERS_TIMEOUT_MS
         value: "80000"
 
-      # ── Third-party integrations ───────────────────────────────────────────
+
+      # ── Client error reporting ────────────────────────────────────────────
+
       - key: CLIENT_ERROR_SINK_URL
         sync: false
+
       - key: CLIENT_ERROR_SINK_TOKEN
         sync: false
 
 
-  # ═══════════════════════════════════════════════════════════════════════
-  #  Static SPAs — admin, mobile (Expo Web), TV
-  # ═══════════════════════════════════════════════════════════════════════
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # temple-tv-admin
   #
-  # Render builds these on its own infra and serves the resulting dist/
-  # directory from a global CDN at zero cost. Cache-Control on hashed asset
-  # paths is immutable + 1y; the SPA shell (/index.html) gets no-store so
-  # deploys are picked up on next page load.
+  # Vite admin dashboard
+  # Static site / global CDN
+  # ══════════════════════════════════════════════════════════════════════════
 
   - type: web
     name: temple-tv-admin
@@ -818,7 +717,10 @@ services:
     rootDir: .
     autoDeploy: true
     pullRequestPreviewsEnabled: false
-    # Only rebuild when admin SPA source or its workspace lib dependencies change.
+
+
+    # ── Build filter ────────────────────────────────────────────────────────
+
     buildFilter:
       paths:
         - artifacts/admin/**
@@ -830,56 +732,89 @@ services:
         - lib/broadcast-sync/**
         - pnpm-lock.yaml
         - package.json
+
+
+    # ── Build ────────────────────────────────────────────────────────────────
+
     buildCommand: |
       bash ./scripts/render-install.sh && \
       pnpm run verify:render && \
       pnpm --filter @workspace/admin run build
+
+
     staticPublishPath: ./artifacts/admin/dist/public
+
+
+    # ── Build-time environment ──────────────────────────────────────────────
+
     envVars:
-      # Build-time env vars — Vite inlines `import.meta.env.VITE_*` at build.
+
       - key: VITE_API_URL
         value: https://api.templetv.org.ng
+
       - key: BASE_PATH
         value: /
+
+
+    # ── Security headers ─────────────────────────────────────────────────────
+
     headers:
-      # ── Security headers ────────────────────────────────────────────────────
-      # The admin SPA is served by Render's CDN, not the API middleware, so it
-      # needs its own headers. HSTS here protects direct first-touch on
-      # admin.templetv.org.ng (e.g. bookmarks) that never hit the API first.
+
       - path: /*
         name: Strict-Transport-Security
         value: "max-age=63072000; includeSubDomains; preload"
+
       - path: /*
         name: X-Frame-Options
         value: DENY
+
       - path: /*
         name: X-Content-Type-Options
         value: nosniff
+
       - path: /*
         name: Referrer-Policy
         value: strict-origin-when-cross-origin
+
       - path: /*
         name: Permissions-Policy
-        value: camera=(), microphone=(), geolocation=(), interest-cohort=()
-      # COOP gives the admin tab process-level isolation from cross-origin
-      # window openers — defense against Spectre-class side-channels and
-      # tab-nabbing. `same-origin` still allows the admin's own popups.
+        value: "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+
       - path: /*
         name: Cross-Origin-Opener-Policy
         value: same-origin
-      # index.html must never be cached — a stale copy causes "Failed to fetch
-      # dynamically imported module" errors after every new deploy because the
-      # old entry point references chunk hashes that no longer exist on the CDN.
+
+
+      # Never cache the SPA shell.
+
       - path: /index.html
         name: Cache-Control
-        value: no-store, no-cache, must-revalidate
+        value: "no-store, no-cache, must-revalidate"
+
+
+      # Hashed assets can be cached indefinitely.
+
       - path: /assets/*
         name: Cache-Control
-        value: public, max-age=31536000, immutable
+        value: "public, max-age=31536000, immutable"
+
+
+    # ── SPA routing ──────────────────────────────────────────────────────────
+
     routes:
+
       - type: rewrite
         source: /*
         destination: /index.html
+
+
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # temple-tv-web
+  #
+  # Expo Web / Mobile PWA
+  # Static site / global CDN
+  # ══════════════════════════════════════════════════════════════════════════
 
   - type: web
     name: temple-tv-web
@@ -888,7 +823,10 @@ services:
     rootDir: .
     autoDeploy: true
     pullRequestPreviewsEnabled: false
-    # Only rebuild when mobile source or its workspace lib dependencies change.
+
+
+    # ── Build filter ────────────────────────────────────────────────────────
+
     buildFilter:
       paths:
         - artifacts/mobile/**
@@ -900,52 +838,89 @@ services:
         - lib/broadcast-sync/**
         - pnpm-lock.yaml
         - package.json
+
+
+    # ── Build ────────────────────────────────────────────────────────────────
+
     buildCommand: |
       bash ./scripts/render-install.sh && \
       pnpm run verify:render && \
       pnpm --filter @workspace/mobile run build:web
+
+
     staticPublishPath: ./artifacts/mobile/web-dist
+
+
+    # ── Build-time environment ──────────────────────────────────────────────
+
     envVars:
-      # Build-time env vars — Expo inlines `process.env.EXPO_PUBLIC_*` at build.
+
       - key: EXPO_PUBLIC_API_URL
         value: https://api.templetv.org.ng
+
       - key: EXPO_PUBLIC_DOMAIN
         value: api.templetv.org.ng
+
       - key: BASE_PATH
         value: /
+
+
+    # ── Security / caching headers ───────────────────────────────────────────
+
     headers:
+
       - path: /*
         name: Strict-Transport-Security
         value: "max-age=63072000; includeSubDomains; preload"
-      # SAMEORIGIN (not DENY) because the Expo PWA can be embedded in the
-      # admin preview pane for QA — same-origin only.
+
       - path: /*
         name: X-Frame-Options
         value: SAMEORIGIN
+
       - path: /*
         name: X-Content-Type-Options
         value: nosniff
+
       - path: /*
         name: Referrer-Policy
         value: strict-origin-when-cross-origin
-      # Camera/microphone/geolocation disabled — the Expo Web build is a
-      # streaming-viewer surface only; none of the audience screens need them.
+
       - path: /*
         name: Permissions-Policy
-        value: camera=(), microphone=(), geolocation=(), interest-cohort=()
+        value: "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+
+
       - path: /index.html
         name: Cache-Control
-        value: no-store, no-cache, must-revalidate
+        value: "no-store, no-cache, must-revalidate"
+
+
       - path: /_expo/static/*
         name: Cache-Control
-        value: public, max-age=31536000, immutable
+        value: "public, max-age=31536000, immutable"
+
+
       - path: /assets/*
         name: Cache-Control
-        value: public, max-age=31536000, immutable
+        value: "public, max-age=31536000, immutable"
+
+
+    # ── SPA routing ──────────────────────────────────────────────────────────
+
     routes:
+
       - type: rewrite
         source: /*
         destination: /index.html
+
+
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # temple-tv-tv
+  #
+  # Vite TV / Tizen SPA
+  # Static site / global CDN
+  # ══════════════════════════════════════════════════════════════════════════
 
   - type: web
     name: temple-tv-tv
@@ -954,7 +929,10 @@ services:
     rootDir: .
     autoDeploy: true
     pullRequestPreviewsEnabled: false
-    # Only rebuild when TV SPA source or its workspace lib dependencies change.
+
+
+    # ── Build filter ────────────────────────────────────────────────────────
+
     buildFilter:
       paths:
         - artifacts/tv/**
@@ -966,45 +944,69 @@ services:
         - lib/broadcast-sync/**
         - pnpm-lock.yaml
         - package.json
+
+
+    # ── Build ────────────────────────────────────────────────────────────────
+
     buildCommand: |
       bash ./scripts/render-install.sh && \
       pnpm run verify:render && \
       pnpm --filter @workspace/tv run build
+
+
     staticPublishPath: ./artifacts/tv/dist/public
+
+
+    # ── Build-time environment ──────────────────────────────────────────────
+
     envVars:
-      # Build-time env vars — Vite inlines `import.meta.env.VITE_*` at build.
+
       - key: VITE_API_URL
         value: https://api.templetv.org.ng
+
       - key: BASE_PATH
         value: /
+
+
+    # ── Security / caching headers ───────────────────────────────────────────
+
     headers:
+
       - path: /*
         name: Strict-Transport-Security
         value: "max-age=63072000; includeSubDomains; preload"
-      # SAMEORIGIN (not DENY) because Tizen/webOS native TV shells embed the
-      # SPA in a system WebView whose origin Render cannot certify in advance —
-      # DENY would block legitimate native-TV launches.
+
       - path: /*
         name: X-Frame-Options
         value: SAMEORIGIN
+
       - path: /*
         name: X-Content-Type-Options
         value: nosniff
+
       - path: /*
         name: Referrer-Policy
         value: strict-origin-when-cross-origin
-      # Camera/microphone/geolocation disabled — TV viewers are passive
-      # consumers; none of the TV screens request these capabilities.
+
       - path: /*
         name: Permissions-Policy
-        value: camera=(), microphone=(), geolocation=(), interest-cohort=()
+        value: "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+
+
       - path: /index.html
         name: Cache-Control
-        value: no-store, no-cache, must-revalidate
+        value: "no-store, no-cache, must-revalidate"
+
+
       - path: /assets/*
         name: Cache-Control
-        value: public, max-age=31536000, immutable
+        value: "public, max-age=31536000, immutable"
+
+
+    # ── SPA routing ──────────────────────────────────────────────────────────
+
     routes:
+
       - type: rewrite
         source: /*
         destination: /index.html
