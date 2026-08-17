@@ -1,4 +1,5 @@
 services:
+  # ── API server ───────────────────────────────────────────────────────────────
   - type: web
     name: temple-tv-api
     runtime: node
@@ -33,7 +34,6 @@ services:
 
     envVars:
       - fromGroup: temple-tv-shared-secrets
-
       - fromGroup: temple-tv-domains
 
       - key: NODE_ENV
@@ -182,3 +182,161 @@ services:
           name: temple-tv-broadcast-daemon
           type: pserv
           property: port
+
+  # ── Broadcast daemon (private service) ──────────────────────────────────────
+  - type: pserv
+    name: temple-tv-broadcast-daemon
+    runtime: node
+    plan: free
+    region: frankfurt
+    branch: main
+    rootDir: .
+    autoDeploy: true
+
+    buildFilter:
+      paths:
+        - artifacts/api-server/**
+        - lib/db/**
+        - lib/api-spec/**
+        - lib/broadcast-types/**
+        - lib/broadcast-sync/**
+        - pnpm-lock.yaml
+        - package.json
+        - scripts/**
+        - render.yaml
+
+    buildCommand: >
+      bash ./scripts/render-install.sh &&
+      pnpm --filter @workspace/api-server run build
+
+    startCommand: pnpm --filter @workspace/api-server run start:render-daemon
+
+    envVars:
+      - fromGroup: temple-tv-shared-secrets
+      - fromGroup: temple-tv-domains
+
+      - key: NODE_ENV
+        value: production
+
+      - key: RUN_MODE
+        value: broadcast
+
+      - key: TRANSCODER_DISABLE
+        value: "true"
+
+      - key: TRANSCODING_AUTO_RETRY_DISABLE
+        value: "true"
+
+      - key: MALLOC_ARENA_MAX
+        value: "2"
+
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=300 --max-http-header-size=16384"
+
+      - key: MEMORY_WARN_RSS_MB
+        value: "340"
+
+      - key: MEMORY_RESTART_RSS_MB
+        value: "400"
+
+      - key: SHUTDOWN_DRAIN_MS
+        value: "10000"
+
+      - key: YOUTUBE_API_KEY
+        sync: false
+
+      - key: YOUTUBE_WEBHOOK_SECRET
+        sync: false
+
+      - key: YOUTUBE_SYNC_INTERVAL_MINS
+        value: "30"
+
+      - key: HLS_TOKEN_SECRET
+        sync: false
+
+      - key: CDN_BASE_URL
+        sync: false
+
+      - key: API_ORIGIN
+        value: https://api.templetv.org.ng
+
+  # ── Admin web panel (static site) ───────────────────────────────────────────
+  - type: static
+    name: temple-tv-admin
+    branch: main
+    rootDir: .
+    autoDeploy: true
+    pullRequestPreviewsEnabled: false
+
+    buildFilter:
+      paths:
+        - artifacts/admin/**
+        - lib/api-spec/**
+        - lib/broadcast-types/**
+        - pnpm-lock.yaml
+        - package.json
+        - scripts/**
+        - render.yaml
+
+    buildCommand: >
+      bash ./scripts/render-install.sh &&
+      pnpm --filter @workspace/admin run build
+
+    staticPublishPath: artifacts/admin/dist/public
+
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      - key: VITE_API_URL
+        value: https://api.templetv.org.ng
+
+      - key: VITE_API_BASE_URL
+        value: https://api.templetv.org.ng
+
+      - key: VITE_SENTRY_DSN
+        sync: false
+
+  # ── TV smart-TV web app (static site) ───────────────────────────────────────
+  - type: static
+    name: temple-tv-tv
+    branch: main
+    rootDir: .
+    autoDeploy: true
+    pullRequestPreviewsEnabled: false
+
+    buildFilter:
+      paths:
+        - artifacts/tv/**
+        - lib/api-spec/**
+        - lib/broadcast-types/**
+        - pnpm-lock.yaml
+        - package.json
+        - scripts/**
+        - render.yaml
+
+    buildCommand: >
+      bash ./scripts/render-install.sh &&
+      pnpm --filter @workspace/tv run build
+
+    staticPublishPath: artifacts/tv/dist/public
+
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      - key: VITE_API_URL
+        value: https://api.templetv.org.ng
+
+      - key: VITE_IMA_AD_TAG_URL
+        sync: false
