@@ -47,7 +47,7 @@ import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { db, schema } from "../../infrastructure/db.js";
 import { logger } from "../../infrastructure/logger.js";
 import { storage } from "../../infrastructure/storage.js";
@@ -1304,15 +1304,83 @@ export function scheduleVideoValidation(
         await runVideoValidation(videoId, objectKey, opts);
       } catch (err) {
         logger.error({ err, videoId, objectKey }, "[video-validation] unhandled error in validation job");
-        // Mark as failed in DB so the admin UI reflects the error state.
-        await db
-          .update(videos)
-          .set({ validationStatus: "failed" })
-          .where(eq(videos.id, videoId))
-          .catch(() => undefined);
+        await persistValidationJobFailure(videoId, err);
       }
     })();
   });
+}
+
+async function persistValidationJobFailure(videoId: string, err: unknown): Promise<void> {
+  const message = err instanceof Error ? err.message : String(err);
+  const completedAt = new Date();
+  const report: VideoValidationReport = {
+    videoId,
+    status: "failed",
+    checks: [],
+    repairsPerformed: [],
+    remainingIssues: [`VALIDATION_JOB: ${message}`],
+    durationMs: 0,
+    completedAt: completedAt.toISOString(),
+  };
+
+  await db
+    .update(schema.videosTable)
+    .set({
+      validationStatus: "failed",
+      validationReport: report as unknown as Record<string, unknown>,
+      validationCompletedAt: completedAt,
+    })
+    .where(eq(schema.videosTable.id, videoId))
+    .catch((persistErr: unknown) =>
+      logger.warn({ err: persistErr, videoId }, "[video-validation] failed to persist terminal job error"),
+    );
+
+  await setPipelineStage(videoId, "failed", `validation job failed: ${message}`).catch((stageErr: unknown) =>
+    logger.warn({ err: stageErr, videoId }, "[video-validation] failed to persist terminal pipeline stage"),
+  );
+}
+
+/**
+ * Recover one local MP4 validation left unfinished by a process restart or an
+ * older upload flow that predated validation. Terminal results are never
+ * revisited; a running job must be stale before it may be reclaimed.
+ */
+export async function recoverIncompleteVideoValidation(): Promise<void> {
+  const videos = schema.videosTable;
+  const staleBefore = new Date(Date.now() - VALIDATION_JOB_TIMEOUT_MS * 2);
+  const [row] = await db
+    .select({
+      id: videos.id,
+      objectPath: videos.objectPath,
+      duration: videos.duration,
+      localVideoUrl: videos.localVideoUrl,
+    })
+    .from(videos)
+    .where(and(
+      eq(videos.videoSource, "local"),
+      isNotNull(videos.s3MirroredAt),
+      isNull(videos.validationCompletedAt),
+      or(
+        isNull(videos.validationStatus),
+        and(eq(videos.validationStatus, "pending"), isNull(videos.validationStartedAt)),
+        and(eq(videos.validationStatus, "running"), lt(videos.validationStartedAt, staleBefore)),
+      ),
+    ))
+    .orderBy(videos.validationStartedAt)
+    .limit(1);
+
+  if (!row?.objectPath) return;
+
+  logger.info({ videoId: row.id }, "[video-validation] recovering incomplete validation");
+  try {
+    await runVideoValidation(row.id, row.objectPath, {
+      storedDurationSecs: row.duration ? parseFloat(row.duration) : null,
+      localVideoUrl: row.localVideoUrl ?? null,
+    });
+  } catch (err) {
+    logger.error({ err, videoId: row.id }, "[video-validation] recovery job failed");
+    await persistValidationJobFailure(row.id, err);
+  }
 }
 
 /**

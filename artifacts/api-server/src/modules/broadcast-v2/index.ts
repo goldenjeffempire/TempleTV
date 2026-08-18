@@ -28,6 +28,7 @@ import { autoHealMonitor } from "./engine/auto-heal-monitor.js";
 import { autohealRoutes } from "./io/autoheal.routes.js";
 import { uploadQueueReconciler } from "../broadcast/upload-queue-reconciler.js";
 import { runDeepRecovery } from "../transcoder/video-recovery.service.js";
+import { recoverIncompleteVideoValidation } from "../transcoder/video-validation.service.js";
 import { scanLibraryAndEnqueue, repairMissingS3MirroredAt } from "../broadcast/auto-enqueue.service.js";
 import { midnightPrayersSchedulerScan } from "./engine/midnight-prayers-scheduler.js";
 import { stopDaemonLivenessMonitor } from "./engine/daemon-liveness-monitor.js";
@@ -452,6 +453,19 @@ function startSupervisedWorkers(): void {
     intervalMs: 60_000,
     initialDelayMs: 30_000,
     backoffMs: [15_000, 30_000, 60_000],
+  });
+
+  // Validation is normally scheduled in-process after upload finalization.
+  // Recover one old or interrupted local-MP4 job per pass so a restart cannot
+  // leave the admin readiness state pending forever.
+  workerSupervisor.spawn({
+    name: "video-validation-recovery",
+    fn: () => recoverIncompleteVideoValidation(),
+    intervalMs: 2 * 60_000,
+    initialDelayMs: 45_000,
+    timeoutMs: 4 * 60_000,
+    backoffMs: [15_000, 30_000, 60_000],
+    onCircuitOpen: makeCircuitOpenCallback("video-validation-recovery"),
   });
 
   // Video deep-recovery worker: scans for managed_videos stuck in broken states

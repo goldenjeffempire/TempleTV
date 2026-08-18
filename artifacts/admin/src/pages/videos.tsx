@@ -570,7 +570,7 @@ export default function VideosPage() {
     .filter((v) => v.videoSource === "local")
     .map((v) => v.id) ?? [];
 
-  const { data: queueStatusData } = useQuery({
+  const { data: queueStatusData, isError: isQueueStatusError } = useQuery({
     queryKey: ["broadcast-v2-queue-status", localVideoIds.slice().sort().join(",")],
     queryFn: () =>
       api.get<{ status: Record<string, "queued" | "missing" | "assembling"> }>(
@@ -2013,9 +2013,14 @@ export default function VideosPage() {
                       // Status query still loading
                       if (qs === undefined) {
                         return (
-                          <span className="text-[9px] text-muted-foreground/60 flex items-center gap-0.5">
-                            <Loader2 size={8} className="animate-spin" />
-                            Checking…
+                          <span
+                            className="text-[9px] text-muted-foreground/60 flex items-center gap-0.5"
+                            title={isQueueStatusError
+                              ? "The broadcast queue status could not be loaded. The video remains MP4-ready; retry after the broadcast service is available."
+                              : "Checking broadcast queue status."}
+                          >
+                            {isQueueStatusError ? <AlertTriangle size={8} /> : <Loader2 size={8} className="animate-spin" />}
+                            {isQueueStatusError ? "Queue status unavailable" : "Checking…"}
                           </span>
                         );
                       }
