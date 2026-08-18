@@ -33,17 +33,21 @@ function makeMockOrchestrator(channelId = "main") {
   emitter.setMaxListeners(50);
   const injected: V2ServerFrame[] = [];
   let suppressed = false;
+  let controllerActive = true;
 
   const orch: FanoutOrchestrator & {
     injected: V2ServerFrame[];
     suppressed: boolean;
+    controllerActive: boolean;
     emitter: EventEmitter;
   } = {
     channelId,
     get injected() { return injected; },
     get suppressed() { return suppressed; },
+    get controllerActive() { return controllerActive; },
     get emitter() { return emitter; },
     setSuppressLocalEmit(val: boolean) { suppressed = val; },
+    setControllerActive(val: boolean) { controllerActive = val; },
     injectFrame(frame: V2ServerFrame) {
       injected.push(frame);
       emitter.emit("frame", frame);
@@ -160,6 +164,8 @@ describe("BroadcastFanout — Redis Pub/Sub fan-out", () => {
       expect(writerOrch.suppressed).toBe(false);
       // Reader must suppress local tick emissions — frames arrive via Redis.
       expect(readerOrch.suppressed).toBe(true);
+      expect(readerOrch.controllerActive).toBe(false);
+      expect(writerOrch.controllerActive).toBe(true);
 
       // Emit a frame on the writer's orchestrator EventEmitter.
       // The fanout's publish listener intercepts this and relays it to Redis.
@@ -208,6 +214,7 @@ describe("BroadcastFanout — Redis Pub/Sub fan-out", () => {
       // After close, suppress flag must be cleared so the orchestrator can
       // resume normal local emission if the process continues.
       expect(readerOrch.suppressed).toBe(false);
+      expect(readerOrch.controllerActive).toBe(true);
       expect(readerFanout.getRole()).toBe("standalone");
 
       await writerFanout.close();

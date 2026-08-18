@@ -58,6 +58,7 @@ interface FanoutMessage {
 export interface FanoutOrchestrator {
   readonly channelId: string;
   setSuppressLocalEmit(val: boolean): void;
+  setControllerActive(val: boolean): void;
   injectFrame(frame: V2ServerFrame): void;
   on(event: "frame", listener: (frame: V2ServerFrame) => void): this;
   off(event: "frame", listener: (frame: V2ServerFrame) => void): this;
@@ -140,6 +141,10 @@ class BroadcastFanout {
       logger.warn("[broadcast-v2] leadership lost — switching to reader mode");
       if (this.orchestrator) this._becomeReader(this.orchestrator);
     });
+    this.leader.onLeadershipGained(() => {
+      logger.info("[broadcast-v2] leadership gained — switching to writer mode");
+      if (this.orchestrator) this._becomeWriter(this.orchestrator);
+    });
 
     // ── Subscribe (all replicas, including writer for deduplication) ─────
     const subscriberClient = opts?.subscriberClient ?? createRedisSubscriberClient();
@@ -147,6 +152,7 @@ class BroadcastFanout {
       logger.warn("[broadcast-v2] could not create subscriber client — standalone fallback");
       this.role = "standalone";
       orchestrator.setSuppressLocalEmit(false);
+      orchestrator.setControllerActive(true);
       this.leader.stopRenewal();
       return;
     }
@@ -159,6 +165,7 @@ class BroadcastFanout {
       logger.warn({ err }, "[broadcast-v2] subscribe failed — standalone fallback");
       this.role = "standalone";
       orchestrator.setSuppressLocalEmit(false);
+      orchestrator.setControllerActive(true);
       this.leader.stopRenewal();
       await this.subscriber.quit().catch(() => undefined);
       this.subscriber = null;
@@ -198,6 +205,7 @@ class BroadcastFanout {
     }
     this.role = "standalone";
     this.orchestrator?.setSuppressLocalEmit(false);
+    this.orchestrator?.setControllerActive(true);
   }
 
   // ── Private role transitions ─────────────────────────────────────────────
@@ -205,6 +213,7 @@ class BroadcastFanout {
   private _becomeWriter(orchestrator: FanoutOrchestrator): void {
     // Remove any reader-mode suppression so local ticks reach SSE/WS clients.
     orchestrator.setSuppressLocalEmit(false);
+    orchestrator.setControllerActive(true);
     this.role = "writer";
 
     // Detach any old listener before attaching a fresh one (idempotent).
@@ -223,6 +232,7 @@ class BroadcastFanout {
   private _becomeReader(orchestrator: FanoutOrchestrator): void {
     // Suppress local tick emissions — frames arrive from Redis instead.
     orchestrator.setSuppressLocalEmit(true);
+    orchestrator.setControllerActive(false);
     this.role = "reader";
 
     // Reader never publishes, so detach the writer's publish listener.

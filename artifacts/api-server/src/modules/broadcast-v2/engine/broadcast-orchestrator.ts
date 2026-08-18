@@ -342,6 +342,8 @@ class BroadcastOrchestrator extends EventEmitter {
    * Default false = standalone / writer mode (existing behaviour).
    */
   private suppressLocalEmit = false;
+  /** True only for the elected fan-out writer or standalone instance. */
+  private controllerActive = true;
   /**
    * Wall-clock ms when the last position checkpoint was written to DB.
    * Loaded during hydrate() and used as a fallback anchor in reloadInner()
@@ -3004,6 +3006,7 @@ class BroadcastOrchestrator extends EventEmitter {
   }
 
   private tick(): void {
+    if (!this.controllerActive) return;
     if (this.tickCircuitOpen) return;
     try {
       this.tickInner();
@@ -4134,6 +4137,7 @@ class BroadcastOrchestrator extends EventEmitter {
   // ── Persistence helpers ────────────────────────────────────────────────
 
   private async bump(eventType: V2EventType, payload: unknown): Promise<void> {
+    if (!this.controllerActive) return;
     this.sequence += 1;
     this.lastSequenceAdvanceMs = Date.now();
     // Increment both sequence counters: the v2-prefixed one (main branch) for
@@ -4258,6 +4262,16 @@ class BroadcastOrchestrator extends EventEmitter {
    */
   setSuppressLocalEmit(val: boolean): void {
     this.suppressLocalEmit = val;
+  }
+
+  /**
+   * Transfer queue ownership between fan-out roles. A promoted writer ticks
+   * immediately so an existing queued item becomes ON AIR without delay.
+   */
+  setControllerActive(val: boolean): void {
+    if (this.controllerActive === val) return;
+    this.controllerActive = val;
+    if (val && this.started) this.tick();
   }
 
   /**
@@ -5031,6 +5045,7 @@ class BroadcastOrchestrator extends EventEmitter {
   }
 
   private async persistCheckpoint(): Promise<void> {
+    if (!this.controllerActive) return;
     // Concurrency guard: if a prior write is still in-flight (DB latency
     // exceeded CHECKPOINT_INTERVAL_MS), skip this tick entirely.  The dirty
     // flag stays set so the next interval fires the write.

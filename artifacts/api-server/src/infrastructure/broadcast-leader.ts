@@ -46,6 +46,7 @@ export class BroadcastLeader {
   private _isWriter = false;
   private renewalTimer: NodeJS.Timeout | null = null;
   private readonly lostCallbacks: Array<() => void> = [];
+  private readonly gainedCallbacks: Array<() => void> = [];
 
   constructor(
     private readonly redis: Redis,
@@ -111,6 +112,11 @@ export class BroadcastLeader {
     this.lostCallbacks.push(cb);
   }
 
+  /** Register a callback invoked when a reader acquires leadership. */
+  onLeadershipGained(cb: () => void): void {
+    this.gainedCallbacks.push(cb);
+  }
+
   /**
    * Start the 10 s renewal timer.
    *
@@ -163,6 +169,7 @@ export class BroadcastLeader {
           { instanceId: this.instanceId },
           "[broadcast-leader] promoted from reader → writer",
         );
+        for (const cb of this.gainedCallbacks) cb();
       }
     }
   }
