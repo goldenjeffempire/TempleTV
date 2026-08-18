@@ -297,7 +297,7 @@ export async function restRoutes(app: FastifyInstance) {
   // queue and never reloaded — `scheduleSelfHealReload()` should make
   // that impossible now, but the probe stays as a safety net.
   app.get("/health", {
-    schema: { response: { 429: _429err } },
+    schema: { response: { 200: z.unknown(), 429: _429err } },
     config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
   }, async (req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
@@ -892,7 +892,7 @@ export async function restRoutes(app: FastifyInstance) {
     broadcastOrchestrator.on("frame", () => { _stateCache = null; });
 
     app.get("/state", {
-      schema: { response: { 304: z.void(), 429: _429err } },
+      schema: { response: { 200: z.unknown(), 304: z.void(), 429: _429err } },
       config: {
         // Cold-start authority for every player surface and the recover-frame
         // refetch target. Rate-limited to absorb aggressive polling from
