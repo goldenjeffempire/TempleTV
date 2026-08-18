@@ -302,12 +302,12 @@ export const queueSelfHealingWorker = {
             repairLog: sql`(
               repair_log || jsonb_build_object(
                 'ts', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
-                'actor', 'system',
-                'action', 'stuck_repairing_recovered',
+                'actor', 'system'::text,
+                'action', 'stuck_repairing_recovered'::text,
                 'detail', ${shouldBlock
                   ? `Item stuck in repairing state ${newAttempts} times — permanently blocked`
-                  : `Item was stuck in repairing state after process restart — resetting to quarantined (attempt ${newAttempts}/${maxAttempts})`},
-                'outcome', ${shouldBlock ? "blocked" : "pending"}
+                  : `Item was stuck in repairing state after process restart — resetting to quarantined (attempt ${newAttempts}/${maxAttempts})`}::text,
+                'outcome', ${shouldBlock ? "blocked" : "pending"}::text
               )
             )`,
             updatedAt: new Date(),

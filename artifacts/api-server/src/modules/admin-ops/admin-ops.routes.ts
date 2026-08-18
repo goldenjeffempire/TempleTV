@@ -4688,18 +4688,80 @@ export async function adminOpsRoutes(app: FastifyInstance) {
     handler: async (_req, _reply) => {
       const issues: string[] = [];
 
+      // ── Broadcast orchestrator + workers + content rotation ─────────────
+      //
+      // When BROADCAST_DAEMON_URL is configured the API server runs in proxy
+      // mode: the V2 orchestrator, all supervised workers, and the content-
+      // rotation state live exclusively inside the broadcast daemon process
+      // (port 9000). The local broadcastOrchestrator is never started in this
+      // mode → isStarted() returns false → the old code always reported
+      // "Broadcast orchestrator is not started" even when the daemon was
+      // broadcasting perfectly.
+      //
+      // Fix: fetch the daemon's public /health endpoint (loopback, no auth
+      // required) to get the real started/sequence/itemCount/contentRotation/
+      // workerAggregate state. Falls back to local state gracefully if the
+      // daemon is temporarily unreachable (e.g. mid-restart), so the endpoint
+      // never hard-fails during a rolling deploy.
+      //
+      // The daemon's public /health payload now includes contentRotation and
+      // workerAggregate (added alongside this change) so no auth header is
+      // needed and no new internal bypass token is required.
+      type DaemonHealthSnippet = {
+        boot?: { started?: boolean };
+        sequence?: number;
+        itemCount?: number;
+        contentRotation?: {
+          strategy?: string;
+          intervalMs?: number;
+          lastShuffleAtMs?: number;
+          shuffleCount?: number;
+        };
+        workerAggregate?: {
+          workers?: Array<{
+            name: string;
+            running: boolean;
+            circuitOpen: boolean;
+            consecutiveFailures: number;
+            totalRuns: number;
+            lastRunAtMs: number | null;
+            lastSuccessAtMs: number | null;
+            nextRunAtMs: number | null;
+          }>;
+        };
+      };
+      let daemonHealth: DaemonHealthSnippet | null = null;
+      if (env.BROADCAST_DAEMON_URL) {
+        try {
+          const daemonHealthUrl =
+            `${env.BROADCAST_DAEMON_URL.replace(/\/$/, "")}/api/broadcast-v2/health`;
+          const res = await fetch(daemonHealthUrl, {
+            signal: AbortSignal.timeout(4_000),
+            headers: { "x-internal-request": "system-health" },
+          });
+          if (res.ok) daemonHealth = (await res.json()) as DaemonHealthSnippet;
+        } catch (err) {
+          // Non-fatal: daemon may be mid-restart. Fall through to local state
+          // which will correctly show "not started" during the daemon's own
+          // boot window rather than masking a genuine failure.
+          _req.log?.warn({ err }, "[system-health] daemon health fetch failed — using local fallback");
+        }
+      }
+
       // ── Broadcast orchestrator ──────────────────────────────────────────
       const broadcast = {
-        started: broadcastOrchestrator.isStarted(),
-        sequence: broadcastOrchestrator.getSequence(),
-        itemCount: broadcastOrchestrator.getItemCount(),
+        started:   daemonHealth?.boot?.started  ?? broadcastOrchestrator.isStarted(),
+        sequence:  daemonHealth?.sequence       ?? broadcastOrchestrator.getSequence(),
+        itemCount: daemonHealth?.itemCount      ?? broadcastOrchestrator.getItemCount(),
       };
       if (!broadcast.started) issues.push("Broadcast orchestrator is not started");
 
       // ── Workers ─────────────────────────────────────────────────────────
-      // Dynamic import avoids circular deps; workerSupervisor is a singleton.
+      // In proxy mode the daemon health payload carries the real worker list;
+      // fall back to the local workerSupervisor (empty in proxy mode, populated
+      // when running as a standalone all-in-one process).
       const { workerSupervisor } = await import("../broadcast-v2/engine/worker-supervisor.js");
-      const rawWorkers = workerSupervisor.getHealth();
+      const rawWorkers = daemonHealth?.workerAggregate?.workers ?? workerSupervisor.getHealth();
       const workers = rawWorkers.map((w) => ({
         name: w.name,
         running: w.running,
@@ -4773,13 +4835,16 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       }
 
       // ── Content rotation ──────────────────────────────────────────────────
+      // In proxy mode the local getContentRotationStatus() always returns
+      // lastShuffleAtMs=0 / shuffleCount=0 (workers run in the daemon).
+      // Use the daemon health snapshot when available.
       const { getContentRotationStatus } = await import("../broadcast-v2/index.js");
       const rot = getContentRotationStatus();
       const contentRotation = {
-        strategy: rot.strategy,
-        intervalMs: rot.intervalMs,
-        lastShuffleAtMs: rot.lastShuffleAtMs,
-        shuffleCount: rot.shuffleCount,
+        strategy:       daemonHealth?.contentRotation?.strategy      ?? rot.strategy,
+        intervalMs:     daemonHealth?.contentRotation?.intervalMs    ?? rot.intervalMs,
+        lastShuffleAtMs: daemonHealth?.contentRotation?.lastShuffleAtMs ?? rot.lastShuffleAtMs,
+        shuffleCount:   daemonHealth?.contentRotation?.shuffleCount  ?? rot.shuffleCount,
       };
 
       // Detect when no public API origin is configured in production.

@@ -254,7 +254,30 @@ async function doScan(): Promise<void> {
     const mode = snap?.mode ?? "unknown";
 
     // ── 2. Broadcast stuck detection ──────────────────────────────────────
-    if (started && itemCount > 0 && advanceAgeMs > STUCK_THRESHOLD_MS) {
+    //
+    // Guard: when a video is actively playing, the sequence legitimately does
+    // not advance until item.advanced fires at the end of the item. A fixed
+    // 90 s threshold false-positives on any content longer than 90 s (every
+    // sermon, every music video). Only flag stuck when the current item has
+    // been playing LONGER than its declared duration plus a 2-minute grace
+    // period — meaning item.advanced genuinely never fired.
+    //
+    // When there is no current item (snap.current == null) the plain 90 s
+    // threshold still applies — something should have started by then.
+    const SEQUENCE_STALE_GRACE_MS = 2 * 60_000; // 2-minute post-item grace
+    const currentItemElapsedMs =
+      snap?.current != null ? Math.max(0, now - snap.current.startsAtMs) : 0;
+    const currentItemDurationMs =
+      snap?.current != null ? snap.current.durationSecs * 1_000 : 0;
+    const withinPlaybackWindow =
+      snap?.current != null &&
+      currentItemElapsedMs < currentItemDurationMs + SEQUENCE_STALE_GRACE_MS;
+    const genuinelyStuck =
+      started &&
+      itemCount > 0 &&
+      advanceAgeMs > STUCK_THRESHOLD_MS &&
+      !withinPlaybackWindow;
+    if (genuinelyStuck) {
       raiseAlert("BROADCAST_STUCK", "broadcast", "error",
         `Broadcast sequence has not advanced in ${Math.round(advanceAgeMs / 1000)}s`);
       if (!onCooldown("BROADCAST_STUCK")) {
@@ -278,7 +301,9 @@ async function doScan(): Promise<void> {
           });
         }
       }
-    } else if (advanceAgeMs <= STUCK_THRESHOLD_MS || itemCount === 0) {
+    } else {
+      // Not genuinely stuck (playing normally, within playback window, or
+      // queue empty) — clear any previously raised alert.
       clearAlert("BROADCAST_STUCK");
     }
 

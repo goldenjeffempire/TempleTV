@@ -408,6 +408,35 @@ export async function restRoutes(app: FastifyInstance) {
         sse: getBroadcastV2SseViewerCount(),
         total: getBroadcastV2WsViewerCount() + getBroadcastV2SseViewerCount(),
       },
+      /**
+       * Content-rotation worker status — included in the public payload so the
+       * API server's /admin/broadcast/system-health endpoint can read it when
+       * running in proxy mode (where all workers live in the broadcast daemon
+       * and the local in-memory state is always zero).
+       */
+      contentRotation: getContentRotationStatus(),
+      /**
+       * Worker supervisor aggregate summary — included in the public payload
+       * for the same proxy-mode reason as contentRotation above.
+       * Only exposes counts (running / circuitOpen / stopped) and per-worker
+       * name+running+circuitOpen — no sensitive internal metrics.
+       */
+      workerAggregate: (() => {
+        const { workers, summary } = workerSupervisor.getWorkerStatuses();
+        return {
+          summary,
+          workers: workers.map((w) => ({
+            name:                w.name,
+            running:             w.running,
+            circuitOpen:         w.circuitOpen,
+            consecutiveFailures: w.consecutiveFailures,
+            totalRuns:           w.totalRuns,
+            lastRunAtMs:         w.lastRunAtMs,
+            lastSuccessAtMs:     w.lastSuccessAtMs,
+            nextRunAtMs:         w.nextRunAtMs,
+          })),
+        };
+      })(),
     };
 
     // Authenticated operators get the full internal diagnostics payload —
