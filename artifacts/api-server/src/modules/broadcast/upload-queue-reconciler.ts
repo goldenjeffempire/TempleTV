@@ -49,7 +49,10 @@ const MAX_PER_SCAN = 50;
 export const uploadQueueReconciler = {
   async scan(): Promise<{ scanned: number; enqueued: number; repaired: number }> {
     try {
-      const { repaired } = await repairMissingS3MirroredAt();
+      // This is the supervised retry path. Let a storage/DB verification
+      // failure reach workerSupervisor so its 15 s → 30 s → 60 s backoff is
+      // applied instead of silently deferring every retry to the next minute.
+      const { repaired } = await repairMissingS3MirroredAt(undefined, { throwOnError: true });
 
       const cutoff = new Date(Date.now() - LOOKBACK_MS);
 
@@ -116,8 +119,8 @@ export const uploadQueueReconciler = {
 
       return { scanned: candidates.length, enqueued, repaired };
     } catch (err) {
-      logger.warn({ err }, "[upload-queue-reconciler] scan failed (non-fatal)");
-      return { scanned: 0, enqueued: 0, repaired: 0 };
+      logger.warn({ err }, "[upload-queue-reconciler] scan failed — delegating retry to worker supervisor");
+      throw err;
     }
   },
 };

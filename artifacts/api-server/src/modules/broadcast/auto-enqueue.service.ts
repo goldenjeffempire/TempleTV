@@ -231,20 +231,36 @@ export async function enqueueIfMissing(opts: {
 // For relative URLs we strip the leading /api/v1/ segment to restore the key.
 // For absolute URLs the suffix after /api/v1/uploads/ must have "uploads/"
 // re-added because publicUrl() strips it when building the URL.
-function deriveStorageKeyFromUrl(localVideoUrl: string): string | null {
-  if (!localVideoUrl) return null;
-  if (/^https?:\/\//i.test(localVideoUrl)) {
-    const marker = "/api/v1/uploads/";
-    const idx = localVideoUrl.indexOf(marker);
-    if (idx !== -1) return "uploads/" + localVideoUrl.slice(idx + marker.length);
-    const legacyMarker = "/api/uploads/";
-    const idx2 = localVideoUrl.indexOf(legacyMarker);
-    if (idx2 !== -1) return "uploads/" + localVideoUrl.slice(idx2 + legacyMarker.length);
-    return null;
-  }
-  // Relative URL: /api/v1/uploads/2024/... → uploads/2024/...
-  const stripped = localVideoUrl.replace(/^\/(?:api\/(?:v\d+\/)?)?/, "");
-  return stripped.startsWith("uploads/") ? stripped : null;
+function storageKeyCandidates(objectPath: string | null, localVideoUrl: string | null): string[] {
+  const candidates = new Set<string>();
+
+  const add = (value: string | null | undefined) => {
+    const raw = value?.trim();
+    if (!raw) return;
+    candidates.add(raw);
+
+    const withoutQuery = raw.split(/[?#]/, 1)[0] ?? raw;
+    candidates.add(withoutQuery);
+    const normalized = withoutQuery.replace(/^\/(?:api\/(?:v\d+\/)?)?/, "");
+    if (normalized.startsWith("uploads/")) candidates.add(normalized);
+
+    try {
+      const pathname = new URL(raw, "https://templetv.invalid").pathname;
+      const uploadMarker = pathname.match(/^\/(?:api\/(?:v\d+\/)?|)?uploads\/(.+)$/);
+      if (uploadMarker?.[1]) {
+        candidates.add(`uploads/${uploadMarker[1]}`);
+      } else if (pathname.startsWith("/uploads/")) {
+        candidates.add(pathname.slice(1));
+      }
+    } catch {
+      // The raw value remains a candidate; malformed legacy references are
+      // safely ignored unless they exactly match a committed blob key.
+    }
+  };
+
+  add(objectPath);
+  add(localVideoUrl);
+  return [...candidates];
 }
 
 /**
@@ -277,7 +293,10 @@ function deriveStorageKeyFromUrl(localVideoUrl: string): string | null {
  *   - Batch-updates with a single UPDATE … WHERE id IN (…) to minimise
  *     round-trips; the cap of 500 rows prevents runaway scans on large DBs.
  */
-export async function repairMissingS3MirroredAt(videoId?: string): Promise<{ repaired: number }> {
+export async function repairMissingS3MirroredAt(
+  videoId?: string,
+  opts: { throwOnError?: boolean } = {},
+): Promise<{ repaired: number }> {
   try {
     // Step 1: Find all local videos with s3MirroredAt IS NULL that look
     // potentially assembled (have a localVideoUrl and no terminal error).
@@ -319,45 +338,51 @@ export async function repairMissingS3MirroredAt(videoId?: string): Promise<{ rep
 
     if (candidates.length === 0) return { repaired: 0 };
 
-    // Step 2: Derive storage keys and filter out non-derivable URLs.
-    // Prefer object_path (the authoritative storage key written at upload time)
-    // over the URL-derived key — mirrors auditMissingBlobs(). Without this, a
-    // video whose blob IS present in storage_blobs under its object_path key but
-    // whose localVideoUrl derives a different/null key would never be stamped,
-    // leaving it permanently "not broadcast-ready — blob stamp is missing".
+    // Step 2: Derive every safe form of each storage reference. Legacy rows
+    // can hold a public `/api/v1/uploads/...` URL in object_path while the
+    // committed blob key is `uploads/...`; checking only object_path causes a
+    // permanent false-negative even though the MP4 is present and playable.
     const withKeys = candidates.flatMap((r) => {
-      const keyFromPath = r.objectPath?.trim() || null;
-      const keyFromUrl = deriveStorageKeyFromUrl(r.localVideoUrl ?? "");
-      const key = keyFromPath ?? keyFromUrl;
-      return key ? [{ id: r.id, key }] : [];
+      const keys = storageKeyCandidates(r.objectPath, r.localVideoUrl);
+      return keys.length > 0 ? [{ id: r.id, objectPath: r.objectPath, keys }] : [];
     });
     if (withKeys.length === 0) return { repaired: 0 };
 
-    // Step 3: Batch-check storage_blobs for the derived keys (single round-trip).
-    const keys = withKeys.map((r) => r.key);
+    // Step 3: Batch-check storage_blobs for every equivalent key (single round-trip).
+    const keys = [...new Set(withKeys.flatMap((r) => r.keys))];
     const presentRows = await db
       .select({ key: schema.storageBlobsTable.key })
       .from(schema.storageBlobsTable)
       .where(inArray(schema.storageBlobsTable.key, keys));
     const presentSet = new Set(presentRows.map((r) => r.key));
 
-    // Step 4: Stamp s3MirroredAt for every video whose blob is confirmed present.
-    const toRepair = withKeys.filter((r) => presentSet.has(r.key)).map((r) => r.id);
+    // Step 4: Persist the real committed key, then stamp readiness. This makes
+    // future integrity checks and playback resolve the same blob without
+    // repeatedly relying on URL aliases.
+    const resolved = withKeys.flatMap((r) => {
+      const key = r.keys.find((candidate) => presentSet.has(candidate));
+      return key ? [{ id: r.id, objectPath: r.objectPath, key }] : [];
+    });
+    const toRepair = resolved.map((r) => r.id);
     let bytea_repaired = 0;
 
     if (toRepair.length > 0) {
+      for (const row of resolved) {
+        if (row.objectPath === row.key) continue;
+        await db
+          .update(videosTable)
+          .set({ objectPath: row.key })
+          .where(eq(videosTable.id, row.id));
+      }
       await db
         .update(videosTable)
         .set({ s3MirroredAt: new Date() })
         .where(inArray(videosTable.id, toRepair))
-        .catch((err: unknown) =>
-          logger.warn({ err, count: toRepair.length }, "[auto-enqueue] repair: s3MirroredAt batch stamp failed"),
-        );
 
       bytea_repaired = toRepair.length;
       logger.info(
-        { repaired: bytea_repaired, candidates: candidates.length, withKeys: withKeys.length, present: presentSet.size },
-        "[auto-enqueue] repair: stamped s3MirroredAt for videos with confirmed storage blobs",
+        { repaired: bytea_repaired, candidates: candidates.length, resolved: resolved.length, present: presentSet.size },
+        "[auto-enqueue] repair: repaired storage references and stamped confirmed blobs",
       );
     }
 
@@ -410,6 +435,7 @@ export async function repairMissingS3MirroredAt(videoId?: string): Promise<{ rep
     return { repaired: bytea_repaired + legacy_repaired };
   } catch (err) {
     logger.warn({ err }, "[auto-enqueue] repairMissingS3MirroredAt failed (non-fatal)");
+    if (opts.throwOnError) throw err;
     return { repaired: 0 };
   }
 }
@@ -444,25 +470,25 @@ export async function auditMissingBlobs(): Promise<{ checked: number; missing: n
 
     if (candidates.length === 0) return { checked: 0, missing: 0, missingIds: [] };
 
-    // Derive storage keys — prefer objectPath (exact DB key) over localVideoUrl.
+    // Derive every safe reference form. Legacy rows can retain a public upload
+    // URL in objectPath while storage_blobs stores the canonical uploads/... key.
     const withKeys = candidates.flatMap((r) => {
-      // objectPath is the authoritative storage key (e.g. "uploads/2024/01/15/abc.mp4").
-      const keyFromPath = r.objectPath?.trim() || null;
-      const keyFromUrl = deriveStorageKeyFromUrl(r.localVideoUrl ?? "");
-      const key = keyFromPath ?? keyFromUrl;
-      return key ? [{ id: r.id, title: r.title, key }] : [];
+      const keys = storageKeyCandidates(r.objectPath, r.localVideoUrl);
+      return keys.length > 0 ? [{ id: r.id, title: r.title, keys }] : [];
     });
 
     if (withKeys.length === 0) return { checked: candidates.length, missing: 0, missingIds: [] };
 
-    const keys = withKeys.map((r) => r.key);
+    const keys = [...new Set(withKeys.flatMap((r) => r.keys))];
     const presentRows = await db
       .select({ key: schema.storageBlobsTable.key })
       .from(schema.storageBlobsTable)
       .where(inArray(schema.storageBlobsTable.key, keys));
     const presentSet = new Set(presentRows.map((r) => r.key));
 
-    const missingEntries = withKeys.filter((r) => !presentSet.has(r.key));
+    const missingEntries = withKeys
+      .map((r) => ({ ...r, key: r.keys.find((candidate) => presentSet.has(candidate)) ?? r.keys[0]! }))
+      .filter((r) => !r.keys.some((candidate) => presentSet.has(candidate)));
 
     if (missingEntries.length > 0) {
       logger.error(
