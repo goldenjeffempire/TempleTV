@@ -574,7 +574,7 @@ export default function VideosPage() {
     queryKey: ["broadcast-v2-queue-status", localVideoIds.slice().sort().join(",")],
     queryFn: () =>
       api.get<{ status: Record<string, "queued" | "missing" | "assembling"> }>(
-        `/broadcast-v2/queue-status?videoIds=${localVideoIds.join(",")}`,
+        `/admin/videos/queue-status?videoIds=${localVideoIds.join(",")}`,
       ),
     enabled: localVideoIds.length > 0,
     staleTime: 30_000,

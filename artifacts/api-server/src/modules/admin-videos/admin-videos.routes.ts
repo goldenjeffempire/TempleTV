@@ -287,6 +287,70 @@ function toDto(row: typeof videos.$inferSelect, progress: number | null = null):
 export async function adminVideosRoutes(app: FastifyInstance) {
   const r = app.withTypeProvider<ZodTypeProvider>();
 
+  // ── GET /videos/queue-status ──────────────────────────────────────────────
+  // Queue membership is persisted in the shared PostgreSQL database. Keep this
+  // read on the API service so the video library remains informative during a
+  // broadcast-daemon restart; the daemon still exclusively owns playback.
+  r.get(
+    "/videos/queue-status",
+    {
+      preHandler: requireAuth("editor"),
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["admin"],
+        summary: "Get active broadcast-queue status for local videos",
+        security: [{ bearerAuth: [] }],
+        querystring: z.object({ videoIds: z.string().optional() }),
+        response: {
+          200: z.object({
+            status: z.record(z.string(), z.enum(["queued", "missing", "assembling"])),
+          }),
+          429: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      reply.header("Cache-Control", "no-store, max-age=0");
+      const ids = (req.query.videoIds ?? "")
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean)
+        .slice(0, 100);
+
+      if (ids.length === 0) return { status: {} };
+
+      const [queueRows, videoRows] = await Promise.all([
+        db
+          .select({ videoId: schema.broadcastQueueTable.videoId })
+          .from(schema.broadcastQueueTable)
+          .where(and(
+            eq(schema.broadcastQueueTable.isActive, true),
+            inArray(schema.broadcastQueueTable.videoId, ids),
+          )),
+        db
+          .select({ id: videos.id, s3MirroredAt: videos.s3MirroredAt })
+          .from(videos)
+          .where(inArray(videos.id, ids)),
+      ]);
+
+      const queuedIds = new Set(
+        queueRows.map((row) => row.videoId).filter((id): id is string => id !== null),
+      );
+      const confirmedBlobIds = new Set(
+        videoRows.filter((row) => row.s3MirroredAt !== null).map((row) => row.id),
+      );
+      const status: Record<string, "queued" | "missing" | "assembling"> = {};
+      for (const id of ids) {
+        status[id] = queuedIds.has(id)
+          ? "queued"
+          : confirmedBlobIds.has(id)
+          ? "missing"
+          : "assembling";
+      }
+      return { status };
+    },
+  );
+
   // ── GET /videos ─────────────────────────────────────────────────────────────
   r.get(
     "/videos",
