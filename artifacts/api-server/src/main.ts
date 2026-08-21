@@ -435,7 +435,15 @@ async function runBroadcastDaemon(): Promise<never> {
   // and the old build survived indefinitely. Opening the process-health socket
   // first lets Render terminate the old instance; the new process still does
   // not start any broadcast workers until it has acquired the lock below.
-  const daemonHost = process.env.RENDER === "true" ? "0.0.0.0" : "127.0.0.1";
+  // Render's private network can only reach listeners bound to all interfaces.
+  // Treat either Render's explicit marker/service ID or any production runtime
+  // as externally networked; keep loopback only for non-production local runs.
+  const daemonHost =
+    process.env.RENDER === "true" ||
+    process.env.RENDER_SERVICE_ID !== undefined ||
+    env.NODE_ENV === "production"
+      ? "0.0.0.0"
+      : "127.0.0.1";
   await daemonApp.listen({ port: env.PORT, host: daemonHost });
   logger.info(
     {
