@@ -247,6 +247,8 @@ async function httpDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promis
       });
       clearTimeout(t);
       const respBody = await upstreamRes.text();
+      const contentType = upstreamRes.headers.get("content-type");
+      let responsePayload: unknown = respBody;
 
       // Never let a stale/broken daemon masquerade as healthy. The previous
       // daemon build returned HTTP 200 with a zero-byte body; forwarding that
@@ -272,12 +274,52 @@ async function httpDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promis
           });
           return;
         }
+        responsePayload = health.payload;
+      } else if (upstreamRes.status !== 204 && contentType?.toLowerCase().includes("application/json")) {
+        // Fastify's production serializer expects an object for JSON responses.
+        // Passing an already-stringified JSON document can be reduced to a
+        // zero-byte response by the serializer stack even though the upstream
+        // body was valid. Parse at the process boundary and let Fastify perform
+        // the single authoritative serialization.
+        if (respBody.trim().length === 0) {
+          logger.error(
+            { targetUrl, upstreamStatus: upstreamRes.status },
+            "[broadcast-daemon-proxy] daemon returned an empty JSON response",
+          );
+          reply.code(502).send({
+            error: "broadcast daemon returned an invalid JSON response",
+            code: "INVALID_DAEMON_JSON_RESPONSE",
+            detail: "empty response body",
+          });
+          return;
+        }
+        try {
+          responsePayload = JSON.parse(respBody);
+        } catch {
+          logger.error(
+            {
+              targetUrl,
+              upstreamStatus: upstreamRes.status,
+              responseBytes: Buffer.byteLength(respBody),
+            },
+            "[broadcast-daemon-proxy] daemon returned malformed JSON",
+          );
+          reply.code(502).send({
+            error: "broadcast daemon returned an invalid JSON response",
+            code: "INVALID_DAEMON_JSON_RESPONSE",
+            detail: "response body is not valid JSON",
+          });
+          return;
+        }
       }
 
       reply.code(upstreamRes.status);
-      const ct = upstreamRes.headers.get("content-type");
-      if (ct) reply.header("content-type", ct);
-      reply.send(respBody);
+      if (contentType) reply.header("content-type", contentType);
+      if (upstreamRes.status === 204) {
+        reply.send();
+      } else {
+        reply.send(responsePayload);
+      }
       return;
     } catch (err) {
       clearTimeout(t);
