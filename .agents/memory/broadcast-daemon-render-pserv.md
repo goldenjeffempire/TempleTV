@@ -49,11 +49,13 @@ if (!BROADCAST_DAEMON_URL && BROADCAST_DAEMON_HOST) {
 
 `artifacts/api-server/package.json`: `"start:render-daemon"` uses `--max-old-space-size=300` (daemon has no HLS cache, no upload buffers, no FFmpeg — 300 MiB is sufficient on Starter's 512 MiB RAM).
 
-## buildFilter.paths for the daemon
+## Daemon deployment trigger
 
-The daemon's `buildFilter.paths` includes `artifacts/api-server/**` and shared libs but NOT `artifacts/admin/**`, `artifacts/tv/**`, or `artifacts/mobile/**`. Changes to SPAs do NOT redeploy the daemon.
+The repository Blueprint intentionally has no daemon `buildFilter`, so every `main` commit should redeploy the private service and prevent code drift between API and daemon.
 
-**Why:** SPA deploys must never restart the broadcast engine. Only broadcast-engine source changes warrant a daemon redeploy.
+**Why:** A stale daemon can keep serving an old health/runtime contract while the API deploys newer proxy code.
+
+**Operational caveat:** Render does not automatically apply every Blueprint setting change to an existing service. If an empty commit creates no daemon deployment, manually sync the Blueprint in Render; until then, API-server file changes still trigger the older path-filtered service.
 
 ## Memory thresholds for daemon (Starter: 512 MiB)
 
