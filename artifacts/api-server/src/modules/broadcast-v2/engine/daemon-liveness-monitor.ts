@@ -16,6 +16,7 @@
 import { adminEventBus } from "../../admin-ops/admin-event-bus.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
+import { validateDaemonHealthBody } from "../io/daemon-health-contract.js";
 
 const POLL_INTERVAL_MS = 30_000;
 const PROBE_TIMEOUT_MS = 8_000;
@@ -55,8 +56,13 @@ async function probe(): Promise<boolean> {
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       headers: { accept: "application/json" },
     });
-    // Any sub-500 response means the daemon is alive (200, 401, 429 all count)
-    return res.status < 500;
+    // Rate limiting proves the daemon process is reachable. For a successful
+    // response, require the complete health contract so a blank HTTP 200 or an
+    // API process accidentally wired as the daemon is treated as unavailable.
+    if (res.status === 429) return true;
+    if (!res.ok) return false;
+    const body = await res.text();
+    return validateDaemonHealthBody(body).valid;
   } catch {
     return false;
   }

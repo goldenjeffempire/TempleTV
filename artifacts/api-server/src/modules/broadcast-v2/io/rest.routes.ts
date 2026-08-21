@@ -360,12 +360,16 @@ export async function restRoutes(app: FastifyInstance) {
 
     const allBlocked = broadcastOrchestrator.getAllBlockedInfo();
     const now = Date.now();
+    const hasActiveOutput = snap.current !== null || snap.override !== null;
+    const playbackUnavailable =
+      boot.started !== true ||
+      (itemCount > 0 && !hasActiveOutput);
 
     // Public fields — safe to expose to unauthenticated uptime monitors and
     // player clients. Reveals only broadcast liveness state (no internal
     // infra metrics, no blocked-source URL list, no airing history).
     const publicPayload = {
-      ok: !stuck && !sequenceStale,
+      ok: !stuck && !sequenceStale && !playbackUnavailable,
       stuck,
       sequenceStale,
       sequenceStaleSec,
@@ -391,6 +395,12 @@ export async function restRoutes(app: FastifyInstance) {
       uptimeMs,
       serverTimeMs: now,
       boot,
+      runtime: {
+        role: env.RUN_MODE === "broadcast" ? "broadcast-daemon" : "api",
+        gitCommit: env.RENDER_GIT_COMMIT ?? null,
+        serviceName: env.RENDER_SERVICE_NAME ?? null,
+        instanceId: env.RENDER_INSTANCE_ID ?? null,
+      },
       reload,
       /** True when queue has items but nothing is on air and sources are not all blocked. */
       deadAir: !stuck && !allBlocked.allSourcesBlocked && itemCount > 0 && snap.current === null && snap.mode !== "override",
@@ -454,6 +464,12 @@ export async function restRoutes(app: FastifyInstance) {
     // JSON.stringify.  Calling reply.send(string) with Content-Type:application/json
     // bypasses the serializer entirely and guarantees a well-formed response.
     reply.header("Content-Type", "application/json; charset=utf-8");
+    // A daemon with queued content but no active output is not healthy. This is
+    // intentionally an HTTP failure rather than a frontend-only status: Render,
+    // the API proxy, and external monitors must all see the runtime fault.
+    // Set the raw status because this route intentionally omits success/error
+    // response schemas to bypass the serializer bug described above.
+    reply.raw.statusCode = playbackUnavailable ? 503 : 200;
     if (!isAuthenticated) {
       return reply.send(JSON.stringify(publicPayload));
     }
@@ -2454,7 +2470,7 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
     naturalEndDedup.set(dedupKey, now);
 
     const result = await broadcastOrchestrator.naturalItemEnd(itemId);
-    return { ok: true, ...result };
+    return { ok: true, advanced: result.acted };
   });
 
   // ── Viewer position report (sync telemetry) ──────────────────────────

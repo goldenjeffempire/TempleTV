@@ -179,7 +179,7 @@ services:
       - key: CLIENT_ERROR_SINK_TOKEN
         sync: false
 
-  # ── Broadcast daemon (pserv — internal only, never restarted on API deploy) ─
+  # ── Broadcast daemon (pserv — internal only) ────────────────────────────────
   # pserv: no healthCheckPath, no region — Render monitors via process health.
   - type: pserv
     name: temple-tv-broadcast-daemon
@@ -191,18 +191,9 @@ services:
     autoDeploy: true
     pullRequestPreviewsEnabled: false
 
-    buildFilter:
-      paths:
-        - artifacts/api-server/**
-        - lib/db/**
-        - lib/broadcast-types/**
-        - lib/broadcast-sync/**
-        - pnpm-lock.yaml
-        - package.json
-        - pnpm-workspace.yaml
-        - scripts/**
-        - render.yaml
-
+    # Deliberately no buildFilter. The daemon is the playback authority and must
+    # never remain on an older commit while the API/admin deploy ahead of it.
+    # Render therefore redeploys this service for every main-branch commit.
     buildCommand: |
       bash ./scripts/render-install.sh && \
       pnpm --filter @workspace/api-server run build

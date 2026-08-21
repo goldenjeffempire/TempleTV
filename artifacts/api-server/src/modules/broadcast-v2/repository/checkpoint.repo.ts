@@ -7,7 +7,12 @@ export interface CheckpointRecord {
   channelId: string;
   itemId: string | null;
   positionMs: number;
-  sourceHealth: "ok" | "degraded" | "failed";
+  sourceHealth:
+    | "ok"
+    | "degraded"
+    | "failed"
+    | "midnight-prayers-prepared"
+    | "midnight-prayers-committed";
   /**
    * Wall-clock ms when this checkpoint was written to the DB (populated on read
    * from `updated_at`; not required when writing — the DB sets it automatically).

@@ -1,5 +1,6 @@
 import net from "node:net";
 import v8 from "node:v8";
+import type { PoolClient } from "pg";
 import { sql, ne, inArray, eq as drizzleEq } from "drizzle-orm";
 import { buildApp } from "./app.js";
 import { env } from "./config/env.js";
@@ -349,7 +350,15 @@ async function stopWorkers() {
  * never-resolving promise; process.exit() is called on SIGTERM/SIGINT.
  */
 async function runBroadcastDaemon(): Promise<never> {
-  logger.info({ port: env.PORT }, "[broadcast-daemon] booting broadcast-only daemon");
+  logger.info(
+    {
+      port: env.PORT,
+      gitCommit: env.RENDER_GIT_COMMIT ?? null,
+      serviceName: env.RENDER_SERVICE_NAME ?? null,
+      instanceId: env.RENDER_INSTANCE_ID ?? null,
+    },
+    "[broadcast-daemon] booting broadcast-only daemon",
+  );
 
   // DB schema self-heals + broadcast_v2 table creation (same as API).
   await runPreBuildBootSequence().catch((err) =>
@@ -372,9 +381,40 @@ async function runBroadcastDaemon(): Promise<never> {
   daemonApp.setValidatorCompiler(validatorCompiler);
   daemonApp.setSerializerCompiler(serializerCompiler);
 
-  // ── Health endpoints ──────────────────────────────────────────────────────
-  daemonApp.get("/healthz", async () => ({ status: "ok", mode: "broadcast", ts: Date.now() }));
-  daemonApp.get("/readyz",  async () => ({ status: "ok", mode: "broadcast", ts: Date.now() }));
+  let daemonRuntimeReady = false;
+  const runtimeIdentity = {
+    role: "broadcast-daemon",
+    gitCommit: env.RENDER_GIT_COMMIT ?? null,
+    serviceName: env.RENDER_SERVICE_NAME ?? null,
+    instanceId: env.RENDER_INSTANCE_ID ?? null,
+  } as const;
+
+  // ── Process health endpoint ───────────────────────────────────────────────
+  // This endpoint becomes reachable BEFORE leadership acquisition. Render can
+  // therefore complete a rolling handoff and terminate the old instance,
+  // releasing its advisory lock. /readyz remains 503 until the new instance
+  // owns the lock and has started the orchestrator.
+  daemonApp.get("/healthz", async (_req, reply) => {
+    reply.header("Content-Type", "application/json; charset=utf-8");
+    return reply.send(JSON.stringify({
+      status: "ok",
+      mode: "broadcast",
+      runtimeReady: daemonRuntimeReady,
+      runtime: runtimeIdentity,
+      ts: Date.now(),
+    }));
+  });
+  daemonApp.get("/readyz", async (_req, reply) => {
+    reply.header("Content-Type", "application/json; charset=utf-8");
+    reply.code(daemonRuntimeReady ? 200 : 503);
+    return reply.send(JSON.stringify({
+      status: daemonRuntimeReady ? "ready" : "starting",
+      mode: "broadcast",
+      runtimeReady: daemonRuntimeReady,
+      runtime: runtimeIdentity,
+      ts: Date.now(),
+    }));
+  });
 
   // ── Broadcast-v2 routes ───────────────────────────────────────────────────
   // Mount under both /api/v1 (preferred) and /api (legacy alias) so existing
@@ -388,6 +428,24 @@ async function runBroadcastDaemon(): Promise<never> {
   await daemonApp.register(mountBroadcast, { prefix: "/api/v1" });
   await daemonApp.register(mountBroadcast, { prefix: "/api" });
 
+  // ── Listen before leadership acquisition ─────────────────────────────────
+  // IMPORTANT: Render keeps the old pserv instance alive until the replacement
+  // opens its port. Acquiring the singleton DB lock before listen() deadlocked
+  // rolling deploys: new waited for old's lock, Render waited for new's port,
+  // and the old build survived indefinitely. Opening the process-health socket
+  // first lets Render terminate the old instance; the new process still does
+  // not start any broadcast workers until it has acquired the lock below.
+  const daemonHost = process.env.RENDER === "true" ? "0.0.0.0" : "127.0.0.1";
+  await daemonApp.listen({ port: env.PORT, host: daemonHost });
+  logger.info(
+    {
+      port: env.PORT,
+      host: daemonHost,
+      runtime: runtimeIdentity,
+    },
+    "[broadcast-daemon] process health socket up — waiting for singleton leadership",
+  );
+
   // ── Single-instance advisory lock ────────────────────────────────────────
   // Prevent two broadcast daemons from running simultaneously on the same DB.
   // pg_try_advisory_lock is session-level: the lock is held until the connection
@@ -399,10 +457,17 @@ async function runBroadcastDaemon(): Promise<never> {
   // shut down and release the lock before we give up.
   const DAEMON_ADVISORY_LOCK_ID = 7_878_787_878; // fixed ID — must never change
   const LOCK_RETRY_DELAYS_MS = [2000, 4000, 8000, 12000, 15000, 15000, 15000, 15000]; // ~86 s total
+  let daemonLockClient: PoolClient | null = null;
   try {
+    // Reserve one physical PostgreSQL session for the entire process lifetime.
+    // pgPool.query() returns its client to the idle pool, where idle eviction
+    // can silently close the session and release a session-level advisory lock.
+    // A dedicated client makes single-orchestrator ownership deterministic.
+    const lockClient = await pgPool.connect();
+    daemonLockClient = lockClient;
     let acquired = false;
     for (let attempt = 0; attempt <= LOCK_RETRY_DELAYS_MS.length; attempt++) {
-      const lockRes = await pgPool.query<{ acquired: boolean }>(
+      const lockRes = await lockClient.query<{ acquired: boolean }>(
         "SELECT pg_try_advisory_lock($1::bigint) AS acquired",
         [DAEMON_ADVISORY_LOCK_ID],
       );
@@ -424,6 +489,9 @@ async function runBroadcastDaemon(): Promise<never> {
         { lockId: DAEMON_ADVISORY_LOCK_ID },
         "[broadcast-daemon] another daemon instance holds the advisory lock and did not release it within the retry window — refusing to start",
       );
+      lockClient.release();
+      daemonLockClient = null;
+      await daemonApp.close().catch(() => undefined);
       process.exit(1);
     }
     logger.info(
@@ -431,27 +499,25 @@ async function runBroadcastDaemon(): Promise<never> {
       "[broadcast-daemon] advisory lock acquired — duplicate-worker guard active",
     );
   } catch (err) {
-    // Non-fatal: log and proceed if the lock check itself fails (e.g. pgBouncer
-    // in transaction mode, which disallows session-level advisory locks).
-    logger.warn({ err }, "[broadcast-daemon] advisory lock check failed — proceeding without duplicate-worker guard");
+    // Fail closed. Running without singleton ownership can produce two
+    // independent timelines and corrupt the authoritative ON AIR state.
+    daemonLockClient?.release();
+    daemonLockClient = null;
+    logger.fatal({ err }, "[broadcast-daemon] advisory lock check failed — refusing to start duplicate orchestrator");
+    await daemonApp.close().catch(() => undefined);
+    process.exit(1);
   }
 
   // ── Start broadcast engine + memory watchdog ──────────────────────────────
   await ensureBroadcastV2Started();
+  daemonRuntimeReady = true;
   startMemoryWatchdog();
 
-  // ── Listen ────────────────────────────────────────────────────────────────
-  // On Render (pserv) the daemon runs in its own container. The API container
-  // reaches it over Render's private network, which requires binding to
-  // 0.0.0.0 — loopback-only (127.0.0.1) is unreachable from another container.
-  // On single-VM deployments (prod-supervisor.mjs, local dev) 127.0.0.1 is
-  // preferred because the API and daemon share a network namespace and binding
-  // to 0.0.0.0 would expose the unauthenticated daemon to the host network.
-  // Render injects RENDER=true into every service's runtime environment.
-  const daemonHost = process.env.RENDER === "true" ? "0.0.0.0" : "127.0.0.1";
-  await daemonApp.listen({ port: env.PORT, host: daemonHost });
   logger.info(
-    { port: env.PORT },
+    {
+      port: env.PORT,
+      runtime: runtimeIdentity,
+    },
     "[broadcast-daemon] up — broadcast engine live; API should set BROADCAST_DAEMON_URL to proxy here",
   );
   markStartupComplete();
@@ -461,6 +527,7 @@ async function runBroadcastDaemon(): Promise<never> {
   const daemonShutdown = async (signal: string): Promise<void> => {
     if (daemonShuttingDown) return;
     daemonShuttingDown = true;
+    daemonRuntimeReady = false;
     markShuttingDown();
     logger.info({ signal }, "[broadcast-daemon] graceful shutdown starting");
     stopMemoryWatchdog();
@@ -472,6 +539,19 @@ async function runBroadcastDaemon(): Promise<never> {
       }
     } catch { /* non-fatal */ }
     try { await daemonApp.close(); } catch (err) { logger.warn({ err }, "[broadcast-daemon] app.close failed"); }
+    if (daemonLockClient !== null) {
+      try {
+        await daemonLockClient.query(
+          "SELECT pg_advisory_unlock($1::bigint)",
+          [DAEMON_ADVISORY_LOCK_ID],
+        );
+      } catch (err) {
+        logger.warn({ err }, "[broadcast-daemon] advisory unlock failed during shutdown");
+      } finally {
+        daemonLockClient.release();
+        daemonLockClient = null;
+      }
+    }
     await closeDb().catch((err) => logger.warn({ err }, "[broadcast-daemon] closeDb failed"));
     logger.info("[broadcast-daemon] shutdown complete");
     process.exit(0);

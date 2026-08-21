@@ -148,6 +148,15 @@ const DEAD_AIR_ESCALATION_COOLDOWN_MS = 5 * 60_000;
  * so the two never collide).
  */
 const MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID = "main:midnight-prayers-pending";
+/**
+ * The checkpoint row is an independent, durable two-phase transition marker.
+ * Ownership must not depend on cycleStartedAtMs because that anchor legitimately
+ * changes as prayer videos naturally end or are skipped.
+ */
+const MIDNIGHT_PRAYERS_CHECKPOINT_PREPARED = "midnight-prayers-prepared";
+const MIDNIGHT_PRAYERS_CHECKPOINT_COMMITTED = "midnight-prayers-committed";
+/** A pending checkpoint older than one daily prayer cycle is abandoned. */
+const MIDNIGHT_PRAYERS_CHECKPOINT_MAX_AGE_MS = 26 * 60 * 60_000;
 
 /**
  * Pre-resolved queue item stored in the orchestrator's in-memory items array.
@@ -292,6 +301,13 @@ class BroadcastOrchestrator extends EventEmitter {
    */
   private checkpointDirty = false;
   private lastCurrentItemId: string | null = null;
+  /**
+   * Runtime currentItemId captured during hydrate(), before the first tick on
+   * the normally-loaded main queue can overwrite lastCurrentItemId. Consumed
+   * by Midnight Prayers boot recovery to decide whether restoredCycleAnchor
+   * belongs to a prayer item and can safely preserve its exact progress.
+   */
+  private hydratedRuntimeCurrentItemId: string | null = null;
   /**
    * Ring buffer of recently-aired items (newest-first, capped at AIRING_HISTORY_MAX).
    * Populated by tickInner() on every item advance.
@@ -1236,6 +1252,7 @@ class BroadcastOrchestrator extends EventEmitter {
         this.hydrateSource = "checkpoint";
         this.mode = runtime.mode;
         this.sequence = runtime.sequence;
+        this.hydratedRuntimeCurrentItemId = runtime.currentItemId;
         // PRIMARY restart-persistence: restore the cycle epoch so reloadInner()
         // does NOT clobber it with Date.now(). The cycle anchor is written on
         // every bump() call so this value is always the most recent reliable
@@ -1300,6 +1317,7 @@ class BroadcastOrchestrator extends EventEmitter {
         if (diskSnap.startedAtMs) this.restoredCycleAnchor = diskSnap.startedAtMs;
         if (diskSnap.currentItemId) {
           this.queueCheckpoint = { itemId: diskSnap.currentItemId, positionMs: diskSnap.positionMs };
+          this.hydratedRuntimeCurrentItemId ??= diskSnap.currentItemId;
         }
         if (diskSnap.failoverActive && !this.failover.active) {
           this.failover = { active: true, reason: diskSnap.failoverReason ?? null };
@@ -3669,50 +3687,108 @@ class BroadcastOrchestrator extends EventEmitter {
         return;
       }
 
-      // Do NOT overwrite an existing pending checkpoint row: if the process
-      // crashed mid-window and this is the post-restart re-activation, a row
-      // already holds the ORIGINAL main-queue pause point captured when the
-      // window first opened. Overwriting it here would replace that with the
-      // post-restart queue position, losing the true resume point. Only write
-      // a fresh checkpoint when none is currently pending.
-      let hasExistingCheckpoint = false;
+      // Do NOT overwrite a committed pending checkpoint row: if the process
+      // restarted mid-window, it holds the ORIGINAL main-queue pause point.
+      // Ownership is encoded in sourceHealth as an immutable transition state;
+      // it never depends on the mutable prayer cycle anchor.
+      let existingCheckpoint: {
+        itemId: string | null;
+        positionMs: number;
+        sourceHealth:
+          | "ok"
+          | "degraded"
+          | "failed"
+          | "midnight-prayers-prepared"
+          | "midnight-prayers-committed";
+        savedAtMs?: number;
+      } | null = null;
       try {
-        hasExistingCheckpoint = (await checkpointRepo.load(MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID)) !== null;
+        existingCheckpoint = await checkpointRepo.load(MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID);
       } catch (err) {
         logger.warn({ err }, "[broadcast-v2] midnight-prayers: failed to check for existing checkpoint (non-fatal)");
       }
 
-      if (!hasExistingCheckpoint) {
+      if (existingCheckpoint) {
+        const checkpointAgeMs =
+          existingCheckpoint.savedAtMs !== undefined
+            ? Date.now() - existingCheckpoint.savedAtMs
+            : Number.POSITIVE_INFINITY;
+        const isCommitted =
+          existingCheckpoint.sourceHealth === MIDNIGHT_PRAYERS_CHECKPOINT_COMMITTED;
+        const isFresh =
+          checkpointAgeMs >= 0 &&
+          checkpointAgeMs <= MIDNIGHT_PRAYERS_CHECKPOINT_MAX_AGE_MS;
+        if (!isCommitted || !isFresh) {
+          logger.warn(
+            {
+              checkpointState: existingCheckpoint.sourceHealth,
+              checkpointAgeMs: Number.isFinite(checkpointAgeMs) ? checkpointAgeMs : null,
+              maxAgeMs: MIDNIGHT_PRAYERS_CHECKPOINT_MAX_AGE_MS,
+            },
+            "[broadcast-v2] midnight-prayers: clearing uncommitted or stale checkpoint before fresh activation",
+          );
+          existingCheckpoint = null;
+          await checkpointRepo.clear(MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID).catch((err) =>
+            logger.warn({ err }, "[broadcast-v2] midnight-prayers: failed to clear stale pre-activation checkpoint"),
+          );
+        }
+      }
+
+      let prayerAnchorMs =
+        existingCheckpoint &&
+        this.hydratedRuntimeCurrentItemId !== null &&
+        mpItems.some((item) => item.id === this.hydratedRuntimeCurrentItemId)
+          ? this.cycleStartedAtMs
+          : existingCheckpoint?.savedAtMs ?? this.cycleStartedAtMs;
+      let createdCheckpoint = false;
+      if (!existingCheckpoint) {
         const snap = this.snapshot();
         const checkpoint = snap.current
           ? { itemId: snap.current.id, positionMs: Math.max(0, Date.now() - snap.current.startsAtMs) }
           : null;
 
-        // Persist the resume checkpoint BEFORE swapping in-memory state so a
-        // crash between these two steps still leaves a durable, restorable
-        // pointer back to the exact main-queue item/position.
+        const checkpointRecord = {
+          channelId: MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID,
+          itemId: checkpoint?.itemId ?? null,
+          positionMs: checkpoint?.positionMs ?? 0,
+        } as const;
+
+        // Two-phase durable marker, independent of runtime_state:
+        //   prepared  — main is still authoritative; safe to discard on boot
+        //   committed — the prayer interruption owns the checkpoint
+        // Both writes complete before the synchronous in-memory swap. A crash
+        // after commit but before the swap treats the interruption as committed,
+        // which can differ from visible playback by only this event-loop turn.
         try {
           await checkpointRepo.save({
-            channelId: MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID,
-            itemId: checkpoint?.itemId ?? null,
-            positionMs: checkpoint?.positionMs ?? 0,
-            sourceHealth: "ok",
+            ...checkpointRecord,
+            sourceHealth: MIDNIGHT_PRAYERS_CHECKPOINT_PREPARED,
           });
+          await checkpointRepo.save({
+            ...checkpointRecord,
+            sourceHealth: MIDNIGHT_PRAYERS_CHECKPOINT_COMMITTED,
+          });
+          createdCheckpoint = true;
         } catch (err) {
-          logger.warn(
+          await checkpointRepo.clear(MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID).catch(() => {});
+          logger.error(
             { err },
-            "[broadcast-v2] midnight-prayers: failed to persist pre-activation checkpoint (non-fatal — resume may restart from item 0 after a crash)",
+            "[broadcast-v2] midnight-prayers: activation aborted — failed to commit durable transition checkpoint",
           );
+          return;
         }
+        prayerAnchorMs = Date.now();
       }
 
-      // Final race guard: re-validate immediately before committing. If a
-      // concurrent path somehow got an override running again despite the
-      // `midnightPrayersActivating` gate (e.g. a manual operator override
-      // applied mid-transition), abort the swap rather than silently running
-      // Midnight Prayers underneath a live operator override.
+      // Final race guard after all awaited persistence. If a manual override
+      // appeared while the DB writes were in flight, roll back the newly-created
+      // transition marker before aborting. No runtime_state rollback is needed:
+      // this transition no longer writes runtime_state before the swap.
       const modeBeforeCommit = this.mode as unknown as V2Mode;
       if (modeBeforeCommit !== "queue") {
+        if (createdCheckpoint) {
+          await checkpointRepo.clear(MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID).catch(() => {});
+        }
         logger.warn(
           { mode: modeBeforeCommit },
           "[broadcast-v2] midnight-prayers: override reappeared during activation — aborting swap, will retry next tick",
@@ -3724,7 +3800,8 @@ class BroadcastOrchestrator extends EventEmitter {
       this.mpSavedCycleStartedAtMs = this.cycleStartedAtMs;
       this.items = mpItems;
       this.rebuildItemOffsets();
-      this.cycleStartedAtMs = Date.now();
+      this.cycleStartedAtMs = prayerAnchorMs;
+      this.hydratedRuntimeCurrentItemId = null;
       this.midnightPrayersActive = true;
       this.mpPreloadFiredForId = null;
       logger.info(
@@ -3753,11 +3830,14 @@ class BroadcastOrchestrator extends EventEmitter {
    */
   async deactivateMidnightPrayers(): Promise<void> {
     if (!this.midnightPrayersActive) return;
+    const savedMainAnchorMs = this.mpSavedCycleStartedAtMs;
     this.midnightPrayersActive = false;
     this.items = this.mpSavedItems ?? this.items;
     this.mpSavedItems = null;
     this.rebuildItemOffsets();
-    await this.resolvePendingMidnightPrayersCheckpoint();
+    await this.resolvePendingMidnightPrayersCheckpoint({
+      fallbackAnchorMs: savedMainAnchorMs,
+    });
     // Force the next reload to be a full re-resolution (not a hash-skip) so
     // any queue edits made while Midnight Prayers was on-air (new uploads,
     // deactivations) are picked up promptly rather than waiting on a
@@ -3790,8 +3870,20 @@ class BroadcastOrchestrator extends EventEmitter {
    * crashed/restarted while a checkpoint was pending — e.g. the window ended
    * while the server was down). Safe to call with no pending checkpoint.
    */
-  async resolvePendingMidnightPrayersCheckpoint(): Promise<void> {
-    let checkpoint: { itemId: string | null; positionMs: number } | null = null;
+  async resolvePendingMidnightPrayersCheckpoint(
+    opts?: { fallbackAnchorMs?: number | null },
+  ): Promise<void> {
+    let checkpoint: {
+      itemId: string | null;
+      positionMs: number;
+      sourceHealth:
+        | "ok"
+        | "degraded"
+        | "failed"
+        | "midnight-prayers-prepared"
+        | "midnight-prayers-committed";
+      savedAtMs?: number;
+    } | null = null;
     try {
       checkpoint = await checkpointRepo.load(MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID);
     } catch (err) {
@@ -3800,6 +3892,28 @@ class BroadcastOrchestrator extends EventEmitter {
         "[broadcast-v2] midnight-prayers: failed to load resume checkpoint (non-fatal — will resume from item 0)",
       );
     }
+    const checkpointAgeMs =
+      checkpoint?.savedAtMs !== undefined
+        ? Date.now() - checkpoint.savedAtMs
+        : Number.POSITIVE_INFINITY;
+    const checkpointOwnsTransition =
+      checkpoint !== null &&
+      checkpoint.sourceHealth === MIDNIGHT_PRAYERS_CHECKPOINT_COMMITTED &&
+      checkpointAgeMs >= 0 &&
+      checkpointAgeMs <= MIDNIGHT_PRAYERS_CHECKPOINT_MAX_AGE_MS;
+
+    if (checkpoint && !checkpointOwnsTransition) {
+      logger.warn(
+        {
+          checkpointState: checkpoint.sourceHealth,
+          checkpointAgeMs: Number.isFinite(checkpointAgeMs) ? checkpointAgeMs : null,
+          maxAgeMs: MIDNIGHT_PRAYERS_CHECKPOINT_MAX_AGE_MS,
+        },
+        "[broadcast-v2] midnight-prayers: discarded uncommitted or stale resume checkpoint — current main-broadcast anchor is authoritative",
+      );
+      checkpoint = null;
+    }
+
     if (checkpoint?.itemId && this.items.length > 0) {
       const idx = this.items.findIndex((i) => i.id === checkpoint!.itemId);
       if (idx !== -1) {
@@ -3811,10 +3925,20 @@ class BroadcastOrchestrator extends EventEmitter {
         // while Midnight Prayers was on-air) — start the restored queue fresh.
         this.cycleStartedAtMs = Date.now();
       }
-    } else {
-      this.cycleStartedAtMs = this.mpSavedCycleStartedAtMs ?? Date.now();
+    } else if (checkpoint) {
+      this.cycleStartedAtMs =
+        opts?.fallbackAnchorMs ??
+        this.mpSavedCycleStartedAtMs ??
+        Date.now();
+    } else if (opts?.fallbackAnchorMs != null) {
+      // Same-process deactivation still has the authoritative frozen main
+      // anchor in memory. Boot reconciliation intentionally omits this option,
+      // preserving the already-hydrated main anchor when no valid checkpoint
+      // owns the transition.
+      this.cycleStartedAtMs = opts.fallbackAnchorMs;
     }
     this.mpSavedCycleStartedAtMs = null;
+    this.hydratedRuntimeCurrentItemId = null;
     try {
       await checkpointRepo.clear(MIDNIGHT_PRAYERS_CHECKPOINT_CHANNEL_ID);
     } catch (err) {
@@ -3962,12 +4086,8 @@ class BroadcastOrchestrator extends EventEmitter {
   async naturalItemEnd(itemId: string): Promise<{ acted: boolean }> {
     if (this.mode !== "queue") return { acted: false };
     if (this.items.length === 0 || this.cycleDurationMs === 0) return { acted: false };
-    const snap = this.snapshot();
+    let snap = this.snapshot();
     if (!snap.current || snap.current.id !== itemId) return { acted: false };
-    const remainingMs = snap.current.endsAtMs - Date.now();
-    // Only advance if there is actually remaining time; if the slot has
-    // already expired the next tick() will handle the advance naturally.
-    if (remainingMs <= 0) return { acted: false };
 
     // ── Minimum elapsed-time guard ─────────────────────────────────────────
     // Reject natural-end signals that arrive before the item has played for
@@ -3990,7 +4110,6 @@ class BroadcastOrchestrator extends EventEmitter {
     // the item will always have elapsed > 90 % of the scheduled duration, so
     // this threshold never blocks a real end signal.  A false positive from a
     // late joiner will have elapsed ≈ 0–5 s, well below the threshold.
-    const elapsedMs = (snap.current.endsAtMs - remainingMs) - snap.current.startsAtMs;
     const item = this.items.find((i) => i.id === itemId);
 
     // When the queue row still carries the 1800-s upload-time placeholder, the
@@ -4009,14 +4128,6 @@ class BroadcastOrchestrator extends EventEmitter {
         const realDur = await queueRepo.getVideoDurationSecs(item.videoId);
         if (realDur != null && realDur > 0 && realDur < 86_400) {
           effectiveDurationSecs = realDur;
-          // Mirror the real duration into memory so the NEXT cycle uses it
-          // without another DB round-trip and so the threshold is already
-          // correct if a second naturalItemEnd arrives before the next reload.
-          const idx = this.items.findIndex((i) => i.id === itemId);
-          if (idx !== -1 && this.items[idx]) {
-            this.items[idx] = { ...this.items[idx]!, durationSecs: realDur };
-            this.rebuildItemOffsets();
-          }
           logger.debug(
             { itemId, realDur, placeholder: 1800 },
             "[broadcast-v2] naturalItemEnd: resolved real duration from managed_videos (was placeholder 1800s)",
@@ -4029,6 +4140,20 @@ class BroadcastOrchestrator extends EventEmitter {
         );
       }
     }
+
+    // The placeholder-duration lookup above yields to the event loop. Another
+    // client may have advanced the broadcast while it was in flight, so the
+    // original snapshot/remaining time is no longer authoritative. Re-snapshot
+    // and revalidate immediately before any in-memory mutation. This also makes
+    // concurrent direct callers safe, not only HTTP calls protected by dedup.
+    snap = this.snapshot();
+    if (!snap.current || snap.current.id !== itemId) return { acted: false };
+    const transitionNowMs = Date.now();
+    const remainingMs = snap.current.endsAtMs - transitionNowMs;
+    // Only advance if there is actually remaining time; if the slot has
+    // already expired the next tick() will handle the advance naturally.
+    if (remainingMs <= 0) return { acted: false };
+    const elapsedMs = transitionNowMs - snap.current.startsAtMs;
 
     // When effectiveDurationSecs is still 1800 after the DB lookup (i.e. managed_videos
     // also stores the placeholder, or the lookup failed), the 5% threshold would be
@@ -4058,7 +4183,25 @@ class BroadcastOrchestrator extends EventEmitter {
     const actualDurationSecs = Math.round(
       (snap.current.endsAtMs - remainingMs - snap.current.startsAtMs) / 1000,
     );
+    let anchorAdvanceMs = remainingMs;
     if (actualDurationSecs > 10 && actualDurationSecs < 86_400) {
+      // Update the in-memory duration BEFORE moving the cycle anchor. Shrinking
+      // the current slot already advances the wall-clock projection by the
+      // removed duration. Applying the full old remainingMs as well would
+      // double-count that time and skip one or more advertised `next` items.
+      //
+      // The residual anchor adjustment is normally within ±500 ms (rounding to
+      // integer seconds) and places the following item exactly at Date.now().
+      const idx = this.items.findIndex((i) => i.id === itemId);
+      if (idx !== -1 && this.items[idx]) {
+        const scheduledDurationSecs = snap.current.durationSecs;
+        this.items[idx] = { ...this.items[idx]!, durationSecs: actualDurationSecs };
+        this.rebuildItemOffsets();
+        const durationReductionMs =
+          (scheduledDurationSecs - actualDurationSecs) * 1000;
+        anchorAdvanceMs = remainingMs - durationReductionMs;
+      }
+
       // Guard against two near-simultaneous naturalItemEnd calls for the same
       // item (multiple clients reporting the natural end in the same event-loop
       // tick) issuing redundant concurrent DB writes.  Both writes would carry
@@ -4069,20 +4212,6 @@ class BroadcastOrchestrator extends EventEmitter {
         this.durationWriteInFlight.add(itemId);
         void queueRepo
           .updateDurationSecs(itemId, actualDurationSecs)
-          .then(() => {
-            // Mirror the DB write-back into the in-memory items array so that
-            // the NEXT cycle iteration uses the real duration without waiting
-            // for the next self-heal reload (up to 60 s later). Without this,
-            // the stale 1800-second placeholder stays in this.items and the
-            // cycle timing is wrong for every subsequent loop.
-            const idx = this.items.findIndex((i) => i.id === itemId);
-            if (idx !== -1 && this.items[idx]) {
-              this.items[idx] = { ...this.items[idx]!, durationSecs: actualDurationSecs };
-              // Rebuild itemOffsets so the next snapshot() binary search uses
-              // the corrected duration.  Also updates cycleDurationMs.
-              this.rebuildItemOffsets();
-            }
-          })
           .catch((err) =>
             logger.warn(
               { err, itemId, actualDurationSecs },
@@ -4095,7 +4224,7 @@ class BroadcastOrchestrator extends EventEmitter {
       }
     }
 
-    this.cycleStartedAtMs -= remainingMs;
+    this.cycleStartedAtMs -= anchorAdvanceMs;
     // Item played successfully to its natural end — reset consecutive skip
     // counter and URL-failure counter so past probe/stall failures don't
     // accumulate across restarts or transient CDN blips.
@@ -4115,7 +4244,7 @@ class BroadcastOrchestrator extends EventEmitter {
     await this.bump("item.advanced", { itemId, title: snap.current.title, naturalEnd: true });
     this.emitSnapshot();
     logger.info(
-      { itemId, remainingMs, actualDurationSecs, title: snap.current.title },
+      { itemId, remainingMs, anchorAdvanceMs, actualDurationSecs, title: snap.current.title },
       "[broadcast-v2] natural item end — cycle anchor advanced to now",
     );
     return { acted: true };

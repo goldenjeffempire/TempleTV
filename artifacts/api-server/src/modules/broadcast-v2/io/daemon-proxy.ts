@@ -24,6 +24,7 @@ import type { RawData } from "ws";
 import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
 import { startDaemonLivenessMonitor, stopDaemonLivenessMonitor } from "../engine/daemon-liveness-monitor.js";
+import { validateDaemonHealthBody } from "./daemon-health-contract.js";
 
 /** Build the full daemon URL for a given absolute path. */
 function daemonUrl(path: string): string {
@@ -196,6 +197,15 @@ const REST_MAX_RETRIES = 3;
 const REST_RETRY_DELAY_MS = 600;
 const REST_CONNECT_TIMEOUT_MS = 5_000;
 
+function isDaemonHealthRequest(url: string): boolean {
+  try {
+    const pathname = new URL(url, "http://broadcast-api.local").pathname;
+    return /\/broadcast-v2\/health\/?$/.test(pathname);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Generic HTTP proxy handler for all non-SSE broadcast-v2 REST routes.
  *
@@ -237,6 +247,33 @@ async function httpDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promis
       });
       clearTimeout(t);
       const respBody = await upstreamRes.text();
+
+      // Never let a stale/broken daemon masquerade as healthy. The previous
+      // daemon build returned HTTP 200 with a zero-byte body; forwarding that
+      // verbatim kept Master Control OFF AIR while every surface reported a
+      // nominally successful request. Only the health endpoint is contracted
+      // here; all other REST responses remain transparent pass-throughs.
+      if (isDaemonHealthRequest(req.url) && upstreamRes.ok) {
+        const health = validateDaemonHealthBody(respBody);
+        if (!health.valid) {
+          logger.error(
+            {
+              targetUrl,
+              upstreamStatus: upstreamRes.status,
+              responseBytes: Buffer.byteLength(respBody),
+              reason: health.reason,
+            },
+            "[broadcast-daemon-proxy] invalid daemon health response",
+          );
+          reply.code(502).send({
+            error: "broadcast daemon returned an invalid health response",
+            code: "INVALID_DAEMON_HEALTH",
+            detail: health.reason,
+          });
+          return;
+        }
+      }
+
       reply.code(upstreamRes.status);
       const ct = upstreamRes.headers.get("content-type");
       if (ct) reply.header("content-type", ct);
