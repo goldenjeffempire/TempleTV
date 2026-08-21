@@ -456,8 +456,13 @@ async function runBroadcastDaemon(): Promise<never> {
 
   // ── Single-instance advisory lock ────────────────────────────────────────
   // Prevent two broadcast daemons from running simultaneously on the same DB.
-  // pg_try_advisory_lock is session-level: the lock is held until the connection
-  // closes (process exit). A second daemon startup attempt will see acquired=false.
+  //
+  // IMPORTANT: production connects through a transaction pooler. A session-level
+  // advisory lock can leak onto the pooler's PostgreSQL backend after our client
+  // disconnects, then remain held while that backend serves unrelated API work.
+  // Keep a transaction open on one dedicated client and use the transaction-level
+  // lock instead. Transaction poolers pin that backend until COMMIT/ROLLBACK and
+  // always roll it back when the client disconnects, so ownership is deterministic.
   //
   // During a Render rolling deploy, the new pserv instance starts before the old
   // one is terminated, so the lock will be held transiently. We retry with
@@ -465,18 +470,29 @@ async function runBroadcastDaemon(): Promise<never> {
   // shut down and release the lock before we give up.
   const DAEMON_ADVISORY_LOCK_ID = 7_878_787_878; // fixed ID — must never change
   const LOCK_RETRY_DELAYS_MS = [2000, 4000, 8000, 12000, 15000, 15000, 15000, 15000]; // ~86 s total
+  const LOCK_HEARTBEAT_MS = 5_000;
   let daemonLockClient: PoolClient | null = null;
+  let daemonLockTransactionOpen = false;
+  let daemonLockHeartbeat: NodeJS.Timeout | null = null;
   try {
-    // Reserve one physical PostgreSQL session for the entire process lifetime.
-    // pgPool.query() returns its client to the idle pool, where idle eviction
-    // can silently close the session and release a session-level advisory lock.
-    // A dedicated client makes single-orchestrator ownership deterministic.
+    // Reserve one pool client and pin its server backend with an open transaction
+    // for the entire daemon lifetime. No application queries use this client.
     const lockClient = await pgPool.connect();
     daemonLockClient = lockClient;
+    lockClient.once("error", (err) => {
+      logger.fatal(
+        { err, lockId: DAEMON_ADVISORY_LOCK_ID },
+        "[broadcast-daemon] leader-lock connection lost — terminating to prevent duplicate orchestrators",
+      );
+      process.kill(process.pid, "SIGTERM");
+    });
+    await lockClient.query("BEGIN");
+    daemonLockTransactionOpen = true;
+
     let acquired = false;
     for (let attempt = 0; attempt <= LOCK_RETRY_DELAYS_MS.length; attempt++) {
       const lockRes = await lockClient.query<{ acquired: boolean }>(
-        "SELECT pg_try_advisory_lock($1::bigint) AS acquired",
+        "SELECT pg_try_advisory_xact_lock($1::bigint) AS acquired",
         [DAEMON_ADVISORY_LOCK_ID],
       );
       acquired = (lockRes.rows[0] as { acquired?: boolean } | undefined)?.acquired ?? false;
@@ -497,18 +513,64 @@ async function runBroadcastDaemon(): Promise<never> {
         { lockId: DAEMON_ADVISORY_LOCK_ID },
         "[broadcast-daemon] another daemon instance holds the advisory lock and did not release it within the retry window — refusing to start",
       );
+      await lockClient.query("ROLLBACK").catch((err) => {
+        logger.warn({ err }, "[broadcast-daemon] leader-lock transaction rollback failed after acquisition timeout");
+      });
+      daemonLockTransactionOpen = false;
       lockClient.release();
       daemonLockClient = null;
       await daemonApp.close().catch(() => undefined);
       process.exit(1);
     }
     logger.info(
-      { lockId: DAEMON_ADVISORY_LOCK_ID },
-      "[broadcast-daemon] advisory lock acquired — duplicate-worker guard active",
+      { lockId: DAEMON_ADVISORY_LOCK_ID, scope: "transaction" },
+      "[broadcast-daemon] transaction-scoped advisory lock acquired — duplicate-worker guard active",
     );
+
+    // Start ownership monitoring before any broadcast workers. Match the exact
+    // bigint advisory-lock identity; checking for any advisory lock on this
+    // backend can be fooled by an unrelated or legacy session-level lock.
+    daemonLockHeartbeat = setInterval(() => {
+      const client = daemonLockClient;
+      if (client === null) return;
+      void client.query<{ held: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1
+           FROM pg_locks
+           WHERE locktype = 'advisory'
+             AND pid = pg_backend_pid()
+             AND mode = 'ExclusiveLock'
+             AND granted
+             AND classid = ($1::bigint >> 32)::oid
+             AND objid = ($1::bigint & 4294967295)::oid
+             AND objsubid = 1
+         ) AS held`,
+        [DAEMON_ADVISORY_LOCK_ID],
+      ).then((result) => {
+        const held = result.rows[0]?.held ?? false;
+        if (!held) {
+          logger.fatal(
+            { lockId: DAEMON_ADVISORY_LOCK_ID },
+            "[broadcast-daemon] leader-lock heartbeat found no owned advisory lock — terminating",
+          );
+          process.kill(process.pid, "SIGTERM");
+        }
+      }).catch((err) => {
+        logger.fatal(
+          { err, lockId: DAEMON_ADVISORY_LOCK_ID },
+          "[broadcast-daemon] leader-lock heartbeat failed — terminating",
+        );
+        process.kill(process.pid, "SIGTERM");
+      });
+    }, LOCK_HEARTBEAT_MS);
+    daemonLockHeartbeat.unref();
   } catch (err) {
     // Fail closed. Running without singleton ownership can produce two
     // independent timelines and corrupt the authoritative ON AIR state.
+    if (daemonLockClient !== null && daemonLockTransactionOpen) {
+      await daemonLockClient.query("ROLLBACK").catch(() => undefined);
+      daemonLockTransactionOpen = false;
+    }
     daemonLockClient?.release();
     daemonLockClient = null;
     logger.fatal({ err }, "[broadcast-daemon] advisory lock check failed — refusing to start duplicate orchestrator");
@@ -532,12 +594,16 @@ async function runBroadcastDaemon(): Promise<never> {
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────
   let daemonShuttingDown = false;
-  const daemonShutdown = async (signal: string): Promise<void> => {
+  const daemonShutdown = async (signal: string, exitCode = 0): Promise<void> => {
     if (daemonShuttingDown) return;
     daemonShuttingDown = true;
     daemonRuntimeReady = false;
     markShuttingDown();
     logger.info({ signal }, "[broadcast-daemon] graceful shutdown starting");
+    if (daemonLockHeartbeat !== null) {
+      clearInterval(daemonLockHeartbeat);
+      daemonLockHeartbeat = null;
+    }
     stopMemoryWatchdog();
     try { await stopBroadcastV2(); } catch (err) { logger.warn({ err }, "[broadcast-daemon] stopBroadcastV2 failed"); }
     // Force-close all keep-alive TCP sockets so the port is released immediately.
@@ -549,12 +615,12 @@ async function runBroadcastDaemon(): Promise<never> {
     try { await daemonApp.close(); } catch (err) { logger.warn({ err }, "[broadcast-daemon] app.close failed"); }
     if (daemonLockClient !== null) {
       try {
-        await daemonLockClient.query(
-          "SELECT pg_advisory_unlock($1::bigint)",
-          [DAEMON_ADVISORY_LOCK_ID],
-        );
+        if (daemonLockTransactionOpen) {
+          await daemonLockClient.query("ROLLBACK");
+          daemonLockTransactionOpen = false;
+        }
       } catch (err) {
-        logger.warn({ err }, "[broadcast-daemon] advisory unlock failed during shutdown");
+        logger.warn({ err }, "[broadcast-daemon] leader-lock transaction rollback failed during shutdown");
       } finally {
         daemonLockClient.release();
         daemonLockClient = null;
@@ -562,7 +628,7 @@ async function runBroadcastDaemon(): Promise<never> {
     }
     await closeDb().catch((err) => logger.warn({ err }, "[broadcast-daemon] closeDb failed"));
     logger.info("[broadcast-daemon] shutdown complete");
-    process.exit(0);
+    process.exit(exitCode);
   };
   process.on("SIGTERM", () => void daemonShutdown("SIGTERM"));
   process.on("SIGINT",  () => void daemonShutdown("SIGINT"));
