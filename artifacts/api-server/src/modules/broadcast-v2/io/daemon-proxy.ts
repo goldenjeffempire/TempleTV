@@ -494,9 +494,13 @@ export async function broadcastDaemonProxyRoutes(app: FastifyInstance): Promise<
   // REST catch-all — handles /state, /rehydrate, /skip, /override/*, /reload,
   // /force-failover, /clear-failover, /natural-end, /report-stall, /health,
   // /diagnostics, /autoheal/*, /queue/*, and everything else.
+  // Compression is intentionally disabled: @fastify/compress emits a gzip/br
+  // response with Content-Length: 0 for these pre-serialized daemon payloads.
+  // Cloudflare always advertises compression to the Render origin, so this
+  // manifested in production even when the end client requested identity.
   for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"] as const) {
     const m = method.toLowerCase() as "get" | "post" | "put" | "patch" | "delete";
-    app[m]("/*", httpDaemonProxy);
-    app[m]("/", httpDaemonProxy);
+    app[m]("/*", { compress: false }, httpDaemonProxy);
+    app[m]("/", { compress: false }, httpDaemonProxy);
   }
 }
