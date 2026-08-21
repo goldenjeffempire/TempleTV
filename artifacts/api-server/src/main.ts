@@ -465,6 +465,12 @@ async function runBroadcastDaemon(): Promise<never> {
     logger.info({ signal }, "[broadcast-daemon] graceful shutdown starting");
     stopMemoryWatchdog();
     try { await stopBroadcastV2(); } catch (err) { logger.warn({ err }, "[broadcast-daemon] stopBroadcastV2 failed"); }
+    // Force-close all keep-alive TCP sockets so the port is released immediately.
+    try {
+      if (typeof (daemonApp.server as { closeAllConnections?: () => void }).closeAllConnections === "function") {
+        (daemonApp.server as { closeAllConnections: () => void }).closeAllConnections();
+      }
+    } catch { /* non-fatal */ }
     try { await daemonApp.close(); } catch (err) { logger.warn({ err }, "[broadcast-daemon] app.close failed"); }
     await closeDb().catch((err) => logger.warn({ err }, "[broadcast-daemon] closeDb failed"));
     logger.info("[broadcast-daemon] shutdown complete");
@@ -1536,6 +1542,21 @@ async function main() {
             logger.info("all SSE connections drained");
           }
         }
+      }
+      // Force-close all remaining TCP connections (including keep-alive) so
+      // the port is released immediately.  Without this, connections with a
+      // long HTTP_KEEPALIVE_MS (e.g. 75 s in production) can hold the port
+      // open after SIGTERM, causing EADDRINUSE when the next process tries to
+      // bind — most visible as "Start API" failing on Replit workflow restart.
+      // closeAllConnections() is available since Node 18.2 and is confirmed
+      // present in this environment.
+      try {
+        if (typeof (app.server as { closeAllConnections?: () => void }).closeAllConnections === "function") {
+          (app.server as { closeAllConnections: () => void }).closeAllConnections();
+          logger.info("forced all TCP connections closed (port released)");
+        }
+      } catch (err) {
+        logger.warn({ err }, "closeAllConnections failed (non-fatal)");
       }
       try {
         await app.close();
