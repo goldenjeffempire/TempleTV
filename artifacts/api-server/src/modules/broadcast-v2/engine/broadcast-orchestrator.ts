@@ -4382,6 +4382,17 @@ class BroadcastOrchestrator extends EventEmitter {
    * paths are rewritten — other own-origin paths are unchanged.
    */
   private toLocalhostProbeUrl(url: string): string {
+    // When running as the broadcast daemon (RUN_MODE=broadcast) this process is
+    // a separate service that does NOT serve /api/v1/uploads/ or /api/hls/ routes.
+    // On Render the daemon runs in its own container (different host from the API);
+    // on single-VM (prod-supervisor.mjs) it runs on a different port (9000) than
+    // the API (8080).  Rewriting probe URLs to 127.0.0.1:PORT would target the
+    // daemon's own HTTP server, which returns 404 for those paths — falsely marking
+    // every queued video as unreachable and keeping the orchestrator permanently
+    // OFF_AIR.  Skip the loopback rewrite; probe the canonical API URL directly
+    // (with x-internal-token for auth bypass where INTERNAL_HLS_BYPASS_SECRET is set).
+    if (env.RUN_MODE === "broadcast") return url;
+
     try {
       const u = new URL(url);
       // When REPLIT_DEV_DOMAIN is set, API_ORIGIN points to the PRODUCTION

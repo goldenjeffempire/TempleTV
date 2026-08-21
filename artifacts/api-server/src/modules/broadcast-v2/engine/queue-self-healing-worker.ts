@@ -134,6 +134,13 @@ function buildSuggestedFix(errorCode: string | null): string {
  * hiccups and are always routed directly to the API process.
  */
 function toLocalhostProbeUrl(url: string): string {
+  // When running as the broadcast daemon (RUN_MODE=broadcast) this process is
+  // a separate service that does NOT serve /api/v1/uploads/ routes. Rewriting
+  // probe URLs to 127.0.0.1:PORT targets the daemon's own HTTP server, which
+  // returns 404 — falsely marking every video as unreachable. Skip the
+  // loopback rewrite; probe the canonical API URL directly.
+  if (env.RUN_MODE === "broadcast") return url;
+
   try {
     const u = new URL(url);
     const ownHostnames = [

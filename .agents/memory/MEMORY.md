@@ -1,3 +1,4 @@
+- [toLocalhostProbeUrl daemon probe bug](toLocalhostProbeUrl-daemon-probe-bug.md) — RUN_MODE=broadcast must skip loopback rewrite; daemon doesn't serve /uploads/ routes → 404 → all videos blocked OFF_AIR.
 - [Proxy-mode system-health pattern](proxy-mode-system-health-pattern.md) — admin-ops must fetch daemon /health in proxy mode; local orchestrator is never started; include contentRotation+workerAggregate in public payload.
 - [Auto-heal stuck-sequence withinPlaybackWindow guard](auto-heal-stuck-sequence-guard.md) — STUCK_THRESHOLD_MS=90s fires on every video >90s; guard with currentElapsed < durationMs+2min grace before reload.
 - [EAS local credentials — JKS required, PKCS12 alias not resolved](eas-local-credentials-jks-required.md) — PKCS12 (.p12) keystore fails EAS alias lookup even when keytool reads it fine; convert to JKS first.
