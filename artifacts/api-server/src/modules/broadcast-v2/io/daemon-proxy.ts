@@ -249,6 +249,7 @@ async function httpDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promis
       const respBody = await upstreamRes.text();
       const contentType = upstreamRes.headers.get("content-type");
       let responsePayload: unknown = respBody;
+      let responseBuffer: Buffer | null = null;
 
       // Never let a stale/broken daemon masquerade as healthy. The previous
       // daemon build returned HTTP 200 with a zero-byte body; forwarding that
@@ -274,7 +275,13 @@ async function httpDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promis
           });
           return;
         }
-        responsePayload = health.payload;
+        // The health contract has already parsed and validated these exact
+        // bytes. Send them as a pre-serialized Buffer with an explicit length:
+        // this preserves Fastify hooks/CORS while avoiding environment-specific
+        // serializer behaviour that previously emitted Content-Length: 0.
+        responseBuffer = Buffer.from(respBody, "utf8");
+        reply.header("x-temple-daemon-proxy", "health-buffer-v1");
+        reply.header("x-temple-daemon-response-bytes", String(responseBuffer.byteLength));
       } else if (upstreamRes.status !== 204 && contentType?.toLowerCase().includes("application/json")) {
         // Fastify's production serializer expects an object for JSON responses.
         // Passing an already-stringified JSON document can be reduced to a
@@ -317,6 +324,9 @@ async function httpDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promis
       if (contentType) reply.header("content-type", contentType);
       if (upstreamRes.status === 204) {
         reply.send();
+      } else if (responseBuffer !== null) {
+        reply.header("content-length", String(responseBuffer.byteLength));
+        reply.send(responseBuffer);
       } else {
         reply.send(responsePayload);
       }
