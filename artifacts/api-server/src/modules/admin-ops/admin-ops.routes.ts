@@ -4732,19 +4732,75 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       };
       let daemonHealth: DaemonHealthSnippet | null = null;
       if (env.BROADCAST_DAEMON_URL) {
+        // Phase 1: network fetch — failure means daemon is unreachable (mid-restart, not deployed, etc.)
+        let daemonRes: Response | null = null;
         try {
           const daemonHealthUrl =
             `${env.BROADCAST_DAEMON_URL.replace(/\/$/, "")}/api/broadcast-v2/health`;
-          const res = await fetch(daemonHealthUrl, {
+          daemonRes = await fetch(daemonHealthUrl, {
             signal: AbortSignal.timeout(4_000),
             headers: { "x-internal-request": "system-health" },
           });
-          if (res.ok) daemonHealth = (await res.json()) as DaemonHealthSnippet;
         } catch (err) {
-          // Non-fatal: daemon may be mid-restart. Fall through to local state
-          // which will correctly show "not started" during the daemon's own
-          // boot window rather than masking a genuine failure.
-          _req.log?.warn({ err }, "[system-health] daemon health fetch failed — using local fallback");
+          // Daemon is unreachable — mid-restart, not deployed, or network issue.
+          // Fall through: daemonHealth stays null → local state used → "not started" shown.
+          _req.log?.warn({ err }, "[system-health] daemon unreachable — using local fallback");
+        }
+
+        // Phase 2: body consumption + parse + shape validation.
+        // The entire block is wrapped in a single try/catch so that any failure
+        // — body read rejection (daemon resets mid-response), JSON.parse error,
+        //   or unexpected thrown value — uses the reachable-daemon stub rather
+        //   than escaping to a 500 or silently falling back to isStarted()=false.
+        if (daemonRes != null) {
+          if (daemonRes.ok) {
+            try {
+              const raw = await daemonRes.text();
+              if (!raw) {
+                // HTTP 200 with empty body — serialization bug in the daemon's health
+                // route (Fastify Zod serializer emitting content-length:0). The daemon
+                // IS reachable; use a minimal stub to avoid a false "not started" report.
+                _req.log?.error(
+                  "[system-health] daemon health returned HTTP 200 with empty body — " +
+                  "daemon is reachable; treating orchestrator as started. " +
+                  "Check daemon logs: Fastify serializer likely emitting empty response.",
+                );
+                daemonHealth = { boot: { started: true } };
+              } else {
+                const parsed = JSON.parse(raw) as DaemonHealthSnippet;
+                // Structural validation: require boot.started to be a boolean.
+                // Syntactically-valid-but-wrong JSON (e.g. `{}` or `{"boot":{}}`) would
+                // leave boot.started=undefined, which `?? isStarted()` resolves to false
+                // — the exact false "not started" regression we're guarding against.
+                if (typeof parsed?.boot?.started === "boolean") {
+                  daemonHealth = parsed;
+                } else {
+                  _req.log?.error(
+                    { bootShape: JSON.stringify(parsed?.boot)?.slice(0, 120) },
+                    "[system-health] daemon health payload has unexpected shape " +
+                    "(boot.started is not boolean) — daemon is reachable; " +
+                    "treating orchestrator as started.",
+                  );
+                  daemonHealth = { boot: { started: true } };
+                }
+              }
+            } catch (err) {
+              // Body read or JSON.parse failed (daemon reset mid-response, truly malformed
+              // JSON, etc.). A reachable HTTP server implies the process is up; stub it.
+              _req.log?.error(
+                { err },
+                "[system-health] failed to read/parse daemon health response — " +
+                "daemon was reachable (HTTP 200); treating orchestrator as started.",
+              );
+              daemonHealth = { boot: { started: true } };
+            }
+          } else {
+            // Non-2xx from daemon — log for diagnostics but fall back to local state.
+            _req.log?.warn(
+              { status: daemonRes.status },
+              "[system-health] daemon health returned non-OK status — using local fallback",
+            );
+          }
         }
       }
 

@@ -447,12 +447,19 @@ export async function restRoutes(app: FastifyInstance) {
     // infra metrics, blocked-source details, airing history, drift stats, etc.
     // Any valid JWT/ADMIN_API_TOKEN principal (editor or above) qualifies.
     const isAuthenticated = Boolean(req.principal);
+    // Use reply.send(JSON.stringify(...)) explicitly rather than `return payload` so
+    // that Fastify's Zod serializer compiler (fastify-type-provider-zod) never gets
+    // a chance to produce an empty body. When there is no 200 schema declared, some
+    // versions of the compiler emit content-length:0 instead of falling back to
+    // JSON.stringify.  Calling reply.send(string) with Content-Type:application/json
+    // bypasses the serializer entirely and guarantees a well-formed response.
+    reply.header("Content-Type", "application/json; charset=utf-8");
     if (!isAuthenticated) {
-      return publicPayload;
+      return reply.send(JSON.stringify(publicPayload));
     }
 
     const hmStatus = getBroadcastHealthMonitorStatus();
-    return {
+    const fullPayload = {
       ...publicPayload,
       prodSync: sync,
       drift: broadcastOrchestrator.getDriftInfo(),
@@ -523,6 +530,7 @@ export async function restRoutes(app: FastifyInstance) {
        */
       storageReconciliation: storageBlobRecoveryService.getStats(),
     };
+    return reply.send(JSON.stringify(fullPayload));
   });
 
   // ── Worker aggregate health endpoint ─────────────────────────────────
