@@ -55,7 +55,9 @@ The repository Blueprint intentionally has no daemon `buildFilter`, so every `ma
 
 **Why:** A stale daemon can keep serving an old health/runtime contract while the API deploys newer proxy code.
 
-**Operational caveat:** Render does not automatically apply every Blueprint setting change to an existing service. If an empty commit creates no daemon deployment, manually sync the Blueprint in Render; until then, API-server file changes still trigger the older path-filtered service.
+**Operational status:** The no-filter policy is active in Render. A documentation-only commit under `.agents/` triggered API, daemon, admin, and TV deployments. An empty commit producing no deployment is not evidence of a stale Blueprint because it has no file diff for Render to build.
+
+**How to apply:** Assume every pushed `main` commit will restart the daemon. Bundle documentation-only repository changes with planned releases when possible instead of pushing them separately.
 
 ## Memory thresholds for daemon (Starter: 512 MiB)
 
