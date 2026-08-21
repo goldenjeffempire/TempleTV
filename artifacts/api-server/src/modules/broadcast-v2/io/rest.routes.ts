@@ -297,7 +297,11 @@ export async function restRoutes(app: FastifyInstance) {
   // queue and never reloaded — `scheduleSelfHealReload()` should make
   // that impossible now, but the probe stays as a safety net.
   app.get("/health", {
-    schema: { response: { 200: z.unknown(), 429: _429err } },
+    // NOTE: no 200 schema here on purpose — z.unknown() compiles to an empty
+    // JSON Schema ({}) that fast-json-stringify cannot serialize, producing a
+    // 200 response with content-length: 0. Omitting the 200 entry makes
+    // Fastify fall back to JSON.stringify, which serializes the full payload.
+    schema: { response: { 429: _429err } },
     config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
   }, async (req, reply) => {
     reply.header("Cache-Control", "no-store, max-age=0");
@@ -892,7 +896,9 @@ export async function restRoutes(app: FastifyInstance) {
     broadcastOrchestrator.on("frame", () => { _stateCache = null; });
 
     app.get("/state", {
-      schema: { response: { 200: z.unknown(), 304: z.void(), 429: _429err } },
+      // NOTE: no 200 schema — same z.unknown() serialization issue as /health.
+      // Fastify falls back to JSON.stringify when no 200 schema is declared.
+      schema: { response: { 304: z.void(), 429: _429err } },
       config: {
         // Cold-start authority for every player surface and the recover-frame
         // refetch target. Rate-limited to absorb aggressive polling from
