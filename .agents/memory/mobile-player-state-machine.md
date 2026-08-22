@@ -45,14 +45,12 @@ Never replace "load more" footer spinners with skeletons — `ActivityIndicator`
 
 ## Hero streaming resilience
 
-Three-state CTA priority chain in `HeroSection`:
-1. `isFatal === true` → red "Reconnect" `<Pressable onPress={forceRebind}>` (highest priority)
-2. `isWatchLiveCTAVisible` (idle/offline/error, !fatal) → brand-color "Watch Live" / "Watch Now"
-3. `!isWatchLiveCTAVisible && !isReconnecting` → ghost "Open Player" secondary button
-4. `isReconnecting` → no button (StreamStatusBadge provides amber spinner feedback)
+Two-state CTA priority chain in `HeroSection`:
+1. `isFatal === true` → red "Reconnect" action that restores transport and opens the player.
+2. Every non-fatal state → one brand-color "Watch" button that pushes the existing live player route.
 
 Destructure `forceRebind` from `useV2BroadcastNative()` alongside `snapshot`.
-Destructure `isFatal` from `useMediaPlayerState()`.
+Destructure `isFatal` from `useMediaPlayerState()`; hero CTA visibility must not depend on the legacy visibility signal.
 
 ## Channels category grid — tablet responsiveness
 

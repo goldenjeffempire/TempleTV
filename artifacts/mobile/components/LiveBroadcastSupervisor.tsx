@@ -107,7 +107,7 @@ export function LiveBroadcastSupervisor() {
         // User is already on the player — do not push again.
         return;
       }
-      // Guard: another safeNavPush is in-flight (e.g. user tapped "Open Player"
+      // Guard: another safeNavPush is in-flight (e.g. user tapped Watch
       // while this async check was resolving). Expo Router receiving a second
       // push during a modal animation can reset the stack to the home screen.
       // Wait for the in-flight navigation to settle before pushing again.

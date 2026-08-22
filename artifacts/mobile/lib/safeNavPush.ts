@@ -69,7 +69,7 @@ export function safeNavPush(
 
   // Mark a push as in-flight for 3 000 ms. NativeTabLayout's useLayoutEffect
   // reads this via isNavPushActive() and skips its competing router.replace("/")
-  // redirect when a push is already in progress — preventing the "Open Player"
+  // redirect when a push is already in progress — preventing the hero Watch
   // tap from bouncing the user back to Home on iOS 18+.
   //
   // 3 000 ms (up from 1 500 ms): on slower Android devices the push animation

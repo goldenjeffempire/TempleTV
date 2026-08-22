@@ -22,7 +22,7 @@
  *     "Now Playing" indicator instead.
  *
  *   isAlreadyLive — convenience flag: mediaState === 'live'. Use to
- *     switch the hero CTA to an "Open Player" affordance.
+ *     keep the hero Watch affordance in the active-broadcast state.
  */
 
 import { useMemo } from "react";
@@ -41,7 +41,7 @@ import { getApiBase } from "@/lib/apiBase";
 // PREPARING_NEXT: machine is loading the NEXT queue item into the inactive
 //   buffer while the current item is still playing (A/B preload). The user
 //   sees uninterrupted playback. Map to "live" so the hero stays in
-//   "Open Player" mode rather than flipping back to "Watch Now".
+//   active-broadcast mode rather than flipping back to idle.
 //
 // HANDOFF: brief buffer swap (inactive → active) during item advance. The
 //   decoder is live; this state lasts < 200 ms. Map to "live" for the same
@@ -92,7 +92,7 @@ export interface MediaPlayerState {
 
   /**
    * The broadcast is currently playing — transition hero CTA to
-   * "Open Player" / "Now Watching" mode.
+   * active-broadcast / "Now Watching" mode.
    */
   isAlreadyLive: boolean;
 
@@ -183,7 +183,7 @@ export function useMediaPlayerState(): MediaPlayerState {
       // LIVE_OVERRIDE_ACTIVE: an override (e.g. YouTube shuffle fallback) is
       // actively streaming.  This is the permanent broadcast state on
       // YouTube-only deployments — treat it identically to PLAYING so that the
-      // hero shows "Open Player", the mini-player shows "Now Watching", and all
+      // hero shows Watch, the mini-player shows "Now Watching", and all
       // navigation guards correctly detect an active broadcast.
       mediaState = "live";
     } else if (LOADING_STATES.has(fsmState)) {

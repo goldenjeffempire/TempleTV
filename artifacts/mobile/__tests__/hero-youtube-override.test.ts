@@ -2,7 +2,7 @@
 /**
  * Hero YouTube Override — Regression Tests
  *
- * Guards the pure-JS logic introduced to fix the "Open Player" button
+ * Guards the pure-JS logic used by the hero Watch button
  * not working on YouTube-only deployments.
  *
  * Root causes fixed (each has its own describe block):
@@ -313,7 +313,7 @@ describe("useMediaPlayerState — FSM state → mediaState mapping", () => {
   it("LIVE_OVERRIDE_ACTIVE → 'live' (YouTube-only deployment)", () => {
     // This was the root cause: LIVE_OVERRIDE_ACTIVE fell through to the else
     // branch → 'idle', causing isWatchLiveCTAVisible=true and the hero to
-    // show "Watch Now" instead of "Open Player".
+    // misclassify the active override as idle.
     assert.equal(fsmStateToMediaState("LIVE_OVERRIDE_ACTIVE", false), "live");
   });
 
@@ -369,7 +369,7 @@ function isWatchLiveCTAVisible(mediaState: MediaState): boolean {
 }
 
 describe("isWatchLiveCTAVisible", () => {
-  it("false for 'live' (user is already watching — show 'Open Player' instead)", () => {
+  it("false for 'live' (legacy visibility signal recognizes active playback)", () => {
     assert.equal(isWatchLiveCTAVisible("live"), false);
   });
 
@@ -486,7 +486,7 @@ describe("navigateToLive params — YouTube-only deployment", () => {
 });
 
 // ─── 7. End-to-end YouTube-only scenario ──────────────────────────────────────
-// Full scenario: ytShuffleFallback is active, user taps "Open Player",
+// Full scenario: ytShuffleFallback is active, user taps Watch,
 // verifies the correct navigation params are produced.
 
 describe("YouTube-only deployment — full tap-to-player scenario", () => {
@@ -503,7 +503,7 @@ describe("YouTube-only deployment — full tap-to-player scenario", () => {
     assert.equal(fsmStateToMediaState("LIVE_OVERRIDE_ACTIVE", false), "live");
   });
 
-  it("Step 2: mediaState='live' → CTA is hidden (button shows 'Open Player' not 'Watch Live')", () => {
+  it("Step 2: mediaState='live' → legacy visibility signal is false", () => {
     const ms = fsmStateToMediaState("LIVE_OVERRIDE_ACTIVE", false);
     assert.equal(isWatchLiveCTAVisible(ms), false);
   });

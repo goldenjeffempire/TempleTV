@@ -92,7 +92,7 @@ export function BroadcastHlsPlayer({ muted, suppressEvents, isInPip, ...rest }: 
    *   • Navigating back / closing the player — V2PlayerContainer already
    *     renders a "Playback Error" overlay with countdown + Retry.  Auto-
    *     closing would silently remove that recovery path and make the
-   *     "Open Player" button appear completely non-functional whenever the
+   *     hero Watch button appear completely non-functional whenever the
    *     API is temporarily unreachable.
    */
   const handleFatal = useCallback(() => {

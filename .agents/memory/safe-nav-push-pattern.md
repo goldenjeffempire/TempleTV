@@ -20,7 +20,7 @@ Every `router.push` or `router.replace` that targets `/player` (or any screen wh
 
 Route-recovery callbacks that can resolve after user input (initial links, incoming links, notification fallbacks) must not replace a valid current route or compete with an active push. A guarded replace must re-run its live route/push predicate before both its first dispatch and every delayed retry.
 
-**Why:** Android can resolve the initial URL after the user taps Open Player. An unconditional Home replace—or a retry scheduled before the tap—can overwrite `/player` and remount Home, producing a skeleton refresh instead of the Player.
+**Why:** Android can resolve the initial URL after the user taps Watch. An unconditional Home replace—or a retry scheduled before the tap—can overwrite `/player` and remount Home, producing a skeleton refresh instead of the Player.
 
 **How to apply:** Keep current pathname in a render-ref, check the active-push latch, avoid replacing known routes (including Home), and pass a live guard into any retrying replace helper. Never rely only on a check made when the async callback first started.
 
@@ -42,8 +42,8 @@ Route-recovery callbacks that can resolve after user input (initial links, incom
 - `app/_layout.tsx` — notification handler (all types), deep-link guard
 - `components/LiveBroadcastSupervisor.tsx` — SSE-triggered auto-nav
 
-## Reconnecting escape hatch (index.tsx)
-`reconnectingEscapeVisible` state in `HeroSection` becomes true after 5 s of continuous `isReconnecting`. At 5 s the "Open Player" button appears regardless of reconnect state, giving the user an escape route when `STALL_REBIND_MS=20s` would otherwise leave a blank home screen for up to 20 s.
+## Hero Watch availability (index.tsx)
+Every non-fatal hero state renders the same Watch button. Do not hide it while loading, reconnecting, idle, or off-air; the existing player screen is the authoritative connection and recovery UI.
 
 ## isFatal Reconnect button (index.tsx)
 When `isFatal=true`, the Reconnect button now calls BOTH `forceRebind()` AND `navigateToLive(...)` — the player's own recovery UI is superior to the home screen spinner.

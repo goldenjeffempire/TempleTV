@@ -72,7 +72,7 @@ checks again, `isNavPushActive()=false` AND `onPlayer()` might still be false
   opening from hero hero CTA (youtubeId="", isLive=true). Player renders
   BroadcastHlsPlayer on first frame, swaps to YoutubePlayer ~100ms after the
   V2 snapshot arrives (YouTube-only platform).
-- `handleOpenPlayer` passes `hlsUrl:"", youtubeId:"", isLive:"true"` — the
+- The hero Watch handler passes `hlsUrl:"", youtubeId:"", isLive:"true"` — the
   player resolves source internally from V2 broadcast state, not from params.
 - `LiveBroadcastSupervisor` is in `_layout.tsx` (global). Effect dep `[playLive]`.
   `playLive` is useCallback([]) — stable. Effect runs ONCE per app session.

@@ -1,8 +1,8 @@
 /// <reference types="node" />
 /**
- * Open Player Navigation — Regression Tests
+ * Hero Watch Navigation — Regression Tests
  *
- * Guards against re-introduction of the "Open Player does nothing" bug where
+ * Guards against re-introduction of the legacy hero-navigation bug where
  * the player screen opened and immediately navigated back because handleFatal
  * called router.back() on any transient WS connection failure.
  *
@@ -18,6 +18,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 const loadDeepLinkGuard = () => import("../lib/deepLinkGuard");
 
@@ -35,7 +36,7 @@ function computeIsBroadcastV2(isLive: boolean, youtubeId: string, hlsUrl: string
 }
 
 describe("isBroadcastV2 computation", () => {
-  it("true when isLive=true and no URL / youtubeId (hero Open Player path)", () => {
+  it("true when isLive=true and no URL / youtubeId (hero Watch path)", () => {
     // navigateToLive("", title, 0) → isLive=true, hlsUrl="", youtubeId=""
     assert.equal(computeIsBroadcastV2(true, "", ""), true);
   });
@@ -58,6 +59,25 @@ describe("isBroadcastV2 computation", () => {
     assert.equal(computeIsBroadcastV2(false, "", ""), false);
     assert.equal(computeIsBroadcastV2(false, "", "https://cdn.example.com/vod.m3u8"), false);
     assert.equal(computeIsBroadcastV2(false, "dQw4w9WgXcQ", ""), false);
+  });
+});
+
+describe("Hero Watch CTA", () => {
+  it("renders one guarded Watch action to the existing player route", () => {
+    const source = readFileSync("app/(tabs)/index.tsx", "utf8");
+    const legacyLabel = ["Open", "Player"].join(" ");
+
+    assert.equal(source.includes(legacyLabel), false);
+    assert.match(source, /const handleWatch = useCallback/);
+    assert.match(source, /testID="hero-watch-button"/);
+    assert.match(source, /accessibilityLabel="Watch current live broadcast"/);
+    assert.match(source, /<Text style=\{styles\.heroBtnText\}>Watch<\/Text>/);
+    assert.match(source, /"hero-watch"/);
+
+    // The hero must continue to use the existing guarded /player push rather
+    // than adding a second player route or a Home replace.
+    assert.match(source, /safeNavPush\(\s*"\/player"/);
+    assert.doesNotMatch(source, /router\.(?:replace|push)\(\s*["']\/["']/);
   });
 });
 
@@ -94,8 +114,8 @@ function selectPlayerSurface(params: {
 }
 
 describe("Player render branch selection", () => {
-  it("hero Open Player → broadcast_engine (isLive=true, no URL, no youtubeId)", () => {
-    // This is the primary case for 'Open Player' in the hero.
+  it("hero Watch → broadcast_engine (isLive=true, no URL, no youtubeId)", () => {
+    // This is the primary case for Watch in the hero.
     // isBroadcastV2=true, v2Override not yet loaded → falls to isLive fallback.
     const surface = selectPlayerSurface({
       isBroadcastV2: true,
@@ -365,7 +385,7 @@ describe("navigateToLive params produce correct isBroadcastV2", () => {
 
   it("YouTube override (hasYoutubeOverride=true) WITHOUT youtubeId param → V2 engine", () => {
     // Branch: navigateToLive("", activeBroadcastTitle, 0, undefined, thumb,
-    // "hero-open-player", false, initialYoutubeOverrideId). `youtubeId` must
+    // "hero-watch", false, initialYoutubeOverrideId). `youtubeId` must
     // stay empty so V2 remains authoritative; the separate bootstrap value
     // avoids waiting for the first V2 snapshot before rendering YouTube.
     const d = deriveFromParams({ isLive: "true", hlsUrl: "", youtubeId: "" });
@@ -402,7 +422,7 @@ describe("navigateToLive params produce correct isBroadcastV2", () => {
 
 // ─── 7. Deep-link guard must not overwrite player navigation ─────────────────
 // Linking.getInitialURL() resolves asynchronously on Android. A stale unknown
-// initial URL used to call safeNavReplace("/") after the user tapped Open Player,
+// initial URL used to call safeNavReplace("/") after the user tapped Watch,
 // replacing /player and remounting Home. The guard may only recover when Expo
 // Router is actually sitting on an unknown route.
 
@@ -436,7 +456,7 @@ describe("deep-link guard navigation isolation", () => {
     );
   });
 
-  it("never competes with an in-flight Open Player push", async () => {
+  it("never competes with an in-flight Watch push", async () => {
     const { shouldRecoverUnknownDeepLink } = await loadDeepLinkGuard();
     assert.equal(
       shouldRecoverUnknownDeepLink("/unrecognized-referral", true),
@@ -507,7 +527,7 @@ describe("deep-link guard navigation isolation", () => {
     assert.equal(canRecover(), true);
 
     // That dispatch throws during a navigator transition. Before the 300 ms
-    // retry, the user taps Open Player and safeNavPush starts committing.
+    // retry, the user taps Watch and safeNavPush starts committing.
     navigationPushActive = true;
     currentPathname = "/player";
 

@@ -354,11 +354,10 @@ const HeroSection = React.memo(function HeroSection({
   // Unified media state — drives badge, CTA, and status indicators.
   const {
     mediaState,
-    isWatchLiveCTAVisible,
     isFatal,
   } = useMediaPlayerState();
 
-  // NOTE: The previous "reconnecting escape hatch" that delayed the "Open Player"
+  // NOTE: The previous "reconnecting escape hatch" that delayed the Watch
   // button by 5 s during reconnection has been removed. The button is now always
   // visible whenever the broadcast is live, loading, OR reconnecting.  Hiding
   // the button during reconnection left users with no visible tap target for up
@@ -466,22 +465,22 @@ const HeroSection = React.memo(function HeroSection({
   // NOTE: We intentionally do NOT use isNavPushActive() here. That flag is
   // global — any safeNavPush call anywhere in the app (LiveBroadcastSupervisor,
   // video card, notification tap) sets navPushActiveUntil for 1 500 ms, which
-  // would silently block a legitimate user tap on "Open Player". The 600 ms
+  // would silently block a legitimate user tap on "Watch". The 600 ms
   // debounce is sufficient for all same-gesture double-fire scenarios. The
   // isNavPushActive() guard in NativeTabLayout's useLayoutEffect — which is what
   // actually needs it to prevent the iOS 18+ bounce-back race — is unaffected.
   const lastTuneInMs = useRef(0);
 
-  // ── "Open Player" dedicated handler ──────────────────────────────────────────
+  // ── "Watch" dedicated handler ────────────────────────────────────────────────
   // Always navigates directly to the live broadcast player. Never routes to VOD.
   // This is intentionally the only handler used by the hero's open/watch CTA.
   // The player route owns connection state, so this remains usable while the
   // broadcast snapshot is loading, reconnecting, or temporarily unavailable.
-  const handleOpenPlayer = useCallback(() => {
+  const handleWatch = useCallback(() => {
     const now = Date.now();
     if (now - lastTuneInMs.current < 600) {
       if (__DEV__) {
-        console.log("[HeroSection] handleOpenPlayer debounced (< 600 ms since last call)");
+        console.log("[HeroSection] handleWatch debounced (< 600 ms since last call)");
       }
       return;
     }
@@ -489,7 +488,7 @@ const HeroSection = React.memo(function HeroSection({
 
     if (__DEV__) {
       console.log(
-        "[HeroSection] handleOpenPlayer — navigating to live broadcast player",
+        "[HeroSection] handleWatch — navigating to live broadcast player",
         { activeBroadcastTitle, thumbUrl },
       );
     }
@@ -500,7 +499,7 @@ const HeroSection = React.memo(function HeroSection({
       0,
       undefined,
       thumbUrl ?? undefined,
-      "hero-open-player",
+      "hero-watch",
       false,
       youtubeOverrideVideoId ?? undefined,
     );
@@ -508,8 +507,8 @@ const HeroSection = React.memo(function HeroSection({
 
   const handleReconnect = useCallback(() => {
     forceRebind();
-    handleOpenPlayer();
-  }, [forceRebind, handleOpenPlayer]);
+    handleWatch();
+  }, [forceRebind, handleWatch]);
 
   // ── Hero fullscreen handler ───────────────────────────────────────────────────
   // Opens the broadcast player — with auto-fullscreen for uploaded MP4/HLS
@@ -688,9 +687,8 @@ const HeroSection = React.memo(function HeroSection({
 
           Priority order:
           1. isFatal → "Reconnect" restores the transport + opens the player.
-          2. Live / loading / reconnecting → "Open Player" (solid primary button).
-          3. Idle / offline → "Watch Live" (primary button, navigates to player).
-          All non-Reconnect paths call handleOpenPlayer — a single, direct
+          2. Every other state → "Watch" (solid primary button).
+          The Watch path calls handleWatch — a single, direct
           handler that always navigates to the broadcast player regardless of
           broadcast state. The player screen is the authoritative UI for showing
           connecting / live / off-air / reconnecting states. */}
@@ -735,47 +733,28 @@ const HeroSection = React.memo(function HeroSection({
                 styles.heroBtn,
                 { backgroundColor: "#DC2626", opacity: pressed ? 0.85 : 1 },
               ]}
-              testID="hero-open-player-button"
+              testID="hero-reconnect-button"
               accessibilityRole="button"
               accessibilityLabel="Reconnect to live broadcast"
             >
               <Feather name="refresh-cw" size={13} color="#fff" />
               <Text style={styles.heroBtnText}>Reconnect</Text>
             </Pressable>
-          ) : !isWatchLiveCTAVisible ? (
-            // Broadcast is live / loading / reconnecting — solid primary CTA.
+          ) : (
+            // Always expose the existing broadcast player in non-fatal states.
             <Pressable
-              onPress={handleOpenPlayer}
+              onPress={handleWatch}
               hitSlop={8}
               style={({ pressed }) => [
                 styles.heroBtn,
                 { backgroundColor: c.primary, opacity: pressed ? 0.85 : 1 },
               ]}
-              testID="hero-open-player-button"
+              testID="hero-watch-button"
               accessibilityRole="button"
-              accessibilityLabel="Open broadcast player"
+              accessibilityLabel="Watch current live broadcast"
             >
               <Feather name="play" size={13} color="#fff" />
-              <Text style={styles.heroBtnText}>Open Player</Text>
-            </Pressable>
-          ) : (
-            // Idle / offline — still navigate to the broadcast player so the
-            // user can see the off-air state or wait for the broadcast to start.
-            <Pressable
-              onPress={handleOpenPlayer}
-              hitSlop={8}
-              style={({ pressed }) => [
-                styles.heroBtn,
-                { backgroundColor: c.primary, opacity: pressed ? 0.88 : 1 },
-              ]}
-              testID="hero-open-player-button"
-              accessibilityRole="button"
-              accessibilityLabel={hasActiveBroadcast ? "Watch live broadcast" : "Watch broadcast player"}
-            >
-              <Feather name="play" size={13} color="#fff" />
-              <Text style={styles.heroBtnText}>
-                {hasActiveBroadcast ? "Watch Live" : "Watch Now"}
-              </Text>
+              <Text style={styles.heroBtnText}>Watch</Text>
             </Pressable>
           )}
         </View>

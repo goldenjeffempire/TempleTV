@@ -315,7 +315,7 @@ function RootLayoutNav() {
       if (!canRecover()) {
         // The incoming URL was unknown, but the app is already on a valid route
         // (or a user push is still committing). Replacing with "/" here would
-        // overwrite /player and remount Home, which is exactly the Open Player
+        // overwrite /player and remount Home, which is exactly the hero Watch
         // bounce/reload bug this guard must never cause.
         return;
       }

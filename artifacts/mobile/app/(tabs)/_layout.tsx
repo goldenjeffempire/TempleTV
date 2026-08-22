@@ -64,7 +64,7 @@ function NativeTabLayout() {
   useLayoutEffect(() => {
     if (hasRedirectedToDefaultTab) return;
     if (isNavPushActive()) {
-      // A safeNavPush is already in flight (e.g. the user tapped "Open Player"
+      // A safeNavPush is already in flight (e.g. the user tapped Watch
       // just as the tabs group remounted during the modal presentation
       // animation). Issuing router.replace("/") here would race the push and
       // bounce the user back to Home. Mark as done without redirecting so the
