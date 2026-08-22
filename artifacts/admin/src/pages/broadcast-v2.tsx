@@ -1746,6 +1746,104 @@ interface SystemHealth {
   issues: string[];
 }
 
+type SystemHealthResponse = Partial<
+  Omit<
+    SystemHealth,
+    "broadcast" | "workers" | "queue" | "transcoder" | "dbPool" | "storage" | "contentRotation" | "issues"
+  >
+> & {
+  broadcast?: Partial<SystemHealth["broadcast"]>;
+  workers?: SystemHealth["workers"];
+  queue?: Partial<SystemHealth["queue"]>;
+  transcoder?: Partial<SystemHealth["transcoder"]>;
+  dbPool?: Partial<SystemHealth["dbPool"]>;
+  storage?: Partial<SystemHealth["storage"]>;
+  contentRotation?: Partial<SystemHealth["contentRotation"]>;
+  issues?: unknown;
+};
+
+function normalizeSystemHealth(payload: SystemHealthResponse): SystemHealth {
+  const missingSections = [
+    ["broadcast", payload.broadcast],
+    ["workers", payload.workers],
+    ["queue", payload.queue],
+    ["transcoder", payload.transcoder],
+    ["dbPool", payload.dbPool],
+    ["storage", payload.storage],
+    ["contentRotation", payload.contentRotation],
+  ]
+    .filter((entry): entry is [string, undefined] => entry[1] == null)
+    .map(([name]) => name);
+
+  const reportedIssues = Array.isArray(payload.issues)
+    ? payload.issues.filter((issue): issue is string => typeof issue === "string")
+    : [];
+  const issues =
+    missingSections.length > 0
+      ? [
+          ...reportedIssues,
+          `Partial platform health response — ${missingSections.join(", ")} unavailable`,
+        ]
+      : reportedIssues;
+
+  return {
+    checkedAt: payload.checkedAt ?? new Date().toISOString(),
+    broadcast: {
+      started: false,
+      sequence: 0,
+      itemCount: 0,
+      ...payload.broadcast,
+    },
+    workers: Array.isArray(payload.workers) ? payload.workers : [],
+    unhealthyWorkerCount:
+      typeof payload.unhealthyWorkerCount === "number" &&
+      Number.isFinite(payload.unhealthyWorkerCount)
+        ? payload.unhealthyWorkerCount
+        : 0,
+    queue: {
+      activeItems: null,
+      threshold: 0,
+      belowThreshold: false,
+      totalRebuilds: 0,
+      lastRebuildAtMs: null,
+      ...payload.queue,
+    },
+    transcoder: {
+      enabled: false,
+      isRunning: false,
+      circuitOpen: false,
+      currentJobId: null,
+      ...payload.transcoder,
+    },
+    dbPool: {
+      active: 0,
+      idle: 0,
+      waiting: 0,
+      max: 0,
+      utilizationPct: 0,
+      highUtilAlertActive: false,
+      waitingAlertActive: false,
+      ...payload.dbPool,
+    },
+    storage: {
+      healthy: false,
+      enabled: false,
+      consecutiveFailures: 0,
+      ...payload.storage,
+    },
+    apiOriginConfigured: payload.apiOriginConfigured === true,
+    contentRotation: {
+      strategy: "not reported",
+      intervalMs: 0,
+      lastShuffleAtMs: 0,
+      shuffleCount: 0,
+      ...payload.contentRotation,
+    },
+    ok: payload.ok === true && missingSections.length === 0,
+    issues,
+  };
+}
+
 function PlatformHealthCard({ health, error }: { health: SystemHealth | undefined; error: boolean }) {
   if (error) return (
     <Card>
@@ -2614,7 +2712,8 @@ function BroadcastV2PageInner() {
   // within a single polling cycle without hammering the API.
   const { data: systemHealth, isError: systemHealthError } = useQuery({
     queryKey: ["broadcast-v2-system-health"],
-    queryFn: () => api.get<SystemHealth>("/admin/broadcast/system-health"),
+    queryFn: () => api.get<SystemHealthResponse>("/admin/broadcast/system-health"),
+    select: normalizeSystemHealth,
     refetchInterval: 30_000,
     staleTime: 25_000,
   });
