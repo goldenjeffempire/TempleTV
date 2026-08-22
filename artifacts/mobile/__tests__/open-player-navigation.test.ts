@@ -81,6 +81,45 @@ describe("Hero Watch CTA", () => {
   });
 });
 
+describe("Live Channel Watch navigation", () => {
+  it("uses the same guarded V2 player route with a synchronous double-tap latch", () => {
+    const source = readFileSync("app/(tabs)/channels.tsx", "utf8");
+
+    assert.match(source, /const tuningIdRef = useRef<string \| null>\(null\)/);
+    assert.match(source, /if \(tuningIdRef\.current\) return;/);
+    assert.match(source, /if \(!channel\.isRunning && !channel\.isPrimary\)/);
+    assert.match(source, /tuningIdRef\.current = channel\.id;/);
+    assert.match(source, /if \(tuningIdRef\.current !== channel\.id\) return;/);
+    assert.match(source, /safeNavPush\(\s*"\/player"/);
+    assert.match(source, /id: "live"/);
+    assert.match(source, /isLive: "true"/);
+    assert.match(source, /"channels-live"/);
+    assert.doesNotMatch(source, /router\.(?:replace|push)\(\s*["']\/["']/);
+  });
+
+  it("allows only one same-frame tap, then returns from Player to Live Channel", () => {
+    let tuningId: string | null = null;
+    const channelId = "temple-tv-live";
+    const stack = ["/channels"];
+
+    const tapLiveChannel = () => {
+      if (tuningId) return false;
+      tuningId = channelId;
+      stack.push("/player");
+      return true;
+    };
+
+    assert.equal(tapLiveChannel(), true, "first tap opens the shared Player route");
+    assert.equal(tapLiveChannel(), false, "same-frame repeat tap is synchronously blocked");
+    assert.deepEqual(stack, ["/channels", "/player"]);
+
+    stack.pop();
+    tuningId = null; // useFocusEffect clears the latch when the tab regains focus.
+    assert.deepEqual(stack, ["/channels"]);
+    assert.equal(tapLiveChannel(), true, "a later tap works after Back returns to Live Channel");
+  });
+});
+
 // ─── 2. Player render branch selection ───────────────────────────────────────
 // Mirrors the ternary chain in artifacts/mobile/app/player.tsx (lines 1132–1238).
 // Confirms which player surface mounts for each navigation scenario.

@@ -561,34 +561,45 @@ export default function ChannelsTab() {
   const { channels, loading, error, isRetrying, refetch } = useChannels();
   const { items: scheduleItems, loading: scheduleLoading, engineMode } = useBroadcastSchedule();
   const [tuningId, setTuningId] = useState<string | null>(null);
+  const tuningIdRef = useRef<string | null>(null);
   const tuningReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const clearTuning = useCallback(() => {
+    tuningIdRef.current = null;
+    setTuningId(null);
+    if (tuningReleaseTimerRef.current) {
+      clearTimeout(tuningReleaseTimerRef.current);
+      tuningReleaseTimerRef.current = null;
+    }
+  }, []);
+
   // Reset the tuning spinner whenever this screen comes back into focus
-  // (e.g. user presses back from the player). Without this, setTuningId
-  // would remain set and `if (tuningId) return;` would block all further
-  // channel presses until the component fully unmounts.
+  // (e.g. user presses back from the player). The ref is the synchronous tap
+  // gate; keeping it in sync with state prevents a same-frame double-tap from
+  // pushing duplicate Player screens before React rerenders the disabled card.
   useFocusEffect(
     useCallback(() => {
-      setTuningId(null);
-      if (tuningReleaseTimerRef.current) {
-        clearTimeout(tuningReleaseTimerRef.current);
-        tuningReleaseTimerRef.current = null;
-      }
-    }, []),
+      clearTuning();
+    }, [clearTuning]),
   );
 
   useEffect(() => {
     return () => {
       if (tuningReleaseTimerRef.current) clearTimeout(tuningReleaseTimerRef.current);
+      tuningIdRef.current = null;
     };
   }, []);
 
   const handleChannelPress = useCallback((channel: ApiChannel) => {
-    if (tuningId) return;
+    // Read the ref instead of React state: two native press events can arrive
+    // before setTuningId() commits and would otherwise push /player twice.
+    if (tuningIdRef.current) return;
 
-    // If the server already told us the channel is offline (isRunning=false),
-    // show the alert immediately — no network round-trip needed.
-    if (!channel.isRunning) {
+    // The primary Temple TV Live card must always open the authoritative V2
+    // player, even if this list's isRunning flag is stale. The player owns the
+    // professional loading, off-air, reconnect, and playback-error states.
+    // Preserve the immediate offline alert for any secondary channels.
+    if (!channel.isRunning && !channel.isPrimary) {
       Alert.alert(
         `${channel.name} is Offline`,
         "This channel is not currently broadcasting. Check back later.",
@@ -604,9 +615,13 @@ export default function ChannelsTab() {
     // player appears and avoids a v1/v2 mismatch where the v1 snapshot could
     // show "offline" even while v2 has content queued.
     // V2 will display its own "tuning-in" → "off-air" states if needed.
+    tuningIdRef.current = channel.id;
     setTuningId(channel.id);
     // Small tick so the tuning spinner renders before the navigation fires.
     requestAnimationFrame(() => {
+      // A focus return or timeout may have released the navigation gate before
+      // this frame runs; never dispatch a stale Player push in that case.
+      if (tuningIdRef.current !== channel.id) return;
       safeNavPush(
         "/player",
         {
@@ -619,7 +634,7 @@ export default function ChannelsTab() {
         "channels-live",
       );
     });
-    // Safety-net release: normally `useFocusEffect` clears `tuningId` when
+    // Safety-net release: normally `useFocusEffect` clears the tuning latch when
     // the user returns from the player. But if `router.push` above is ever
     // silently clobbered (e.g. by another effect issuing a competing
     // navigation in the same tick) this screen never loses focus, so
@@ -627,8 +642,14 @@ export default function ChannelsTab() {
     // permanently block every future channel tap until app restart. Release
     // the latch on a timer regardless of what navigation actually happened.
     if (tuningReleaseTimerRef.current) clearTimeout(tuningReleaseTimerRef.current);
-    tuningReleaseTimerRef.current = setTimeout(() => setTuningId(null), 8_000);
-  }, [tuningId]);
+    tuningReleaseTimerRef.current = setTimeout(() => {
+      if (tuningIdRef.current === channel.id) {
+        tuningIdRef.current = null;
+        setTuningId(null);
+      }
+      tuningReleaseTimerRef.current = null;
+    }, 8_000);
+  }, []);
 
   // ── Channels section content ───────────────────────────────────────────────
 
