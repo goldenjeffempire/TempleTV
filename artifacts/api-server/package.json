@@ -12,8 +12,8 @@
     "start:render-paid": "node --max-old-space-size=1536 --max-http-header-size=16384 --expose-gc --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs",
     "start:render-daemon": "node --max-old-space-size=300 --max-http-header-size=16384 --expose-gc --enable-source-maps --import ./dist/instrument.mjs ./dist/index.mjs",
     "typecheck": "NODE_OPTIONS='--max-old-space-size=4096' tsc -p tsconfig.json --noEmit",
-    "test": "echo 'vitest not available in Replit environment'",
-    "test:watch": "echo 'vitest not available in Replit environment'",
+    "test": "node --import tsx/esm --test tests/unit/chat-hub.test.ts",
+    "test:watch": "node --import tsx/esm --test --watch tests/unit/chat-hub.test.ts",
     "openapi": "node --enable-source-maps --import ./dist/instrument.mjs ./dist/openapi.mjs"
   },
   "dependencies": {

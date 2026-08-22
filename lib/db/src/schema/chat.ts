@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, jsonb, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, jsonb, integer, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 export const chatMessagesTable = pgTable("chat_messages", {
@@ -80,3 +80,33 @@ export const chatSettingsTable = pgTable("chat_settings", {
 });
 
 export type ChatSettingsRow = typeof chatSettingsTable.$inferSelect;
+
+/**
+ * User reports on individual chat messages.
+ *
+ * The route is authenticated-only, so reporterUserId is always populated.
+ * reporterIpHash is stored as audit metadata only — it does not drive
+ * deduplication. Uniqueness is enforced at the DB level on
+ * (message_id, reporter_user_id) so concurrent duplicate submits get a
+ * 23505 unique-violation rather than two rows.
+ */
+export const chatMessageReportsTable = pgTable("chat_message_reports", {
+  id: text("id").primaryKey(),
+  messageId: text("message_id").notNull(),
+  /** Authenticated reporter's user ID. Always non-null (route requires auth). */
+  reporterUserId: text("reporter_user_id").notNull(),
+  /** Hashed IP stored as audit metadata. */
+  reporterIpHash: text("reporter_ip_hash"),
+  reason: text("reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  /** Set by a moderator when the report is reviewed. */
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  resolvedBy: text("resolved_by"),
+}, (table) => [
+  index("idx_chat_reports_message_id").on(table.messageId),
+  index("idx_chat_reports_reporter_user_id").on(table.reporterUserId),
+  // Race-safe unique constraint: concurrent submits get 23505 not two rows.
+  uniqueIndex("uq_chat_reports_message_reporter").on(table.messageId, table.reporterUserId),
+]);
+
+export type ChatMessageReportRow = typeof chatMessageReportsTable.$inferSelect;

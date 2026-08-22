@@ -84,6 +84,7 @@ import { FloatingReactions, type FloatingReactionsHandle } from "@/components/Fl
 import { getApiBase } from "@/lib/apiBase";
 import { useAuth } from "@/context/AuthContext";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
+import * as audioController from "@/services/audioController";
 import { usePageSeo } from "@/hooks/usePageSeo";
 import { usePlayer } from "@/context/PlayerContext";
 import {
@@ -466,6 +467,39 @@ export default function PlayerScreen() {
       }
     };
   }, [isBroadcastV2, setIsBroadcastMode]);
+
+  // ── Audio exclusivity: stop in-app radio when V2 broadcast surface activates ──
+  //
+  // The V2 broadcast surface starts HLS audio directly through the native
+  // media engine (BroadcastHlsPlayer / MobilePlaybackEngine). It does NOT go
+  // through PlayerContext.playSermon() or playLive(), so it bypasses the mutual-
+  // exclusion calls that those functions make via audioController.requestRadioStop().
+  //
+  // This effect closes that gap: the moment isBroadcastV2 is true (including
+  // cold-start / deep-link entry where this fires before any user interaction),
+  // we synchronously request that the radio stop through the existing singleton.
+  //
+  // Scope guard: the call fires exactly once per mount when isBroadcastV2 is
+  // true. The effect does NOT run again while the surface stays active (dep
+  // array is stable: isBroadcastV2 is derived from params and does not change
+  // while this screen is mounted). The radio is allowed to be re-started by the
+  // user after they leave the player route; it is only stopped on the initial
+  // activation of this surface — never on a route that is not the V2 surface.
+  const radioStoppedForThisMountRef = useRef(false);
+  useEffect(() => {
+    if (!isBroadcastV2) return;
+    if (radioStoppedForThisMountRef.current) return;
+    radioStoppedForThisMountRef.current = true;
+    audioController.requestRadioStop();
+    // Cleanup: reset the guard so a future re-mount (e.g. the user navigates
+    // away and back) fires the stop again if the radio was restarted in the interim.
+    return () => {
+      radioStoppedForThisMountRef.current = false;
+    };
+  // isBroadcastV2 is stable for the lifetime of this screen mount (derived from
+  // route params), so this effect effectively fires once on mount.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBroadcastV2]);
 
   const startPositionSecs = params.startPositionSecs
     ? parseNumberParam(params.startPositionSecs, 0)

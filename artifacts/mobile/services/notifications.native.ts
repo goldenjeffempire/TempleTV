@@ -50,25 +50,48 @@ function getNotifications(): typeof NotificationsModule | null {
   }
 }
 
-async function registerTokenWithServer(token: string): Promise<void> {
+/**
+ * Register a push token with the server.
+ *
+ * Returns true on success (2xx), false on any failure (network error, 4xx,
+ * 5xx). On failure the token is written to PUSH_TOKEN_PENDING_KEY so a
+ * subsequent launch/foreground can retry via retryPendingPushToken().
+ *
+ * IMPORTANT: non-2xx responses are treated as failures — the token must NOT
+ * be removed from the pending key and callers must NOT report success. A 4xx
+ * means the server definitively rejected the token (bad format, auth error,
+ * etc.); a 5xx means a transient server error. Both require a retry path.
+ */
+async function registerTokenWithServer(token: string): Promise<boolean> {
   try {
     const platform = Platform.OS as "ios" | "android";
     const baseUrl = getApiBase();
-    await fetchWithRetry(`${baseUrl}/api/push-tokens`, {
+    const res = await fetchWithRetry(`${baseUrl}/api/push-tokens`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token, platform }),
       signal: AbortSignal.timeout(10000),
     });
+    if (!res.ok) {
+      // 4xx or 5xx — retain the pending token for retry on next launch.
+      try {
+        await AsyncStorage.setItem(PUSH_TOKEN_PENDING_KEY, token);
+      } catch {
+        // Storage unavailable — token will be re-fetched from EAS on the next launch
+      }
+      return false;
+    }
     // Clear any pending-retry key on success
     await AsyncStorage.removeItem(PUSH_TOKEN_PENDING_KEY).catch(() => undefined);
+    return true;
   } catch {
-    // Persist token so the next launch can retry server registration
+    // Network error / timeout — persist token for retry on next launch.
     try {
       await AsyncStorage.setItem(PUSH_TOKEN_PENDING_KEY, token);
     } catch {
       // Storage unavailable — token will be re-fetched from EAS on the next launch
     }
+    return false;
   }
 }
 
@@ -172,9 +195,14 @@ export async function registerForPushTokenAsync(): Promise<string | null> {
     );
     if (token) {
       await AsyncStorage.setItem(PUSH_TOKEN_KEY, token);
-      await registerTokenWithServer(token);
+      // Only return the token to the caller if server registration also
+      // succeeded. A null return signals "permission granted but server
+      // registration failed" so the opt-in gate does NOT mark seen — the
+      // pending key already holds the token for retry on next launch.
+      const registered = await registerTokenWithServer(token);
+      return registered ? token : null;
     }
-    return token ?? null;
+    return null;
   } catch (err) {
     if (__DEV__) {
       console.warn("[notifications] registerForPushTokenAsync failed:", err);
@@ -325,34 +353,29 @@ export async function cancelAllNotifications(): Promise<void> {
 }
 
 /**
- * Revoke the device's Expo push token from the server.
- *
- * Called on sign-out to prevent the previous user from receiving push
- * notifications on a shared device. Best-effort — failures are swallowed
- * because the server auto-removes stale tokens whenever Expo returns
- * `DeviceNotRegistered` on the next delivery attempt.
- *
- * After a successful revocation the token is removed from local storage so
- * a fresh sign-in re-registers a clean token.
- */
-/**
  * Retry push token server registration for any token that was successfully
  * obtained from EAS but whose server registration failed (e.g. due to a
  * network error on first launch). Call this on every app foreground so that
  * devices that came online after the initial grant eventually register without
  * requiring the user to re-open Settings.
+ *
+ * Returns true if a pending token existed AND was successfully registered with
+ * the server on this call. Returns false if there was no pending token, or if
+ * the server registration failed again (it will be retried on the next call).
+ * Callers can use the true return to mark the notification opt-in as seen and
+ * sync preferences without re-prompting the user.
  */
-export async function retryPendingPushToken(): Promise<void> {
-  if (Platform.OS === "web") return;
+export async function retryPendingPushToken(): Promise<boolean> {
+  if (Platform.OS === "web") return false;
   const N = getNotifications();
-  if (!N) return;
+  if (!N) return false;
   try {
     const pendingToken = await AsyncStorage.getItem(PUSH_TOKEN_PENDING_KEY);
-    if (pendingToken) {
-      await registerTokenWithServer(pendingToken);
-    }
+    if (!pendingToken) return false;
+    return await registerTokenWithServer(pendingToken);
   } catch {
     // Non-critical — will retry on next foreground
+    return false;
   }
 }
 

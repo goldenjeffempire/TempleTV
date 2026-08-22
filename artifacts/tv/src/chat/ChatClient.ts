@@ -207,7 +207,14 @@ export class ChatClient {
   private handleServerFrame(frame: ChatServerEvent): void {
     switch (frame.type) {
       case "state":
-        this.identity = frame.you;
+        // frame.you now includes userId — assign directly (type matches ChatIdentity)
+        this.identity = {
+          sessionId: frame.you.sessionId,
+          userId: frame.you.userId,
+          displayName: frame.you.displayName,
+          isModerator: frame.you.isModerator,
+          role: frame.you.role,
+        };
         this.viewers = frame.viewers;
         this.messages = this.dedupeAndCap(frame.recent);
         this.emit();
@@ -241,6 +248,12 @@ export class ChatClient {
         }
         return;
       case "ping":
+        // Server sends ping; client must reply with pong to stay alive.
+        try {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: "pong" }));
+          }
+        } catch { /* noop */ }
         return;
     }
   }

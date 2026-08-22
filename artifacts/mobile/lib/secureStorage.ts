@@ -25,17 +25,18 @@ export const secureStorage = {
       await AsyncStorage.setItem(key, value);
       return;
     }
-    try {
-      await SecureStore.setItemAsync(key, value, {
-        // AFTER_FIRST_UNLOCK allows auth tokens to be read in background
-        // while the screen is locked (e.g. during background audio playback).
-        // WHEN_UNLOCKED_THIS_DEVICE_ONLY would silently fail token reads
-        // whenever the user's screen is locked, breaking auto-refresh mid-stream.
-        keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-      });
-    } catch {
-      /* swallow — keystore may be temporarily unavailable (e.g. Android post-reboot) */
-    }
+    // Do NOT swallow keystore errors — callers that need atomic credential
+    // persistence (AuthContext.signIn, authApi.persistAuthResponse) depend on
+    // a thrown error to trigger their rollback path. Swallowing here would let
+    // signIn complete successfully while leaving tokens unwritten on disk,
+    // causing a logged-in UI with a token that disappears on next cold start.
+    await SecureStore.setItemAsync(key, value, {
+      // AFTER_FIRST_UNLOCK allows auth tokens to be read in background
+      // while the screen is locked (e.g. during background audio playback).
+      // WHEN_UNLOCKED_THIS_DEVICE_ONLY would silently fail token reads
+      // whenever the user's screen is locked, breaking auto-refresh mid-stream.
+      keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+    });
   },
   async removeItem(key: string): Promise<void> {
     if (Platform.OS === "web") {

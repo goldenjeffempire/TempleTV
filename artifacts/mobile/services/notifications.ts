@@ -148,6 +148,7 @@ export async function unregisterCurrentPushToken(): Promise<void> {
   // Web push subscriptions expire or are cleaned up by the browser automatically.
 }
 
-export async function retryPendingPushToken(): Promise<void> {
+export async function retryPendingPushToken(): Promise<boolean> {
   // Native-only — no pending-token concept for web push.
+  return false;
 }

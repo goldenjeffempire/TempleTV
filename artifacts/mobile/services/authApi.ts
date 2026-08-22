@@ -207,10 +207,29 @@ async function attemptRefresh(): Promise<string | null> {
       return null;
     }
     const data = (await res.json()) as { accessToken: string; refreshToken: string };
-    await Promise.all([
-      secureStorage.setItem(SECURE_KEYS.authToken, data.accessToken),
-      secureStorage.setItem(SECURE_KEYS.authRefreshToken, data.refreshToken),
-    ]);
+    // Persist the rotated token pair. If one write succeeds and the other
+    // fails the old refresh token is already invalid (consumed server-side),
+    // so leaving partial rotated credentials would permanently break the
+    // session. Isolate the persistence step: on any keystore failure remove
+    // both keys, notify session expiry, and return null. Network / 5xx
+    // failures (the outer catch below) must NOT reach this path and must
+    // still leave stored tokens intact.
+    try {
+      await Promise.all([
+        secureStorage.setItem(SECURE_KEYS.authToken, data.accessToken),
+        secureStorage.setItem(SECURE_KEYS.authRefreshToken, data.refreshToken),
+      ]);
+    } catch {
+      // Keystore write failure — roll back both keys and invalidate the session.
+      // The old refresh token is gone (the server rotated it), so retaining
+      // either key would lead to permanent auth failures on the next request.
+      await Promise.all([
+        secureStorage.removeItem(SECURE_KEYS.authToken),
+        secureStorage.removeItem(SECURE_KEYS.authRefreshToken),
+      ]).catch(() => {/* best-effort */});
+      onSessionExpired?.();
+      return null;
+    }
     return data.accessToken;
   } catch {
     // Network / parse error — transient, leave stored tokens intact.
@@ -274,13 +293,34 @@ export async function authFetch(path: string, options: RequestInit = {}): Promis
   return fetchWithRetry(url, { ...options, signal: AbortSignal.timeout(12_000), headers: buildHeaders(newToken) }, AUTH_RETRY);
 }
 
+/**
+ * Persist the access+refresh token pair from a fresh login/signup response.
+ *
+ * On keystore write failure both keys are removed (not restored to prior
+ * values — this is a fresh login, so there are no prior values to restore).
+ * Removing both guarantees we never leave a partial credential set on disk
+ * where one token is written and the other is not, which would cause a
+ * permanently broken session. The error is re-thrown so the login/signup
+ * caller can surface it to the UI.
+ */
 async function persistAuthResponse(data: AuthResponse): Promise<void> {
-  await Promise.all([
-    secureStorage.setItem(SECURE_KEYS.authToken, data.accessToken ?? data.token),
-    data.refreshToken
-      ? secureStorage.setItem(SECURE_KEYS.authRefreshToken, data.refreshToken)
-      : secureStorage.removeItem(SECURE_KEYS.authRefreshToken),
-  ]);
+  try {
+    await Promise.all([
+      secureStorage.setItem(SECURE_KEYS.authToken, data.accessToken ?? data.token),
+      data.refreshToken
+        ? secureStorage.setItem(SECURE_KEYS.authRefreshToken, data.refreshToken)
+        : secureStorage.removeItem(SECURE_KEYS.authRefreshToken),
+    ]);
+  } catch (err) {
+    // Remove both keys — this is a fresh write, not an update, so there are
+    // no prior values to restore. Leaving either key would result in a
+    // partial credential set that can never be used to authenticate.
+    await Promise.all([
+      secureStorage.removeItem(SECURE_KEYS.authToken),
+      secureStorage.removeItem(SECURE_KEYS.authRefreshToken),
+    ]).catch(() => {/* best-effort cleanup */});
+    throw err;
+  }
 }
 
 // ── Client-side validators ────────────────────────────────────────────────

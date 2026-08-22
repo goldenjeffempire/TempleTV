@@ -19,7 +19,7 @@ import {
   shouldRecoverUnknownDeepLink,
 } from "@/lib/deepLinkGuard";
 import * as SplashScreen from "expo-splash-screen";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, AppStateStatus, Linking, Platform, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -222,44 +222,159 @@ async function setupAudioSession() {
  * Shown once on first launch (after fonts load) to ask the user whether they
  * want to receive push notifications. Requesting OS permission without
  * explicit user consent is a guideline violation on both iOS and Android.
- * Once dismissed (allowed OR deferred), the flag is stored in AsyncStorage
- * and the modal never appears again.
+ *
+ * Marking behaviour:
+ *  - Intentional dismissal ("Not Now") → always marks seen immediately.
+ *  - Allow path → marks seen ONLY after a successful token + server
+ *    registration. Transient failures (network error, server 5xx) leave
+ *    the flag unset so the next app launch can retry. Permanent failures
+ *    (OS permission denied, "unavailable" on emulator) mark seen to avoid
+ *    pestering the user on every launch.
+ *
+ * Retry behaviour:
+ *  - On mount (after prefs load), retryPendingPushToken() is called silently.
+ *    If a previous first-launch registration succeeded now, opt-in is marked
+ *    seen and preferences are synced — without showing the modal again.
+ *  - On each app foreground (AppState active), the same silent retry runs,
+ *    bounded to one in-flight call at a time.
+ *  - The modal is blocked until the initial retry check completes so it does
+ *    not race a silently-succeeding background recovery.
+ *
+ * Within a single mount the gate tracks whether an attempt was already made
+ * so it never shows the modal twice in the same session even on retry paths.
  */
 function NotificationOptInGate() {
   const { hasSeenOptIn, optInLoaded, markOptInSeen, syncWithPermissionStatus } =
     useNotificationPreferences();
   const [showModal, setShowModal] = useState(false);
+  // True once the initial mount retry check has completed. The modal timer
+  // must not start until this is true so it cannot race a silent recovery.
+  const [retryCheckDone, setRetryCheckDone] = useState(false);
+  // Prevents showing the modal a second time within the same mount (e.g. if
+  // hasSeenOptIn briefly flips due to a race). Does NOT persist across app
+  // restarts — that's the job of hasSeenOptIn in AsyncStorage.
+  const attemptedThisMountRef = useRef(false);
+  // Guards against concurrent retryPendingPushToken calls (initial mount +
+  // AppState foreground events can overlap on a slow device).
+  const retryInFlightRef = useRef(false);
 
+  /**
+   * Attempt a silent pending-token retry. If the server registration
+   * succeeds, mark opt-in seen and sync preferences so the modal never
+   * appears. Returns true if the retry completed (regardless of outcome).
+   */
+  const runSilentRetry = useCallback(async (): Promise<boolean> => {
+    if (retryInFlightRef.current) return false;
+    retryInFlightRef.current = true;
+    try {
+      const { retryPendingPushToken } = await import("@/services/notifications");
+      const succeeded = await retryPendingPushToken();
+      if (succeeded) {
+        // A previously-failed first-launch registration just succeeded.
+        // Mark opt-in seen and sync preferences without re-prompting.
+        await markOptInSeen();
+        await syncWithPermissionStatus(true);
+      }
+      return true;
+    } catch {
+      // Non-critical — will retry on next foreground
+      return true;
+    } finally {
+      retryInFlightRef.current = false;
+    }
+  }, [markOptInSeen, syncWithPermissionStatus]);
+
+  // ── Initial mount: run silent retry BEFORE showing the modal ───────────────
+  useEffect(() => {
+    if (Platform.OS === "web") {
+      setRetryCheckDone(true);
+      return;
+    }
+    if (!optInLoaded) return;
+    // If already seen (user opted in or dismissed previously), skip the retry
+    // check — there is no pending modal to race.
+    if (hasSeenOptIn) {
+      setRetryCheckDone(true);
+      return;
+    }
+    let cancelled = false;
+    runSilentRetry().then(() => {
+      if (!cancelled) setRetryCheckDone(true);
+    });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [optInLoaded, hasSeenOptIn]);
+
+  // ── AppState-active: bounded best-effort retry on foreground ───────────────
   useEffect(() => {
     if (Platform.OS === "web") return;
-    if (!optInLoaded || hasSeenOptIn) return;
+    const sub = AppState.addEventListener("change", (next: AppStateStatus) => {
+      if (next !== "active") return;
+      // Only retry if opt-in prefs are loaded and not yet seen. If the user
+      // already dismissed or allowed, there is nothing to retry.
+      if (!optInLoaded || hasSeenOptIn) return;
+      runSilentRetry();
+    });
+    return () => sub.remove();
+  }, [optInLoaded, hasSeenOptIn, runSilentRetry]);
+
+  // ── Modal display: only after retry check finishes ─────────────────────────
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    if (!optInLoaded || !retryCheckDone || hasSeenOptIn) return;
+    if (attemptedThisMountRef.current) return;
     // Small delay so the splash screen fade finishes before the modal appears
     const timer = setTimeout(() => setShowModal(true), 1800);
     return () => clearTimeout(timer);
-  }, [optInLoaded, hasSeenOptIn]);
+  }, [optInLoaded, retryCheckDone, hasSeenOptIn]);
 
   const handleAllow = async () => {
     setShowModal(false);
-    await markOptInSeen();
+    attemptedThisMountRef.current = true;
     try {
       const { registerForPushTokenAsync } = await import("@/services/notifications");
       const token = await registerForPushTokenAsync();
       if (token) {
+        // Full success: OS permission granted AND server registration succeeded.
+        // Only now is it safe to permanently mark opt-in as seen.
+        await markOptInSeen();
         await syncWithPermissionStatus(true);
+      } else {
+        // registerForPushTokenAsync returns null for two distinct cases:
+        //   1. OS permission denied / unavailable — permanent; mark seen so
+        //      the user is not prompted on every launch.
+        //   2. Permission granted but server registration failed — transient;
+        //      do NOT mark seen so the next launch retries (the pending token
+        //      key handles the server retry via retryPendingPushToken).
+        // Distinguish via the system permission status.
+        const { getNotificationPermissionStatus } = await import("@/services/notifications");
+        const status = await getNotificationPermissionStatus();
+        if (status !== "granted") {
+          // Permission was not granted (denied/unavailable/Expo Go) — mark seen
+          // to avoid re-prompting on every launch.
+          await markOptInSeen();
+        }
+        // If status === "granted" but token is null, the server registration
+        // failed transiently. Leave seen un-marked; next launch will retry
+        // via retryPendingPushToken.
+        if (__DEV__) {
+          console.warn("[PushOptIn] registerForPushTokenAsync returned null — status:", status);
+        }
       }
     } catch (err) {
-      // Registration can fail due to network issues, missing Google Play
-      // Services on some Android flavours, or the user declining the OS
-      // permission dialog. Log for diagnostics but do not surface a modal —
-      // the opt-in is already marked seen so the user won't be prompted again.
+      // Unexpected error (e.g. import failure). Mark seen to avoid an
+      // infinite loop on every launch while still surfacing the issue in dev.
+      await markOptInSeen().catch(() => {});
       if (__DEV__) {
-        console.warn("[PushOptIn] registerForPushTokenAsync failed:", err);
+        console.warn("[PushOptIn] registerForPushTokenAsync threw:", err);
       }
     }
   };
 
   const handleDismiss = async () => {
+    // Intentional dismissal — always mark seen immediately.
     setShowModal(false);
+    attemptedThisMountRef.current = true;
     await markOptInSeen();
   };
 

@@ -28,7 +28,6 @@ export interface ChatClientOptions {
   token?: string | null;
   url?: string;
 }
-
 type Listener = (snapshot: ChatSnapshot) => void;
 
 export interface PendingMessage {
@@ -96,13 +95,12 @@ export class ChatClient {
   private closedByUser = false;
   private readonly bufferSize: number;
   private readonly opts: ChatClientOptions;
-  private pingInterval: ReturnType<typeof setInterval> | null = null;
-  private lastServerActivityAt = 0;
-  private readonly PING_INTERVAL_MS = 25_000;
-  // Typing indicator state — userId → { displayName, expiresAt }
-  // Entries expire after TYPING_TTL_MS of silence (server should send
-  // isTyping=false when the user stops, but TTL guards against dropped frames).
-  private typingMap = new Map<string, { displayName: string; expiresAt: number }>();
+  // Typing indicator state — keyed by sessionId → { userId, displayName, expiresAt }
+  // Keying by sessionId (always present) lets each guest connection get its own
+  // slot rather than collapsing all guests into a single "__anon__" entry.
+  // Entries expire after TYPING_TTL_MS of silence (server sends isTyping=false
+  // when the user stops, but TTL guards against dropped frames).
+  private typingMap = new Map<string, { userId: string | null; displayName: string; expiresAt: number }>();
   private typingCleanupTimer: ReturnType<typeof setInterval> | null = null;
   private readonly TYPING_TTL_MS = 5_000;
 
@@ -118,7 +116,6 @@ export class ChatClient {
 
   stop(): void {
     this.closedByUser = true;
-    this.stopPing();
     this.stopTypingCleanup();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -208,9 +205,9 @@ export class ChatClient {
   private getTypingUsers(): TypingUser[] {
     const now = Date.now();
     const out: TypingUser[] = [];
-    for (const [uid, entry] of this.typingMap) {
+    for (const [, entry] of this.typingMap) {
       if (entry.expiresAt > now) {
-        out.push({ userId: uid === "__anon__" ? null : uid, displayName: entry.displayName });
+        out.push({ userId: entry.userId, displayName: entry.displayName });
       }
     }
     return out;
@@ -275,13 +272,10 @@ export class ChatClient {
 
     ws.onopen = () => {
       this.reconnectAttempts = 0;
-      this.lastServerActivityAt = Date.now();
       this.setState("open");
-      this.startPing(ws);
     };
 
     ws.onmessage = (ev: WebSocketMessageEvent) => {
-      this.lastServerActivityAt = Date.now();
       if (typeof ev.data !== "string") return;
       let frame: ChatServerEvent;
       try { frame = JSON.parse(ev.data) as ChatServerEvent; } catch { return; }
@@ -291,7 +285,6 @@ export class ChatClient {
     ws.onerror = () => { /* handled by onclose */ };
 
     ws.onclose = () => {
-      this.stopPing();
       this.ws = null;
       if (!this.closedByUser) this.scheduleReconnect();
     };
@@ -314,6 +307,7 @@ export class ChatClient {
       case "state":
         this.identity = {
           sessionId: frame.you.sessionId,
+          userId: frame.you.userId,
           displayName: frame.you.displayName,
           isModerator: frame.you.isModerator,
           role: frame.you.role,
@@ -366,9 +360,28 @@ export class ChatClient {
         return;
 
       case "typing": {
-        const key = frame.userId ?? "__anon__";
+        // Defensive own-typing guard: the server already excludes the sender,
+        // but guard against edge-cases (e.g. same user in two tabs, or a
+        // reconnect replaying a stale frame).
+        // For authenticated users: skip if userId matches ours.
+        // For guests: skip if the sessionId matches ours exactly.
+        if (this.identity) {
+          if (
+            frame.userId !== null &&
+            this.identity.userId !== null &&
+            frame.userId === this.identity.userId
+          ) return;
+          if (
+            frame.userId === null &&
+            frame.sessionId === this.identity.sessionId
+          ) return;
+        }
+        // Key by sessionId so each guest connection gets its own slot,
+        // instead of all guests collapsing into a shared "__anon__" entry.
+        const key = frame.sessionId;
         if (frame.isTyping) {
           this.typingMap.set(key, {
+            userId: frame.userId,
             displayName: frame.displayName,
             expiresAt: Date.now() + this.TYPING_TTL_MS,
           });
@@ -402,6 +415,12 @@ export class ChatClient {
         return;
 
       case "ping":
+        // Server sends ping; client must reply with pong to stay alive.
+        try {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: "pong" }));
+          }
+        } catch { /* noop */ }
         return;
     }
   }
@@ -438,23 +457,4 @@ export class ChatClient {
     for (const l of this.listeners) l(snap);
   }
 
-  private startPing(ws: WebSocket): void {
-    this.stopPing();
-    this.pingInterval = setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      const silentMs = Date.now() - this.lastServerActivityAt;
-      if (silentMs > this.PING_INTERVAL_MS * 2) {
-        try { ws.close(1001, "pong-timeout"); } catch { /* noop */ }
-        return;
-      }
-      try { ws.send(JSON.stringify({ type: "ping" })); } catch { /* noop */ }
-    }, this.PING_INTERVAL_MS);
-  }
-
-  private stopPing(): void {
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
-    }
-  }
 }

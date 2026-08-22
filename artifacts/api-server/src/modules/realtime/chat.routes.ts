@@ -25,6 +25,7 @@ import type {
 
 const chat = schema.chatMessagesTable;
 const moderation = schema.chatModerationTable;
+const reports = schema.chatMessageReportsTable;
 
 const ChatMessageSchema = z.object({
   id: z.string(),
@@ -276,6 +277,80 @@ export async function chatRoutes(app: FastifyInstance) {
     },
   );
 
+  // ── Report a chat message ─────────────────────────────────────────────────
+  // POST /messages/:id/report — authenticated-only.
+  // requireAuth("user") rejects unauthenticated callers via UnauthorizedError
+  // (caught by the global error handler) so req.principal is always populated
+  // in the handler body.
+  r.post(
+    "/messages/:id/report",
+    {
+      preHandler: requireAuth("user"),
+      config: { rateLimit: { max: 10, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["chat"],
+        summary: "Report a chat message for moderator review",
+        params: z.object({ id: z.string().min(1).max(128) }),
+        body: z.object({ reason: z.string().max(500).optional() }).optional(),
+        security: [{ bearerAuth: [] }],
+        response: {
+          200: z.object({ ok: z.literal(true), reportId: z.string() }),
+          404: z.object({ error: z.string() }),
+          409: z.object({ error: z.string() }),
+          429: z.object({ error: z.string() }),
+        },
+      },
+    },
+    async (req, reply) => {
+      // requireAuth guarantees req.principal is set — non-null assert is safe.
+      const reporterUserId = req.principal!.id;
+      const { id: messageId } = req.params;
+
+      // Verify the message exists and has not been deleted; also fetch userId
+      // so we can reject self-reports server-side.
+      const msgRows = await db
+        .select({ id: chat.id, userId: chat.userId })
+        .from(chat)
+        .where(and(eq(chat.id, messageId), isNull(chat.deletedAt)))
+        .limit(1);
+      if (msgRows.length === 0) {
+        reply.code(404);
+        return { error: "Message not found or already removed." };
+      }
+
+      // Prevent self-reporting — a user should not be able to report their
+      // own message (same user ID as the message author).
+      if (msgRows[0]!.userId && msgRows[0]!.userId === reporterUserId) {
+        reply.code(409);
+        return { error: "You cannot report your own message." };
+      }
+
+      // Insert the report. The unique index on (message_id, reporter_user_id)
+      // makes this race-safe: if two requests race, one will get a PG 23505
+      // unique-violation which we catch and surface as 409.
+      const reportId = nanoid();
+      try {
+        await db.insert(reports).values({
+          id: reportId,
+          messageId,
+          reporterUserId,
+          reporterIpHash: hashIp(req.ip),
+          reason: req.body?.reason ?? null,
+        });
+      } catch (err: unknown) {
+        // PostgreSQL unique-violation error code 23505
+        const pgErr = err as { code?: string };
+        if (pgErr?.code === "23505") {
+          reply.code(409);
+          return { error: "You have already reported this message." };
+        }
+        throw err;
+      }
+
+      return { ok: true as const, reportId };
+    },
+  );
+
   // ── WebSocket gateway ──────────────────────────────────────────────────────
   app.get(
     "/ws",
@@ -344,6 +419,7 @@ export async function chatRoutes(app: FastifyInstance) {
         pinnedMessage,
         you: {
           sessionId: member.sessionId,
+          userId: member.userId,
           displayName: member.displayName,
           isModerator: member.isModerator,
           role: member.role,
@@ -368,6 +444,13 @@ export async function chatRoutes(app: FastifyInstance) {
           if (!messageId || !emoji || emoji.length > 8) return;
           const userKey = member.userId ?? member.sessionId;
           chatHub.toggleReaction(channelId, messageId, emoji, userKey);
+          return;
+        }
+
+        // ── typing ────────────────────────────────────────────────────────────
+        if (frame.type === "typing") {
+          const isTyping = frame.isTyping === true;
+          chatHub.broadcastTyping(channelId, member, isTyping);
           return;
         }
 

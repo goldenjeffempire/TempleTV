@@ -575,3 +575,143 @@ describe("deep-link guard navigation isolation", () => {
     assert.equal(canRecover(), false);
   });
 });
+
+// ─── 8. V2 broadcast surface audio exclusivity ───────────────────────────────
+//
+// Defect: when the /player route activates the V2 broadcast surface it starts
+// HLS audio directly through the native media engine, bypassing PlayerContext
+// .playSermon() / .playLive() which are the only callers of
+// audioController.requestRadioStop(). The result: in-app radio plays
+// simultaneously with the broadcast — two audio streams at once.
+//
+// Fix: player.tsx now calls audioController.requestRadioStop() synchronously
+// from a focused useEffect that fires whenever isBroadcastV2 is true, including
+// cold-start / deep-link entry. The effect is scoped via a mount-local ref so
+// it never fires again while the surface stays active, and never fires at all
+// for non-V2 surfaces (VOD, YouTube-live).
+//
+// This section tests the pure-logic contract of the fix:
+//   1. requestRadioStop IS called when isBroadcastV2=true
+//   2. It is NOT called when isBroadcastV2=false (VOD / YouTube paths)
+//   3. It fires exactly once per mount (not on every re-render)
+//   4. Re-mount fires it again (guard resets on unmount)
+//   5. Cold-start / deep-link (isBroadcastV2=true on first render) triggers it
+
+describe("V2 broadcast surface — audio exclusivity via audioController", () => {
+  /**
+   * Minimal simulation of the useEffect in player.tsx that calls
+   * audioController.requestRadioStop() when isBroadcastV2 is true.
+   *
+   * Returns { stopCallCount, simulateUnmount }
+   * so callers can assert call counts and test re-mount behaviour.
+   */
+  function simulateBroadcastMount(isBroadcastV2: boolean): {
+    stopCallCount: () => number;
+    simulateUnmount: () => void;
+  } {
+    let calls = 0;
+    // Minimal stand-in for audioController.requestRadioStop
+    const requestRadioStop = () => { calls++; };
+
+    // Mirror the ref + effect logic from player.tsx:
+    //   const radioStoppedForThisMountRef = useRef(false);
+    //   useEffect(() => {
+    //     if (!isBroadcastV2) return;
+    //     if (radioStoppedForThisMountRef.current) return;
+    //     radioStoppedForThisMountRef.current = true;
+    //     audioController.requestRadioStop();
+    //     return () => { radioStoppedForThisMountRef.current = false; };
+    //   }, [isBroadcastV2]);
+    let radioStoppedForThisMount = false;
+    let cleanup: (() => void) | undefined;
+
+    if (isBroadcastV2) {
+      if (!radioStoppedForThisMount) {
+        radioStoppedForThisMount = true;
+        requestRadioStop();
+        cleanup = () => { radioStoppedForThisMount = false; };
+      }
+    }
+
+    return {
+      stopCallCount: () => calls,
+      simulateUnmount: () => cleanup?.(),
+    };
+  }
+
+  it("calls requestRadioStop exactly once when isBroadcastV2=true (normal direct entry)", () => {
+    const { stopCallCount } = simulateBroadcastMount(true);
+    assert.equal(stopCallCount(), 1, "requestRadioStop must be called once on V2 mount");
+  });
+
+  it("does NOT call requestRadioStop when isBroadcastV2=false (VOD / YouTube path)", () => {
+    const { stopCallCount } = simulateBroadcastMount(false);
+    assert.equal(stopCallCount(), 0, "requestRadioStop must not be called for non-V2 surfaces");
+  });
+
+  it("cold-start deep-link (isBroadcastV2=true from route params) stops radio immediately", () => {
+    // Simulate params: isLive=true, no youtubeId, no hlsUrl → isBroadcastV2=true
+    const params = { isLive: "true", hlsUrl: "", youtubeId: "" };
+    const isLive = params.isLive === "true";
+    const youtubeId = params.youtubeId;
+    const hlsUrl = params.hlsUrl;
+    const isBroadcastV2 = isLive && !(!!youtubeId && !hlsUrl);
+
+    assert.equal(isBroadcastV2, true, "deep-link params must yield isBroadcastV2=true");
+
+    const { stopCallCount } = simulateBroadcastMount(isBroadcastV2);
+    assert.equal(stopCallCount(), 1, "cold-start deep-link must stop radio on mount");
+  });
+
+  it("does not re-stop radio after already firing for this mount (guard is scoped)", () => {
+    // If the same mount calls the effect body twice (e.g. StrictMode double-invoke
+    // is defeated by the ref guard), only one stop should occur.
+    let calls = 0;
+    const requestRadioStop = () => { calls++; };
+    let radioStoppedForThisMount = false;
+
+    // Simulate two invocations of the effect body (same mount)
+    const runEffect = () => {
+      if (!radioStoppedForThisMount) {
+        radioStoppedForThisMount = true;
+        requestRadioStop();
+      }
+    };
+    runEffect(); // first invocation
+    runEffect(); // second invocation — should be a no-op due to the guard
+
+    assert.equal(calls, 1, "ref guard prevents duplicate stop calls within the same mount");
+  });
+
+  it("re-mount fires requestRadioStop again after unmount resets the guard", () => {
+    // Mount 1
+    const mount1 = simulateBroadcastMount(true);
+    assert.equal(mount1.stopCallCount(), 1, "first mount stops radio");
+    mount1.simulateUnmount(); // cleanup: resets guard
+
+    // Mount 2 (user navigated away and back; radio may have been restarted)
+    const mount2 = simulateBroadcastMount(true);
+    assert.equal(mount2.stopCallCount(), 1, "re-mount stops radio again after guard reset");
+  });
+
+  it("source-contract: player.tsx imports audioController", () => {
+    const src = readFileSync("app/player.tsx", "utf8");
+    assert.match(src, /import \* as audioController from ["']@\/services\/audioController["']/,
+      "player.tsx must import audioController singleton");
+  });
+
+  it("source-contract: player.tsx calls requestRadioStop inside an isBroadcastV2-gated effect", () => {
+    const src = readFileSync("app/player.tsx", "utf8");
+    assert.match(src, /audioController\.requestRadioStop\(\)/,
+      "player.tsx must call audioController.requestRadioStop()");
+    // The call must be inside a block gated on isBroadcastV2
+    assert.match(src, /if \(!isBroadcastV2\) return/,
+      "the radio-stop effect must bail early when not V2 surface");
+  });
+
+  it("source-contract: guard ref prevents repeated stops on stable V2 surface", () => {
+    const src = readFileSync("app/player.tsx", "utf8");
+    assert.match(src, /radioStoppedForThisMountRef/,
+      "player.tsx must use a mount-scoped ref to prevent repeated radio-stop calls");
+  });
+});

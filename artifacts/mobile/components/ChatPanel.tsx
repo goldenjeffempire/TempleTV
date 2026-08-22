@@ -454,7 +454,12 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
   const handleLongPress = useCallback(
     (msg: ChatMessage) => {
       const isMod = identity?.isModerator ?? false;
-      const isOwnMsg = identity?.sessionId === msg.userId;
+      // Compare via userId (authenticated) with sessionId fallback for guests.
+      // This prevents users from seeing report/block options on their own messages.
+      const myUserId = identity?.userId ?? null;
+      const isOwnMsg =
+        (myUserId !== null && myUserId === msg.userId) ||
+        (myUserId === null && identity?.sessionId === msg.userId);
 
       const options: Array<{ text: string; style?: "cancel" | "destructive"; onPress?: () => void }> = [];
 
@@ -462,9 +467,43 @@ export function ChatPanel({ visible, onClose, token, inline = false }: ChatPanel
         options.push({
           text: "Report Message",
           onPress: () => {
-            // Report is best-effort; show acknowledgement immediately.
-            void apiModAction(`/api/v1/chat/messages/${msg.id}/report`, "POST", token);
-            Alert.alert("Reported", "Thank you — our team will review this message.");
+            if (!token) {
+              // Unauthenticated — give a truthful message instead of silently failing.
+              Alert.alert(
+                "Sign In Required",
+                "Please sign in to report messages. This helps us verify reports and prevent abuse.",
+              );
+              return;
+            }
+            void (async () => {
+              try {
+                const base = getApiBase();
+                if (!base) throw new Error("no api base");
+                const res = await fetch(`${base}/api/v1/chat/messages/${msg.id}/report`, {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`,
+                  },
+                  body: JSON.stringify({}),
+                });
+                if (res.status === 401) {
+                  Alert.alert(
+                    "Sign In Required",
+                    "Please sign in to report messages.",
+                  );
+                } else if (res.status === 409) {
+                  Alert.alert("Already Reported", "You have already reported this message.");
+                } else if (res.ok) {
+                  Alert.alert("Reported", "Thank you — our team will review this message.");
+                } else {
+                  const data = await res.json().catch(() => ({})) as { error?: string };
+                  Alert.alert("Report Failed", data.error ?? "Could not submit report. Please try again.");
+                }
+              } catch {
+                Alert.alert("Report Failed", "Could not submit report. Please check your connection.");
+              }
+            })();
           },
         });
         options.push({

@@ -62,13 +62,19 @@ export interface RoomMember {
   lastSentAtMs: number;
   /** Body of the last message sent — used for duplicate detection. */
   lastMsgBody: string;
+  /** Epoch-ms of the last typing frame sent (rate-limit guard). */
+  lastTypingMs: number;
+  /** Whether the server currently considers this member as typing. */
+  isTyping: boolean;
 }
 
 const SEND_WINDOW_MS = 10_000;
 const SEND_TOKENS_PER_WINDOW = 5;
+/** Minimum ms between typing frame broadcasts per member (rate-limit guard). */
+const TYPING_RATE_MS = 1_000;
 const MAX_ROOMS = 256;
 
-class ChatHub extends EventEmitter {
+export class ChatHub extends EventEmitter {
   private rooms = new Map<string, Set<RoomMember>>();
   private _settings = new Map<string, ChatSettings>();
   private _pinnedMessages = new Map<string, ChatMessage>();
@@ -115,6 +121,19 @@ class ChatHub extends EventEmitter {
     const room = this.rooms.get(channelId);
     if (!room) return;
     if (!room.delete(member)) return;
+    // If the member was typing, broadcast a typing=false frame so clients
+    // clear the indicator immediately instead of waiting for the TTL.
+    if (member.isTyping) {
+      member.isTyping = false;
+      this._broadcastRaw(channelId, {
+        type: "typing",
+        channelId,
+        sessionId: member.sessionId,
+        userId: member.userId,
+        displayName: member.displayName,
+        isTyping: false,
+      });
+    }
     if (room.size === 0) {
       this.rooms.delete(channelId);
     } else {
@@ -184,6 +203,47 @@ class ChatHub extends EventEmitter {
       subjectId,
       expiresAtMs,
     });
+  }
+
+  // ── Typing indicators ───────────────────────────────────────────────────────
+
+  /**
+   * Broadcast a typing indicator to all other room members.
+   * Rate-limited: each member may broadcast at most one typing frame per
+   * TYPING_RATE_MS to prevent keystroke-level flooding. The frame is only
+   * sent to *other* members (the sender already knows their own state).
+   */
+  broadcastTyping(channelId: string, member: RoomMember, isTyping: boolean): void {
+    const now = Date.now();
+    // Debounce: skip if the member sent the same state very recently
+    if (isTyping && now - member.lastTypingMs < TYPING_RATE_MS) return;
+    // If toggling to false while not currently marked as typing, skip
+    if (!isTyping && !member.isTyping) return;
+    member.lastTypingMs = now;
+    member.isTyping = isTyping;
+
+    const room = this.rooms.get(channelId);
+    if (!room) return;
+    const payload = JSON.stringify({
+      type: "typing",
+      channelId,
+      sessionId: member.sessionId,
+      userId: member.userId,
+      displayName: member.displayName,
+      isTyping,
+    });
+    // Broadcast to all members EXCEPT the sender
+    for (const m of room) {
+      if (m === member) continue;
+      try {
+        if (m.socket.readyState !== 1 /* OPEN */) continue;
+        if (
+          m.socket.bufferedAmount !== undefined &&
+          m.socket.bufferedAmount > BACKPRESSURE_BYTES
+        ) continue;
+        m.socket.send(payload);
+      } catch { /* ignore */ }
+    }
   }
 
   // ── Settings ────────────────────────────────────────────────────────────────
@@ -402,5 +462,7 @@ export function createMember(args: {
     lastPongMs: Date.now(),
     lastSentAtMs: 0,
     lastMsgBody: "",
+    lastTypingMs: 0,
+    isTyping: false,
   };
 }

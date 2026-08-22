@@ -156,20 +156,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       markStartupPhase("auth_restore_start");
       try {
         // Migration: legacy AsyncStorage token → SecureStore (one-time).
+        // Each migration step is isolated so a transient keystore failure on
+        // one key does not abort the others or the whole restore sequence.
+        // setItem now throws on keystore failure (no longer swallows), so we
+        // catch per-key to preserve the others and leave legacy keys intact
+        // (they will be retried on the next cold start if setItem failed).
         const legacyToken = await AsyncStorage.getItem(STORAGE_KEYS.authToken);
         if (legacyToken) {
-          await secureStorage.setItem(SECURE_KEYS.authToken, legacyToken);
-          await AsyncStorage.removeItem(STORAGE_KEYS.authToken);
+          try {
+            await secureStorage.setItem(SECURE_KEYS.authToken, legacyToken);
+            await AsyncStorage.removeItem(STORAGE_KEYS.authToken);
+          } catch { /* transient — will retry on next launch */ }
         }
         const legacyRefresh = await AsyncStorage.getItem(STORAGE_KEYS.authRefreshToken);
         if (legacyRefresh) {
-          await secureStorage.setItem(SECURE_KEYS.authRefreshToken, legacyRefresh);
-          await AsyncStorage.removeItem(STORAGE_KEYS.authRefreshToken);
+          try {
+            await secureStorage.setItem(SECURE_KEYS.authRefreshToken, legacyRefresh);
+            await AsyncStorage.removeItem(STORAGE_KEYS.authRefreshToken);
+          } catch { /* transient — will retry on next launch */ }
         }
         const legacyUser = await AsyncStorage.getItem(STORAGE_KEYS.authUser);
         if (legacyUser) {
-          await secureStorage.setItem(SECURE_KEYS.authUser, legacyUser);
-          await AsyncStorage.removeItem(STORAGE_KEYS.authUser);
+          try {
+            await secureStorage.setItem(SECURE_KEYS.authUser, legacyUser);
+            await AsyncStorage.removeItem(STORAGE_KEYS.authUser);
+          } catch { /* transient — will retry on next launch */ }
         }
 
         // Read credentials from SecureStore. On Android, the hardware-backed
@@ -358,9 +369,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // authApi.apiLogin/apiSignup already persisted both tokens to SecureStore
     // when given an AuthResponse; we only need to mirror state and the user.
     const accessToken = typeof resp === "string" ? resp : (resp.accessToken ?? resp.token);
-    if (typeof resp === "string") {
-      await secureStorage.setItem(SECURE_KEYS.authToken, resp);
-    }
+
     // Normalize the user object so a freshly-logged-in user has the EXACT
     // same shape as a user restored from /me on cold-start. The server's
     // /login response omits `avatarUrl` and `emailVerified` entirely (and
@@ -371,7 +380,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Match the defaults apiGetMe applies so all entry points produce
     // identical state.
     const normalizedUser = normalizeAuthUser(newUser);
-    await secureStorage.setItem(SECURE_KEYS.authUser, JSON.stringify(normalizedUser));
+
+    // Persist credentials atomically: if either write fails (keystore
+    // temporarily unavailable, disk full, etc.) we roll ALL three keys back
+    // and re-throw so the caller sees the failure and the UI never advertises
+    // a logged-in user whose credentials were not actually written to secure
+    // storage.
+    //
+    // When resp is an AuthResponse, apiLogin/apiSignup already wrote the token
+    // pair to SecureStore via persistAuthResponse before calling signIn. The
+    // user JSON write here is the last step; on failure we roll back the token
+    // pair too so no partial credential set remains on disk.
+    try {
+      if (typeof resp === "string") {
+        await secureStorage.setItem(SECURE_KEYS.authToken, resp);
+      }
+      await secureStorage.setItem(SECURE_KEYS.authUser, JSON.stringify(normalizedUser));
+    } catch (persistErr) {
+      // Roll back all three keys — access token, refresh token, and user JSON —
+      // so we never leave a partial credential set on disk after a failed login.
+      await Promise.all([
+        secureStorage.removeItem(SECURE_KEYS.authToken),
+        secureStorage.removeItem(SECURE_KEYS.authRefreshToken),
+        secureStorage.removeItem(SECURE_KEYS.authUser),
+      ]).catch(() => {/* best-effort rollback */});
+      // Do NOT set React state — the context must not advertise a logged-in
+      // user when the underlying credentials could not be persisted.
+      throw persistErr;
+    }
+
     setToken(accessToken);
     setUser(normalizedUser);
     setSessionExpiredAt(null);
