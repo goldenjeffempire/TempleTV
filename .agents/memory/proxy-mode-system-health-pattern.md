@@ -16,3 +16,11 @@ description: Admin system-health endpoint must fetch from daemon when BROADCAST_
 - On success, use daemon's `boot.started`, `sequence`, `itemCount`, `contentRotation`, and `workerAggregate.workers`.
 - On fetch failure (mid-restart), fall through to local state — endpoint must never hard-fail.
 - The public health payload in `rest.routes.ts` MUST include `contentRotation` and `workerAggregate` (added alongside this fix) so no auth header is needed from the API server.
+
+## Admin client contract
+
+Treat daemon health as a progressive payload: core public playback fields are guaranteed, but operator-only diagnostic groups can be absent even when the browser sent a valid bearer token.
+
+**Why:** The private daemon uses a minimal runtime and may not establish `req.principal` for a proxied public health request. It then correctly returns the public payload, while an admin page that assumes `prodSync`, `drift`, or `skipInfo` exists can crash despite a healthy ON AIR broadcast.
+
+**How to apply:** Normalize health once at the client query boundary, preserve all reported values, and clearly label missing diagnostic groups as unavailable. Never let optional diagnostics gate or crash core Master Control playback controls.

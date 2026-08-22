@@ -302,6 +302,103 @@ interface EngineHealth {
   };
 }
 
+type EngineHealthResponse = Partial<
+  Omit<EngineHealth, "boot" | "reload" | "prodSync" | "drift">
+> & {
+  boot?: Partial<EngineHealth["boot"]>;
+  reload?: Partial<EngineHealth["reload"]>;
+  prodSync?: Partial<EngineHealth["prodSync"]>;
+  drift?: Partial<EngineHealth["drift"]>;
+};
+
+interface NormalizedEngineHealth extends EngineHealth {
+  diagnosticsReported: {
+    prodSync: boolean;
+    drift: boolean;
+  };
+}
+
+function normalizeEngineHealth(payload: EngineHealthResponse): NormalizedEngineHealth {
+  const prodSyncReported = payload.prodSync != null;
+  const driftReported = payload.drift != null;
+
+  return {
+    ...payload,
+    ok: payload.ok === true,
+    channelId: payload.channelId ?? "main",
+    sequence:
+      typeof payload.sequence === "number" && Number.isFinite(payload.sequence)
+        ? payload.sequence
+        : 0,
+    mode: payload.mode ?? "offline_hold",
+    hasCurrent: payload.hasCurrent === true,
+    hasOverride: payload.hasOverride === true,
+    failoverActive: payload.failoverActive === true,
+    itemCount:
+      typeof payload.itemCount === "number" && Number.isFinite(payload.itemCount)
+        ? payload.itemCount
+        : 0,
+    uptimeMs:
+      typeof payload.uptimeMs === "number" && Number.isFinite(payload.uptimeMs)
+        ? payload.uptimeMs
+        : 0,
+    serverTimeMs:
+      typeof payload.serverTimeMs === "number" && Number.isFinite(payload.serverTimeMs)
+        ? payload.serverTimeMs
+        : Date.now(),
+    boot: {
+      started: false,
+      busBridgeInstalled: false,
+      startAttempts: 0,
+      lastStartError: null,
+      lastStartAttemptAtMs: null,
+      ...payload.boot,
+    },
+    reload: {
+      lastReloadAtMs: null,
+      lastReloadOk: true,
+      lastReloadError: null,
+      attempts: 0,
+      successes: 0,
+      ...payload.reload,
+    },
+    prodSync: {
+      enabled: false,
+      upstreamUrl: null,
+      intervalMs: 0,
+      lastPollAtMs: null,
+      lastPollOk: false,
+      lastPollError: null,
+      lastUpsertCount: 0,
+      totalPolls: 0,
+      totalUpserts: 0,
+      ...payload.prodSync,
+    },
+    drift: {
+      cycleStartedAtMs: 0,
+      cycleDurationMs: 0,
+      currentItemId: null,
+      currentItemPositionMs: null,
+      lastCpItemId: null,
+      lastCpPositionMs: null,
+      lastCpWallMs: null,
+      driftMs: null,
+      driftAlerted: false,
+      driftThresholdMs: 0,
+      ...payload.drift,
+    },
+    skipInfo: {
+      consecutiveSkips: 0,
+      lastDeadAirAt: null,
+      ...payload.skipInfo,
+    },
+    diagnosticsReported: {
+      prodSync: prodSyncReported,
+      drift: driftReported,
+    },
+  };
+}
+
 interface AiringEntry {
   itemId: string;
   title: string | null;
@@ -2505,7 +2602,8 @@ function BroadcastV2PageInner() {
   // the 30 s poll is a safety-net for any missed SSE frames.
   const { data: engineHealth, isError: engineHealthError } = useQuery({
     queryKey: ["broadcast-v2-engine-health"],
-    queryFn: () => api.get<EngineHealth>("/broadcast-v2/health"),
+    queryFn: () => api.get<EngineHealthResponse>("/broadcast-v2/health"),
+    select: normalizeEngineHealth,
     refetchInterval: sseGated60s,
     staleTime: 25_000,
   });
@@ -5038,11 +5136,17 @@ function BroadcastV2PageInner() {
               <div className="space-y-1.5">
                 <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   Prod sync
-                  {!engineHealth.prodSync.enabled && (
+                  {!engineHealth.diagnosticsReported.prodSync ? (
+                    <span className="ml-1 text-muted-foreground/60">(not reported)</span>
+                  ) : !engineHealth.prodSync.enabled ? (
                     <span className="ml-1 text-muted-foreground/60">(disabled)</span>
-                  )}
+                  ) : null}
                 </div>
-                {engineHealth.prodSync.enabled ? (
+                {!engineHealth.diagnosticsReported.prodSync ? (
+                  <p className="text-xs text-muted-foreground">
+                    This diagnostic is not reported by the current broadcast daemon.
+                  </p>
+                ) : engineHealth.prodSync.enabled ? (
                   <>
                     <HealthRow
                       label="Last poll"
@@ -5083,54 +5187,68 @@ function BroadcastV2PageInner() {
 
               {/* Sync drift */}
               <div className="space-y-1.5">
-                <div className={`text-xs font-semibold uppercase tracking-wide ${engineHealth.drift.driftAlerted ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}>
+                <div className={`text-xs font-semibold uppercase tracking-wide ${
+                  engineHealth.diagnosticsReported.drift && engineHealth.drift.driftAlerted
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-muted-foreground"
+                }`}>
                   Sync drift
-                  {engineHealth.drift.driftAlerted && (
+                  {!engineHealth.diagnosticsReported.drift ? (
+                    <span className="ml-1 text-muted-foreground/60">(not reported)</span>
+                  ) : engineHealth.drift.driftAlerted ? (
                     <span className="ml-1.5 inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400">
                       <AlertTriangle className="h-3 w-3" />
                     </span>
-                  )}
+                  ) : null}
                 </div>
-                <HealthRow
-                  label="Drift"
-                  ok={!engineHealth.drift.driftAlerted}
-                  value={
-                    engineHealth.drift.driftMs === null
-                      ? "—"
-                      : engineHealth.drift.driftMs >= 0
-                      ? `+${(engineHealth.drift.driftMs / 1000).toFixed(1)}s`
-                      : `${(engineHealth.drift.driftMs / 1000).toFixed(1)}s`
-                  }
-                />
-                <HealthRow
-                  label="Threshold"
-                  ok
-                  value={`±${engineHealth.drift.driftThresholdMs / 1000}s`}
-                />
-                <HealthRow
-                  label="Last checkpoint"
-                  ok={engineHealth.drift.lastCpWallMs !== null}
-                  value={
-                    engineHealth.drift.lastCpWallMs
-                      ? formatAgo(engineHealth.drift.lastCpWallMs)
-                      : "none yet"
-                  }
-                />
-                <HealthRow
-                  label="Cycle length"
-                  ok
-                  value={
-                    engineHealth.drift.cycleDurationMs > 0
-                      ? formatDuration(engineHealth.drift.cycleDurationMs)
-                      : "—"
-                  }
-                />
-                {engineHealth.drift.driftMs === null && (
-                  <p className="text-[10px] text-muted-foreground leading-tight">
-                    {engineHealth.mode === "override"
-                      ? "Override active — drift paused."
-                      : "Awaiting first checkpoint (≤5s after start)."}
+                {!engineHealth.diagnosticsReported.drift ? (
+                  <p className="text-xs text-muted-foreground">
+                    This diagnostic is not reported by the current broadcast daemon.
                   </p>
+                ) : (
+                  <>
+                    <HealthRow
+                      label="Drift"
+                      ok={!engineHealth.drift.driftAlerted}
+                      value={
+                        engineHealth.drift.driftMs === null
+                          ? "—"
+                          : engineHealth.drift.driftMs >= 0
+                          ? `+${(engineHealth.drift.driftMs / 1000).toFixed(1)}s`
+                          : `${(engineHealth.drift.driftMs / 1000).toFixed(1)}s`
+                      }
+                    />
+                    <HealthRow
+                      label="Threshold"
+                      ok
+                      value={`±${engineHealth.drift.driftThresholdMs / 1000}s`}
+                    />
+                    <HealthRow
+                      label="Last checkpoint"
+                      ok={engineHealth.drift.lastCpWallMs !== null}
+                      value={
+                        engineHealth.drift.lastCpWallMs
+                          ? formatAgo(engineHealth.drift.lastCpWallMs)
+                          : "none yet"
+                      }
+                    />
+                    <HealthRow
+                      label="Cycle length"
+                      ok
+                      value={
+                        engineHealth.drift.cycleDurationMs > 0
+                          ? formatDuration(engineHealth.drift.cycleDurationMs)
+                          : "—"
+                      }
+                    />
+                    {engineHealth.drift.driftMs === null && (
+                      <p className="text-[10px] text-muted-foreground leading-tight">
+                        {engineHealth.mode === "override"
+                          ? "Override active — drift paused."
+                          : "Awaiting first checkpoint (≤5s after start)."}
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             </div>
