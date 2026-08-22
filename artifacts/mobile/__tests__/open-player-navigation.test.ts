@@ -19,6 +19,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
+const loadDeepLinkGuard = () => import("../lib/deepLinkGuard");
+
 // ─── 1. isBroadcastV2 computation ────────────────────────────────────────────
 // Mirrors the exact expression in artifacts/mobile/app/player.tsx:
 //
@@ -395,5 +397,122 @@ describe("navigateToLive params produce correct isBroadcastV2", () => {
     // Branch: navigateToLive("", "Live Broadcast", 0, undefined, undefined)
     const d = deriveFromParams({ isLive: "true" });
     assert.equal(d.isBroadcastV2, true, "bare isLive always boots V2 engine");
+  });
+});
+
+// ─── 7. Deep-link guard must not overwrite player navigation ─────────────────
+// Linking.getInitialURL() resolves asynchronously on Android. A stale unknown
+// initial URL used to call safeNavReplace("/") after the user tapped Open Player,
+// replacing /player and remounting Home. The guard may only recover when Expo
+// Router is actually sitting on an unknown route.
+
+describe("deep-link guard navigation isolation", () => {
+  it("recognizes Home and the existing Player route", async () => {
+    const { getAppPathFromUrl, isKnownAppPath } = await loadDeepLinkGuard();
+    assert.equal(isKnownAppPath("/"), true);
+    assert.equal(isKnownAppPath("/player"), true);
+    assert.equal(isKnownAppPath("/player/live"), true);
+    assert.equal(getAppPathFromUrl("templetv://player"), "/player");
+    assert.equal(getAppPathFromUrl("templetv:///player"), "/player");
+    assert.equal(getAppPathFromUrl("https://templetv.org.ng/player"), "/player");
+    assert.equal(isKnownAppPath(getAppPathFromUrl("templetv://unknown")), false);
+  });
+
+  it("never replaces Player with Home", async () => {
+    const { shouldRecoverUnknownDeepLink } = await loadDeepLinkGuard();
+    assert.equal(
+      shouldRecoverUnknownDeepLink("/player", false),
+      false,
+      "a delayed unknown-link callback must preserve the active Player route",
+    );
+  });
+
+  it("never replaces Home with Home and triggers a reload", async () => {
+    const { shouldRecoverUnknownDeepLink } = await loadDeepLinkGuard();
+    assert.equal(
+      shouldRecoverUnknownDeepLink("/", false),
+      false,
+      "an unknown link must not remount an already-valid Home route",
+    );
+  });
+
+  it("never competes with an in-flight Open Player push", async () => {
+    const { shouldRecoverUnknownDeepLink } = await loadDeepLinkGuard();
+    assert.equal(
+      shouldRecoverUnknownDeepLink("/unrecognized-referral", true),
+      false,
+      "the user navigation must win while safeNavPush is active",
+    );
+  });
+
+  it("recovers only when the current route is actually unknown", async () => {
+    const { shouldRecoverUnknownDeepLink } = await loadDeepLinkGuard();
+    assert.equal(
+      shouldRecoverUnknownDeepLink("/unrecognized-referral", false),
+      true,
+    );
+  });
+
+  it("preserves Home → Player → Back → Home when the initial URL resolves late", async () => {
+    const { shouldRecoverUnknownDeepLink } = await loadDeepLinkGuard();
+    const stack = ["/"];
+
+    // Home hero: safeNavPush("/player") stamps the in-flight guard before push.
+    let navigationPushActive = true;
+    stack.push("/player");
+
+    // Android now resolves a stale, unknown initial URL. It must not replace
+    // the just-opened player with Home.
+    const shouldReplaceWithHome = shouldRecoverUnknownDeepLink(
+      stack.at(-1) ?? "/",
+      navigationPushActive,
+    );
+    if (shouldReplaceWithHome) stack.splice(0, stack.length, "/");
+
+    navigationPushActive = false;
+    assert.deepEqual(stack, ["/", "/player"]);
+
+    // Android hardware back uses router.back(), restoring the existing Home
+    // entry rather than creating or reloading another Home route.
+    stack.pop();
+    assert.deepEqual(stack, ["/"]);
+  });
+
+  it("repeats the same navigation flow after a cold app restart", async () => {
+    const { shouldRecoverUnknownDeepLink } = await loadDeepLinkGuard();
+    const coldStartStack = ["/"];
+
+    // A delayed unknown-link callback may finish while the fresh app is already
+    // on Home. Replacing Home with Home would remount and refresh the screen.
+    assert.equal(
+      shouldRecoverUnknownDeepLink(coldStartStack.at(-1) ?? "/", false),
+      false,
+    );
+
+    coldStartStack.push("/player");
+    assert.deepEqual(coldStartStack, ["/", "/player"]);
+
+    coldStartStack.pop();
+    assert.deepEqual(coldStartStack, ["/"]);
+  });
+
+  it("blocks a delayed recovery retry when Player opens after attempt one", async () => {
+    const { shouldRecoverUnknownDeepLink } = await loadDeepLinkGuard();
+    let currentPathname = "/unrecognized-referral";
+    let navigationPushActive = false;
+    const canRecover = () =>
+      shouldRecoverUnknownDeepLink(currentPathname, navigationPushActive);
+
+    // Attempt one is valid while Expo Router is still on the unknown path.
+    assert.equal(canRecover(), true);
+
+    // That dispatch throws during a navigator transition. Before the 300 ms
+    // retry, the user taps Open Player and safeNavPush starts committing.
+    navigationPushActive = true;
+    currentPathname = "/player";
+
+    // safeNavReplace receives this live predicate and must call it again before
+    // the retry. The stale Home replace is now cancelled.
+    assert.equal(canRecover(), false);
   });
 });

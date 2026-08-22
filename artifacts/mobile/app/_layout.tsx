@@ -10,9 +10,14 @@ import {
 import { Feather } from "@expo/vector-icons";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Constants from "expo-constants";
-import { Stack, useRootNavigationState, useSegments } from "expo-router";
-import { safeNavPush, safeNavReplace } from "@/lib/safeNavPush";
+import { Stack, usePathname, useRootNavigationState, useSegments } from "expo-router";
+import { isNavPushActive, safeNavPush, safeNavReplace } from "@/lib/safeNavPush";
 import { navLogger } from "@/lib/navLogger";
+import {
+  getAppPathFromUrl,
+  isKnownAppPath,
+  shouldRecoverUnknownDeepLink,
+} from "@/lib/deepLinkGuard";
 import * as SplashScreen from "expo-splash-screen";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AppState, AppStateStatus, Linking, Platform, View } from "react-native";
@@ -269,53 +274,6 @@ function NotificationOptInGate() {
   );
 }
 
-/**
- * Known app paths — any incoming deep-link whose pathname starts with one
- * of these is a valid app route. Everything else is a web-only path that
- * happened to open the app via the broad `pathPrefix "/"` intent filter.
- * Unrecognised paths are redirected to the Watch/Home screen ("/") so the
- * user never sees a 404, even before +not-found.tsx has had a chance to mount.
- * NOTE: Do NOT redirect to Channels here — that would make every unhandled
- * deep-link appear as a phantom Channels navigation to the user.
- */
-const KNOWN_APP_PATH_PREFIXES = [
-  "/channels",
-  "/library",
-  "/player",
-  "/live",
-  "/video",
-  "/search",
-  "/playlists",
-  "/series",
-  "/favorites",
-  "/history",
-  "/watch-later",
-  "/downloads",
-  "/notifications",
-  "/login",
-  "/signup",
-  "/donate",
-  "/settings",
-  "/radio",
-  "/account",
-  "/change-password",
-  "/forgot-password",
-  "/reset-password",
-  "/link",
-  "/contact",
-];
-
-/**
- * Returns true when the pathname could be an in-app route.
- * The root "/" is also valid — it resolves to the tabs group.
- */
-function isKnownAppPath(pathname: string): boolean {
-  if (pathname === "/" || pathname === "") return true;
-  return KNOWN_APP_PATH_PREFIXES.some((prefix) =>
-    pathname === prefix || pathname.startsWith(prefix + "/"),
-  );
-}
-
 function RootLayoutNav() {
   const notifListenerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Readiness-gated cold-start notification routing (see push notification tap
@@ -325,6 +283,9 @@ function RootLayoutNav() {
   // throw). We queue the pending notification here and flush it once the
   // navigator reports ready, instead of guessing with a fixed delay.
   const rootNavigationState = useRootNavigationState();
+  const pathname = usePathname();
+  const pathnameRef = useRef(pathname);
+  pathnameRef.current = pathname;
   const pendingNotificationRef = useRef<{ data: Record<string, unknown>; type: string | undefined } | null>(null);
   const handleNotificationResponseRef = useRef<
     ((data: Record<string, unknown>, type: string | undefined) => void) | null
@@ -343,20 +304,36 @@ function RootLayoutNav() {
   useEffect(() => {
     if (Platform.OS === "web") return;
 
+    let cancelled = false;
+
+    const recoverUnknownRoute = (
+      source: "deep-link-guard" | "deep-link-guard-malformed" | "incoming-link-guard",
+    ) => {
+      const canRecover = () =>
+        shouldRecoverUnknownDeepLink(pathnameRef.current, isNavPushActive());
+
+      if (!canRecover()) {
+        // The incoming URL was unknown, but the app is already on a valid route
+        // (or a user push is still committing). Replacing with "/" here would
+        // overwrite /player and remount Home, which is exactly the Open Player
+        // bounce/reload bug this guard must never cause.
+        return;
+      }
+      // safeNavReplace invokes this live predicate again before a delayed retry,
+      // so a later Player push always wins over stale unknown-link recovery.
+      safeNavReplace("/", {}, source, canRecover);
+    };
+
     // ── Initial URL (cold start) ────────────────────────────────────────────
     Linking.getInitialURL().then((url) => {
-      if (!url) return;
+      if (cancelled || !url) return;
       try {
-        // Strip the custom scheme (templetv://) or https origin to get the path.
-        const parsed = new URL(url);
-        const path = parsed.pathname ?? "/";
+        const path = getAppPathFromUrl(url);
         if (!isKnownAppPath(path)) {
-          // Unknown path — redirect to Watch/Home (the app's default screen).
-          safeNavReplace("/", {}, "deep-link-guard");
+          recoverUnknownRoute("deep-link-guard");
         }
       } catch {
-        // Malformed URL — navigate to Watch/Home.
-        safeNavReplace("/", {}, "deep-link-guard-malformed");
+        recoverUnknownRoute("deep-link-guard-malformed");
       }
     }).catch(() => {
       // getInitialURL failure is non-fatal — the route resolver handles it.
@@ -366,18 +343,18 @@ function RootLayoutNav() {
     const sub = Linking.addEventListener("url", ({ url: incomingUrl }) => {
       if (!incomingUrl) return;
       try {
-        const parsed = new URL(incomingUrl);
-        const path = parsed.pathname ?? "/";
+        const path = getAppPathFromUrl(incomingUrl);
         if (!isKnownAppPath(path)) {
-          // Unknown external path — redirect to Watch/Home so the user is
-          // never stranded on a 404 by a stale web link or Play Store referral.
-          safeNavReplace("/", {}, "incoming-link-guard");
+          recoverUnknownRoute("incoming-link-guard");
         }
         // Known paths fall through — Expo Router's built-in handler processes them.
       } catch { /* ignore malformed URLs */ }
     });
 
-    return () => sub.remove();
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
   }, []);
 
   // ── Push notification tap handler ──────────────────────────────────────────

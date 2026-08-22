@@ -111,10 +111,16 @@ export function safeNavReplace(
   pathname: string,
   params?: NavParams,
   source = "unknown",
+  shouldProceed?: () => boolean,
 ): void {
   const startTs = navLogger.logAttempt(pathname, params as Record<string, unknown> | undefined, source);
 
   const attempt = (n: number): void => {
+    // Re-check immediately before every dispatch, including the delayed retry.
+    // This prevents a stale unknown-link recovery from overwriting a /player
+    // push that started after attempt one failed.
+    if (shouldProceed && !shouldProceed()) return;
+
     try {
       router.replace({ pathname: pathname as never, params: params as never });
       navLogger.logSuccess(pathname, startTs, source);

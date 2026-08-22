@@ -16,6 +16,14 @@ Every `router.push` or `router.replace` that targets `/player` (or any screen wh
 - Source tags are short kebab-case strings identifying the call site ("home-hero", "channels-live", "notification:live", "player-related", etc.). They appear in Sentry breadcrumbs.
 - For non-player navigations (settings tabs, login/signup flows, go-back), bare `router.push/replace` is acceptable.
 
+## Async recovery must revalidate every dispatch
+
+Route-recovery callbacks that can resolve after user input (initial links, incoming links, notification fallbacks) must not replace a valid current route or compete with an active push. A guarded replace must re-run its live route/push predicate before both its first dispatch and every delayed retry.
+
+**Why:** Android can resolve the initial URL after the user taps Open Player. An unconditional Home replace—or a retry scheduled before the tap—can overwrite `/player` and remount Home, producing a skeleton refresh instead of the Player.
+
+**How to apply:** Keep current pathname in a render-ref, check the active-push latch, avoid replacing known routes (including Home), and pass a live guard into any retrying replace helper. Never rely only on a check made when the async callback first started.
+
 ## navLogger
 `@/lib/navLogger` is a 30-event ring buffer + Sentry breadcrumbs + `__DEV__` console. Three events form the full session timeline:
 1. `logAttempt` — fired by `safeNavPush` before the push
