@@ -292,3 +292,17 @@ mtime_ms = 1787395893878
 storage_uri = "gcs://replit-rams-assets-worf/rams/assets/repl:c64777b7-fc5a-4baf-a755-0ab6e41a51b7/bc1469f5-a570-48ab-aa8d-f04dfec9b8fa/0c9c5e93-f53e-460f-91e0-ef84f05a834a"
 storage_version_token = "1787395958234136"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "DepNeFwb_dee9WmB_Wm-D"
+uri = "file://artifacts/mobile/build-output/temple-tv-1.0.68-build-136.aab"
+type = "unspecified"
+title = "Temple TV 1.0.68 — Correctly Signed AAB"
+description = "Production Android App Bundle, versionCode 136. Embedded signer verified against Google Play SHA-1 52:2C:16:01:87:CF:98:86:F2:FB:AB:3B:0A:3A:FC:B1:E8:BF:91:69."
+logical_id = "cec73fe2-dc95-4831-980f-0e659fd0e6fb"
+content_hash = "sha256:4ebb1df4878e0e6251d2711e5f695021e3decc0124f61cf1780b9934e70378c5"
+size = 98058139
+mtime_ms = 1787398045290
+storage_uri = "gcs://replit-rams-assets-worf/rams/assets/repl:c64777b7-fc5a-4baf-a755-0ab6e41a51b7/cec73fe2-dc95-4831-980f-0e659fd0e6fb/d7b65991-a6cf-42ef-85eb-e58183623b90"
+storage_version_token = "1787398079546005"
+content_type = "application/octet-stream"
