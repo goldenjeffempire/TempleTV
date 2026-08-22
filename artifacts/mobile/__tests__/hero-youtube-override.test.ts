@@ -32,10 +32,12 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 // ─── Shared fixtures ──────────────────────────────────────────────────────────
 
 const YT_ID = "dQw4w9WgXcQ"; // canonical 11-char YouTube ID used throughout
+const loadYouTubePlayerLayout = () => import("../lib/youtubePlayerLayout");
 
 // ─── 1. YouTube video ID extraction ──────────────────────────────────────────
 // Mirrors the regex used in:
@@ -98,6 +100,48 @@ describe("extractYouTubeId — standard watch URL", () => {
   it("builds the correct YouTube URL (mirrors buildYouTubeUrl on the server)", () => {
     const url = `https://www.youtube.com/watch?v=${YT_ID}`;
     assert.equal(extractYouTubeId(url), YT_ID);
+  });
+});
+
+describe("native YouTube player surface layout", () => {
+  it("uses the route shell height before, during, and after playback", async () => {
+    const { resolveYouTubePlayerHeight } = await loadYouTubePlayerLayout();
+    const videos = ["dQw4w9WgXcQ", "M7lc1UVf-VE", "aqz-KE-bpKQ"];
+    const states = ["thumbnail", "playing", "ended"] as const;
+
+    for (const videoId of videos) {
+      for (const state of states) {
+        assert.equal(
+          resolveYouTubePlayerHeight(412, 232),
+          232,
+          `${videoId} ${state} must fill the same 412×232 shell`,
+        );
+      }
+    }
+  });
+
+  it("falls back to responsive 16:9 sizing across Android widths", async () => {
+    const {
+      resolveYouTubePlayerHeight,
+      YOUTUBE_ASPECT_RATIO,
+    } = await loadYouTubePlayerLayout();
+
+    for (const width of [320, 360, 393, 412, 480]) {
+      const height = resolveYouTubePlayerHeight(width);
+      assert.ok(Math.abs((width / height) - YOUTUBE_ASPECT_RATIO) < 0.02);
+    }
+  });
+
+  it("does not add opaque React Native masks above the YouTube iframe", () => {
+    const source = readFileSync("components/YoutubePlayer.native.tsx", "utf8");
+    assert.equal(source.includes("YouTube chrome blockers"), false);
+    assert.equal(source.includes('backgroundColor: "rgba(0,0,0,0.88)"'), false);
+    assert.equal(source.includes('backgroundColor: "rgba(0,0,0,0.90)"'), false);
+    assert.equal(
+      (source.match(/resizeMode="cover"/g) ?? []).length,
+      2,
+      "loading and fallback thumbnails must fill the player rectangle",
+    );
   });
 });
 

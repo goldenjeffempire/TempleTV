@@ -18,6 +18,7 @@ import * as WebBrowser from "expo-web-browser";
 import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { usePlayer } from "@/context/PlayerContext";
+import { resolveYouTubePlayerHeight } from "@/lib/youtubePlayerLayout";
 
 interface YoutubeIframeRef {
   setVolume?(vol: number): void;
@@ -192,7 +193,7 @@ export function YoutubePlayer({
   isBroadcastLive = false,
 }: YoutubePlayerProps) {
   const c = useColors();
-  const { width, height: screenHeight } = useWindowDimensions();
+  const { width } = useWindowDimensions();
   const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, playerVolumeRef, dataSaver, isRadioMode, volume } = usePlayer();
   const [loading, setLoading] = useState(false);
   const [playing, setPlaying] = useState(autoPlay);
@@ -418,10 +419,7 @@ export function YoutubePlayer({
     onError?.();
   }, [retryCount, onError]);
 
-  const playerHeight = playerHeightProp ?? Math.min(
-    Math.round(width * (9 / 16)),
-    Math.round(screenHeight * 0.42),
-  );
+  const playerHeight = resolveYouTubePlayerHeight(width, playerHeightProp);
 
   const thumb =
     thumbnailUrl ?? (activeVideoId ? `https://img.youtube.com/vi/${activeVideoId}/hqdefault.jpg` : null);
@@ -465,11 +463,9 @@ export function YoutubePlayer({
           mediaPlaybackRequiresUserAction: false,
           javaScriptEnabled: true,
           bounces: false,
-          // On Android, WebView uses SurfaceView by default which always
-          // renders above React Native views regardless of zIndex. Setting
-          // androidLayerType="hardware" switches it to a hardware-composited
-          // View layer that React Native views CAN sit above, enabling the
-          // chrome-blocker overlay Views defined in the render below.
+          // Keep the iframe hardware-composited on Android so the existing
+          // loading transition can fade cleanly above it without changing
+          // YouTube's own controls or touch handling.
           androidLayerType: "hardware",
         }}
       />
@@ -496,76 +492,11 @@ export function YoutubePlayer({
       <View style={[styles.container, { height: playerHeight }]}>
         {ytPlayer}
 
-        {/* ── YouTube chrome blockers ─────────────────────────────────────
-            React Native Views layered above the YoutubeIframe WebView.
-
-            WHY this works (and injectedJavaScript doesn't):
-            The library loads "lonelycpp.github.io/iframe_v2.html" which
-            embeds a cross-origin youtube.com <iframe>. In mobile WebViews,
-            cross-origin iframes get their own GPU compositing layer that
-            always renders above the outer document — so position:fixed
-            divs injected via injectedJavaScript land *under* the video.
-
-            React Native Views placed AFTER the WebView in the component
-            tree sit above it in the same RN layer stack.
-            • iOS (WKWebView): RN views naturally composite above WebViews.
-            • Android: androidLayerType="hardware" (webViewProps above)
-              switches the WebView off SurfaceView (always-on-top) onto a
-              hardware-composited View layer that RN views can overlay.
-
-            Three caps cover YouTube's chrome without touching the iframe:
-            • top 52 px          — channel name / video-title info bar
-            • bottom-right 38%   — "More videos" recommendation button
-            • bottom-left  14%   — YouTube's Share / external-link button
-
-            Gated on playerReady so they only show after the loading
-            transition completes. zIndex 6 keeps them below the loading
-            overlay (zIndex 10) which must win during buffering/reconnect.
-            Not rendered for broadcast: controls=0 already hides the bar. */}
-        {playerReady && (
-          <>
-            <View
-              style={{
-                position: "absolute",
-                pointerEvents: "none",
-                top: 0, left: 0, right: 0,
-                height: 52,
-                backgroundColor: "rgba(0,0,0,0.88)",
-                zIndex: 6,
-              }}
-            />
-            {!isBroadcastLive && (
-              <>
-                <View
-                  style={{
-                    position: "absolute",
-                    bottom: 0, right: 0,
-                    width: Math.round(width * 0.38),
-                    height: 50,
-                    backgroundColor: "rgba(0,0,0,0.90)",
-                    zIndex: 6,
-                  }}
-                />
-                <View
-                  style={{
-                    position: "absolute",
-                    bottom: 0, left: 0,
-                    width: Math.round(width * 0.14),
-                    height: 50,
-                    backgroundColor: "rgba(0,0,0,0.90)",
-                    zIndex: 6,
-                  }}
-                />
-              </>
-            )}
-          </>
-        )}
-
         <Animated.View
           style={[styles.transitionOverlay, { opacity: transitionOpacity, pointerEvents: "none" }]}
         >
           {thumb && (
-            <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="contain" />
+            <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="cover" />
           )}
           <View style={[styles.loadingCenter, { backgroundColor: "rgba(0,0,0,0.5)" }]}>
             <ActivityIndicator color={c.primary} size="large" />
@@ -581,7 +512,7 @@ export function YoutubePlayer({
   return (
     <View style={styles.container}>
       {thumb && (
-        <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="contain" />
+        <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="cover" />
       )}
       <View style={[styles.overlay, { backgroundColor: "rgba(0,0,0,0.38)" }]}>
         <Pressable

@@ -774,6 +774,7 @@ export default function PlayerScreen() {
   // immediately visible without scrolling — matching the split-screen layout
   // of professional streaming platforms (YouTube Live, Twitch).
   const livePlayerHeight = Math.round(width * 9 / 16);
+  const inlinePlayerHeight = isLive ? livePlayerHeight : playerHeight;
   const handleAspectRatioChange = useCallback((ratio: number) => {
     // Clamp to sane range — ignore garbage values from corrupt streams.
     if (ratio > 0.1 && ratio < 10) setVideoAspectRatio(ratio);
@@ -1404,7 +1405,7 @@ export default function PlayerScreen() {
         {/* ── Player Shell ──────────────────────────────────────────────── */}
         {/* Live broadcasts: compact 16:9 height so chat is immediately visible.
             VOD: adaptive height based on video aspect ratio, max 60% of screen. */}
-        <View style={[styles.playerShell, { height: isLive ? livePlayerHeight : playerHeight }]}>
+        <View style={[styles.playerShell, { height: inlinePlayerHeight }]}>
           {isBroadcastV2 && v2YouTubeOverrideVideoId ? (
             /* V2 YouTube override — swaps inline to YoutubePlayer the moment
                the server snapshot arrives with override.kind="youtube" (e.g.
@@ -1420,7 +1421,7 @@ export default function PlayerScreen() {
               title={v2Override?.title ?? liveTitle}
               autoPlay
               startPositionSecs={0}
-              playerHeight={playerHeight}
+              playerHeight={inlinePlayerHeight}
               isBroadcastLive={true}
               onEnd={() => { /* live YouTube override — no autoplay countdown */ }}
               onProgress={handleProgress}
@@ -1452,7 +1453,7 @@ export default function PlayerScreen() {
               title={title}
               autoPlay
               startPositionSecs={startPositionSecs}
-              playerHeight={playerHeight}
+              playerHeight={inlinePlayerHeight}
               isBroadcastLive={isLive}
               onEnd={startCountdown}
               onProgress={handleProgress}
