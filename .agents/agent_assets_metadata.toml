@@ -95,159 +95,200 @@ id = "UPbzqm8if0zEfclLOZ34p"
 uri = "file://RELEASE_AUDIT.md"
 type = "text"
 title = "Temple TV — Production Release Audit"
+logical_id = "fa833c0f-6c42-4cc2-b1e2-84c144dca621"
 
 [[outputs]]
 id = "sZNyLCHJ2HUjlBqHs1pMi"
 uri = "file://artifacts/mobile/store-assets/icon-512x512.png"
 type = "image"
 title = "App Icon — Temple TV Logo (your upload)"
+logical_id = "02461cf6-8d9b-478a-9cf6-c3a58dfb587a"
 
 [[outputs]]
 id = "jcYDk3i0kAwOcC9A5gYwK"
 uri = "file://artifacts/mobile/store-assets/screenshots/01-home.png"
 type = "image"
 title = "Screenshot 1 — Home Screen"
+logical_id = "3315c305-045b-4de5-a758-25f7291e4b12"
 
 [[outputs]]
 id = "uuSZxUYxrLwDqF_YvGdWx"
 uri = "file://artifacts/mobile/store-assets/screenshots/02-live-stream.png"
 type = "image"
 title = "Screenshot 2 — Live Stream"
+logical_id = "2355d867-69de-4c4a-bdd3-0a3425cc1c38"
 
 [[outputs]]
 id = "jKaNfD-7xYr5YFLhi0XY2"
 uri = "file://artifacts/mobile/store-assets/screenshots/03-categories.png"
 type = "image"
 title = "Screenshot 3 — Categories"
+logical_id = "1ce7150a-03b5-4ef7-9f05-925abf3c8ebf"
 
 [[outputs]]
 id = "nIMsFR5Ul9qwsLZdBXV7U"
 uri = "file://artifacts/mobile/store-assets/screenshots/04-sermon-detail.png"
 type = "image"
 title = "Screenshot 4 — Sermon Detail"
+logical_id = "8de8519e-1639-4e11-957b-a13e1701ae98"
 
 [[outputs]]
 id = "FeLmgWVJ4FJwDRVVH5atU"
 uri = "file://artifacts/mobile/store-assets/screenshots/05-search.png"
 type = "image"
 title = "Screenshot 5 — Search"
+logical_id = "cc3364d7-3f39-491f-b3c0-504aec372ad5"
 
 [[outputs]]
 id = "SVdgCgG9PSAw4W9PtuZ6c"
 uri = "file://artifacts/mobile/store-assets/screenshots/06-video-player.png"
 type = "image"
 title = "Screenshot 6 — Video Player"
+logical_id = "4b3e8b4f-5dc4-4f9d-ba30-34ce55cf8f7a"
 
 [[outputs]]
 id = "nAq8J5Anmq5r9qPaWZN31"
 uri = "file://artifacts/mobile/store-assets/screenshots/01-home.jpg"
 type = "image"
 title = "Screen 1 — Home (Watch)"
+logical_id = "b0df7fd5-b68b-4be3-8ac4-f1c8aa6bb91a"
 
 [[outputs]]
 id = "TBeAPmsUHcXRpJa-mE5C6"
 uri = "file://artifacts/mobile/store-assets/screenshots/02-library.jpg"
 type = "image"
 title = "Screen 2 — Library (2,114 Sermons)"
+logical_id = "90e5c52b-6184-4fd2-8a75-1a0ecb5d3888"
 
 [[outputs]]
 id = "fyK3J99P1-tILiYCFbXyw"
 uri = "file://artifacts/mobile/store-assets/screenshots/03-radio.jpg"
 type = "image"
 title = "Screen 3 — Radio Player"
+logical_id = "5fb6c69c-b669-4c5f-80ac-5dec4d972a9e"
 
 [[outputs]]
 id = "glznWUsb7kLvxywKyGiL_"
 uri = "file://artifacts/mobile/store-assets/screenshots/04-guide.jpg"
 type = "image"
 title = "Screen 4 — Programme Guide"
+logical_id = "33234d2f-6a6d-407a-bd71-8b19c7df5920"
 
 [[outputs]]
 id = "7YmcQyKowxODIye59gIBL"
 uri = "file://artifacts/mobile/store-assets/screenshots/05-settings.jpg"
 type = "image"
 title = "Screen 5 — Settings"
+logical_id = "45d2e2e4-210f-4f68-a314-db849bff0add"
 
 [[outputs]]
 id = "dGE1L8x11QRK5aR-Olwb-"
 uri = "file://artifacts/mobile/COMMANDS.md"
 type = "text"
 title = "Temple TV Mobile — Command Reference"
+logical_id = "e3f43588-41dd-41f9-888e-1bae60e77e69"
 
 [[outputs]]
 id = "DX1mhtBNEQXm6ZZuZfnKF"
 uri = "file://PLATFORM_AUDIT.md"
 type = "text"
 title = "Temple TV — Full Platform Audit Report"
+logical_id = "c964aa51-aeb7-4e29-a856-3dd6c3676c17"
 
 [[outputs]]
 id = "TLJCwS_Yyh7RJrF_VpeZN"
 uri = "file://platform.md"
 type = "text"
 title = "Temple TV — Platform Features & Functionality Reference"
+logical_id = "b6e34e05-192d-4540-bd71-6cf58f77c67c"
 
 [[outputs]]
 id = "ygfnkBxnUYesm4GC6POYn"
 uri = "file://PLATFORM_AUDIT_REPORT.md"
 type = "text"
 title = "Temple TV — Full Platform Audit Report"
+logical_id = "e9bbda38-806e-499e-a8fb-c2021cfd953d"
 
 [[outputs]]
 id = "_xVfgPw7qUBUnLmPZKB0p"
 uri = "file://attached_assets/temple-tv-feature-graphic.png"
 type = "image"
 title = "Temple TV — Google Play Feature Graphic (1024×500)"
+logical_id = "06b23f59-46f4-4064-baf0-733c9de951a9"
 
 [[outputs]]
 id = "K-ONid78WtiwoSiEgyAOO"
 uri = "file://artifacts/mobile/upload_certificate.pem.txt"
 type = "text"
 title = "upload_certificate.pem — upload this to Play Console"
+logical_id = "0102b1a7-2dda-4e7c-ad8f-f3d20a2932ac"
 
 [[outputs]]
 id = "Jpukm0005922hnFZIK-x8"
 uri = "file://artifacts/mobile/dist/temple-tv-android-release.tar.gz"
 type = "unspecified"
 title = "Temple TV — Android release bundle (.aab + upload cert)"
+logical_id = "c5b65f5e-8721-4f20-80fb-40347ad98d51"
 
 [[outputs]]
 id = "6mBBWO3P3N1dCYI-ZR4AK"
 uri = "file://artifacts/mobile/dist/temple-tv-android-v34.tar.gz"
 type = "unspecified"
 title = "Temple TV — Android v1.0.5 (versionCode 34, .aab + upload cert)"
+logical_id = "2650be8f-b3fb-4b2d-8977-aeef1e2e8b02"
 
 [[outputs]]
 id = "VbRuD9wc-WZNEtWLXYtre"
 uri = "file://screenshots/icon-suite-preview.png"
 type = "image"
 title = "Temple TV — Production Icon Suite"
+logical_id = "9507f35e-ef44-494e-84d2-228a2b083da5"
 
 [[outputs]]
 id = "nHGp8TlsIC4HsDpUYUoJq"
 uri = "file://artifacts/mobile/build-output/temple-tv-mobile-v1.0.43-102.aab"
 type = "unspecified"
 title = "Temple TV v1.0.43 (versionCode 102) — production .aab"
+logical_id = "eb1df449-a37a-4d19-bd79-2648265326bd"
 
 [[outputs]]
 id = "y8wdVrrobGMvOV3ogz-33"
 uri = "file://attached_assets/temple-tv-v1.0.45-105.aab"
 type = "unspecified"
 title = "Temple TV v1.0.45 (105) — production Android .aab"
+logical_id = "c6c4a156-0160-4c34-935c-cb203937c6d0"
 
 [[outputs]]
 id = "1yTCi2NGKvAguQci2KFYa"
 uri = "file://build-output/temple-tv-v1.0.45-105.aab"
 type = "unspecified"
 title = "Temple TV v1.0.45 (105) — Android App Bundle"
+logical_id = "04e21f63-2a1a-4b63-9ff1-6f4ebeeb8224"
 
 [[outputs]]
 id = "Y2QeLcYo50sy-d2RKvH7J"
 uri = "file://build-output/temple-tv-v1.0.46-106.aab"
 type = "unspecified"
 title = "Temple TV v1.0.46 (versionCode 106) — Android App Bundle"
+logical_id = "3847e51e-1136-4bde-83c8-1550cf509c66"
 
 [[outputs]]
 id = "FkQBpF2wiNO2B7DVDp0v3"
 uri = "file://artifacts/mobile/build-output/temple-tv-v1.0.48.aab"
 type = "unspecified"
 title = "Temple TV v1.0.48 (versionCode 108) — signed Android App Bundle"
+logical_id = "f8567df0-c67b-44ba-82ab-737a6e5e5d2a"
+
+[[outputs]]
+id = "bYXevm1cdKE1FzGkaQ9E2"
+uri = "file://artifacts/mobile/build-output/temple-tv-1.0.67-build-135.aab"
+type = "unspecified"
+title = "Temple TV 1.0.67 Android App Bundle"
+description = "Signed production AAB built by Expo EAS for Android versionCode 135. ZIP integrity verified; size 94 MB."
+logical_id = "bc1469f5-a570-48ab-aa8d-f04dfec9b8fa"
+content_hash = "sha256:57b8956559d4e420e69a536226cf47363a3ea501bc5e2c47b047522551133082"
+size = 98058059
+mtime_ms = 1787395893878
+storage_uri = "gcs://replit-rams-assets-worf/rams/assets/repl:c64777b7-fc5a-4baf-a755-0ab6e41a51b7/bc1469f5-a570-48ab-aa8d-f04dfec9b8fa/0c9c5e93-f53e-460f-91e0-ef84f05a834a"
+storage_version_token = "1787395958234136"
+content_type = "application/octet-stream"
