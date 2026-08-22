@@ -1,6 +1,6 @@
 {
   "name": "@workspace/mobile",
-  "version": "1.0.54",
+  "version": "1.0.67",
   "private": true,
   "packageManager": "pnpm@10.26.1",
   "main": "./index.ts",
