@@ -155,3 +155,4 @@
 - [Broadcast daemon leadership through transaction poolers](broadcast-daemon-pooler-lock.md) — use a pinned transaction-scoped advisory lock with exact-key heartbeat; session locks can leak onto pooled backends.
 - [Daemon REST proxy compression zero-body bug](daemon-proxy-compression-zero-body.md) — disable @fastify/compress for pre-serialized daemon REST payloads; Cloudflare gzip/br exposed Content-Length: 0.
 - [Mobile YouTube surface layout](mobile-youtube-surface-layout.md) — iframe, shell, and thumbnails share one rectangle; never mask native YouTube controls with dark RN overlay caps.
+- [Managed artifact workflow bootstrap](managed-artifact-workflow-bootstrap.md) — artifact workflows inject pnpm install and reject command overrides; serialize retries after concurrent-install ENOTEMPTY failures.

@@ -15,7 +15,7 @@ const BASE_URL = import.meta.env.BASE_URL.replace(/\/$/, "");
  *      "https://api.templetv.org.ng"). Strip trailing slash and /api
  *      suffix so callers always get a normalised origin-only base.
  *   2. Same-origin fallback — uses window.location.origin so the Vite
- *      dev proxy (/api → localhost:5000) keeps working without config.
+ *      dev proxy (/api → localhost:8080) keeps working without config.
  */
 export function resolveApiOrigin(): string {
   const override = (import.meta.env.VITE_API_URL as string | undefined)?.trim();
