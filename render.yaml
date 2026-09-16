@@ -55,16 +55,15 @@ services:
         - scripts/**
         - render.yaml
 
-    # DB migration runs in preDeployCommand (after build, before traffic swap)
-    # so DATABASE_URL is available as a live env var — not at build time.
+    # Render free-tier services do not support preDeployCommand. The startup
+    # wrapper runs the idempotent schema push before the API process starts,
+    # while DATABASE_URL is available as a runtime environment variable.
     buildCommand: |
       bash ./scripts/render-install.sh && \
       pnpm run verify:render && \
       pnpm --filter @workspace/api-server run build
 
-    preDeployCommand: pnpm --filter @workspace/db run push-force
-
-    startCommand: pnpm --filter @workspace/api-server run start:render-free
+    startCommand: bash ./scripts/render-start-api.sh
 
     healthCheckPath: /api/healthz
 
