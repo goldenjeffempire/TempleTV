@@ -289,17 +289,19 @@ pnpm --filter @workspace/api-server exec tsx scripts/seed-demo-account.ts
 
 ---
 
+---
+
 ## 5. Ads Declaration
 
 > **Play Console path**: Policy → App content → Ads
 
 ### Does this app contain ads?
 
-**→ No. Temple TV does not contain any advertisements.**
+**→ No. Temple TV does not contain advertisements.**
 
-**Declaration**: This app does not display any ads from third-party ad networks (AdMob, Facebook Audience Network, Unity Ads, etc.) and does not include any ad SDK libraries. No interstitial, banner, rewarded, or native ads are shown at any point in the app.
+**Declaration**: The Android release does not include a third-party advertising SDK or display banner, interstitial, rewarded, native, or app-open advertising.
 
-**Impact on Play Store badge**: Selecting "No ads" will display the "No ads" badge on the store listing, which increases user trust for a ministry/faith app.
+**Impact on Play Store badge**: Selecting "No ads" will display the "No ads" badge on the store listing.
 
 ---
 
@@ -820,7 +822,7 @@ Recommended approaches for producing store screenshots:
 
 ### Policy compliance
 
-- [ ] No third-party ad SDKs present in release build
+- [ ] No third-party advertising SDKs present in release build
 - [ ] No root detection bypass code
 - [ ] No obfuscation that hides true app functionality
 - [ ] In-app purchase / payment flows link to external provider (not custom payment UI collecting card data)

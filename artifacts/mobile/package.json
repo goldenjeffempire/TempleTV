@@ -29,7 +29,7 @@
     "release:rollback": "bash scripts/release-rollback.sh",
     "android:clean": "cd android && ./gradlew clean",
     "android:stop": "cd android && ./gradlew --stop",
-    "test": "node --import tsx/esm --test __tests__/startup.test.ts __tests__/hero-youtube-override.test.ts __tests__/open-player-navigation.test.ts __tests__/ads.test.ts __tests__/notifications-auth-fixes.test.ts"
+    "test": "node --import tsx/esm --test __tests__/startup.test.ts __tests__/hero-youtube-override.test.ts __tests__/open-player-navigation.test.ts __tests__/notifications-auth-fixes.test.ts __tests__/network-media-defects.test.ts __tests__/player-hook-safety.test.ts"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
@@ -96,7 +96,6 @@
     "hls.js": "^1.6.16",
     "react": "catalog:",
     "react-native": "0.86.3",
-    "react-native-google-mobile-ads": "16.3.4",
     "react-native-sse": "^1.2.1",
     "react-native-track-player": "^4.1.2",
     "react-native-webview": "13.16.1",

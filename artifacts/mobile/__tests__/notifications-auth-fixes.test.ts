@@ -6,7 +6,7 @@
  *   node --import tsx/esm --test __tests__/notifications-auth-fixes.test.ts
  *
  * Tests pure-JS logic only — no React Native host, no native module mocks.
- * Follows the convention of startup.test.ts and ads.test.ts.
+ * Follows the convention of startup.test.ts.
  *
  * Areas covered:
  *   1. registerTokenWithServer result classification (non-2xx = failure, retain token)

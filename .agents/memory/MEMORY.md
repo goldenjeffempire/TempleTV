@@ -4,11 +4,11 @@
 - [EAS local credentials — JKS required, PKCS12 alias not resolved](eas-local-credentials-jks-required.md) — PKCS12 (.p12) keystore fails EAS alias lookup even when keytool reads it fine; convert to JKS first.
 - [EAS submission fails when pnpm peer-hash variants block hoisting](eas-pnpm-hoist-conflict.md) — multiple expo/expo-router peer-hash variants prevent hoisting; fix: pnpm install --ignore-scripts before eas build.
 - [pnpm patch + lockfile sync — EAS and Render both fail](pnpm-patch-lockfile-sync.md) — after any patch change, run pnpm install and commit both patch + lockfile; missing patchedDependencies in lockfile = Kotlin build error on EAS + LOCKFILE_CONFIG_MISMATCH on Render.
-- [EAS root .easignore + google-mobile-ads Kotlin pinning](eas-android-dir-and-ads-kotlin.md) — root .easignore governs monorepo uploads (must exclude artifacts/mobile/android/); rn-google-mobile-ads 16.3.4 max for Kotlin 2.1.x projects.
+- [IMA SDK integration — TV](ima-sdk-integration.md) — TV-only IMA HTML5 VMAP integration, no-op configuration, and player break-handling decisions.
+- [Expo keep-awake activation race](expo-keep-awake-activation-race.md) — own a named tag and handle cleanup after async activation; default-tag deactivation can race and crash.
 - [Stale patch causes EAS frozen-lockfile failure](stale-patch-eas-failure.md) — patch applied locally via cache but fails on EAS clean store; verify every patch still applies to raw npm source before building.
 - [Safe nav push pattern — player navigation](safe-nav-push-pattern.md) — safeNavPush sets navPushActiveUntil+1500ms; NativeTabLayout checks isNavPushActive() before router.replace("/"); both sides required to prevent iOS 18+ bounce-back bug.
 - [Player bounce-back root cause and fix](player-bounce-back-root-cause.md) — LiveBroadcastSupervisor concurrent-push race + Android predictive-back gesture; fix: isNavPushActive() guard in Supervisor + gestureEnabled:false on player Stack.Screen.
-- [IMA SDK integration — TV + Mobile](ima-sdk-integration.md) — TV: IMA HTML5 VMAP via CDN script + adManager.ts class; Mobile: react-native-google-mobile-ads@14.11.0; both use 30-min frequency cap; see before touching ad config.
 - [Gradle config cache — incompatible with RN/Expo/Sentry](gradle-config-cache-incompatibility.md) — org.gradle.configuration-cache=true breaks EAS builds; RN/Expo/Sentry spawn node at config time; do not re-enable.
 - [Corrupted pnpm patch + duplicate const build blockers](corrupted-patch-and-duplicate-const.md) — regenerate corrupted patch files from the real unpatched source; expect layered install→build→runtime blockers on unfamiliar setups.
 - [Broadcast continuity — all fixes applied](broadcast-continuity-fixes.md) — 6-layer fix; boot dead-air 75s→9ms; video resumes exact timestamp; see before touching daemon-proxy, orchestrator, or yt-shuffle.
@@ -125,8 +125,6 @@
 - [Player FSM FATAL backoff base is 10s not 30s](player-fatal-backoff-10s.md) — FATAL_AUTO_RECOVERY_MS=10_000 in machine.ts; correct schedule: 10→20→40→80→160→240s.
 - [FailoverHandler React Native network events](failover-handler-rn-network.md) — window 'online'/'offline' silently never fire on RN Hermes; use notifyOnline()/notifyOffline() from NetInfo + bindDomEvents:false.
 - [Schedule bridge one-time entry exactly-once](schedule-bridge-one-time-claim.md) — must claim-deactivate in DB BEFORE firing handleEntry; `claimOneTimeFiring()` returns bool; only fire when true.
-- [AdMob production wiring — mobile app](admob-production-wiring.md) — config plugin pattern, all ad format hooks, FrequencyCapper class name, inner/outer split in InterstitialAdController, publisher pub-6817509745706083.
-- [AdMob placeholder-protection + frequency-cap audit](admob-audit-jul2026.md) — 4 bugs fixed: REPLACE_WITH_* placeholders bypassed SDK; App Open cap was 4min not 30min; nextBackoffDelay could return 0ms.
 - [DownloadManager progress throttle — OOM fix](download-manager-progress-throttle.md) — onProgress must throttle notify() to ≤4fps per video; in-memory state still updates every callback.
 - [schedule day_of_week=313 bug](schedule-dow-bug.md) — nowMinutes() (0–1439) confused with todayDow() (0–6); 5×60+13=313 at 05:13; fixed with guard, bounds-check, DB CHECK constraint, and assertValidDayOfWeek helper.
 - [PG advisory lock in Drizzle transactions](pg-advisory-lock-drizzle.md) — pg_try_advisory_xact_lock returns first row; read as (row as {acquired?:boolean}|undefined)?.acquired; use fixed int32 constant (not hashtext) to avoid IMMUTABLE issues.

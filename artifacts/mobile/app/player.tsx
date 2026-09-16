@@ -56,6 +56,8 @@ import { safeNavReplace } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
+const PLAYER_KEEP_AWAKE_TAG = "templetv-player";
+
 import { setAudioModeAsync } from "expo-audio";
 import { usePictureInPicture } from "@/hooks/usePictureInPicture";
 import * as ScreenOrientation from "expo-screen-orientation";
@@ -660,15 +662,27 @@ export default function PlayerScreen() {
   // lock there wastes battery without benefit. Deactivate during PiP and
   // re-activate automatically when PiP exits (isInPip → false).
   useEffect(() => {
-    if (isInPip) {
-      try { deactivateKeepAwake(); } catch { /* expo-keep-awake unavailable — non-fatal */ }
-      return;
-    }
+    if (isInPip) return;
+
+    let cancelled = false;
     // expo-keep-awake may throw NoClassDefFoundError on Android when
     // KeepAwakeManager is missing from the classpath (R8 missing-class gap in
     // expo-modules-core 57). Catching here prevents a hard app crash.
-    activateKeepAwakeAsync().catch(() => {});
-    return () => { try { deactivateKeepAwake(); } catch { /* non-fatal */ } };
+    void activateKeepAwakeAsync(PLAYER_KEEP_AWAKE_TAG)
+      .then(() => {
+        // React may clean up this effect before native activation finishes.
+        // Release the tag after activation completes instead of attempting to
+        // deactivate a tag that the native module has not registered yet.
+        if (cancelled) {
+          void deactivateKeepAwake(PLAYER_KEEP_AWAKE_TAG).catch(() => {});
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      void deactivateKeepAwake(PLAYER_KEEP_AWAKE_TAG).catch(() => {});
+    };
   }, [isInPip]);
 
   // Last-known playback position (ms). Written by handleProgressWithPosition

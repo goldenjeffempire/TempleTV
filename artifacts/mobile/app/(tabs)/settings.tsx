@@ -26,7 +26,6 @@ import * as Haptics from "expo-haptics";
 import { useColors } from "@/hooks/useColors";
 import { GlassCard } from "@/components/GlassCard";
 import { Logo } from "@/components/Logo";
-import { AdBanner } from "@/components/ads/AdBanner";
 import { usePlayer } from "@/context/PlayerContext";
 import { useWatchHistory } from "@/hooks/useWatchHistory";
 import { useFavorites } from "@/hooks/useFavorites";
@@ -693,9 +692,6 @@ export default function SettingsScreen() {
         </Text>
       </View>
 
-      {/* Non-intrusive banner ad on this static settings screen. Renders
-          nothing when ads are disabled/unconfigured or on load failure. */}
-      <AdBanner style={{ marginTop: 16 }} />
     </ScrollView>
 
     <FeedbackModal visible={showFeedback} onClose={() => setShowFeedback(false)} />

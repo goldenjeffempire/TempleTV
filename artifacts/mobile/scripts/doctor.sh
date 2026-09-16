@@ -59,51 +59,12 @@ const eas = JSON.parse(fs.readFileSync(easPath, "utf8"));
 if (JSON.stringify(app.runtimeVersion) !== JSON.stringify({ policy: "appVersion" })) {
   throw new Error("runtimeVersion must use the appVersion policy");
 }
-const sampleIds = [
-  "ca-app-pub-3940256099942544~3347511713",
-  "ca-app-pub-3940256099942544~1458002511",
-];
-for (const [name, profile] of Object.entries(eas.build ?? {})) {
-  if (!name.startsWith("production")) continue;
-  const values = Object.values(profile.env ?? {});
-  if (values.some((value) => typeof value === "string" &&
-      (value.startsWith("REPLACE_WITH_") || sampleIds.includes(value)))) {
-    throw new Error(`${name} contains a release placeholder or Google sample AdMob ID`);
-  }
-}
 NODE
 then
-  echo -e "$PASS static release config has appVersion runtime policy and no production AdMob placeholders"
+  echo -e "$PASS static release config has appVersion runtime policy"
 else
   echo -e "$FAIL static release config contains unsafe production values"
   mark_fail
-fi
-
-# A direct Gradle release build packages the existing generated manifest rather
-# than re-evaluating app.config.ts. Refuse stale, sample, or malformed native IDs.
-ANDROID_MANIFEST="$MOBILE_DIR/android/app/src/main/AndroidManifest.xml"
-if [ -f "$ANDROID_MANIFEST" ]; then
-  if node - "$ANDROID_MANIFEST" <<'NODE'
-const fs = require("fs");
-const manifest = fs.readFileSync(process.argv[2], "utf8");
-const match = manifest.match(
-  /com\.google\.android\.gms\.ads\.APPLICATION_ID[^>]*android:value="([^"]+)"/s,
-);
-if (!match) throw new Error("generated Android manifest has no AdMob application ID");
-const value = match[1];
-if (!/^ca-app-pub-\d{16}~\d{10}$/.test(value)) {
-  throw new Error("generated Android manifest has a malformed AdMob application ID");
-}
-if (value === "ca-app-pub-3940256099942544~3347511713") {
-  throw new Error("generated Android manifest still contains Google's sample app ID");
-}
-NODE
-  then
-    echo -e "$PASS generated Android manifest has a production-format AdMob App ID"
-  else
-    echo -e "$FAIL generated Android manifest contains an unsafe AdMob App ID — fix the secret and rerun prebuild"
-    mark_fail
-  fi
 fi
 
 # ── 1. Node.js version ────────────────────────────────────────────────────────

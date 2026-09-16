@@ -34,6 +34,8 @@ export interface RetryOptions {
    * Defaults to: retry on 5xx and 429.
    */
   isRetryable?: (res: Response) => boolean;
+  /** Per-attempt timeout in milliseconds. Defaults to 15 seconds. */
+  timeoutMs?: number;
 }
 
 const DEFAULT_MAX_RETRIES = 3;
@@ -131,6 +133,7 @@ export async function fetchWithRetry(
   const baseDelayMs = options?.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
   const maxDelayMs = options?.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
   const isRetryable = options?.isRetryable ?? defaultIsRetryable;
+  const timeoutMs = options?.timeoutMs ?? FETCH_TIMEOUT_MS;
   const signal = init?.signal;
 
   let attempt = 0;
@@ -138,7 +141,9 @@ export async function fetchWithRetry(
   // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
-      // Apply a per-attempt timeout when the caller did not supply an AbortSignal.
+      // Apply a fresh per-attempt timeout, including when the caller supplied
+      // a signal. The caller signal is relayed separately so it can still
+      // cancel the complete retry operation.
       // On mobile, zombie TCP connections (OS keep-alive open, application layer
       // silent) can cause fetch() to hang indefinitely. AbortSignal.timeout()
       // tears the connection down so the retry loop can issue a fresh attempt.
@@ -159,7 +164,7 @@ export async function fetchWithRetry(
       }
       const timeoutId = setTimeout(() => {
         attemptController.abort(new DOMException("Timeout", "TimeoutError"));
-      }, FETCH_TIMEOUT_MS);
+      }, timeoutMs);
       try {
         const res = await fetch(input, { ...init, signal: attemptController.signal });
 

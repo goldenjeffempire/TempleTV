@@ -197,9 +197,6 @@ export function MiniPlayer() {
   const navigatingRef      = useRef(false);
   const navigatingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Early exit ─────────────────────────────────────────────────────────────
-  if (!shouldRender) return null;
-
   // ── Derived display values ─────────────────────────────────────────────────
   const title = isLive
     ? "Live"
@@ -236,6 +233,11 @@ export function MiniPlayer() {
   useEffect(() => () => {
     if (navigatingTimerRef.current) clearTimeout(navigatingTimerRef.current);
   }, []);
+
+  // All hooks must run before this visibility guard. Returning earlier caused
+  // the cleanup effect above to appear only after playback became visible,
+  // changing the hook count between renders.
+  if (!shouldRender) return null;
 
   const handlePress = () => {
     if (navigatingRef.current) return;
