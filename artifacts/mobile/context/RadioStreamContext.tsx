@@ -57,7 +57,7 @@ import React, {
 import { AppState, Platform } from "react-native";
 import type { AppStateStatus } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { getApiBase } from "@/lib/apiBase";
+import { getApiBase, PRODUCTION_API_BASE } from "@/lib/apiBase";
 import * as audioController from "@/services/audioController";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -152,8 +152,20 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
 
     async function fetchWithRetry(attemptsLeft: number, delayMs: number): Promise<void> {
       try {
-        const r = await fetch(`${base}/api/radio`, { signal: AbortSignal.timeout(8_000) });
+        let r = await fetch(`${base}/api/radio`, { signal: AbortSignal.timeout(8_000) });
+        if (
+          r.ok &&
+          r.headers.get("content-type")?.toLowerCase().includes("text/html") &&
+          base !== PRODUCTION_API_BASE
+        ) {
+          r = await fetch(`${PRODUCTION_API_BASE}/api/radio`, {
+            signal: AbortSignal.timeout(8_000),
+          });
+        }
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        if (!r.headers.get("content-type")?.toLowerCase().includes("application/json")) {
+          throw new Error("Invalid radio configuration response");
+        }
         const data = await r.json() as RadioConfig;
         if (!cancelled && mountedRef.current) setConfig(data);
       } catch (err) {

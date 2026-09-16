@@ -9,7 +9,7 @@
  * Zero mock/stub data — every function hits a real API endpoint.
  */
 
-import { getApiBase } from "@/lib/apiBase";
+import { getApiBase, PRODUCTION_API_BASE } from "@/lib/apiBase";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
 import { authFetch } from "@/services/authApi";
 
@@ -38,7 +38,19 @@ function url(path: string): string {
  * counts, etc.) pass their own signal explicitly.
  */
 async function publicFetch(path: string, init?: RequestInit): Promise<Response> {
-  const res = await fetchWithRetry(url(path), init);
+  const configuredBase = getApiBase();
+  let res = await fetchWithRetry(url(path), init);
+  // A direct Expo web preview serves its own HTML shell for unknown /api/*
+  // paths. Recover public data from the canonical API instead of attempting
+  // to parse that document as JSON. Same-origin API deployments never enter
+  // this branch because their API responses have the correct content type.
+  if (
+    res.ok &&
+    res.headers.get("content-type")?.toLowerCase().includes("text/html") &&
+    configuredBase !== PRODUCTION_API_BASE
+  ) {
+    res = await fetchWithRetry(`${PRODUCTION_API_BASE}${path}`, init);
+  }
   if (__DEV__ && !res.ok) {
     console.warn(`[api] publicFetch ${path} → HTTP ${res.status}`);
   }
@@ -242,6 +254,9 @@ export async function fetchVideos(opts: FetchVideosOptions = {}): Promise<Videos
       }
     }
     throw new Error(`We're having trouble reaching the library. Please try again in a moment.`);
+  }
+  if (!res.headers.get("content-type")?.toLowerCase().includes("application/json")) {
+    throw new Error("The video library returned an invalid response. Please try again.");
   }
   const data = await res.json() as { videos?: ApiVideo[]; data?: ApiVideo[]; total?: number; totalPages?: number; nextCursor?: string | null };
   const videos = data.videos ?? data.data ?? [];

@@ -23,6 +23,7 @@
  * therefore safe and eliminates repeated string ops on the hot API call path.
  */
 let _cachedBase: string | undefined;
+export const PRODUCTION_API_BASE = "https://api.templetv.org.ng";
 
 export function getApiBase(): string {
   if (_cachedBase !== undefined) return _cachedBase;
@@ -79,7 +80,7 @@ export function getApiBase(): string {
   // dev build against a missing env file degrades gracefully to "works but hits
   // production" rather than "completely broken with no error UI".
   if (typeof window === "undefined") {
-    const fallback = "https://api.templetv.org.ng";
+    const fallback = PRODUCTION_API_BASE;
     if (__DEV__ && typeof console !== "undefined") {
       console.warn(
         "[apiBase] getApiBase() falling back to hardcoded production URL — " +
