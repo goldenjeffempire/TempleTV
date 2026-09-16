@@ -164,7 +164,6 @@ export function AppHeader({
           borderBottomColor: borderless ? "transparent" : c.border,
         },
       ]}
-      accessibilityRole="header"
     >
       {variant === "tab" ? (
         // ── Tab variant ──────────────────────────────────────────────────────
@@ -205,6 +204,7 @@ export function AppHeader({
             numberOfLines={1}
             adjustsFontSizeToFit
             minimumFontScale={0.82}
+            accessibilityRole="header"
           >
             {title}
           </Text>
