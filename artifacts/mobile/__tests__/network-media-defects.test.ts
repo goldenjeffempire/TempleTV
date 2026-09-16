@@ -2,6 +2,8 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
 let fetchWithRetry: typeof import("../lib/fetchWithRetry.js").fetchWithRetry;
+let deriveConnectivityStatus:
+  typeof import("../lib/connectivityStatus.js").deriveConnectivityStatus;
 
 const originalFetch = globalThis.fetch;
 
@@ -51,5 +53,32 @@ describe("fetchWithRetry per-attempt cancellation", async () => {
     controller.abort();
     await assert.rejects(request);
     assert.equal(calls, 1);
+  });
+});
+
+describe("native connectivity classification", async () => {
+  deriveConnectivityStatus = (
+    await import("../lib/connectivityStatus.js")
+  ).deriveConnectivityStatus;
+
+  it("stays online when the Temple TV API works but third-party probes are blocked", () => {
+    assert.deepEqual(deriveConnectivityStatus(true, [false, false]), {
+      online: true,
+      apiUnreachable: false,
+    });
+  });
+
+  it("identifies an API outage when another internet probe succeeds", () => {
+    assert.deepEqual(deriveConnectivityStatus(false, [true, false]), {
+      online: false,
+      apiUnreachable: true,
+    });
+  });
+
+  it("reports a full outage only when every probe fails", () => {
+    assert.deepEqual(deriveConnectivityStatus(false, [false, false]), {
+      online: false,
+      apiUnreachable: false,
+    });
   });
 });

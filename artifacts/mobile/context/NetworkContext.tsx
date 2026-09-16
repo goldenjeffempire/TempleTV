@@ -30,6 +30,10 @@ import { AppState, Platform } from "react-native";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
 import { getApiBase } from "@/lib/apiBase";
 import { scheduleHeartbeat } from "@/lib/heartbeatScheduler";
+import {
+  deriveConnectivityStatus,
+  type ConnectivityResult,
+} from "@/lib/connectivityStatus";
 
 // ── Connectivity probe ────────────────────────────────────────────────────────
 
@@ -56,12 +60,6 @@ const PING_ENDPOINTS = buildPingEndpoints();
 const POLL_ONLINE_MS  = 30_000;
 const POLL_OFFLINE_MS =  8_000;
 const RECOVERY_FLASH_MS = 2_500;
-
-interface ConnectivityResult {
-  online: boolean;
-  /** True when internet is up but only the app API probe failed. */
-  apiUnreachable: boolean;
-}
 
 async function probeEndpoint(url: string): Promise<boolean> {
   try {
@@ -94,22 +92,14 @@ async function checkConnectivity(): Promise<ConnectivityResult> {
     Promise.all(PING_FALLBACKS.map(probeEndpoint)),
     appHealthzUrl ? probeEndpoint(appHealthzUrl) : Promise.resolve(true),
   ]);
-  const internetUp = fallbackResults.some(Boolean);
-
-  if (!internetUp) {
-    // All probes failed — no internet.
-    return { online: false, apiUnreachable: false };
+  if (!appHealthzUrl) {
+    return {
+      online: fallbackResults.some(Boolean),
+      apiUnreachable: false,
+    };
   }
 
-  // Internet is up. Now check the app API specifically.
-  if (appHealthzUrl) {
-    if (!apiResult) {
-      // Internet works but app API is unreachable.
-      return { online: false, apiUnreachable: true };
-    }
-  }
-
-  return { online: true, apiUnreachable: false };
+  return deriveConnectivityStatus(apiResult, fallbackResults);
 }
 
 // ── Context ───────────────────────────────────────────────────────────────────

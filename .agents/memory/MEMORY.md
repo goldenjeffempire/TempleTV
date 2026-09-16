@@ -156,3 +156,4 @@
 - [Mobile YouTube surface layout](mobile-youtube-surface-layout.md) — iframe, shell, and thumbnails share one rectangle; never mask native YouTube controls with dark RN overlay caps.
 - [Managed artifact workflow bootstrap](managed-artifact-workflow-bootstrap.md) — artifact workflows inject pnpm install and reject command overrides; serialize retries after concurrent-install ENOTEMPTY failures.
 - [Render free-tier migrations](render-free-predeploy.md) — free web services reject preDeployCommand; run idempotent schema sync from a startup wrapper instead.
+- [Mobile Node test import resolution](mobile-node-test-import-resolution.md) — local TypeScript modules in Node tests must use dynamic `.js` imports; static imports fail under the current tsx loader.
