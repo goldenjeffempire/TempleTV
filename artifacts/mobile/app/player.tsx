@@ -1070,6 +1070,24 @@ export default function PlayerScreen() {
     };
   }, []);
 
+  // A player can remain mounted in the stack while an external route takes
+  // focus (for example a tab switch). In that case the unmount cleanup above
+  // does not run, so release any fullscreen landscape lock on blur as well.
+  // Update the intent first so an in-flight LANDSCAPE lock cannot win after
+  // this route has been exited.
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        if (Platform.OS !== "web") {
+          orientationIntentRef.current = "portrait";
+          ScreenOrientation.lockAsync(
+            ScreenOrientation.OrientationLock.PORTRAIT_UP,
+          ).catch(() => {});
+        }
+      };
+    }, []),
+  );
+
   // Live broadcast sync — viewerCount display only. Position is ignored for
   // V2 broadcasts (BroadcastHlsPlayer does `void rest` on initialPositionMs —
   // the V2 engine self-syncs position from the server clock offset). For VOD

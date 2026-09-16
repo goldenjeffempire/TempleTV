@@ -35,6 +35,8 @@ import { configureMobileStorage } from "@workspace/player-core";
 
 const MEMORY = new Map<string, string>();
 const AS_KEY_PREFIX = "ttv:transport:";
+/** Transport only needs a small hot set; bound this process-global cache. */
+const MAX_MEMORY_ENTRIES = 64;
 
 // ── Hydration gate ─────────────────────────────────────────────────────────
 // Resolves once the AsyncStorage → in-memory hydration pass completes.
@@ -85,6 +87,21 @@ function unwrapValue(raw: string): string | null {
   }
 }
 
+function remember(key: string, value: string): string | null {
+  // Map insertion order gives us a small, allocation-free LRU. Touch entries
+  // on reads because transport snapshots are read much more often than they
+  // are written.
+  MEMORY.delete(key);
+  MEMORY.set(key, value);
+  if (MEMORY.size <= MAX_MEMORY_ENTRIES) return null;
+  const oldest = MEMORY.keys().next().value as string | undefined;
+  if (oldest !== undefined) {
+    MEMORY.delete(oldest);
+    return oldest;
+  }
+  return null;
+}
+
 /**
  * Hydrate the in-memory store from AsyncStorage.
  * Called asynchronously at startup — safe to fire-and-forget.
@@ -106,7 +123,8 @@ async function hydrateFromStorage(): Promise<void> {
       const memKey = rawKey.slice(AS_KEY_PREFIX.length);
       const value = unwrapValue(raw);
       if (value !== null) {
-        MEMORY.set(memKey, value);
+        const evicted = remember(memKey, value);
+        if (evicted) expiredKeys.push(`${AS_KEY_PREFIX}${evicted}`);
       } else {
         // Expired — schedule cleanup (fire-and-forget; never block hydration)
         expiredKeys.push(rawKey);
@@ -135,10 +153,17 @@ async function hydrateFromStorage(): Promise<void> {
 export function setupMobileBroadcastStorage(): void {
   configureMobileStorage({
     getItem(key: string): string | null {
-      return MEMORY.get(key) ?? null;
+      const value = MEMORY.get(key);
+      if (value !== undefined) {
+        remember(key, value);
+      }
+      return value ?? null;
     },
     setItem(key: string, value: string): void {
-      MEMORY.set(key, value);
+      const evicted = remember(key, value);
+      if (evicted) {
+        AsyncStorage.removeItem(`${AS_KEY_PREFIX}${evicted}`).catch(() => {});
+      }
       AsyncStorage.setItem(`${AS_KEY_PREFIX}${key}`, wrapValue(value)).catch(() => {});
     },
     removeItem(key: string): void {

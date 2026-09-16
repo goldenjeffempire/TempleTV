@@ -131,7 +131,7 @@ export async function fetchWithRetry(
   const baseDelayMs = options?.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
   const maxDelayMs = options?.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
   const isRetryable = options?.isRetryable ?? defaultIsRetryable;
-  const signal = init?.signal instanceof AbortSignal ? init.signal : undefined;
+  const signal = init?.signal;
 
   let attempt = 0;
 
@@ -146,14 +146,26 @@ export async function fetchWithRetry(
       // A timeout fires as DOMException("TimeoutError") which is neither
       // signal?.aborted nor "AbortError", so it falls through to the retry
       // path below — correct: a timed-out attempt should be retried.
-      const perAttemptInit = signal
-        ? init
-        : { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) };
-      const res = await fetch(input, perAttemptInit);
+      // Always use a fresh controller per attempt.  A timeout controller must
+      // not be shared with the retry loop, otherwise the first timed-out
+      // attempt leaves the signal permanently aborted and all retries fail
+      // immediately.  Relay the caller's signal separately so user
+      // cancellation still aborts the whole operation.
+      const attemptController = new AbortController();
+      const onCallerAbort = () => attemptController.abort(signal?.reason);
+      if (signal) {
+        if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+        signal.addEventListener("abort", onCallerAbort, { once: true });
+      }
+      const timeoutId = setTimeout(() => {
+        attemptController.abort(new DOMException("Timeout", "TimeoutError"));
+      }, FETCH_TIMEOUT_MS);
+      try {
+        const res = await fetch(input, { ...init, signal: attemptController.signal });
 
-      if (res.ok) return res;
+        if (res.ok) return res;
 
-      if (!isRetryable(res)) {
+        if (!isRetryable(res)) {
         // In dev, surface the non-OK status immediately so engineers see the
         // problem rather than chasing a silent null return in a service layer.
         if (__DEV__) {
@@ -161,10 +173,10 @@ export async function fetchWithRetry(
             `[fetchWithRetry] Non-retryable ${res.status} from ${typeof input === "string" ? input : String(input)}`,
           );
         }
-        return res;
-      }
+          return res;
+        }
 
-      if (attempt >= maxRetries) return res;
+        if (attempt >= maxRetries) return res;
 
       // 429: honour Retry-After if present, otherwise use normal backoff
       let delayMs: number;
@@ -174,8 +186,12 @@ export async function fetchWithRetry(
         delayMs = jitteredBackoff(attempt, baseDelayMs, maxDelayMs);
       }
 
-      await delayWithSignal(delayMs, signal);
-      attempt++;
+        await delayWithSignal(delayMs, signal);
+        attempt++;
+      } finally {
+        clearTimeout(timeoutId);
+        signal?.removeEventListener("abort", onCallerAbort);
+      }
     } catch (err) {
       // Re-throw immediately on abort — never retry a cancelled request
       if (signal?.aborted) throw err;

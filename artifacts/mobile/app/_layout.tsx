@@ -655,8 +655,14 @@ function RootLayoutNav() {
           pendingNotificationRef.current = { data, type };
           if (rootNavigationState?.key) {
             // Already ready (e.g. this listener resolved after mount) — flush now.
-            pendingNotificationRef.current = null;
-            handleNotificationResponse(data, type);
+            // Do not consume the response until the handler is installed. The
+            // dynamic notifications import can resolve after the navigator on
+            // a cold start; clearing here would permanently lose the tap.
+            const handler = handleNotificationResponseRef.current;
+            if (handler) {
+              pendingNotificationRef.current = null;
+              handler(data, type);
+            }
           } else {
             // Belt-and-suspenders: if the navigator never reports ready within
             // 5s (should not happen in practice), route anyway rather than
@@ -665,8 +671,11 @@ function RootLayoutNav() {
               notifListenerRef.current = null;
               if (pendingNotificationRef.current) {
                 const pending = pendingNotificationRef.current;
-                pendingNotificationRef.current = null;
-                handleNotificationResponse(pending.data, pending.type);
+                const handler = handleNotificationResponseRef.current;
+                if (handler) {
+                  pendingNotificationRef.current = null;
+                  handler(pending.data, pending.type);
+                }
               }
             }, 5000);
           }
@@ -696,13 +705,17 @@ function RootLayoutNav() {
     if (!rootNavigationState?.key) return;
     if (!pendingNotificationRef.current) return;
 
+    const handler = handleNotificationResponseRef.current;
+    // The response must remain queued until the dynamic notification setup
+    // has published its handler. This effect can win the race on cold start.
+    if (!handler) return;
     const pending = pendingNotificationRef.current;
     pendingNotificationRef.current = null;
     if (notifListenerRef.current) {
       clearTimeout(notifListenerRef.current);
       notifListenerRef.current = null;
     }
-    handleNotificationResponseRef.current?.(pending.data, pending.type);
+    handler(pending.data, pending.type);
   }, [rootNavigationState?.key]);
 
   const noHeader = { headerShown: false, header: () => null, title: "" } as const;

@@ -74,7 +74,9 @@ async function probeEndpoint(url: string): Promise<boolean> {
       },
       { maxRetries: 0 },
     );
-    return res.ok || res.status < 500;
+    // A reachable server that rejects HEAD (403/405) is not proof that the
+    // API is usable.  Treat only an actual successful response as reachable.
+    return res.ok;
   } catch {
     return false;
   }
@@ -84,9 +86,14 @@ async function checkConnectivity(): Promise<ConnectivityResult> {
   const base = getApiBase();
   const appHealthzUrl = base ? `${base}/api/healthz` : null;
 
-  // Check internet via fallback endpoints (Cloudflare + Ubuntu).
-  // Run in parallel for speed since fallbacks are independent.
-  const fallbackResults = await Promise.all(PING_FALLBACKS.map(probeEndpoint));
+  // Check all endpoints together.  The API probe used to run after both
+  // fallbacks, adding up to another timeout during every network transition.
+  // Keeping them concurrent makes recovery responsive without changing the
+  // API-specific result semantics.
+  const [fallbackResults, apiResult] = await Promise.all([
+    Promise.all(PING_FALLBACKS.map(probeEndpoint)),
+    appHealthzUrl ? probeEndpoint(appHealthzUrl) : Promise.resolve(true),
+  ]);
   const internetUp = fallbackResults.some(Boolean);
 
   if (!internetUp) {
@@ -96,8 +103,7 @@ async function checkConnectivity(): Promise<ConnectivityResult> {
 
   // Internet is up. Now check the app API specifically.
   if (appHealthzUrl) {
-    const apiOk = await probeEndpoint(appHealthzUrl);
-    if (!apiOk) {
+    if (!apiResult) {
       // Internet works but app API is unreachable.
       return { online: false, apiUnreachable: true };
     }
@@ -148,6 +154,7 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
   // Online slow-poll (30 s = 2 × 15 s heartbeat ticks) — unsubscribe handle
   // for the shared HeartbeatScheduler. Null while the device is offline.
   const heartbeatUnsubRef   = useRef<(() => void) | null>(null);
+  const checkInFlightRef = useRef(false);
 
   function applyStatus({ online, apiUnreachable: apiUnreachableFlag }: ConnectivityResult): void {
     const wasOffline = !prevOnlineRef.current;
@@ -184,9 +191,12 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
     heartbeatUnsubRef.current = null;
 
     const probe = (): void => {
+      if (checkInFlightRef.current) return;
+      checkInFlightRef.current = true;
       checkConnectivity()
         .then((online) => applyStatus(online))
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => { checkInFlightRef.current = false; });
     };
 
     if (ms >= POLL_ONLINE_MS) {
@@ -219,9 +229,12 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
 
     const runCheck = () => {
+      if (checkInFlightRef.current) return;
+      checkInFlightRef.current = true;
       checkConnectivity()
         .then((online) => { if (!cancelled) applyStatus(online); })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => { checkInFlightRef.current = false; });
     };
 
     // Immediate check on mount

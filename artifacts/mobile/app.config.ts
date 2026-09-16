@@ -9,9 +9,8 @@
  *   EXPO_PUBLIC_ADMOB_ANDROID_APP_ID = ca-app-pub-6817509745706083~XXXXXXXXXX
  *   EXPO_PUBLIC_ADMOB_IOS_APP_ID     = ca-app-pub-6817509745706083~YYYYYYYYYY
  *
- * When unset (e.g. local/dev builds) the Google sample App IDs already present
- * in app.json are used, so the SDK still initialises for QA without a live
- * account. See lib/ads/adConfig.ts for the matching ad-unit resolution.
+ * Development builds may use Google's sample IDs so the SDK initialises for
+ * QA. Production builds must always provide both real IDs through environment.
  */
 
 import type { ConfigContext, ExpoConfig } from "expo/config";
@@ -25,6 +24,14 @@ const SAMPLE_IOS_APP_ID = "ca-app-pub-3940256099942544~1458002511";
 /** Returns true when the value is a build-time placeholder rather than a real ID. */
 function isPlaceholder(value: string): boolean {
   return value.startsWith("REPLACE_WITH_") || value.startsWith("REPLACE_");
+}
+
+function isGoogleSampleAppId(value: string): boolean {
+  return value === SAMPLE_ANDROID_APP_ID || value === SAMPLE_IOS_APP_ID;
+}
+
+function isValidGoogleMobileAdsAppId(value: string): boolean {
+  return /^ca-app-pub-\d{16}~\d{10}$/.test(value);
 }
 
 /**
@@ -43,14 +50,26 @@ function readAppId(
   platform?: "android" | "ios",
 ): string {
   const raw = process.env[name]?.trim() ?? "";
-  // Reject unfilled eas.json placeholders ("REPLACE_WITH_*") the same way we
+  const appEnv = (process.env.APP_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
+  if (appEnv === "production" && isGoogleSampleAppId(raw)) {
+    throw new Error(
+      `[mobile config] ${name} uses Google's sample AdMob App ID in production. ` +
+        "Provide the real ID through an environment variable.",
+    );
+  }
+  if (raw && !isPlaceholder(raw) && !isValidGoogleMobileAdsAppId(raw)) {
+    throw new Error(
+      `[mobile config] ${name} is not a valid Google Mobile Ads App ID. ` +
+        "Expected the ca-app-pub-XXXXXXXXXXXXXXXX~YYYYYYYYYY app-ID format.",
+    );
+  }
+  // Reject unfilled build placeholders ("REPLACE_WITH_*") the same way we
   // treat a missing env var — they must never reach the native plugin because
   // the GMA plugin bakes the value into the compiled AndroidManifest/Info.plist
   // at build time and an invalid App ID will break SDK initialization at runtime.
   const value = isPlaceholder(raw) ? "" : raw;
   if (value) return value;
 
-  const appEnv = (process.env.APP_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
   // EAS sets EAS_BUILD_PLATFORM to "android" or "ios" during cloud builds.
   const buildPlatform = (process.env.EAS_BUILD_PLATFORM ?? "").toLowerCase() as
     | "android"
@@ -63,19 +82,11 @@ function readAppId(
   const isRelevantPlatform =
     !platform || !buildPlatform || buildPlatform === platform;
 
-  // Only enforce the production guard when running on an EAS build server.
-  // EAS CLI also calls `expo config --json` locally (before uploading) with the
-  // profile's env vars applied — including APP_ENV=production and the
-  // REPLACE_WITH_* placeholder values from eas.json. Throwing there would
-  // block build submission even though the real secrets are set on the server.
-  // EAS sets EAS_BUILD=1 on its build workers but NOT during the local
-  // config-reading step, so this guard correctly distinguishes the two cases.
-  const onEasServer = process.env.EAS_BUILD === "1";
-  if (appEnv === "production" && isRelevantPlatform && onEasServer) {
+  if (appEnv === "production" && isRelevantPlatform) {
     throw new Error(
       `[mobile config] ${name} is required for production ${platform ?? ""} builds. ` +
         "The Google sample App ID must never ship in a release binary. " +
-        "Set it as an EAS secret or fill in the eas.json placeholder.",
+        "Set it as an environment variable or EAS secret before building.",
     );
   }
 

@@ -13,7 +13,9 @@
     "assetBundlePatterns": [
       "assets/**/*"
     ],
-    "runtimeVersion": "1.0.58",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
     "updates": {
       "enabled": true,
       "checkAutomatically": "ON_LOAD",
@@ -151,6 +153,9 @@
       "bundler": "metro"
     },
     "plugins": [
+      "expo-asset",
+      "expo-audio",
+      "expo-video",
       [
         "expo-router",
         {
@@ -250,14 +255,11 @@
       [
         "react-native-google-mobile-ads",
         {
-          "androidAppId": "ca-app-pub-3940256099942544~3347511713",
-          "iosAppId": "ca-app-pub-3940256099942544~1458002511",
           "skAdNetworkItems": [],
           "userTrackingUsageDescription": "Temple TV uses this identifier to show relevant ads that support our free broadcast ministry.",
           "delayAppMeasurementInit": true
         }
-      ],
-      "./plugins/with-admob-app-id.js"
+      ]
     ],
     "extra": {
       "router": {
