@@ -41,4 +41,16 @@ describe("player hook safety", () => {
     );
     assert.doesNotMatch(playerSource, /deactivateKeepAwake\(\);/);
   });
+
+  it("does not nest playback control buttons inside the open-player button", () => {
+    assert.match(miniPlayerSource, /<View style=\{styles\.inner\}>/);
+    assert.doesNotMatch(
+      miniPlayerSource,
+      /<Pressable[\s\S]*?style=\{[\s\S]*?styles\.inner/,
+    );
+    assert.match(
+      miniPlayerSource,
+      /<Pressable[\s\S]*?style=\{\(\{ pressed \}\) => \[styles\.info/,
+    );
+  });
 });

@@ -308,15 +308,15 @@ export function MiniPlayer() {
           />
         </View>
       )}
-      <Pressable
-        onPress={handlePress}
-        style={({ pressed }) => [styles.inner, { opacity: pressed ? 0.85 : 1 }]}
-        android_ripple={{ color: "rgba(0,0,0,0.06)", borderless: false }}
-        accessibilityRole="button"
-        accessibilityLabel={`Now playing: ${title}${subtitle ? ` — ${subtitle}` : ""}. Tap to open player.`}
-      >
+      <View style={styles.inner}>
         {/* ── Artwork ─────────────────────────────────────────────────── */}
-        <View style={styles.info}>
+        <Pressable
+          onPress={handlePress}
+          style={({ pressed }) => [styles.info, { opacity: pressed ? 0.85 : 1 }]}
+          android_ripple={{ color: "rgba(0,0,0,0.06)", borderless: false }}
+          accessibilityRole="button"
+          accessibilityLabel={`Now playing: ${title}${subtitle ? ` — ${subtitle}` : ""}. Tap to open player.`}
+        >
           {thumbUri ? (
             <View style={styles.artworkWrap}>
               <Image
@@ -368,7 +368,7 @@ export function MiniPlayer() {
               {subtitle}
             </Text>
           </View>
-        </View>
+        </Pressable>
 
         {/* ── Controls ────────────────────────────────────────────────── */}
         <View style={styles.controls}>
@@ -397,7 +397,7 @@ export function MiniPlayer() {
             </Pressable>
           )}
         </View>
-      </Pressable>
+      </View>
     </>
   );
 
