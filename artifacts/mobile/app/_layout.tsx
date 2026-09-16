@@ -83,6 +83,7 @@ import { UpdateBanner } from "@/components/UpdateBanner";
 import { MandatoryUpdateGate } from "@/components/MandatoryUpdateGate";
 import { FlexibleUpdateSheet } from "@/components/FlexibleUpdateSheet";
 import { DownloadProvider } from "@/context/DownloadContext";
+import { LiveNotificationBanner } from "@/components/LiveNotificationBanner";
 
 /**
  * Global offline/recovery banner — mounted once at the root so every screen
@@ -1076,6 +1077,7 @@ function RootLayout() {
                    * for the whole app, no per-screen duplication.
                    */}
                   <GlobalNetworkBanner />
+                   <LiveNotificationBanner />
                   {/*
                    * UpdateBanner slides in from the top when a non-mandatory
                    * OTA or store update is available. Positioned above all

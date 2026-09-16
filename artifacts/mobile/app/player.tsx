@@ -300,6 +300,17 @@ export default function PlayerScreen() {
 
   const { setIsBroadcastMode, isPlaying, playerPlayRef, playerPauseRef, playerSeekRef } = usePlayer();
 
+  // One back contract for Android hardware back and the in-screen header.
+  // Keep gesture safeguards in the route options; explicit exits use this
+  // guarded path so a root player never throws or strands the user.
+  const handlePlayerBack = useCallback(() => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      safeNavReplace("/", {}, "player-back");
+    }
+  }, []);
+
   const videoId      = params.id ?? "live";
   const title        = params.title ?? "Now Playing";
   const youtubeId    = params.youtubeId ?? params.videoId ?? "";
@@ -399,11 +410,7 @@ export default function PlayerScreen() {
       const handler = BackHandler.addEventListener("hardwareBackPress", () => {
         // Mirror the in-screen back button's logic — go back in history
         // if possible, otherwise fall back to the Watch tab home screen.
-        if (router.canGoBack()) {
-          router.back();
-        } else {
-          router.replace("/");
-        }
+        handlePlayerBack();
         // Return true to signal that we handled the event and prevent
         // the default Android back behavior (which would also pop the
         // screen, but bypasses our safeNav telemetry).
@@ -411,7 +418,7 @@ export default function PlayerScreen() {
       });
 
       return () => handler.remove();
-    }, []),
+    }, [handlePlayerBack]),
   );
 
   // Derived V2 live metadata — conditional on isBroadcastV2 so VOD screens
@@ -1411,7 +1418,7 @@ export default function PlayerScreen() {
         ]}
       >
         <Pressable
-          onPress={() => router.canGoBack() ? router.back() : router.replace("/")}
+          onPress={handlePlayerBack}
           style={[styles.pageHeaderBack, { backgroundColor: c.card, borderColor: c.border }]}
           hitSlop={12}
           accessibilityLabel="Go back"
@@ -1540,7 +1547,7 @@ export default function PlayerScreen() {
                 It may have been removed or the source link is broken.
               </Text>
               <Pressable
-                onPress={() => (router.canGoBack() ? router.back() : router.replace("/"))}
+                onPress={handlePlayerBack}
                 style={styles.noSourceButton}
                 accessibilityRole="button"
                 accessibilityLabel="Go back"
