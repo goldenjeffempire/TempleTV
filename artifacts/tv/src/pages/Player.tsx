@@ -162,6 +162,34 @@ export interface PlayerProps {
   onPipActivate?: () => void;
 }
 
+// Accept the URL forms returned by YouTube's live/status APIs as well as
+// catalog links.  In particular, live broadcasts are commonly represented as
+// /live/<id>, which the old v= and youtu.be-only parser discarded.
+export function extractYoutubeVideoId(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const raw = value.trim();
+  if (/^[A-Za-z0-9_-]{11}$/.test(raw)) return raw;
+  try {
+    const url = new URL(raw);
+    const host = url.hostname.toLowerCase().replace(/^www\./, "");
+    if (host === "youtu.be") {
+      const id = url.pathname.split("/").filter(Boolean)[0];
+      return id && /^[A-Za-z0-9_-]{11}$/.test(id) ? id : null;
+    }
+    if (host === "youtube.com" || host === "m.youtube.com" || host === "music.youtube.com") {
+      const queryId = url.searchParams.get("v");
+      if (queryId && /^[A-Za-z0-9_-]{11}$/.test(queryId)) return queryId;
+      const match = url.pathname.match(/^\/(?:live|embed|shorts|v)\/([A-Za-z0-9_-]{11})(?:\/|$)/);
+      return match?.[1] ?? null;
+    }
+  } catch {
+    // Keep accepting URL-like values without a scheme from API payloads.
+    const match = raw.match(/(?:youtu\.be\/|youtube\.com\/(?:live\/|embed\/|shorts\/)|[?&]v=)([A-Za-z0-9_-]{11})(?:[&#/?]|$)/);
+    return match?.[1] ?? null;
+  }
+  return null;
+}
+
 // ── YouTube VOD player ────────────────────────────────────────────────────────
 
 function YouTubePlayer({
@@ -200,7 +228,8 @@ function YouTubePlayer({
     return () => window.removeEventListener("keydown", handler, true);
   }, [onBack]);
 
-  const src = `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&mute=1&controls=${isLive ? 0 : 1}&rel=0&modestbranding=1&enablejsapi=1&playsinline=1`;
+  const resolvedVideoId = extractYoutubeVideoId(videoId) ?? videoId;
+  const src = `https://www.youtube-nocookie.com/embed/${resolvedVideoId}?autoplay=1&mute=1&controls=${isLive ? 0 : 1}&rel=0&modestbranding=1&enablejsapi=1&playsinline=1`;
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%", background: "#000" }}>

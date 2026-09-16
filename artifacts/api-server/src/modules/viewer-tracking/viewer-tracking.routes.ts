@@ -15,13 +15,13 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
-import { requireAuth } from "../../middleware/auth.js";
+import { attachPrincipal, requireAuth } from "../../middleware/auth.js";
 import { viewerTrackingService } from "./viewer-tracking.service.js";
+import { broadcastEngine } from "../broadcast/queue.engine.js";
 
 const HeartbeatBodySchema = z.object({
   sessionId: z.string().min(1).max(128),
   streamId:  z.string().min(1).max(128),
-  userId:    z.string().min(1).max(128).optional(),
   platform:  z.enum(["tv", "mobile", "web"]).optional(),
   clientTs:  z.number().int().nonnegative().optional(),
 });
@@ -55,9 +55,44 @@ const HeartbeatResponseSchema = z.object({
 export async function viewerTrackingRoutes(app: FastifyInstance) {
   const r = app.withTypeProvider<ZodTypeProvider>();
 
+  // There is currently one supported public broadcast stream. Keeping this
+  // allowlist server-side prevents arbitrary Redis namespaces/count inflation.
+  const supportedStream = broadcastEngine.channelId;
+  const IssueBodySchema = z.object({
+    streamId: z.literal(supportedStream),
+    platform: z.enum(["tv", "mobile", "web"]).optional(),
+  });
+  const CredentialResponseSchema = z.object({
+    sessionId: z.string(),
+    streamId: z.literal(supportedStream),
+  });
+
+  r.post("/issue", {
+    preHandler: [attachPrincipal()],
+    config: {
+      // Anonymous viewers need a credential, but issuance must not be an
+      // unlimited session-minting endpoint. Heartbeats remain independently
+      // validated against the issued opaque credential.
+      rateLimit: { max: 30, timeWindow: "1 minute" },
+    },
+    schema: {
+      tags: ["viewer-tracking"],
+      summary: "Issue an opaque viewer session credential",
+      body: IssueBodySchema,
+      response: {
+        200: CredentialResponseSchema,
+        429: z.object({ error: z.string() }),
+      },
+    },
+  }, async (req, reply) => {
+    const sessionId = await viewerTrackingService.issueCredential(req.principal?.id);
+    return reply.code(200).send({ sessionId, streamId: req.body.streamId });
+  });
+
   // ── POST /viewer-tracking/heartbeat ────────────────────────────────────
   // High-frequency endpoint — every active viewer calls this every ~10 s.
-  // Rate-limited at 60/min per IP (ample for 10 streams × 1 hb/6s).
+  // Rate-limited as abuse defense in depth; the opaque credential remains the
+  // authority and prevents callers from inventing identities or stream IDs.
   // Intentionally public (no auth) — players are anonymous on TV/web.
   r.post(
     "/heartbeat",
@@ -72,11 +107,22 @@ export async function viewerTrackingRoutes(app: FastifyInstance) {
         response: {
           200: HeartbeatResponseSchema,
           429: z.object({ error: z.string() }),
+          400: z.object({ error: z.string() }),
+          401: z.object({ error: z.string() }),
         },
       },
     },
     async (req, reply) => {
-      const { viewers, isNewSession } = await viewerTrackingService.heartbeat(req.body);
+      if (req.body.streamId !== supportedStream) {
+        return reply.code(400).send({ error: "Unsupported broadcast stream" });
+      }
+      let result: { viewers: number; isNewSession: boolean };
+      try {
+        result = await viewerTrackingService.heartbeat(req.body);
+      } catch {
+        return reply.code(401).send({ error: "Invalid or expired viewer session credential" });
+      }
+      const { viewers, isNewSession } = result;
       return reply.code(200).send({
         ok:           true,
         viewers,
@@ -85,6 +131,24 @@ export async function viewerTrackingRoutes(app: FastifyInstance) {
       });
     },
   );
+
+  r.post("/leave", {
+    schema: {
+      tags: ["viewer-tracking"],
+      body: z.object({ sessionId: z.string().min(1).max(128), streamId: z.literal(supportedStream) }),
+      response: {
+        204: z.null(),
+        401: z.object({ error: z.string() }),
+      },
+    },
+  }, async (req, reply) => {
+    try {
+      await viewerTrackingService.leave(req.body.sessionId, req.body.streamId);
+    } catch {
+      return reply.code(401).send({ error: "Invalid or expired viewer session credential" });
+    }
+    return reply.code(204).send(null);
+  });
 
   // ── GET /viewer-tracking/stats ──────────────────────────────────────────
   // Aggregate across all known streams.

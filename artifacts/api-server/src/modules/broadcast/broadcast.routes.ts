@@ -16,7 +16,6 @@ import { broadcastEngine } from "./queue.engine.js";
 import type { BroadcastEvent, BroadcastItem, BroadcastSnapshot } from "./queue.engine.js";
 import { streamHealthAggregator } from "./stream-health.js";
 import { requireAuth } from "../../middleware/auth.js";
-import { randomUUID } from "node:crypto";
 import { viewerTrackingService } from "../viewer-tracking/viewer-tracking.service.js";
 import { overrideBus } from "../live-overrides/override-bus.js";
 import type { ActiveOverrideEntry } from "../live-overrides/override-bus.js";
@@ -843,13 +842,13 @@ export async function broadcastRoutes(app: FastifyInstance) {
 
       // Register this viewer with the Redis-backed heartbeat tracker — the
       // single source of truth for the broadcast engine's viewer count.
-      const viewerSessionId = randomUUID();
+      const viewerSessionId = await viewerTrackingService.issueCredential();
       const viewerPlatform = req.query.platform === "tv" || req.query.platform === "mobile" || req.query.platform === "web"
         ? req.query.platform
         : undefined;
-      void viewerTrackingService
-        .heartbeat({ sessionId: viewerSessionId, streamId: broadcastEngine.channelId, platform: viewerPlatform })
-        .catch(() => undefined);
+      void viewerTrackingService.heartbeat({
+        sessionId: viewerSessionId, streamId: broadcastEngine.channelId, platform: viewerPlatform,
+      }).catch(() => undefined);
       const viewerHeartbeat = setInterval(() => {
         void viewerTrackingService
           .heartbeat({ sessionId: viewerSessionId, streamId: broadcastEngine.channelId, platform: viewerPlatform })

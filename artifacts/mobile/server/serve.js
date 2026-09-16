@@ -15,6 +15,10 @@ const path = require("path");
 
 const STATIC_ROOT = path.resolve(__dirname, "..", "static-build");
 const TEMPLATE_PATH = path.resolve(__dirname, "templates", "landing-page.html");
+const MANIFEST_PATHS = Object.freeze({
+  ios: path.join(STATIC_ROOT, "ios", "manifest.json"),
+  android: path.join(STATIC_ROOT, "android", "manifest.json"),
+});
 const basePath = (process.env.BASE_PATH || "/").replace(/\/+$/, "");
 
 const MIME_TYPES = {
@@ -46,9 +50,9 @@ function getAppName() {
 }
 
 function serveManifest(platform, res) {
-  const manifestPath = path.join(STATIC_ROOT, platform, "manifest.json");
+  const manifestPath = MANIFEST_PATHS[platform];
 
-  if (!fs.existsSync(manifestPath)) {
+  if (!manifestPath || !fs.existsSync(manifestPath)) {
     res.writeHead(404, { "content-type": "application/json" });
     res.end(
       JSON.stringify({ error: `Manifest not found for platform: ${platform}` }),
@@ -82,10 +86,29 @@ function serveLandingPage(req, res, landingPageTemplate, appName) {
 }
 
 function serveStaticFile(urlPath, res) {
-  const safePath = path.normalize(urlPath).replace(/^(\.\.(\/|\\|$))+/, "");
-  const filePath = path.join(STATIC_ROOT, safePath);
-
-  if (!filePath.startsWith(STATIC_ROOT)) {
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(urlPath);
+  } catch {
+    res.writeHead(400);
+    res.end("Bad Request");
+    return;
+  }
+  if (decodedPath.includes("\0")) {
+    res.writeHead(400);
+    res.end("Bad Request");
+    return;
+  }
+  const filePath = path.resolve(
+    STATIC_ROOT,
+    `.${decodedPath.replaceAll("\\", "/")}`,
+  );
+  const relativePath = path.relative(STATIC_ROOT, filePath);
+  if (
+    relativePath === ".." ||
+    relativePath.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativePath)
+  ) {
     res.writeHead(403);
     res.end("Forbidden");
     return;

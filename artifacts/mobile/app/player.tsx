@@ -89,6 +89,7 @@ import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import * as audioController from "@/services/audioController";
 import { usePageSeo } from "@/hooks/usePageSeo";
 import { usePlayer } from "@/context/PlayerContext";
+import { useMobileViewerPresence } from "@/lib/viewerTracking";
 import {
   ReactionButton,
   PrayerSection,
@@ -333,6 +334,14 @@ export default function PlayerScreen() {
   // the YouTube live path — that is handled by the LiveBroadcastSupervisor
   // which already calls playLive() and sets PlayerContext.isLive=true.
   const isBroadcastV2 = isLive && !( !!( params.youtubeId ?? params.videoId ) && !hlsUrl );
+  // Presence is deliberately scoped to this live player route. VOD, radio,
+  // catalog screens, and background app chrome must not create viewer sessions.
+  useMobileViewerPresence({
+    enabled: isLive,
+    activelyWatching: isLive && isPlaying,
+    token: authToken,
+    reconnectKey: v2Connected,
+  });
   // When true, the player enters landscape fullscreen automatically on mount.
   // Set by the hero fullscreen icon (maximize-2 button) so tapping the icon
   // lands the user directly in an immersive fullscreen broadcast.
@@ -450,7 +459,7 @@ export default function PlayerScreen() {
   // Handles both youtube.com/watch?v= and youtu.be/ URL formats.
   const v2YouTubeOverrideVideoId = useMemo(() => {
     if (v2Override?.kind === "youtube" && typeof v2Override.url === "string" && v2Override.url) {
-      const m = v2Override.url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+       const m = v2Override.url.match(/(?:v=|youtu\.be\/|youtube\.com\/(?:live\/|embed\/|shorts\/))([A-Za-z0-9_-]{11})/);
       return m?.[1] ?? null;
     }
 
@@ -461,6 +470,19 @@ export default function PlayerScreen() {
       ? initialYoutubeOverrideId
       : null;
   }, [initialYoutubeOverrideId, v2Override?.kind, v2Override?.url, v2ServerSnap]);
+
+  // A queue item can itself be YouTube (not only a live override). Keep it
+  // out of expo-video: YouTube URLs are not native media URLs and some API
+  // snapshots intentionally omit `url`, which otherwise binds a blank native
+  // buffer and strands the FSM in PREPARING_ACTIVE.
+  const v2YouTubeCurrentVideoId = useMemo(() => {
+    const source = v2Current?.source;
+    if (!source || source.kind !== "youtube") return null;
+    const value = source.url ?? "";
+    const match = value.match(/(?:v=|youtu\.be\/|youtube\.com\/(?:live\/|embed\/|shorts\/))([A-Za-z0-9_-]{11})/);
+    return match?.[1] ?? (/^[A-Za-z0-9_-]{11}$/.test(value) ? value : null);
+  }, [v2Current?.source]);
+  const v2YouTubeVideoId = v2YouTubeOverrideVideoId ?? v2YouTubeCurrentVideoId;
 
   // Sync PlayerContext.isBroadcastMode with whether the V2 broadcast engine
   // is active. Without this, the MiniPlayer and any context consumer that
@@ -1479,7 +1501,7 @@ export default function PlayerScreen() {
         {/* Live broadcasts: compact 16:9 height so chat is immediately visible.
             VOD: adaptive height based on video aspect ratio, max 60% of screen. */}
         <View style={[styles.playerShell, { height: inlinePlayerHeight }]}>
-          {isBroadcastV2 && v2YouTubeOverrideVideoId ? (
+          {isBroadcastV2 && v2YouTubeVideoId ? (
             /* V2 YouTube override — swaps inline to YoutubePlayer the moment
                the server snapshot arrives with override.kind="youtube" (e.g.
                the YouTube shuffle fallback). This eliminates the "Watch on
@@ -1489,7 +1511,7 @@ export default function PlayerScreen() {
                first server frame arrives, swapping the surface automatically
                without a navigation round-trip. */
             <YoutubePlayer
-              videoId={v2YouTubeOverrideVideoId}
+               videoId={v2YouTubeVideoId}
               thumbnailUrl={undefined}
               title={v2Override?.title ?? liveTitle}
               autoPlay
@@ -1597,7 +1619,7 @@ export default function PlayerScreen() {
 
           {/* Fullscreen expand — hidden for YouTube and YouTube overrides (both
               have their own native YouTube controls; our overlay would conflict) */}
-          {!isYoutube && !v2YouTubeOverrideVideoId && (
+          {!isYoutube && !v2YouTubeVideoId && (
             <Pressable
               onPress={enterFullscreen}
               style={styles.fullscreenBtn}
@@ -2246,12 +2268,12 @@ export default function PlayerScreen() {
 
           {/* Player fills the entire modal */}
           <View style={styles.fsPlayerWrap}>
-            {isBroadcastV2 && v2YouTubeOverrideVideoId ? (
+            {isBroadcastV2 && v2YouTubeVideoId ? (
               /* YouTube override — same inline swap as the inline player shell:
                  embed the YouTube video directly rather than showing the
                  "Watch on YouTube" external-link overlay from V2PlayerContainer. */
               <YoutubePlayer
-                videoId={v2YouTubeOverrideVideoId}
+                videoId={v2YouTubeVideoId}
                 thumbnailUrl={undefined}
                 title={v2Override?.title ?? liveTitle}
                 autoPlay

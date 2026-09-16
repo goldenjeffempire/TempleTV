@@ -25,6 +25,11 @@ packages can use either form; multi-major ones must be version-pinned. Reinstall
 with `pnpm install --ignore-scripts`, then re-run `runDependencyAudit()` to confirm
 the count dropped, and re-run the api-server + player-core vitest suites.
 
+If both a generic override (`"pkg": "..."`) and an exact-version override
+(`"pkg@x.y.z": "..."`) exist, pnpm may keep resolving through the generic rule.
+Do not assume the exact rule wins: inspect the installed/lockfile version after
+every install. Prefer one unambiguous rule per dependency family.
+
 ## Audit false-positive gotchas
 - `runDependencyAudit()` may flag a version that is **outside the advisory's actual
   affected range** (e.g. brace-expansion@5.0.5 flagged under an advisory whose range

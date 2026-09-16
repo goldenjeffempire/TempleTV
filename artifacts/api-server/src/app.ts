@@ -128,7 +128,8 @@ export async function buildApp(): Promise<FastifyInstance> {
         // WebSocket connections (wss:) for the broadcast v2 transport and
         // the admin live preview; https: covers REST + HLS segment fetches.
         connectSrc: ["'self'", "https:", "wss:", "ws:"],
-        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        // Expo/vector-icon fonts are emitted as data: URLs in the web bundle.
+        fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
         objectSrc: ["'none'"],
         frameAncestors: ["'self'"],
         upgradeInsecureRequests: [],
@@ -938,13 +939,20 @@ export async function buildApp(): Promise<FastifyInstance> {
           forwardPath = forwardPath.slice(stripPrefix.length) || "/";
         }
         await new Promise<void>((resolve) => {
+          const proxyHeaders = { ...req.headers, host: `localhost:${port}` };
+          // Expo's dev server validates Origin against its own host. The public
+          // Replit preview origin is expected here because this API is the
+          // intentional same-origin reverse proxy, so normalize it upstream.
+          if (proxyHeaders.origin) {
+            proxyHeaders.origin = `http://localhost:${port}`;
+          }
           const proxyReq = http.request(
             {
               hostname: "127.0.0.1",
               port,
               path: forwardPath,
               method: req.method,
-              headers: { ...req.headers, host: `localhost:${port}` },
+              headers: proxyHeaders,
             },
             (proxyRes) => {
               reply.raw.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers);
@@ -997,7 +1005,11 @@ export async function buildApp(): Promise<FastifyInstance> {
       const upstream = net.connect(MOBILE_DEV_PORT, "127.0.0.1", () => {
         // Re-send the original HTTP upgrade request to the upstream server.
         const reqLine = `${req.method} ${req.url} HTTP/1.1\r\n`;
-        const headers = Object.entries({ ...req.headers, host: `localhost:${MOBILE_DEV_PORT}` })
+        const proxyHeaders = { ...req.headers, host: `localhost:${MOBILE_DEV_PORT}` };
+        if (proxyHeaders.origin) {
+          proxyHeaders.origin = `http://localhost:${MOBILE_DEV_PORT}`;
+        }
+        const headers = Object.entries(proxyHeaders)
           .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v ?? ""}`)
           .join("\r\n");
         upstream.write(`${reqLine}${headers}\r\n\r\n`);
