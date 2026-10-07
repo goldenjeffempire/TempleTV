@@ -174,7 +174,12 @@
       "extends": "production-android",
       "credentialsSource": "remote",
       "autoIncrement": false,
-      "environment": "production"
+      "environment": "production",
+      "android": {
+        "image": "latest",
+        "buildType": "app-bundle",
+        "resourceClass": "medium"
+      }
     },
     "firetv": {
       "autoIncrement": true,
