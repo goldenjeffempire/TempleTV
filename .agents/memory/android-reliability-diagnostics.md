@@ -7,8 +7,10 @@ Gate each Android framework method by its own introduction level, not by the
 age of its enclosing Builder or feature. An unavailable method can throw a
 LinkageError rather than Exception; catching Exception is not API compatibility.
 
-**Why:** PiP had methods from different Android releases grouped under one
-platform gate, leaving a real crash path despite apparent exception handling.
+**Why:** A production Android 12 stack confirmed NoSuchMethodError from PiP
+Builder.setTitle, introduced in Android 13. Grouping methods from different
+Android releases under one feature gate left a real crash path despite
+apparent exception handling.
 
 **How to apply:** Check official method-level references when auditing native
 modules; retain distinct guards and require device/release verification.

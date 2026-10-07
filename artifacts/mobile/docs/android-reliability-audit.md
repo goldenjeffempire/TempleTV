@@ -162,7 +162,7 @@ neither represents an API behavior change.
 
 **NOT READY FOR PRODUCTION.**
 
-Still required: obtain production crash/ANR clusters and exact image/R8
+Still required: obtain expanded traces for remaining crash/ANR clusters and exact image/R8
 diagnostics; resolve dependency/toolchain and repository-check blockers; build
 and inspect a signed minified release; verify its upload certificate; install
 on Android 12/12L (the corrected crash path) and other supported device classes;
@@ -176,10 +176,14 @@ No claim is made that Play metrics have improved or all ANRs are eliminated.
 The subsequently supplied release-138 issue-list screenshots identify:
 
 - `ExpoPipAndroidModule` / `java.lang.NoSuchMethodError`: **19 affected
-  users, 117 events, 86.7% of listed events**. This strongly supports the
-  corrected PiP API-compatibility defect as the leading issue. The list does
-  not identify the unresolved method or affected Android versions; obtain
-  the expanded stack before calling the exact method conclusively proven.
+  users, 117 events, 86.7% of listed events**. A subsequently supplied
+  expanded production stack confirms the missing method is
+  `PictureInPictureParams.Builder.setTitle(java.lang.CharSequence)` on
+  **Android 12 / SDK 31**. The call originates in the custom PiP module's
+  queued callback. This confirms the corrected API-compatibility defect as
+  the root cause of this cluster, not just a suspected title match. Both
+  title calls now require API 33. Installed-release verification and
+  post-release metrics are still required to confirm the outcome.
 - `ExoPlayerImplInternal.shouldContinueLoading` and
   `DirectByteBuffer.asReadOnlyBuffer`: separate `OutOfMemoryError` clusters,
   one event each. These prove production memory failures, not the total
