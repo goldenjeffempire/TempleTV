@@ -200,6 +200,10 @@ export function YoutubePlayer({
   const [playerReady, setPlayerReady] = useState(false);
   const [playerError, setPlayerError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
+  // A failed WebView/iframe can remain permanently wedged even when its
+  // `play` prop is toggled. Incrementing this key forces YoutubeIframe to
+  // recreate the native WebView and reload the failed document.
+  const [reloadGeneration, setReloadGeneration] = useState(0);
   const [activeVideoId, setActiveVideoId] = useState(videoId);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastBackgroundedAtRef = useRef<number>(0);
@@ -297,6 +301,7 @@ export function YoutubePlayer({
       setPlayerReady(false);
       setPlayerError(false);
       setRetryCount(0);
+      setReloadGeneration(0);
       setPlaying(false);
       transitionOpacity.setValue(1);
       setActiveVideoId(videoId);
@@ -409,6 +414,7 @@ export function YoutubePlayer({
       setRetryCount((count) => count + 1);
       setPlayerReady(false);
       setPlaying(false);
+      setReloadGeneration((generation) => generation + 1);
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
       retryTimerRef.current = setTimeout(() => {
         if (isMountedRef.current) setPlaying(true);
@@ -432,7 +438,7 @@ export function YoutubePlayer({
         // YouTube WebView with the new initialPlayerParams (controls
         // hidden, fullscreen prevented). Without this, the iframe
         // would keep the prior chrome until the videoId itself swaps.
-        key={`${activeVideoId}-${isBroadcastLive ? "b" : "v"}`}
+         key={`${activeVideoId}-${isBroadcastLive ? "b" : "v"}-${reloadGeneration}`}
         videoId={activeVideoId}
         height={playerHeight}
         width={width}

@@ -30,6 +30,10 @@ import { AppState, Platform } from "react-native";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
 import { getApiBase } from "@/lib/apiBase";
 import { scheduleHeartbeat } from "@/lib/heartbeatScheduler";
+import {
+  deriveConnectivityStatus,
+  type ConnectivityResult,
+} from "@/lib/connectivityStatus";
 
 // ── Connectivity probe ────────────────────────────────────────────────────────
 
@@ -57,12 +61,6 @@ const POLL_ONLINE_MS  = 30_000;
 const POLL_OFFLINE_MS =  8_000;
 const RECOVERY_FLASH_MS = 2_500;
 
-interface ConnectivityResult {
-  online: boolean;
-  /** True when internet is up but only the app API probe failed. */
-  apiUnreachable: boolean;
-}
-
 async function probeEndpoint(url: string): Promise<boolean> {
   try {
     const res = await fetchWithRetry(
@@ -74,7 +72,9 @@ async function probeEndpoint(url: string): Promise<boolean> {
       },
       { maxRetries: 0 },
     );
-    return res.ok || res.status < 500;
+    // A reachable server that rejects HEAD (403/405) is not proof that the
+    // API is usable.  Treat only an actual successful response as reachable.
+    return res.ok;
   } catch {
     return false;
   }
@@ -84,26 +84,22 @@ async function checkConnectivity(): Promise<ConnectivityResult> {
   const base = getApiBase();
   const appHealthzUrl = base ? `${base}/api/healthz` : null;
 
-  // Check internet via fallback endpoints (Cloudflare + Ubuntu).
-  // Run in parallel for speed since fallbacks are independent.
-  const fallbackResults = await Promise.all(PING_FALLBACKS.map(probeEndpoint));
-  const internetUp = fallbackResults.some(Boolean);
-
-  if (!internetUp) {
-    // All probes failed — no internet.
-    return { online: false, apiUnreachable: false };
+  // Check all endpoints together.  The API probe used to run after both
+  // fallbacks, adding up to another timeout during every network transition.
+  // Keeping them concurrent makes recovery responsive without changing the
+  // API-specific result semantics.
+  const [fallbackResults, apiResult] = await Promise.all([
+    Promise.all(PING_FALLBACKS.map(probeEndpoint)),
+    appHealthzUrl ? probeEndpoint(appHealthzUrl) : Promise.resolve(true),
+  ]);
+  if (!appHealthzUrl) {
+    return {
+      online: fallbackResults.some(Boolean),
+      apiUnreachable: false,
+    };
   }
 
-  // Internet is up. Now check the app API specifically.
-  if (appHealthzUrl) {
-    const apiOk = await probeEndpoint(appHealthzUrl);
-    if (!apiOk) {
-      // Internet works but app API is unreachable.
-      return { online: false, apiUnreachable: true };
-    }
-  }
-
-  return { online: true, apiUnreachable: false };
+  return deriveConnectivityStatus(apiResult, fallbackResults);
 }
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -148,6 +144,7 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
   // Online slow-poll (30 s = 2 × 15 s heartbeat ticks) — unsubscribe handle
   // for the shared HeartbeatScheduler. Null while the device is offline.
   const heartbeatUnsubRef   = useRef<(() => void) | null>(null);
+  const checkInFlightRef = useRef(false);
 
   function applyStatus({ online, apiUnreachable: apiUnreachableFlag }: ConnectivityResult): void {
     const wasOffline = !prevOnlineRef.current;
@@ -184,9 +181,12 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
     heartbeatUnsubRef.current = null;
 
     const probe = (): void => {
+      if (checkInFlightRef.current) return;
+      checkInFlightRef.current = true;
       checkConnectivity()
         .then((online) => applyStatus(online))
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => { checkInFlightRef.current = false; });
     };
 
     if (ms >= POLL_ONLINE_MS) {
@@ -219,9 +219,12 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
 
     const runCheck = () => {
+      if (checkInFlightRef.current) return;
+      checkInFlightRef.current = true;
       checkConnectivity()
         .then((online) => { if (!cancelled) applyStatus(online); })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => { checkInFlightRef.current = false; });
     };
 
     // Immediate check on mount

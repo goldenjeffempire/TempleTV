@@ -16,11 +16,18 @@ export function useEmergencyAlerts() {
   useEffect(() => {
     const apiBase = getApiBase();
     if (!apiBase) return;
-    fetchWithRetry(`${apiBase}/api/emergency/active`, {}, { maxRetries: 3 })
+    const controller = new AbortController();
+    let mounted = true;
+    fetchWithRetry(
+      `${apiBase}/api/emergency/active`,
+      { signal: controller.signal },
+      { maxRetries: 3 },
+    )
       .then((r) => (r.ok ? r.json() : []))
       .then((alerts: Array<{ id: string; title: string; message: string; severity: string; expiresAt: string | null }>) => {
         const a = alerts[0];
         if (a) {
+          if (!mounted) return;
           setActiveAlert({
             alertId: a.id,
             title: a.title,
@@ -31,10 +38,15 @@ export function useEmergencyAlerts() {
         }
       })
       .catch((err: unknown) => {
+        if (!mounted || controller.signal.aborted) return;
         if (__DEV__) {
           console.warn("[useEmergencyAlerts] initial fetch failed — real-time SSE will still deliver new alerts:", err);
         }
       });
+    return () => {
+      mounted = false;
+      controller.abort();
+    };
   }, []);
 
   useEffect(() => {
@@ -44,15 +56,24 @@ export function useEmergencyAlerts() {
     let active = true;
     let retryTimeout: ReturnType<typeof setTimeout> | null = null;
     let es: { addEventListener(type: string, handler: (evt: { data: string }) => void): void; close?(): void } | null = null;
+    let generation = 0;
 
     const connect = () => {
       if (!active) return;
+      if (retryTimeout) {
+        clearTimeout(retryTimeout);
+        retryTimeout = null;
+      }
+      es?.close?.();
+      es = null;
+      const thisGeneration = ++generation;
       try {
         const EventSource = require("react-native-sse").default;
         es = new EventSource(`${apiBase}/api/realtime/sse`);
         const currentEs = es!;
 
         currentEs.addEventListener("omega-signal", (evt: { data: string }) => {
+          if (!active || thisGeneration !== generation) return;
           try {
             const signal = JSON.parse(evt.data) as { type: string; payload?: Record<string, unknown> };
             if (signal.type === "EMERGENCY_BROADCAST" && signal.payload) {
@@ -72,8 +93,15 @@ export function useEmergencyAlerts() {
         });
 
         currentEs.addEventListener("error", () => {
+          if (!active || thisGeneration !== generation) return;
           currentEs.close?.();
-          if (active) retryTimeout = setTimeout(connect, 6_000);
+          if (es === currentEs) es = null;
+          if (!retryTimeout) {
+            retryTimeout = setTimeout(() => {
+              retryTimeout = null;
+              connect();
+            }, 6_000);
+          }
         });
       } catch {
         // react-native-sse not available — polling-only
@@ -83,8 +111,11 @@ export function useEmergencyAlerts() {
     connect();
     return () => {
       active = false;
+      generation++;
       if (retryTimeout) clearTimeout(retryTimeout);
+      retryTimeout = null;
       es?.close?.();
+      es = null;
     };
   }, []);
 

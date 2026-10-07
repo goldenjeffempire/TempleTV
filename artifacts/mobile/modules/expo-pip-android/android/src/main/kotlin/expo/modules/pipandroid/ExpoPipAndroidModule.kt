@@ -15,6 +15,7 @@ import android.content.pm.PackageManager
 import android.graphics.drawable.Icon
 import android.os.Build
 import android.util.Rational
+import android.util.Log
 import expo.modules.kotlin.functions.Coroutine
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -48,10 +49,11 @@ class ExpoPipAndroidModule : Module() {
     // and forwards them to JS via the Expo events system so the player can
     // react without requiring a native-module bridge call.
     private var pipReceiver: BroadcastReceiver? = null
+    private var receiverContext: Context? = null
 
     private fun registerPipReceiver() {
         if (pipReceiver != null) return
-        val ctx = appContext.reactContext ?: return
+        val ctx = appContext.reactContext?.applicationContext ?: return
 
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -79,13 +81,20 @@ class ExpoPipAndroidModule : Module() {
             ctx.registerReceiver(receiver, filter)
         }
         pipReceiver = receiver
+        receiverContext = ctx
     }
 
     private fun unregisterPipReceiver() {
-        val ctx = appContext.reactContext ?: return
-        pipReceiver?.let {
-            try { ctx.unregisterReceiver(it) } catch (_: Exception) {}
-            pipReceiver = null
+        val receiver = pipReceiver
+        val ctx = receiverContext
+        pipReceiver = null
+        receiverContext = null
+        if (receiver != null && ctx != null) {
+            try {
+                ctx.unregisterReceiver(receiver)
+            } catch (error: IllegalArgumentException) {
+                Log.w("ExpoPipAndroid", "PiP receiver already unregistered", error)
+            }
         }
     }
 
@@ -129,6 +138,11 @@ class ExpoPipAndroidModule : Module() {
 
             suspendCancellableCoroutine { cont ->
                 act.runOnUiThread {
+                    if (!cont.isActive) return@runOnUiThread
+                    if (act.isFinishing || act.isDestroyed || currentActivity !== act) {
+                        cont.resume(false)
+                        return@runOnUiThread
+                    }
                     var result = false
                     try {
                         val builder = PictureInPictureParams.Builder()
@@ -137,10 +151,12 @@ class ExpoPipAndroidModule : Module() {
                                 aspectHeight.coerceAtLeast(1),
                             ))
 
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                            // Display the video / broadcast title in the PiP chrome.
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            // setTitle was introduced in API 33, not API 31.
                             val effectiveTitle = title?.takeIf { it.isNotBlank() } ?: "Temple TV"
                             builder.setTitle(effectiveTitle)
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                             // Smooth video crossfade when the PiP window is resized.
                             builder.setSeamlessResizeEnabled(true)
                         }
@@ -160,7 +176,8 @@ class ExpoPipAndroidModule : Module() {
                         result = act.enterPictureInPictureMode(builder.build())
 
                         if (result && withRestore) postRestoreNotification(act)
-                    } catch (_: Exception) {
+                    } catch (error: Exception) {
+                        Log.w("ExpoPipAndroid", "Could not enter PiP", error)
                         result = false
                     }
                     if (cont.isActive) cont.resume(result)
@@ -201,6 +218,11 @@ class ExpoPipAndroidModule : Module() {
 
             suspendCancellableCoroutine<Unit> { cont ->
                 act.runOnUiThread {
+                    if (!cont.isActive) return@runOnUiThread
+                    if (act.isFinishing || act.isDestroyed || currentActivity !== act) {
+                        cont.resume(Unit)
+                        return@runOnUiThread
+                    }
                     try {
                         val builder = PictureInPictureParams.Builder()
                             .setAspectRatio(Rational(
@@ -208,9 +230,11 @@ class ExpoPipAndroidModule : Module() {
                                 aspectHeight.coerceAtLeast(1),
                             ))
 
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                             val effectiveTitle = title?.takeIf { it.isNotBlank() } ?: "Temple TV"
                             builder.setTitle(effectiveTitle)
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                             builder.setAutoEnterEnabled(autoEnter)
                             builder.setSeamlessResizeEnabled(true)
                         }
@@ -223,8 +247,8 @@ class ExpoPipAndroidModule : Module() {
                         if (actions.isNotEmpty()) builder.setActions(actions)
 
                         act.setPictureInPictureParams(builder.build())
-                    } catch (_: Exception) {
-                        // Non-fatal — params fall back to defaults
+                    } catch (error: Exception) {
+                        Log.w("ExpoPipAndroid", "Could not update PiP params", error)
                     }
                     if (cont.isActive) cont.resume(Unit)
                 }
@@ -251,13 +275,16 @@ class ExpoPipAndroidModule : Module() {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return@AsyncFunction null
             val act = currentActivity ?: return@AsyncFunction null
             act.runOnUiThread {
+                if (act.isFinishing || act.isDestroyed || currentActivity !== act) return@runOnUiThread
                 try {
                     act.setPictureInPictureParams(
                         PictureInPictureParams.Builder()
                             .setAutoEnterEnabled(false)
                             .build()
                     )
-                } catch (_: Exception) { /* non-fatal */ }
+                } catch (error: Exception) {
+                    Log.w("ExpoPipAndroid", "Could not disable auto-enter PiP", error)
+                }
             }
             null
         }

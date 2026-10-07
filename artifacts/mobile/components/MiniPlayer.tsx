@@ -197,9 +197,6 @@ export function MiniPlayer() {
   const navigatingRef      = useRef(false);
   const navigatingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Early exit ─────────────────────────────────────────────────────────────
-  if (!shouldRender) return null;
-
   // ── Derived display values ─────────────────────────────────────────────────
   const title = isLive
     ? "Live"
@@ -236,6 +233,11 @@ export function MiniPlayer() {
   useEffect(() => () => {
     if (navigatingTimerRef.current) clearTimeout(navigatingTimerRef.current);
   }, []);
+
+  // All hooks must run before this visibility guard. Returning earlier caused
+  // the cleanup effect above to appear only after playback became visible,
+  // changing the hook count between renders.
+  if (!shouldRender) return null;
 
   const handlePress = () => {
     if (navigatingRef.current) return;
@@ -306,15 +308,15 @@ export function MiniPlayer() {
           />
         </View>
       )}
-      <Pressable
-        onPress={handlePress}
-        style={({ pressed }) => [styles.inner, { opacity: pressed ? 0.85 : 1 }]}
-        android_ripple={{ color: "rgba(0,0,0,0.06)", borderless: false }}
-        accessibilityRole="button"
-        accessibilityLabel={`Now playing: ${title}${subtitle ? ` — ${subtitle}` : ""}. Tap to open player.`}
-      >
+      <View style={styles.inner}>
         {/* ── Artwork ─────────────────────────────────────────────────── */}
-        <View style={styles.info}>
+        <Pressable
+          onPress={handlePress}
+          style={({ pressed }) => [styles.info, { opacity: pressed ? 0.85 : 1 }]}
+          android_ripple={{ color: "rgba(0,0,0,0.06)", borderless: false }}
+          accessibilityRole="button"
+          accessibilityLabel={`Now playing: ${title}${subtitle ? ` — ${subtitle}` : ""}. Tap to open player.`}
+        >
           {thumbUri ? (
             <View style={styles.artworkWrap}>
               <Image
@@ -366,7 +368,7 @@ export function MiniPlayer() {
               {subtitle}
             </Text>
           </View>
-        </View>
+        </Pressable>
 
         {/* ── Controls ────────────────────────────────────────────────── */}
         <View style={styles.controls}>
@@ -395,7 +397,7 @@ export function MiniPlayer() {
             </Pressable>
           )}
         </View>
-      </Pressable>
+      </View>
     </>
   );
 

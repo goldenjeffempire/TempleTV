@@ -49,13 +49,15 @@ import {
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
-import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { parseBoolParam, parseNumberParam } from "@/lib/params";
 import { navLogger } from "@/lib/navLogger";
 import { safeNavReplace } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
+const PLAYER_KEEP_AWAKE_TAG = "templetv-player";
+
 import { setAudioModeAsync } from "expo-audio";
 import { usePictureInPicture } from "@/hooks/usePictureInPicture";
 import * as ScreenOrientation from "expo-screen-orientation";
@@ -87,6 +89,7 @@ import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import * as audioController from "@/services/audioController";
 import { usePageSeo } from "@/hooks/usePageSeo";
 import { usePlayer } from "@/context/PlayerContext";
+import { useMobileViewerPresence } from "@/lib/viewerTracking";
 import {
   ReactionButton,
   PrayerSection,
@@ -300,6 +303,17 @@ export default function PlayerScreen() {
 
   const { setIsBroadcastMode, isPlaying, playerPlayRef, playerPauseRef, playerSeekRef } = usePlayer();
 
+  // One back contract for Android hardware back and the in-screen header.
+  // Keep gesture safeguards in the route options; explicit exits use this
+  // guarded path so a root player never throws or strands the user.
+  const handlePlayerBack = useCallback(() => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      safeNavReplace("/", {}, "player-back");
+    }
+  }, []);
+
   const videoId      = params.id ?? "live";
   const title        = params.title ?? "Now Playing";
   const youtubeId    = params.youtubeId ?? params.videoId ?? "";
@@ -320,6 +334,14 @@ export default function PlayerScreen() {
   // the YouTube live path — that is handled by the LiveBroadcastSupervisor
   // which already calls playLive() and sets PlayerContext.isLive=true.
   const isBroadcastV2 = isLive && !( !!( params.youtubeId ?? params.videoId ) && !hlsUrl );
+  // Presence is deliberately scoped to this live player route. VOD, radio,
+  // catalog screens, and background app chrome must not create viewer sessions.
+  useMobileViewerPresence({
+    enabled: isLive,
+    activelyWatching: isLive && isPlaying,
+    token: authToken,
+    reconnectKey: v2Connected,
+  });
   // When true, the player enters landscape fullscreen automatically on mount.
   // Set by the hero fullscreen icon (maximize-2 button) so tapping the icon
   // lands the user directly in an immersive fullscreen broadcast.
@@ -399,11 +421,7 @@ export default function PlayerScreen() {
       const handler = BackHandler.addEventListener("hardwareBackPress", () => {
         // Mirror the in-screen back button's logic — go back in history
         // if possible, otherwise fall back to the Watch tab home screen.
-        if (router.canGoBack()) {
-          router.back();
-        } else {
-          router.replace("/");
-        }
+        handlePlayerBack();
         // Return true to signal that we handled the event and prevent
         // the default Android back behavior (which would also pop the
         // screen, but bypasses our safeNav telemetry).
@@ -411,7 +429,7 @@ export default function PlayerScreen() {
       });
 
       return () => handler.remove();
-    }, []),
+    }, [handlePlayerBack]),
   );
 
   // Derived V2 live metadata — conditional on isBroadcastV2 so VOD screens
@@ -441,7 +459,7 @@ export default function PlayerScreen() {
   // Handles both youtube.com/watch?v= and youtu.be/ URL formats.
   const v2YouTubeOverrideVideoId = useMemo(() => {
     if (v2Override?.kind === "youtube" && typeof v2Override.url === "string" && v2Override.url) {
-      const m = v2Override.url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+       const m = v2Override.url.match(/(?:v=|youtu\.be\/|youtube\.com\/(?:live\/|embed\/|shorts\/))([A-Za-z0-9_-]{11})/);
       return m?.[1] ?? null;
     }
 
@@ -452,6 +470,19 @@ export default function PlayerScreen() {
       ? initialYoutubeOverrideId
       : null;
   }, [initialYoutubeOverrideId, v2Override?.kind, v2Override?.url, v2ServerSnap]);
+
+  // A queue item can itself be YouTube (not only a live override). Keep it
+  // out of expo-video: YouTube URLs are not native media URLs and some API
+  // snapshots intentionally omit `url`, which otherwise binds a blank native
+  // buffer and strands the FSM in PREPARING_ACTIVE.
+  const v2YouTubeCurrentVideoId = useMemo(() => {
+    const source = v2Current?.source;
+    if (!source || source.kind !== "youtube") return null;
+    const value = source.url ?? "";
+    const match = value.match(/(?:v=|youtu\.be\/|youtube\.com\/(?:live\/|embed\/|shorts\/))([A-Za-z0-9_-]{11})/);
+    return match?.[1] ?? (/^[A-Za-z0-9_-]{11}$/.test(value) ? value : null);
+  }, [v2Current?.source]);
+  const v2YouTubeVideoId = v2YouTubeOverrideVideoId ?? v2YouTubeCurrentVideoId;
 
   // Sync PlayerContext.isBroadcastMode with whether the V2 broadcast engine
   // is active. Without this, the MiniPlayer and any context consumer that
@@ -653,15 +684,27 @@ export default function PlayerScreen() {
   // lock there wastes battery without benefit. Deactivate during PiP and
   // re-activate automatically when PiP exits (isInPip → false).
   useEffect(() => {
-    if (isInPip) {
-      try { deactivateKeepAwake(); } catch { /* expo-keep-awake unavailable — non-fatal */ }
-      return;
-    }
+    if (isInPip) return;
+
+    let cancelled = false;
     // expo-keep-awake may throw NoClassDefFoundError on Android when
     // KeepAwakeManager is missing from the classpath (R8 missing-class gap in
     // expo-modules-core 57). Catching here prevents a hard app crash.
-    activateKeepAwakeAsync().catch(() => {});
-    return () => { try { deactivateKeepAwake(); } catch { /* non-fatal */ } };
+    void activateKeepAwakeAsync(PLAYER_KEEP_AWAKE_TAG)
+      .then(() => {
+        // React may clean up this effect before native activation finishes.
+        // Release the tag after activation completes instead of attempting to
+        // deactivate a tag that the native module has not registered yet.
+        if (cancelled) {
+          void deactivateKeepAwake(PLAYER_KEEP_AWAKE_TAG).catch(() => {});
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      void deactivateKeepAwake(PLAYER_KEEP_AWAKE_TAG).catch(() => {});
+    };
   }, [isInPip]);
 
   // Last-known playback position (ms). Written by handleProgressWithPosition
@@ -1063,6 +1106,24 @@ export default function PlayerScreen() {
     };
   }, []);
 
+  // A player can remain mounted in the stack while an external route takes
+  // focus (for example a tab switch). In that case the unmount cleanup above
+  // does not run, so release any fullscreen landscape lock on blur as well.
+  // Update the intent first so an in-flight LANDSCAPE lock cannot win after
+  // this route has been exited.
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        if (Platform.OS !== "web") {
+          orientationIntentRef.current = "portrait";
+          ScreenOrientation.lockAsync(
+            ScreenOrientation.OrientationLock.PORTRAIT_UP,
+          ).catch(() => {});
+        }
+      };
+    }, []),
+  );
+
   // Live broadcast sync — viewerCount display only. Position is ignored for
   // V2 broadcasts (BroadcastHlsPlayer does `void rest` on initialPositionMs —
   // the V2 engine self-syncs position from the server clock offset). For VOD
@@ -1372,35 +1433,6 @@ export default function PlayerScreen() {
           <Text style={styles.debugBannerText}>▶ PLAYER SCREEN LOADED — v133</Text>
         </View>
       )}
-      {/*
-       * Re-declare gestureEnabled at the component level as a belt-and-
-       * suspenders guard against React Navigation 7's setOptions() merge
-       * behaviour on Android (which can silently drop navigator-level options
-       * that the component-level call doesn't include).
-       *
-       * gestureEnabled: false — prevents Android 13+'s predictive-back system
-       * from animating a back-preview on the card screen after it has rendered.
-       * The root-cause fix (slide_from_right animation in _layout.tsx) already
-       * prevents the OS from misidentifying this as a dismissible bottom-sheet
-       * BEFORE the first frame; this guard covers any gesture re-enable that
-       * could occur after setOptions() merges on mount.
-       *
-       * IMPORTANT: Do NOT set `animation` here.
-       * `navigation.setOptions({ animation })` called from within a mounted
-       * NativeStack screen is unsupported in React Navigation 7 — setting the
-       * entrance animation after the screen is already rendered causes the
-       * screen to malfunction or silently dismiss on Android. The `animation`
-       * is set correctly at the layout level in _layout.tsx and must NOT be
-       * repeated here.
-       */}
-      <Stack.Screen
-        options={{
-          headerShown: false,
-          header: () => null,
-          title: "",
-          gestureEnabled: false,
-        }}
-      />
       <StatusBar style="light" />
 
       {/* ── Page header: back button + title ───────────────────────── */}
@@ -1411,7 +1443,7 @@ export default function PlayerScreen() {
         ]}
       >
         <Pressable
-          onPress={() => router.canGoBack() ? router.back() : router.replace("/")}
+          onPress={handlePlayerBack}
           style={[styles.pageHeaderBack, { backgroundColor: c.card, borderColor: c.border }]}
           hitSlop={12}
           accessibilityLabel="Go back"
@@ -1440,7 +1472,7 @@ export default function PlayerScreen() {
         {/* Live broadcasts: compact 16:9 height so chat is immediately visible.
             VOD: adaptive height based on video aspect ratio, max 60% of screen. */}
         <View style={[styles.playerShell, { height: inlinePlayerHeight }]}>
-          {isBroadcastV2 && v2YouTubeOverrideVideoId ? (
+          {isBroadcastV2 && v2YouTubeVideoId ? (
             /* V2 YouTube override — swaps inline to YoutubePlayer the moment
                the server snapshot arrives with override.kind="youtube" (e.g.
                the YouTube shuffle fallback). This eliminates the "Watch on
@@ -1450,7 +1482,7 @@ export default function PlayerScreen() {
                first server frame arrives, swapping the surface automatically
                without a navigation round-trip. */
             <YoutubePlayer
-              videoId={v2YouTubeOverrideVideoId}
+               videoId={v2YouTubeVideoId}
               thumbnailUrl={undefined}
               title={v2Override?.title ?? liveTitle}
               autoPlay
@@ -1540,7 +1572,7 @@ export default function PlayerScreen() {
                 It may have been removed or the source link is broken.
               </Text>
               <Pressable
-                onPress={() => (router.canGoBack() ? router.back() : router.replace("/"))}
+                onPress={handlePlayerBack}
                 style={styles.noSourceButton}
                 accessibilityRole="button"
                 accessibilityLabel="Go back"
@@ -1558,7 +1590,7 @@ export default function PlayerScreen() {
 
           {/* Fullscreen expand — hidden for YouTube and YouTube overrides (both
               have their own native YouTube controls; our overlay would conflict) */}
-          {!isYoutube && !v2YouTubeOverrideVideoId && (
+          {!isYoutube && !v2YouTubeVideoId && (
             <Pressable
               onPress={enterFullscreen}
               style={styles.fullscreenBtn}
@@ -2207,12 +2239,12 @@ export default function PlayerScreen() {
 
           {/* Player fills the entire modal */}
           <View style={styles.fsPlayerWrap}>
-            {isBroadcastV2 && v2YouTubeOverrideVideoId ? (
+            {isBroadcastV2 && v2YouTubeVideoId ? (
               /* YouTube override — same inline swap as the inline player shell:
                  embed the YouTube video directly rather than showing the
                  "Watch on YouTube" external-link overlay from V2PlayerContainer. */
               <YoutubePlayer
-                videoId={v2YouTubeOverrideVideoId}
+                videoId={v2YouTubeVideoId}
                 thumbnailUrl={undefined}
                 title={v2Override?.title ?? liveTitle}
                 autoPlay

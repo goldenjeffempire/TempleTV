@@ -66,8 +66,6 @@ import { NotificationOptInModal } from "@/components/NotificationOptInModal";
 import { reportClientError } from "@/lib/errorReporter";
 import { LiveBroadcastSupervisor } from "@/components/LiveBroadcastSupervisor";
 import { PersistentAudioPlayer } from "@/components/PersistentAudioPlayer";
-import { AppOpenAdController } from "@/components/ads/AppOpenAdController";
-import { InterstitialAdController } from "@/components/ads/InterstitialAdController";
 import { AuthGateModal } from "@/components/AuthGateModal";
 import { PlayerProvider } from "@/context/PlayerContext";
 import { AuthProvider } from "@/context/AuthContext";
@@ -83,6 +81,7 @@ import { UpdateBanner } from "@/components/UpdateBanner";
 import { MandatoryUpdateGate } from "@/components/MandatoryUpdateGate";
 import { FlexibleUpdateSheet } from "@/components/FlexibleUpdateSheet";
 import { DownloadProvider } from "@/context/DownloadContext";
+import { LiveNotificationBanner } from "@/components/LiveNotificationBanner";
 
 /**
  * Global offline/recovery banner — mounted once at the root so every screen
@@ -163,35 +162,6 @@ const queryClient = new QueryClient({
 
 import { setAudioSessionPromise } from "@/lib/audio-session";
 import { markStartupPhase } from "@/lib/startupLifecycle";
-
-/**
- * Initialize the Google Mobile Ads SDK once at app boot.
- *
- * Must be called before any ad is loaded or shown — the SDK buffers all ad
- * requests until initialization is complete. Calling it here (alongside
- * audio session setup, before any broadcast player mounts) guarantees the
- * first interstitial pre-loads as early as possible.
- *
- * Non-critical: if initialization fails (SDK blocked, no network, web
- * platform) the promise resolves silently and the app runs without ads.
- *
- * Delay app measurement init is configured in app.json (delay_app_measurement_init: true)
- * so the SDK waits for the UMP consent signal before attributing events.
- * This is required for GDPR compliance.
- */
-async function setupMobileAds() {
-  if (Platform.OS === "web") return;
-  try {
-    // Delegates to the hardened ads bootstrap: UMP consent (AdsConsent
-    // .gatherConsent) → request config (COPPA/TFUA, max content rating) →
-    // MobileAds().initialize(). Encapsulates the inline flow that previously
-    // lived here. Never throws.
-    const { initializeMobileAds } = await import("@/services/ads/mobileAds");
-    await initializeMobileAds();
-  } catch {
-    // Non-critical — ads will not load but the broadcast plays normally.
-  }
-}
 
 async function setupAudioSession() {
   if (Platform.OS === "web") return;
@@ -654,8 +624,14 @@ function RootLayoutNav() {
           pendingNotificationRef.current = { data, type };
           if (rootNavigationState?.key) {
             // Already ready (e.g. this listener resolved after mount) — flush now.
-            pendingNotificationRef.current = null;
-            handleNotificationResponse(data, type);
+            // Do not consume the response until the handler is installed. The
+            // dynamic notifications import can resolve after the navigator on
+            // a cold start; clearing here would permanently lose the tap.
+            const handler = handleNotificationResponseRef.current;
+            if (handler) {
+              pendingNotificationRef.current = null;
+              handler(data, type);
+            }
           } else {
             // Belt-and-suspenders: if the navigator never reports ready within
             // 5s (should not happen in practice), route anyway rather than
@@ -664,8 +640,11 @@ function RootLayoutNav() {
               notifListenerRef.current = null;
               if (pendingNotificationRef.current) {
                 const pending = pendingNotificationRef.current;
-                pendingNotificationRef.current = null;
-                handleNotificationResponse(pending.data, pending.type);
+                const handler = handleNotificationResponseRef.current;
+                if (handler) {
+                  pendingNotificationRef.current = null;
+                  handler(pending.data, pending.type);
+                }
               }
             }, 5000);
           }
@@ -695,13 +674,17 @@ function RootLayoutNav() {
     if (!rootNavigationState?.key) return;
     if (!pendingNotificationRef.current) return;
 
+    const handler = handleNotificationResponseRef.current;
+    // The response must remain queued until the dynamic notification setup
+    // has published its handler. This effect can win the race on cold start.
+    if (!handler) return;
     const pending = pendingNotificationRef.current;
     pendingNotificationRef.current = null;
     if (notifListenerRef.current) {
       clearTimeout(notifListenerRef.current);
       notifListenerRef.current = null;
     }
-    handleNotificationResponseRef.current?.(pending.data, pending.type);
+    handler(pending.data, pending.type);
   }, [rootNavigationState?.key]);
 
   const noHeader = { headerShown: false, header: () => null, title: "" } as const;
@@ -938,10 +921,6 @@ function RootLayout() {
       const audioSessionPromise = setupAudioSession();
       setAudioSessionPromise(audioSessionPromise);
       audioSessionPromise.then(() => markStartupPhase("audio_session")).catch(() => markStartupPhase("audio_session"));
-      // Initialize the Google Mobile Ads SDK in parallel with audio setup so
-      // interstitial pre-loading starts as early as possible. Fire-and-forget
-      // — MobileAds failure must never block the broadcast from starting.
-      void setupMobileAds();
       if (Platform.OS !== "web") {
         setupTrackPlayer()
           .then(() => markStartupPhase("track_player_setup"))
@@ -1042,19 +1021,12 @@ function RootLayout() {
             <DownloadProvider>
             <RadioStreamProvider>
             <PlayerProvider>
-              <InterstitialAdController>
               <LiveBroadcastSupervisor />
               <GestureHandlerRootView style={{ flex: 1 }}>
                 <SafeKeyboardProvider>
                   <StatusBar style="auto" />
                   <ProvidersReadyMarker />
                   <RootLayoutNav />
-                  {/*
-                   * App Open ad controller — shows on foreground resume only,
-                   * suppressed while the fullscreen live player route is active
-                   * so it can never interrupt or restart live playback.
-                   */}
-                  <AppOpenAdController isBlocked={(segments as string[]).includes("player")} />
                   <PersistentAudioPlayer />
                   {/*
                    * AuthGateModal is rendered at the root so it can be
@@ -1076,6 +1048,7 @@ function RootLayout() {
                    * for the whole app, no per-screen duplication.
                    */}
                   <GlobalNetworkBanner />
+                   <LiveNotificationBanner />
                   {/*
                    * UpdateBanner slides in from the top when a non-mandatory
                    * OTA or store update is available. Positioned above all
@@ -1098,7 +1071,6 @@ function RootLayout() {
                   <PlayFlexibleUpdateOverlay />
                 </SafeKeyboardProvider>
               </GestureHandlerRootView>
-              </InterstitialAdController>
             </PlayerProvider>
             </RadioStreamProvider>
             </DownloadProvider>

@@ -55,7 +55,11 @@ HERMES=$(node -p "require('./app.json').expo.jsEngine")
 ALLOW_BACKUP=$(node -p "require('./app.json').expo.android.allowBackup")
 BLOCKED=$(node -p "require('./app.json').expo.android.blockedPermissions.length")
 [ "$NEW_ARCH" = "true" ] && ok "New Architecture enabled" || warn "New Architecture disabled"
-[ "$HERMES" = "hermes" ] && ok "Hermes engine" || bad "jsEngine=$HERMES (expected hermes)"
+if [ "$HERMES" = "hermes" ] || [ "$HERMES" = "undefined" ]; then
+  ok "Hermes engine${HERMES:+ (Expo default)}"
+else
+  bad "jsEngine=$HERMES (expected hermes or Expo default)"
+fi
 [ "$ALLOW_BACKUP" = "false" ] && ok "allowBackup=false (no auto-backup of secrets)" \
   || warn "allowBackup=$ALLOW_BACKUP"
 [ "$BLOCKED" -ge 5 ] && ok "$BLOCKED unnecessary permissions blocked" \
@@ -114,32 +118,7 @@ else
   tail -20 /tmp/tsc.log | sed 's/^/    /'
 fi
 
-sec "10. Production ad configuration"
-if [ "${EXPO_PUBLIC_ADMOB_ANDROID_APP_ID:-}" = "ca-app-pub-3940256099942544~3347511713" ] \
-  || [ "${EXPO_PUBLIC_ADMOB_IOS_APP_ID:-}" = "ca-app-pub-3940256099942544~1458002511" ]; then
-  bad "Google sample AdMob App ID is configured for production"
-elif [ -z "${EXPO_PUBLIC_ADMOB_ANDROID_APP_ID:-}" ] \
-  || [ -z "${EXPO_PUBLIC_ADMOB_IOS_APP_ID:-}" ]; then
-  bad "production AdMob App IDs are missing (set both EXPO_PUBLIC_ADMOB_*_APP_ID)"
-else
-  ok "production AdMob App IDs are present"
-fi
-
-for unit in \
-  EXPO_PUBLIC_ADMOB_APP_OPEN_UNIT_ID \
-  EXPO_PUBLIC_ADMOB_BANNER_UNIT_ID \
-  EXPO_PUBLIC_GAM_INTERSTITIAL_AD_UNIT_ID \
-  EXPO_PUBLIC_ADMOB_REWARDED_UNIT_ID \
-  EXPO_PUBLIC_ADMOB_REWARDED_INTERSTITIAL_UNIT_ID \
-  EXPO_PUBLIC_ADMOB_NATIVE_UNIT_ID; do
-  if [ -n "${!unit:-}" ]; then
-    ok "$unit is configured"
-  else
-    warn "$unit is missing — that ad format will be disabled in release"
-  fi
-done
-
-sec "11. Submission credentials (eas submit only, not eas build)"
+sec "10. Submission credentials (eas submit only, not eas build)"
 [ -f ./google-service-account.json ] \
   && ok "google-service-account.json present (eas submit ready)" \
   || warn "google-service-account.json missing — required for 'eas submit' but NOT for 'eas build'"

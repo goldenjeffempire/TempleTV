@@ -24,7 +24,8 @@
 
 import React, { useEffect } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
-import { router, Stack, usePathname } from "expo-router";
+import { Stack, usePathname } from "expo-router";
+import { safeNavReplace } from "@/lib/safeNavPush";
 
 export default function NotFoundScreen() {
   const pathname = usePathname();
@@ -51,7 +52,7 @@ export default function NotFoundScreen() {
     // Replace immediately — this runs before the first committed paint on
     // most devices, so users never see this screen at all.
     // "/" resolves to (tabs)/index (Watch/Home) — the app's default screen.
-    router.replace("/");
+    safeNavReplace("/", {}, "not-found");
   }, [pathname]);
 
   // Render a minimal branded loading indicator in case the redirect takes

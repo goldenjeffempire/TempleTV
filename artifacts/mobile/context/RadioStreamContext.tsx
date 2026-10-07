@@ -57,7 +57,7 @@ import React, {
 import { AppState, Platform } from "react-native";
 import type { AppStateStatus } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { getApiBase } from "@/lib/apiBase";
+import { getApiBase, PRODUCTION_API_BASE } from "@/lib/apiBase";
 import * as audioController from "@/services/audioController";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -132,6 +132,7 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
   const mountedRef        = useRef(true);
   const retryCount        = useRef(0);
   const retryTimer        = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const foregroundRecoveryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stallTimer        = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastPlayingAt     = useRef<number>(0);    // epoch ms of last "isPlaying=true" status
   const isConnectingRef   = useRef(false);
@@ -151,8 +152,20 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
 
     async function fetchWithRetry(attemptsLeft: number, delayMs: number): Promise<void> {
       try {
-        const r = await fetch(`${base}/api/radio`, { signal: AbortSignal.timeout(8_000) });
+        let r = await fetch(`${base}/api/radio`, { signal: AbortSignal.timeout(8_000) });
+        if (
+          r.ok &&
+          r.headers.get("content-type")?.toLowerCase().includes("text/html") &&
+          base !== PRODUCTION_API_BASE
+        ) {
+          r = await fetch(`${PRODUCTION_API_BASE}/api/radio`, {
+            signal: AbortSignal.timeout(8_000),
+          });
+        }
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        if (!r.headers.get("content-type")?.toLowerCase().includes("application/json")) {
+          throw new Error("Invalid radio configuration response");
+        }
         const data = await r.json() as RadioConfig;
         if (!cancelled && mountedRef.current) setConfig(data);
       } catch (err) {
@@ -364,9 +377,14 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
     const handleAppState = (nextState: AppStateStatus) => {
       if (nextState !== "active") return;
       if (!isRadioOnRef.current || !mountedRef.current) return;
+      if (foregroundRecoveryTimer.current) {
+        clearTimeout(foregroundRecoveryTimer.current);
+        foregroundRecoveryTimer.current = null;
+      }
       // Give the OS 1.5s to re-establish the audio session after foregrounding
       // before we decide the stream is dead and trigger a reconnect.
-      setTimeout(() => {
+      foregroundRecoveryTimer.current = setTimeout(() => {
+        foregroundRecoveryTimer.current = null;
         if (!mountedRef.current || !isRadioOnRef.current) return;
         // If the stall watchdog shows the stream has been silent since before
         // we backgrounded (lastPlayingAt was set then), treat it as a dead stream.
@@ -379,7 +397,13 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
     };
 
     const sub = AppState.addEventListener("change", handleAppState);
-    return () => sub.remove();
+    return () => {
+      sub.remove();
+      if (foregroundRecoveryTimer.current) {
+        clearTimeout(foregroundRecoveryTimer.current);
+        foregroundRecoveryTimer.current = null;
+      }
+    };
   }, []);
 
   // ── Cleanup on unmount ────────────────────────────────────────────────────
@@ -389,6 +413,10 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
       if (retryTimer.current) {
         clearTimeout(retryTimer.current);
         retryTimer.current = null;
+      }
+      if (foregroundRecoveryTimer.current) {
+        clearTimeout(foregroundRecoveryTimer.current);
+        foregroundRecoveryTimer.current = null;
       }
       stopStallWatchdog();
     };
@@ -402,6 +430,10 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
    */
   const stopRadio = useCallback(() => {
     if (!isRadioOnRef.current) return;
+    if (foregroundRecoveryTimer.current) {
+      clearTimeout(foregroundRecoveryTimer.current);
+      foregroundRecoveryTimer.current = null;
+    }
     setIsRadioOn(false);
     if (retryTimer.current) {
       clearTimeout(retryTimer.current);
@@ -427,6 +459,10 @@ export function RadioStreamProvider({ children }: { children: React.ReactNode })
 
   const toggleRadio = useCallback(() => {
     const next = !isRadioOn;
+    if (foregroundRecoveryTimer.current) {
+      clearTimeout(foregroundRecoveryTimer.current);
+      foregroundRecoveryTimer.current = null;
+    }
     setIsRadioOn(next);
     // Clear any pending retry when user explicitly toggles
     if (retryTimer.current) {

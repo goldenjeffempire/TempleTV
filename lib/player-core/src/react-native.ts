@@ -160,14 +160,6 @@ interface NativeSession {
 const sessions = new Map<string, { session: NativeSession; lastIdleAtMs: number | null; lastUsedAt: number }>();
 
 const SESSION_IDLE_EVICT_MS = 5 * 60 * 1000;
-/**
- * Hard maximum age (ms) for any session entry in the singleton map — 24 hours.
- * Belt-and-suspenders beyond the 5-min idle eviction: sessions on always-on
- * devices that somehow kept hookCount > 0 (e.g. due to a navigation bug that
- * never calls the hook cleanup) are force-evicted after 24 hours to prevent
- * unbounded Map growth and memory leaks on kiosk-style deployments.
- */
-const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 
 /** setInterval handle for the janitor sweep. Null when no sessions exist. */
 let janitorInterval: ReturnType<typeof setInterval> | null = null;
@@ -216,18 +208,6 @@ function runJanitor(): void {
     // listeners (stallListener, escapeValveListener) added at session creation,
     // so its size is always ≥ 2 and the janitor would never evict.
     const hasListeners = entry.session.hookCount > 0;
-
-    // ── Hard max-age sweep (24 h) ─────────────────────────────────────────
-    // Evict sessions older than SESSION_MAX_AGE_MS regardless of hookCount.
-    // This is a safety net for always-on / kiosk devices where a navigation
-    // bug might keep hookCount > 0 indefinitely without anyone watching.
-    // On real broadcast surfaces the user will briefly see a BOOTSTRAP flash
-    // (< 1 s) before the fresh session reconnects — acceptable vs a memory
-    // leak that accumulates for days.
-    if (now - entry.lastUsedAt > SESSION_MAX_AGE_MS) {
-      evictSession(baseUrl, entry);
-      continue;
-    }
 
     if (hasListeners) {
       entry.lastIdleAtMs = null;

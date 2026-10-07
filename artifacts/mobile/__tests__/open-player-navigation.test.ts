@@ -79,6 +79,22 @@ describe("Hero Watch CTA", () => {
     assert.match(source, /safeNavPush\(\s*"\/player"/);
     assert.doesNotMatch(source, /router\.(?:replace|push)\(\s*["']\/["']/);
   });
+
+  it("does not override the root player transition while the route is mounting", () => {
+    const playerSource = readFileSync("app/player.tsx", "utf8");
+    const rootLayoutSource = readFileSync("app/_layout.tsx", "utf8");
+
+    assert.doesNotMatch(
+      playerSource,
+      /<Stack\.Screen/,
+      "player.tsx must not call navigation.setOptions during its opening transition",
+    );
+    assert.match(
+      rootLayoutSource,
+      /animation:\s*Platform\.OS === "ios" \? "slide_from_bottom" : "slide_from_right"/,
+    );
+    assert.match(rootLayoutSource, /gestureEnabled:\s*false/);
+  });
 });
 
 describe("Live Channel Watch navigation", () => {
@@ -573,6 +589,52 @@ describe("deep-link guard navigation isolation", () => {
     // safeNavReplace receives this live predicate and must call it again before
     // the retry. The stale Home replace is now cancelled.
     assert.equal(canRecover(), false);
+  });
+});
+
+// ─── 9. Android live alias and foreground notification navigation ─────────────
+describe("Android live broadcast navigation fixes", () => {
+  it("keeps /live as a blank compatibility alias that safely replaces to live Player", () => {
+    const source = readFileSync("app/live.tsx", "utf8");
+    assert.match(source, /safeNavReplace\(\s*["']\/player["']/);
+    assert.match(source, /isLive:\s*["']true["']/);
+    assert.match(source, /title:\s*["']Live Broadcast["']/);
+    assert.match(source, /preacher:\s*["']JCTM Ministries["']/);
+    assert.match(source, /return null/);
+    assert.doesNotMatch(source, /router\.(?:push|replace|back)\(/);
+  });
+
+  it("mounts a root-level, accessible foreground live banner with safe navigation", () => {
+    const layout = readFileSync("app/_layout.tsx", "utf8");
+    const source = readFileSync("components/LiveNotificationBanner.tsx", "utf8");
+    assert.match(layout, /<LiveNotificationBanner\s*\/>/);
+    assert.match(layout, /liveNotificationBus"\)\s*\.then/);
+    assert.match(layout, /type === "live_started" \|\| type === "live_now" \|\| type === "live"/);
+    assert.match(source, /liveNotificationBus\.subscribe/);
+    assert.match(source, /safeNavPush\(\s*["']\/player["']/);
+    assert.match(source, /accessibilityRole=["']button["']/);
+    assert.match(source, /accessibilityLabel=/);
+    assert.match(source, /testID=["']foreground-live-notification-banner["']/);
+    assert.match(source, /insets\.top/);
+    assert.match(source, /setTimeout\(\(\) => setVisible\(false\), DISPLAY_MS\)/);
+    assert.match(source, /setVisible\(false\)/);
+  });
+
+  it("centralizes player hardware and header back on one guarded function", () => {
+    const source = readFileSync("app/player.tsx", "utf8");
+    assert.match(source, /const handlePlayerBack = useCallback/);
+    assert.match(source, /handlePlayerBack\(\);/);
+    assert.match(source, /onPress=\{handlePlayerBack\}/);
+    assert.match(source, /safeNavReplace\(\s*["']\/["']\s*,\s*\{\}\s*,\s*["']player-back["']/);
+    assert.doesNotMatch(source, /onPress=\{\(\) => router\.canGoBack\(\)/);
+  });
+
+  it("guards NativeTabs initial replace at dispatch time", () => {
+    const source = readFileSync("app/(tabs)/_layout.tsx", "utf8");
+    assert.match(source, /safeNavReplace\(\s*["']\/["']/);
+    assert.match(source, /const shouldProceed = \(\) => !isNavPushActive\(\)/);
+    assert.match(source, /safeNavReplace\([\s\S]*shouldProceed\)/);
+    assert.doesNotMatch(source, /import\s+\{[^}]*\brouter\b[^}]*\}\s+from\s+["']expo-router["']/);
   });
 });
 

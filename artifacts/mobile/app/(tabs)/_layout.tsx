@@ -1,9 +1,9 @@
 import { BlurView } from "expo-blur";
-import { Tabs, router } from "expo-router";
+import { Tabs } from "expo-router";
 import { SymbolView } from "expo-symbols";
 import { Feather } from "@expo/vector-icons";
 import React, { useLayoutEffect } from "react";
-import { isNavPushActive } from "@/lib/safeNavPush";
+import { isNavPushActive, safeNavReplace } from "@/lib/safeNavPush";
 import {
   Platform,
   StyleSheet,
@@ -63,7 +63,8 @@ let hasRedirectedToDefaultTab = false;
 function NativeTabLayout() {
   useLayoutEffect(() => {
     if (hasRedirectedToDefaultTab) return;
-    if (isNavPushActive()) {
+    const shouldProceed = () => !isNavPushActive();
+    if (!shouldProceed()) {
       // A safeNavPush is already in flight (e.g. the user tapped Watch
       // just as the tabs group remounted during the modal presentation
       // animation). Issuing router.replace("/") here would race the push and
@@ -74,7 +75,7 @@ function NativeTabLayout() {
     }
     hasRedirectedToDefaultTab = true;
     // Navigate to the Watch / Home tab ("/" resolves to (tabs)/index).
-    router.replace("/");
+    safeNavReplace("/", {}, "native-tabs-initial-route", shouldProceed);
   }, []);
 
   // Lazy require — only runs on iOS 18+ when this component is rendered.

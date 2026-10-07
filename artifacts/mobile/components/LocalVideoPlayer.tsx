@@ -11,7 +11,6 @@ import {
 } from "react-native";
 import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
-import * as Haptics from "expo-haptics";
 import * as Sentry from "@sentry/react-native";
 import { useColors } from "@/hooks/useColors";
 import { usePlayer } from "@/context/PlayerContext";
@@ -25,7 +24,7 @@ import {
 } from "@/services/nowPlaying";
 import { postPlaybackTelemetryDelta } from "@/services/broadcast";
 import { useVideoPlayer, VideoView } from "expo-video";
-import type { VideoPlayer as ExpoVideoPlayer } from "expo-video";
+import { ANDROID_VIDEO_BUFFER_OPTIONS } from "@/lib/androidVideoBuffer";
 
 /** Strip query params/tokens from a URL for safe Sentry reporting. */
 function sanitizeUrl(url: string): string {
@@ -63,7 +62,6 @@ function LocalAudioModeCard({
   loading: boolean;
   onToggle?: () => void;
 }) {
-  const c = useColors();
   // Lazy initialisation: Animated.Value objects must be created exactly once.
   // The `useRef(new X()).current` pattern creates a *new* X on every render and
   // discards it — wasteful and flagged by the react-hooks/exhaustive-deps rule.
@@ -273,6 +271,9 @@ export function LocalVideoPlayer({
   // expo-video: useVideoPlayer must be called unconditionally (Rules of Hooks).
   // Pass null as initial source; source is set via player.replaceAsync() in an effect below.
   const nativePlayer = useVideoPlayer(null, (p) => {
+    if (Platform.OS === "android") {
+      p.bufferOptions = { ...ANDROID_VIDEO_BUFFER_OPTIONS };
+    }
     p.allowsExternalPlayback = true;
     p.timeUpdateEventInterval = 0.5; // replaces progressUpdateIntervalMillis={500}
     p.loop = false;
@@ -495,6 +496,7 @@ export function LocalVideoPlayer({
   // Guarded by isMountedRef so it never fires after unmount.
   useEffect(() => {
     if (Platform.OS === "web") return;
+    let cancelled = false;
 
     const loadSource = async () => {
       try {
@@ -504,13 +506,16 @@ export function LocalVideoPlayer({
           await nativePlayer.replaceAsync(null);
           return;
         }
-        if (!effectiveUrl) return;
-        if (!isMountedRef.current) return;
+        if (!effectiveUrl) {
+          await nativePlayer.replaceAsync(null);
+          return;
+        }
+        if (!isMountedRef.current || cancelled) return;
         setLoading(true);
         retryCountRef.current = 0;
         Sentry.addBreadcrumb({ category: "video-player", message: `source load start: ${sanitizeUrl(effectiveUrl)}`, level: "info" });
         await nativePlayer.replaceAsync({ uri: effectiveUrl });
-        if (!isMountedRef.current) return;
+        if (!isMountedRef.current || cancelled) return;
         // Apply playback rate (ignored for live/broadcast).
         if (!isBroadcastLive) {
           try { nativePlayer.playbackRate = rate; } catch { /* noop */ }
@@ -524,7 +529,7 @@ export function LocalVideoPlayer({
         }
         Sentry.addBreadcrumb({ category: "video-player", message: `source load success: ${sanitizeUrl(effectiveUrl)}`, level: "info" });
       } catch (err) {
-        if (!isMountedRef.current) return;
+        if (!isMountedRef.current || cancelled) return;
         Sentry.addBreadcrumb({ category: "video-player", message: `source load failure: ${sanitizeUrl(effectiveUrl)}`, level: "error" });
         Sentry.captureException(err, { tags: { module: "expo-video" }, extra: { url: sanitizeUrl(effectiveUrl) } });
         setLoading(false);
@@ -533,6 +538,7 @@ export function LocalVideoPlayer({
     };
 
     void loadSource();
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [effectiveUrl, isRadioMode, autoPlay, isBroadcastLive, rate, startPositionMs]);
 
@@ -541,6 +547,8 @@ export function LocalVideoPlayer({
   // to reproduce all the behaviour previously driven by onPlaybackStatusUpdate.
   useEffect(() => {
     if (Platform.OS === "web") return;
+    let disposed = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
     // statusChange: loading spinner management and error/retry logic.
     const statusSub = nativePlayer.addListener("statusChange", ({ status, error }) => {
@@ -562,25 +570,28 @@ export function LocalVideoPlayer({
           tags: { module: "expo-video" },
           extra: { url: sanitizeUrl(effectiveUrl) },
         });
-        if (retryCountRef.current < 2) {
+        if (retryTimer !== null) return;
+        if (retryCountRef.current < 2 && effectiveUrl) {
           retryCountRef.current += 1;
           setLoading(true);
           Sentry.addBreadcrumb({ category: "video-player", message: `retry attempt ${retryCountRef.current}`, level: "warning" });
           const retryPositionSecs = lastProgressMsRef.current > 0
             ? lastProgressMsRef.current / 1000
             : startPositionMs / 1000;
-          setTimeout(async () => {
-            if (!isMountedRef.current) return;
+          retryTimer = setTimeout(async () => {
+            if (!isMountedRef.current || disposed) return;
             try {
               await nativePlayer.replaceAsync({ uri: effectiveUrl });
-              if (!isMountedRef.current) return;
+              if (!isMountedRef.current || disposed) return;
               if (retryPositionSecs > 0) nativePlayer.currentTime = retryPositionSecs;
               nativePlayer.play();
             } catch (retryErr) {
-              if (!isMountedRef.current) return;
+              if (!isMountedRef.current || disposed) return;
               Sentry.captureException(retryErr, { tags: { module: "expo-video" } });
               setLoading(false);
               onErrorRef.current?.();
+            } finally {
+              retryTimer = null;
             }
           }, 700);
         } else {
@@ -633,6 +644,8 @@ export function LocalVideoPlayer({
     });
 
     return () => {
+      disposed = true;
+      if (retryTimer !== null) clearTimeout(retryTimer);
       statusSub.remove();
       playingSub.remove();
       timeSub.remove();
@@ -642,15 +655,8 @@ export function LocalVideoPlayer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nativePlayer, effectiveUrl, startPositionMs, onEnd, onPlay, onPause, onAspectRatioChange, transitionOpacity, updatePlayback]);
 
-  // ── Native player unmount cleanup ──────────────────────────────────────
-  useEffect(() => {
-    if (Platform.OS === "web") return;
-    return () => {
-      Sentry.addBreadcrumb({ category: "video-player", message: "player releasing on unmount", level: "info" });
-      try { nativePlayer.replaceAsync(null).catch(() => {}); } catch { /* noop */ }
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // useVideoPlayer owns native release. Starting replaceAsync in cleanup races
+  // its automatic SharedObject release and is neither necessary nor safe.
 
   // ── Mid-playback stall watchdog effect ────────────────────────────────
   // Reset progress refs whenever the URL changes (queue advance, manual

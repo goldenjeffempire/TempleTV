@@ -9,7 +9,7 @@
  * Zero mock/stub data — every function hits a real API endpoint.
  */
 
-import { getApiBase } from "@/lib/apiBase";
+import { getApiBase, PRODUCTION_API_BASE } from "@/lib/apiBase";
 import { fetchWithRetry } from "@/lib/fetchWithRetry";
 import { authFetch } from "@/services/authApi";
 
@@ -38,7 +38,19 @@ function url(path: string): string {
  * counts, etc.) pass their own signal explicitly.
  */
 async function publicFetch(path: string, init?: RequestInit): Promise<Response> {
-  const res = await fetchWithRetry(url(path), init);
+  const configuredBase = getApiBase();
+  let res = await fetchWithRetry(url(path), init);
+  // A direct Expo web preview serves its own HTML shell for unknown /api/*
+  // paths. Recover public data from the canonical API instead of attempting
+  // to parse that document as JSON. Same-origin API deployments never enter
+  // this branch because their API responses have the correct content type.
+  if (
+    res.ok &&
+    res.headers.get("content-type")?.toLowerCase().includes("text/html") &&
+    configuredBase !== PRODUCTION_API_BASE
+  ) {
+    res = await fetchWithRetry(`${PRODUCTION_API_BASE}${path}`, init);
+  }
   if (__DEV__ && !res.ok) {
     console.warn(`[api] publicFetch ${path} → HTTP ${res.status}`);
   }
@@ -243,6 +255,9 @@ export async function fetchVideos(opts: FetchVideosOptions = {}): Promise<Videos
     }
     throw new Error(`We're having trouble reaching the library. Please try again in a moment.`);
   }
+  if (!res.headers.get("content-type")?.toLowerCase().includes("application/json")) {
+    throw new Error("The video library returned an invalid response. Please try again.");
+  }
   const data = await res.json() as { videos?: ApiVideo[]; data?: ApiVideo[]; total?: number; totalPages?: number; nextCursor?: string | null };
   const videos = data.videos ?? data.data ?? [];
   // The server returns total=-1 and totalPages=-1 as sentinels when using
@@ -311,31 +326,65 @@ export async function fetchBroadcastCurrent(): Promise<BroadcastCurrentState> {
     source: "override" | "schedule" | "queue" | "empty";
   };
 
-  const wire = await res.json() as WireState;
-  const positionSecs = wire.current
-    ? Math.max(0, (wire.serverTimeMs - wire.current.startsAtMs) / 1000)
+  const wire = await res.json() as unknown;
+  if (!isRecord(wire) ||
+      !isFiniteNumber(wire.serverTimeMs) ||
+      !["override", "schedule", "queue", "empty"].includes(wire.source as string) ||
+      (wire.current !== null && !isBroadcastItem(wire.current)) ||
+      (wire.next !== null && !isBroadcastItem(wire.next)) ||
+      (wire.liveOverride !== undefined && wire.liveOverride !== null &&
+        (!isRecord(wire.liveOverride) ||
+          typeof wire.liveOverride.title !== "string" ||
+          !isFiniteNumber(wire.liveOverride.startedAtMs) ||
+          (wire.liveOverride.endsAtMs !== null && !isFiniteNumber(wire.liveOverride.endsAtMs))))) {
+    throw new Error("Broadcast state response was invalid");
+  }
+  const state = wire as WireState;
+  const positionSecs = state.current
+    ? Math.max(0, (state.serverTimeMs - state.current.startsAtMs) / 1000)
     : 0;
-  const totalSecs = wire.current?.durationSecs ?? 0;
+  const totalSecs = state.current?.durationSecs ?? 0;
 
   return {
-    serverTimeMs: wire.serverTimeMs,
-    current: wire.current,
-    next: wire.next,
+    serverTimeMs: state.serverTimeMs,
+    current: state.current,
+    next: state.next,
     positionSecs,
     totalSecs,
     progressPercent: totalSecs > 0 ? Math.min(100, (positionSecs / totalSecs) * 100) : 0,
-    failoverHlsUrl: wire.failoverHlsUrl ?? null,
-    isLive: wire.source === "override",
-    liveOverride: wire.liveOverride
+    failoverHlsUrl: typeof state.failoverHlsUrl === "string" ? state.failoverHlsUrl : null,
+    isLive: state.source === "override",
+    liveOverride: state.liveOverride
       ? {
-          title: wire.liveOverride.title,
+           title: state.liveOverride.title,
           youtubeVideoId:
-            wire.current?.source.kind === "youtube" ? wire.current.source.url : null,
+             state.current?.source.kind === "youtube" ? state.current.source.url : null,
           hlsStreamUrl:
-            wire.current?.source.kind === "hls" ? wire.current.source.url : null,
+             state.current?.source.kind === "hls" ? state.current.source.url : null,
         }
       : null,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isBroadcastItem(value: unknown): value is BroadcastCurrentItem {
+  if (!isRecord(value) ||
+      typeof value.id !== "string" ||
+      typeof value.title !== "string" ||
+      !isFiniteNumber(value.durationSecs) ||
+      !isFiniteNumber(value.startsAtMs) ||
+      !isFiniteNumber(value.endsAtMs) ||
+      !isRecord(value.source) ||
+      !["hls", "mp4", "youtube"].includes(value.source.kind as string) ||
+      typeof value.source.url !== "string") return false;
+  return true;
 }
 
 // ─── Channels ────────────────────────────────────────────────────────────────
@@ -359,7 +408,19 @@ export interface LiveStatus {
 export async function fetchLiveStatus(): Promise<LiveStatus> {
   const res = await publicFetch("/api/youtube/live/status");
   if (!res.ok) return { isLive: false, videoId: null, title: null, startedAt: null };
-  return res.json() as Promise<LiveStatus>;
+  const data = await res.json() as unknown;
+  if (!isRecord(data) || typeof data.isLive !== "boolean" ||
+      (data.videoId !== null && typeof data.videoId !== "string") ||
+      (data.title !== null && typeof data.title !== "string") ||
+      (data.startedAt !== null && typeof data.startedAt !== "string")) {
+    throw new Error("Live status response was invalid");
+  }
+  return {
+    isLive: data.isLive,
+    videoId: data.videoId,
+    title: data.title,
+    startedAt: data.startedAt,
+  };
 }
 
 // ─── Interactions (fire-and-forget) ─────────────────────────────────────────

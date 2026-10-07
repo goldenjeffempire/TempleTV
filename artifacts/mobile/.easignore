@@ -15,6 +15,7 @@ node_modules/
 dist/
 web-build/
 web-dist/
+builds/
 expo-env.d.ts
 
 # Native (generated — EAS regenerates these from managed config)

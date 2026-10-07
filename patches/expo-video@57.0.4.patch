@@ -1,0 +1,14 @@
+diff --git a/android/src/main/java/expo/modules/video/player/VideoPlayer.kt b/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
+index 8bae522733a37b0125e6e808cf912098e3ad3f13..f9cf90080933c50617bfb6add2f1ab0fe3e9c805 100644
+--- a/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
++++ b/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
+@@ -77,6 +77,9 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+     .Builder(context, renderersFactory)
+     .apply {
+       setLooper(context.mainLooper)
++      // Keep release on the application looper, but bound the blocking wait.
++      // Media3 still posts native cleanup and reports release timeout errors.
++      setReleaseTimeoutMs(100L)
+       setLoadControl(loadControl)
+       playerBuilderOptions?.seekBackwardIncrement?.let {
+         setSeekBackIncrementMs((it).toLong(DurationUnit.MILLISECONDS).coerceIn(1, 999_000))

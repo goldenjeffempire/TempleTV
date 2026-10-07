@@ -21,7 +21,7 @@ import { setAuthGateBindings, type PendingPlayback } from "@/utils/auth-gate";
 // ── Startup safety constants ─────────────────────────────────────────────────
 
 /**
- * Hard timeout per SecureStore read batch at startup.
+ * Hard timeout per startup storage read.
  *
  * On some Android 10/11 devices, the hardware-backed EncryptedSharedPreferences
  * keystore can permanently deadlock after a force-stop / OOM kill, never
@@ -37,7 +37,7 @@ const SECURE_STORE_TIMEOUT_MS = 2_000;
 
 /**
  * Race a promise against a hard timeout that rejects.
- * Used exclusively on startup-critical SecureStore reads.
+ * Used exclusively on startup-critical storage reads.
  */
 function withReadTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
@@ -161,25 +161,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // setItem now throws on keystore failure (no longer swallows), so we
         // catch per-key to preserve the others and leave legacy keys intact
         // (they will be retried on the next cold start if setItem failed).
-        const legacyToken = await AsyncStorage.getItem(STORAGE_KEYS.authToken);
+        const legacyToken = await withReadTimeout(
+          AsyncStorage.getItem(STORAGE_KEYS.authToken),
+          SECURE_STORE_TIMEOUT_MS,
+        );
         if (legacyToken) {
           try {
-            await secureStorage.setItem(SECURE_KEYS.authToken, legacyToken);
-            await AsyncStorage.removeItem(STORAGE_KEYS.authToken);
+            await withReadTimeout(
+              secureStorage.setItem(SECURE_KEYS.authToken, legacyToken),
+              SECURE_STORE_TIMEOUT_MS,
+            );
+            await withReadTimeout(
+              AsyncStorage.removeItem(STORAGE_KEYS.authToken),
+              SECURE_STORE_TIMEOUT_MS,
+            );
           } catch { /* transient — will retry on next launch */ }
         }
-        const legacyRefresh = await AsyncStorage.getItem(STORAGE_KEYS.authRefreshToken);
+        const legacyRefresh = await withReadTimeout(
+          AsyncStorage.getItem(STORAGE_KEYS.authRefreshToken),
+          SECURE_STORE_TIMEOUT_MS,
+        );
         if (legacyRefresh) {
           try {
-            await secureStorage.setItem(SECURE_KEYS.authRefreshToken, legacyRefresh);
-            await AsyncStorage.removeItem(STORAGE_KEYS.authRefreshToken);
+            await withReadTimeout(
+              secureStorage.setItem(SECURE_KEYS.authRefreshToken, legacyRefresh),
+              SECURE_STORE_TIMEOUT_MS,
+            );
+            await withReadTimeout(
+              AsyncStorage.removeItem(STORAGE_KEYS.authRefreshToken),
+              SECURE_STORE_TIMEOUT_MS,
+            );
           } catch { /* transient — will retry on next launch */ }
         }
-        const legacyUser = await AsyncStorage.getItem(STORAGE_KEYS.authUser);
+        const legacyUser = await withReadTimeout(
+          AsyncStorage.getItem(STORAGE_KEYS.authUser),
+          SECURE_STORE_TIMEOUT_MS,
+        );
         if (legacyUser) {
           try {
-            await secureStorage.setItem(SECURE_KEYS.authUser, legacyUser);
-            await AsyncStorage.removeItem(STORAGE_KEYS.authUser);
+            await withReadTimeout(
+              secureStorage.setItem(SECURE_KEYS.authUser, legacyUser),
+              SECURE_STORE_TIMEOUT_MS,
+            );
+            await withReadTimeout(
+              AsyncStorage.removeItem(STORAGE_KEYS.authUser),
+              SECURE_STORE_TIMEOUT_MS,
+            );
           } catch { /* transient — will retry on next launch */ }
         }
 

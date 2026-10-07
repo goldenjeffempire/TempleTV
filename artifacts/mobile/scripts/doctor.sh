@@ -50,6 +50,23 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MOBILE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# ── 0. Static release configuration ───────────────────────────────────────────
+if node - "$MOBILE_DIR/app.json" "$MOBILE_DIR/eas.json" <<'NODE'
+const fs = require("fs");
+const [appPath, easPath] = process.argv.slice(2);
+const app = JSON.parse(fs.readFileSync(appPath, "utf8")).expo;
+const eas = JSON.parse(fs.readFileSync(easPath, "utf8"));
+if (JSON.stringify(app.runtimeVersion) !== JSON.stringify({ policy: "appVersion" })) {
+  throw new Error("runtimeVersion must use the appVersion policy");
+}
+NODE
+then
+  echo -e "$PASS static release config has appVersion runtime policy"
+else
+  echo -e "$FAIL static release config contains unsafe production values"
+  mark_fail
+fi
+
 # ── 1. Node.js version ────────────────────────────────────────────────────────
 if command -v node >/dev/null 2>&1; then
   NODE_PATH="$(command -v node)"

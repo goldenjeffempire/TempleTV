@@ -63,7 +63,7 @@ export interface ChatSnapshot {
 
 const DEFAULT_BUFFER = 80;
 
-function buildUrl(opts: ChatClientOptions): string {
+function buildUrl(opts: ChatClientOptions, ticket?: string): string {
   if (opts.url) return opts.url;
   const base = getApiBase();
   if (!base) return "";
@@ -72,7 +72,7 @@ function buildUrl(opts: ChatClientOptions): string {
     .replace(/^https:/i, "wss:");
   const params: string[] = [];
   if (opts.channelId) params.push(`channel=${encodeURIComponent(opts.channelId)}`);
-  if (opts.token) params.push(`token=${encodeURIComponent(opts.token)}`);
+  if (ticket) params.push(`ticket=${encodeURIComponent(ticket)}`);
   const qs = params.length ? `?${params.join("&")}` : "";
   return `${wsScheme}/api/chat/ws${qs}`;
 }
@@ -240,9 +240,26 @@ export class ChatClient {
     this.typingMap.clear();
   }
 
-  private connect(): void {
+  private async connect(): Promise<void> {
     if (this.closedByUser) return;
-    const url = buildUrl(this.opts);
+    let ticket: string | undefined;
+    if (this.opts.token && this.opts.channelId) {
+      try {
+        const response = await fetch(`${getApiBase()}/api/chat/${encodeURIComponent(this.opts.channelId)}/ticket`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${this.opts.token}` },
+        });
+        if (!response.ok) throw new Error(`Chat ticket request failed (${response.status})`);
+        ticket = (await response.json() as { ticket?: string }).ticket;
+        if (!ticket) throw new Error("Chat ticket response was invalid");
+      } catch (err) {
+        this.lastError = { code: "auth", message: err instanceof Error ? err.message : "Chat authentication failed", atMs: Date.now() };
+        this.scheduleReconnect();
+        this.emit();
+        return;
+      }
+    }
+    const url = buildUrl(this.opts, ticket);
     if (!url) {
       this.lastError = {
         code: "internal",

@@ -49,16 +49,18 @@
  *   • EXACTLY two VideoPlayer instances per BroadcastBuffer pair, created once
  *     at mount via useVideoPlayer, never recreated. Sources are swapped via
  *     player.replaceAsync() to reuse the decoder without allocating new players.
- *   • On unmount, player.replace(null) drops all decoder/buffer references.
+ *   • On unmount, useVideoPlayer automatically releases decoder/buffer references.
  *   • All player calls guarded by isMountedRef so nothing fires after release.
  *
  * Used by `app/player.tsx` for the live HLS path (v2 broadcast).
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Animated, AppState, Image, Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Animated, AppState, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { RemoteImage } from "@/components/RemoteImage";
 import { useVideoPlayer, VideoView } from "expo-video";
 import type { VideoSource } from "expo-video";
+import { ANDROID_VIDEO_BUFFER_OPTIONS } from "@/lib/androidVideoBuffer";
 import * as Sentry from "@sentry/react-native";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { MobileBufferState } from "@workspace/player-core/adapters/mobile";
@@ -70,7 +72,6 @@ import {
   isInPictureInPictureMode,
   updatePipParams,
 } from "../modules/expo-pip-android/src";
-import { useBroadcastInterstitialAd } from "@/hooks/useInterstitialAd";
 
 // Audio session (playsInSilentModeIOS, staysActiveInBackground, DoNotMix
 // interruption mode) is configured globally in app/_layout.tsx at app boot.
@@ -232,24 +233,17 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   // useVideoPlayer is called unconditionally (Rules of Hooks).
   // Source changes use player.replaceAsync(), never a new player instance.
   const player = useVideoPlayer(null, (p) => {
+    if (Platform.OS === "android") {
+      p.bufferOptions = { ...ANDROID_VIDEO_BUFFER_OPTIONS };
+    }
     p.muted = true; // start silent; mute/volume synced in effects below
     p.loop = false;
     p.allowsExternalPlayback = true;
     p.timeUpdateEventInterval = 0.5; // 500 ms, matches old progressUpdateIntervalMillis
   });
 
-  // Release player resources on unmount (drop decoder + buffer refs).
-  useEffect(() => {
-    return () => {
-      try {
-        // replace(null) drops the decoder and all media buffer memory.
-        player.replace(null);
-      } catch {
-        // Ignore — player may already be in an idle state.
-      }
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // useVideoPlayer releases the SharedObject on unmount. Do not replace a
+  // source during teardown: its own cleanup may already have released it.
 
   // ── Manifest-driven quick-finish threshold ────────────────────────────────
   const quickFinishThresholdMsRef = useRef(HLS_QUICK_FINISH_THRESHOLD_MS);
@@ -458,27 +452,6 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
       clearLoadTimeout();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── Stable error emitter ─────────────────────────────────────────────────
-  const handleError = useCallback(
-    (error: unknown) => {
-      if (!isMountedRef.current) return;
-      clearBufferingWatchdog();
-      clearLoadTimeout();
-      if (!fsmIsWaitingRef.current && loadedRevisionRef.current !== bindRevisionRef.current) return;
-      const errMsg = error instanceof Error ? error.message : typeof error === "string" ? error : "media-error";
-      Sentry.captureException(error instanceof Error ? error : new Error(errMsg), {
-        tags: { "expo-video": bufferId },
-        extra: { url: safeUrl(url), op: "playback-error" },
-      });
-      emit({
-        type: "buffer-error",
-        bufferId,
-        error: errMsg,
-      });
-    },
-    [clearBufferingWatchdog, clearLoadTimeout, emit, bufferId, url],
-  );
 
   // ── expo-video event listeners ────────────────────────────────────────────
   // Register all event listeners in a single effect, cleaned up on unmount.
@@ -924,6 +897,7 @@ interface _MpSingleton {
   listeners: Set<() => void>;
   fetchInterval: ReturnType<typeof setInterval>;
   windowInterval: ReturnType<typeof setInterval> | null;
+  controller: AbortController;
 }
 
 const _mpSingletons = new Map<string, _MpSingleton>();
@@ -938,6 +912,7 @@ function _getOrCreateMpSingleton(mainBaseUrl: string): _MpSingleton {
     listeners: new Set(),
     fetchInterval: undefined as unknown as ReturnType<typeof setInterval>,
     windowInterval: null,
+    controller: new AbortController(),
   };
   _mpSingletons.set(mainBaseUrl, singleton);
 
@@ -953,13 +928,18 @@ function _getOrCreateMpSingleton(mainBaseUrl: string): _MpSingleton {
   };
 
   const fetchConfig = () => {
+    if (singleton.controller.signal.aborted) return;
+    const requestController = new AbortController();
+    const abortRequest = () => requestController.abort();
+    singleton.controller.signal.addEventListener("abort", abortRequest, { once: true });
+    const timeout = setTimeout(abortRequest, 5_000);
     const apiOrigin = mainBaseUrl.replace(/\/api\/broadcast-v2.*/, "");
     fetch(`${apiOrigin}/api/midnight-prayers/config`, {
-      signal: AbortSignal.timeout(5_000),
+      signal: requestController.signal,
     })
       .then((r) => (r.ok ? (r.json() as Promise<MPScheduleConfig>) : null))
       .then((data) => {
-        if (!data) return;
+        if (!data || singleton.controller.signal.aborted) return;
         singleton.cfg = data;
         if (!singleton.windowInterval) {
           singleton.windowInterval = setInterval(checkWindow, 60_000);
@@ -970,7 +950,19 @@ function _getOrCreateMpSingleton(mainBaseUrl: string): _MpSingleton {
           notifyAll();
         }
       })
-      .catch(() => { /* stay on main channel */ });
+      .catch((error: unknown) => {
+        if (singleton.controller.signal.aborted) return;
+        Sentry.addBreadcrumb({
+          category: "midnight-prayers",
+          message: "Config request failed; retaining main channel",
+          level: "warning",
+          data: { error: error instanceof Error ? error.name : "unknown" },
+        });
+      })
+      .finally(() => {
+        clearTimeout(timeout);
+        singleton.controller.signal.removeEventListener("abort", abortRequest);
+      });
   };
 
   fetchConfig();
@@ -989,6 +981,7 @@ function useMidnightPrayersSwitch(mainBaseUrl: string): string {
     return () => {
       singleton.listeners.delete(notify);
       if (singleton.listeners.size === 0) {
+        singleton.controller.abort();
         clearInterval(singleton.fetchInterval);
         if (singleton.windowInterval !== null) {
           clearInterval(singleton.windowInterval);
@@ -1196,19 +1189,6 @@ export function V2PlayerContainer({
        activeItem.kind === "youtube") ||
       server?.override?.kind === "youtube"
     );
-
-  // ── Google Ad Manager interstitial ads ───────────────────────────────────
-  // Shows interstitials at natural broadcast break points (first PLAYING state
-  // and subsequent buffer swaps between queue items). Suppressed during YouTube
-  // live overrides and all non-PLAYING FSM states. No-op when the env var
-  // EXPO_PUBLIC_GAM_INTERSTITIAL_AD_UNIT_ID is not set, or in the minimal /
-  // suppressed-event player variants (hero / inline player).
-  useBroadcastInterstitialAd({
-    broadcastState: snapshot.state,
-    activeBufferId,
-    isYouTubeOverride,
-    enabled: !minimal && !suppressEvents,
-  });
 
   // ── PiP buffer-swap re-entry (Android) ───────────────────────────────
   const prevActiveBufferIdRef = useRef<"A" | "B">(activeBufferId);
@@ -1444,10 +1424,13 @@ export function V2PlayerContainer({
   return (
     <View style={styles.root}>
       {posterUrl && !minimal && (
-        <Image
-          source={{ uri: posterUrl }}
+        <RemoteImage
+          uri={posterUrl}
           style={styles.ambient}
           blurRadius={25}
+          cachePolicy="memory-disk"
+          allowDownscaling
+          contentFit="cover"
           accessible={false}
         />
       )}
@@ -1457,10 +1440,12 @@ export function V2PlayerContainer({
           style={[styles.poster, { opacity: posterFadeAnim }]}
           pointerEvents="none"
         >
-          <Image
-            source={{ uri: posterUrl }}
+          <RemoteImage
+            uri={posterUrl}
             style={styles.posterInner}
-            resizeMode="contain"
+            contentFit="contain"
+            cachePolicy="memory-disk"
+            allowDownscaling
             accessible={false}
           />
         </Animated.View>
@@ -1503,10 +1488,12 @@ export function V2PlayerContainer({
             />
           )}
           {overlayContent.youtubeThumbnailUrl ? (
-            <Image
-              source={{ uri: overlayContent.youtubeThumbnailUrl }}
+            <RemoteImage
+              uri={overlayContent.youtubeThumbnailUrl}
               style={styles.overlayYtThumb}
-              resizeMode="cover"
+              contentFit="cover"
+              cachePolicy="memory-disk"
+              allowDownscaling
               accessible={false}
             />
           ) : null}

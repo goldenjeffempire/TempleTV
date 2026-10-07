@@ -440,7 +440,10 @@ class DownloadManager {
         throw new Error("Download produced no output file");
       }
 
-      if (result.status !== 200) {
+      // Expo returns 206 when a DownloadResumable continues a server-side
+      // byte-range request.  It is a successful completion, not a failed
+      // download (a fresh download still normally returns 200).
+      if (result.status !== 200 && result.status !== 206) {
         throw new Error(`Server returned status ${result.status}`);
       }
 

@@ -86,8 +86,8 @@ module.exports = function withGradleConfig(config) {
 
     // ── R8 full mode (smaller, faster release APK/AAB) ───────────────────────
     // Enables dead-code removal, method inlining, and class merging in R8.
-    // Safe because all reflection-accessed classes are already guarded by the
-    // explicit -keep rules in proguard-rules.pro and expo-build-properties.
+    // Library consumer rules guard JNI/reflection entry points. App rules must
+    // stay narrow; validate every release after changes to the dependency graph.
     upsert("android.enableR8.fullMode", "true");
 
     // ── Non-transitive R classes (AGP 8.x best practice) ─────────────────────

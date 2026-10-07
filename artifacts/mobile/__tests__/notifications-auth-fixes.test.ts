@@ -6,7 +6,7 @@
  *   node --import tsx/esm --test __tests__/notifications-auth-fixes.test.ts
  *
  * Tests pure-JS logic only — no React Native host, no native module mocks.
- * Follows the convention of startup.test.ts and ads.test.ts.
+ * Follows the convention of startup.test.ts.
  *
  * Areas covered:
  *   1. registerTokenWithServer result classification (non-2xx = failure, retain token)
@@ -16,10 +16,12 @@
  *   5. AuthContext.signIn rollback: removes all three keys (token, refresh, user)
  *   6. NotificationOptInGate mount-guard deduplication
  *   7. Migration isolation: one write failure must not abort sibling writes
+ *   8. Migration native reads and writes are all bounded by a startup timeout
  */
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 // ─── Silence console noise ────────────────────────────────────────────────────
 let _origLog: typeof console.log;
@@ -364,5 +366,54 @@ describe("migration write isolation — one failure must not abort siblings", ()
     writeMigrationKey("authRefreshToken", false); // must still succeed
     writeMigrationKey("authUser", false);         // must still succeed
     assert.deepEqual(written, ["authRefreshToken", "authUser"]);
+  });
+});
+
+// ─── 8. Android runtime safety source contracts ──────────────────────────────
+//
+// These routes/providers depend on native modules and cannot be mounted in this
+// Node-only suite. Keep the important ordering and timeout guarantees covered
+// by small source contracts so a refactor cannot silently remove them.
+
+describe("Android startup/runtime safety contracts", () => {
+  const authSource = readFileSync(new URL("../context/AuthContext.tsx", import.meta.url), "utf8");
+  const notFoundSource = readFileSync(new URL("../app/+not-found.tsx", import.meta.url), "utf8");
+  const layoutSource = readFileSync(new URL("../app/_layout.tsx", import.meta.url), "utf8");
+  const playerSource = readFileSync(new URL("../app/player.tsx", import.meta.url), "utf8");
+
+  it("bounds all legacy AsyncStorage auth reads during restore", () => {
+    const reads = [...authSource.matchAll(/withReadTimeout\(\s*AsyncStorage\.getItem\(/g)];
+    assert.equal(reads.length, 3, "token, refresh token, and user reads must all be bounded");
+  });
+
+  it("bounds all legacy migration writes and removals during restore", () => {
+    const secureWrites = [...authSource.matchAll(/withReadTimeout\(\s*secureStorage\.setItem\(/g)];
+    const legacyRemovals = [...authSource.matchAll(/withReadTimeout\(\s*AsyncStorage\.removeItem\(/g)];
+    assert.equal(secureWrites.length, 3, "all SecureStore migration writes must be bounded");
+    assert.equal(legacyRemovals.length, 3, "all legacy-key removals must be bounded");
+  });
+
+  it("routes +not-found through readiness-safe replace", () => {
+    assert.match(notFoundSource, /safeNavReplace\("\/", \{\}, "not-found"\)/);
+    assert.doesNotMatch(notFoundSource, /router\.replace/);
+  });
+
+  it("does not consume a cold-start notification before a handler exists", () => {
+    assert.match(
+      layoutSource,
+      /const handler = handleNotificationResponseRef\.current;\s*if \(handler\) \{\s*pendingNotificationRef\.current = null/s,
+    );
+    assert.match(
+      layoutSource,
+      /const handler = handleNotificationResponseRef\.current;\s*\/\/ The response must remain queued[\s\S]*?if \(!handler\) return;/,
+    );
+  });
+
+  it("restores portrait on player route blur as well as unmount", () => {
+    assert.match(playerSource, /useFocusEffect\(\s*useCallback\(\(\) => \{\s*return \(\) => \{/);
+    assert.match(
+      playerSource,
+      /orientationIntentRef\.current = "portrait"[\s\S]*?OrientationLock\.PORTRAIT_UP/,
+    );
   });
 });
