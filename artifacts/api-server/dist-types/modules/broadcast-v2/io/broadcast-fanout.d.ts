@@ -43,6 +43,7 @@ export type FanoutRole = "writer" | "reader" | "standalone";
 export interface FanoutOrchestrator {
     readonly channelId: string;
     setSuppressLocalEmit(val: boolean): void;
+    setControllerActive(val: boolean): void;
     injectFrame(frame: V2ServerFrame): void;
     on(event: "frame", listener: (frame: V2ServerFrame) => void): this;
     off(event: "frame", listener: (frame: V2ServerFrame) => void): this;

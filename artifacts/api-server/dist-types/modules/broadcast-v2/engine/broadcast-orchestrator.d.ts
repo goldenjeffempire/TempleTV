@@ -161,6 +161,13 @@ declare class BroadcastOrchestrator extends EventEmitter {
     private checkpointDirty;
     private lastCurrentItemId;
     /**
+     * Runtime currentItemId captured during hydrate(), before the first tick on
+     * the normally-loaded main queue can overwrite lastCurrentItemId. Consumed
+     * by Midnight Prayers boot recovery to decide whether restoredCycleAnchor
+     * belongs to a prayer item and can safely preserve its exact progress.
+     */
+    private hydratedRuntimeCurrentItemId;
+    /**
      * Ring buffer of recently-aired items (newest-first, capped at AIRING_HISTORY_MAX).
      * Populated by tickInner() on every item advance.
      */
@@ -210,6 +217,8 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * Default false = standalone / writer mode (existing behaviour).
      */
     private suppressLocalEmit;
+    /** True only for the elected fan-out writer or standalone instance. */
+    private controllerActive;
     /**
      * Wall-clock ms when the last position checkpoint was written to DB.
      * Loaded during hydrate() and used as a fallback anchor in reloadInner()
@@ -839,7 +848,9 @@ declare class BroadcastOrchestrator extends EventEmitter {
      * crashed/restarted while a checkpoint was pending — e.g. the window ended
      * while the server was down). Safe to call with no pending checkpoint.
      */
-    resolvePendingMidnightPrayersCheckpoint(): Promise<void>;
+    resolvePendingMidnightPrayersCheckpoint(opts?: {
+        fallbackAnchorMs?: number | null;
+    }): Promise<void>;
     stopOverride(): Promise<void>;
     /**
      * Public wrapper around {@link probeUrlReachability} for use by the
@@ -905,6 +916,11 @@ declare class BroadcastOrchestrator extends EventEmitter {
      *   setSuppressLocalEmit(false) → writer / standalone mode (default)
      */
     setSuppressLocalEmit(val: boolean): void;
+    /**
+     * Transfer queue ownership between fan-out roles. A promoted writer ticks
+     * immediately so an existing queued item becomes ON AIR without delay.
+     */
+    setControllerActive(val: boolean): void;
     /**
      * Inject a frame received from an external source (Redis fan-out) directly
      * into the local SSE/WS push path.

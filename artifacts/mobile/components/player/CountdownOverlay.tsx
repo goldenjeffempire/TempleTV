@@ -1,5 +1,6 @@
 import React from "react";
-import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import { RemoteImage } from "@/components/RemoteImage";
 import { Feather } from "@expo/vector-icons";
 import type { Sermon } from "@/types";
 import type { useColors } from "@/hooks/useColors";
@@ -42,7 +43,13 @@ export function CountdownOverlay({
       <View style={styles.card}>
         <Text style={styles.kicker}>UP NEXT IN {count}s</Text>
         {next.thumbnailUrl ? (
-          <Image source={{ uri: next.thumbnailUrl }} style={styles.thumb} />
+          <RemoteImage
+            uri={next.thumbnailUrl}
+            style={styles.thumb}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            allowDownscaling
+          />
         ) : (
           <View style={[styles.thumb, { backgroundColor: "#1a1a1a" }]} />
         )}

@@ -46,7 +46,9 @@ export declare function enqueueIfMissing(opts: {
  *   - Batch-updates with a single UPDATE … WHERE id IN (…) to minimise
  *     round-trips; the cap of 500 rows prevents runaway scans on large DBs.
  */
-export declare function repairMissingS3MirroredAt(videoId?: string): Promise<{
+export declare function repairMissingS3MirroredAt(videoId?: string, opts?: {
+    throwOnError?: boolean;
+}): Promise<{
     repaired: number;
 }>;
 /**

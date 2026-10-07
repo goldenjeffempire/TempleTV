@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from "react";
-import { Image, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
+import { Image } from "expo-image";
+import { RemoteImage } from "@/components/RemoteImage";
 import type { V2Item } from "@workspace/player-core";
 import type { useColors } from "@/hooks/useColors";
 
@@ -67,16 +69,18 @@ export function BroadcastUpNextStrip({
       </Text>
       <View style={styles.upNextRow}>
         {item.thumbnailUrl ? (
-          <Image
-            source={{ uri: item.thumbnailUrl }}
+          <RemoteImage
+            uri={item.thumbnailUrl}
             style={styles.upNextThumb}
-            resizeMode="cover"
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            allowDownscaling
           />
         ) : (
           <Image
             source={PLACEHOLDER}
             style={styles.upNextThumb}
-            resizeMode="cover"
+            contentFit="cover"
           />
         )}
         <View style={styles.upNextInfo}>

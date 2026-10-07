@@ -54,6 +54,8 @@ export type ChatServerEvent = {
     pinnedMessage: ChatMessage | null;
     you: {
         sessionId: string;
+        /** Authenticated user ID, or null for guests. */
+        userId: string | null;
         displayName: string;
         isModerator: boolean;
         role: ChatRole;
@@ -95,6 +97,21 @@ export type ChatServerEvent = {
     channelId: string;
     viewers: number;
 } | {
+    /**
+     * Typing indicator — sent by the server when another user starts or
+     * stops typing. Server support is optional: if not supported the client
+     * just never sees this event and the typing indicator stays hidden.
+     *
+     * `sessionId` is always present so guests (userId=null) can each be
+     * tracked individually instead of collapsing into a shared "__anon__" key.
+     */
+    type: "typing";
+    channelId: string;
+    sessionId: string;
+    userId: string | null;
+    displayName: string;
+    isTyping: boolean;
+} | {
     type: "ping";
     serverTimeMs: number;
 } | {
@@ -115,6 +132,14 @@ export type ChatClientFrame = {
     type: "react";
     messageId: string;
     emoji: string;
+} | {
+    /**
+     * Typing indicator — client notifies server when the user starts/stops
+     * typing. Server may broadcast this to other clients as a "typing" event.
+     * Gracefully ignored by servers that do not support it.
+     */
+    type: "typing";
+    isTyping: boolean;
 } | {
     type: "pong";
 };

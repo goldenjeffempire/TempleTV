@@ -79,6 +79,22 @@ describe("Hero Watch CTA", () => {
     assert.match(source, /safeNavPush\(\s*"\/player"/);
     assert.doesNotMatch(source, /router\.(?:replace|push)\(\s*["']\/["']/);
   });
+
+  it("does not override the root player transition while the route is mounting", () => {
+    const playerSource = readFileSync("app/player.tsx", "utf8");
+    const rootLayoutSource = readFileSync("app/_layout.tsx", "utf8");
+
+    assert.doesNotMatch(
+      playerSource,
+      /<Stack\.Screen/,
+      "player.tsx must not call navigation.setOptions during its opening transition",
+    );
+    assert.match(
+      rootLayoutSource,
+      /animation:\s*Platform\.OS === "ios" \? "slide_from_bottom" : "slide_from_right"/,
+    );
+    assert.match(rootLayoutSource, /gestureEnabled:\s*false/);
+  });
 });
 
 describe("Live Channel Watch navigation", () => {

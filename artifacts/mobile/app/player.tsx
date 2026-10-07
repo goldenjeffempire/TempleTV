@@ -49,7 +49,7 @@ import {
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
-import { router, Stack, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { parseBoolParam, parseNumberParam } from "@/lib/params";
 import { navLogger } from "@/lib/navLogger";
 import { safeNavReplace } from "@/lib/safeNavPush";
@@ -1433,35 +1433,6 @@ export default function PlayerScreen() {
           <Text style={styles.debugBannerText}>▶ PLAYER SCREEN LOADED — v133</Text>
         </View>
       )}
-      {/*
-       * Re-declare gestureEnabled at the component level as a belt-and-
-       * suspenders guard against React Navigation 7's setOptions() merge
-       * behaviour on Android (which can silently drop navigator-level options
-       * that the component-level call doesn't include).
-       *
-       * gestureEnabled: false — prevents Android 13+'s predictive-back system
-       * from animating a back-preview on the card screen after it has rendered.
-       * The root-cause fix (slide_from_right animation in _layout.tsx) already
-       * prevents the OS from misidentifying this as a dismissible bottom-sheet
-       * BEFORE the first frame; this guard covers any gesture re-enable that
-       * could occur after setOptions() merges on mount.
-       *
-       * IMPORTANT: Do NOT set `animation` here.
-       * `navigation.setOptions({ animation })` called from within a mounted
-       * NativeStack screen is unsupported in React Navigation 7 — setting the
-       * entrance animation after the screen is already rendered causes the
-       * screen to malfunction or silently dismiss on Android. The `animation`
-       * is set correctly at the layout level in _layout.tsx and must NOT be
-       * repeated here.
-       */}
-      <Stack.Screen
-        options={{
-          headerShown: false,
-          header: () => null,
-          title: "",
-          gestureEnabled: false,
-        }}
-      />
       <StatusBar style="light" />
 
       {/* ── Page header: back button + title ───────────────────────── */}

@@ -1,0 +1,172 @@
+# Android reliability audit — 2026-10-07
+
+## Baseline captured before remediation
+
+Reported Play release: 1.0.70 / 138; user-perceived crashes 4.67%, ANRs
+1.18%. These are user-supplied aggregate measurements, not crash diagnoses.
+No cluster stack traces, ANR thread dumps, affected-device breakdown, or exact
+image/R8 diagnostic call stacks were supplied. Attribution remains open.
+
+### Architecture and toolchain
+
+- Expo prebuild monorepo, Expo Router, React Native 0.86.3, Expo ~57.0.23.
+- Static app.json is the native build source of truth; Android directory is
+  generated and excluded from cloud archives.
+- app.json: Android min 24, target/compile 36, build tools 36.0.0,
+  NDK 27.2.12479018, Kotlin 2.1.20. Local Java: OpenJDK 21.0.7.
+- Local generated Android: Gradle wrapper 9.3.1, Hermes/new architecture enabled,
+  four ABIs. Generated version is stale (1.0.68 / 136), unlike managed config.
+- Release minification and resource shrinking already enabled; optimize default
+  ProGuard config and R8 full mode enabled. Custom rules keep entire Expo,
+  React Native, Kotlin, OkHttp, Media3, Sentry and other packages, including
+  removed expo-av/legacy video code. This directly inhibits optimization;
+  whether it explains Play's exact warning is unverified.
+- Generated release signing uses debug template. Production signing must be
+  injected by the release build process and certificate checked on its output.
+  No credential values were inspected.
+- No adb, Android SDK/local.properties, emulator, or connected device found.
+  Native build/install/stress verification is blocked in this environment.
+
+### Runtime inventory and reviewed risks
+
+- expo-image already serves most thumbnails. React Native Image remains in
+  broadcast posters/up-next/countdown. Existing image sizes constrain layout,
+  but these paths do not explicitly select the project's optimized pipeline.
+- expo-video owns native local and dual-slot broadcast playback; TrackPlayer
+  owns radio/background media. YouTube uses a native WebView.
+- Two broadcast buffers are intentional for handoff; do not remove the
+  second player or introduce a second PiP owner.
+- Broadcast cleanup calls synchronous `player.replace(null)` in addition to
+  useVideoPlayer's automatic release. This performs redundant source work
+  during teardown and risks calling an already released SharedObject.
+- Local-player retry schedules an unowned 700 ms timeout; listener cleanup
+  does not cancel it on source change. A stale retry can replace a new source.
+  Async load completions only check mounted state, not whether source changed.
+- PiP receiver unregister uses the current ReactContext instead of the
+  registering Context. ReactContext loss/recreation can leave it registered.
+- PiP UI work captures an Activity before queuing and lacks a finishing/
+  destroyed-activity guard when the queued callback actually runs.
+- Repository search found no app-owned BitmapFactory/decodeStream/
+  decodeByteArray, synchronous network, Thread.sleep or runBlocking work.
+  This does NOT exclude transitive native image decoders or prove no ANRs.
+- Startup has phase tracing, Sentry, a global JS exception handler delegating
+  to the previous handler, and route/component error boundaries.
+- API requests use timeout/retry helpers and connectivity context; no network
+  results should be inferred from cached content alone.
+- Home limits category strips and uses horizontal FlatLists; library is
+  virtualized. Download progress is already throttled.
+- Player-core native sessions, broadcast subscriptions, auth, notification
+  callbacks, AppState handlers and polling were searched/reviewed for cleanup.
+  Midnight-prayers config polling clears intervals at last unsubscribe but an
+  in-flight fetch can recreate the window timer after unsubscribe.
+- Many legacy catches still suppress errors. This audit does not certify
+  every path or rewrite all recovery code without device/cluster evidence.
+
+## Release gate
+
+Do not submit another build with consumed versionCode 138. Select a fresh
+versionCode during release preparation. Do not describe JS tests or source
+inspection as Android device testing, or claim Play rates improved.
+
+Required before production sign-off: production cluster traces, regenerated
+native build, minified APK/AAB and matching upload certificate, installed
+release critical-flow tests (including hero-to-player), notification/PiP/radio,
+offline/background/orientation transitions, low-memory repeated navigation,
+and multi-hour broadcast soak with memory/CPU/startup measurements.
+
+## A. Findings and attribution
+
+1. **Confirmed crash path:** PiP title methods were called under the Android
+   12/API 31 gate, but were introduced in API 33. API 31/32 can throw
+   NoSuchMethodError, which is not caught by Exception. Both native entry
+   points were affected. Official reference:
+   https://developer.android.com/reference/android/app/PictureInPictureParams.Builder#setTitle(java.lang.CharSequence)
+   No production stack was available to measure its contribution to 4.67%.
+2. **Confirmed lifecycle defects:** local playback retries outlive their
+   source/listener; async completions check mounting but not source-effect
+   disposal; final schedule unsubscribe does not cancel in-flight work; PiP
+   receiver cleanup depends on the current rather than original Context.
+3. **Teardown risk:** redundant source replacement races the hook-owned
+   SharedObject release. A synchronous replacement also adds unnecessary
+   teardown work. This is not a measured ANR attribution.
+4. **Image optimization gap:** remaining broadcast surfaces used a separate
+   image pipeline. No app-owned manual bitmap decode was found. Play's exact
+   decoder warning remains unattributed without its call stack.
+5. **R8 optimization blocker:** extensive blanket keeps and blanket dontwarns,
+   plus legacy template keeps; actual warning/size savings unmeasured.
+
+## B–E. Implemented remediation
+
+- Corrected both PiP title gates to API 33; API 31 auto-enter/seamless behavior
+  remains unchanged. Added cancellation/stale-Activity checks inside queued
+  UI callbacks and explicit native logs for failed PiP operations.
+- Receiver now uses and retains its registering application Context, clears
+  ownership during destruction, and logs unexpected unregister failures.
+- Local-player retries are cancelled during listener cleanup, duplicate
+  pending retries are suppressed, and obsolete load/retry completions cannot
+  seek/play/update the replacement screen. Empty sources unload the player.
+- Removed redundant on-unmount replacements; expo-video's hook owns release.
+  Intentional radio-mode unloading and A/B broadcast handoff remain intact.
+- Last schedule unsubscribe aborts requests; timed requests clear their timer
+  and abort listener. Late completions cannot recreate polling.
+- Broadcast images use existing expo-image, memory/disk caching, view-size
+  downscaling, local placeholders and source-specific failure fallback.
+- Removed blanket custom library keeps/warning suppression. Retained
+  symbolication metadata and narrow optimizable custom-module construction
+  rules. Installed consumer configs remain responsible for library JNI and
+  reflection contracts. A prebuild plugin removes only the two known legacy
+  blanket rules from Expo's application template, not library consumer rules.
+- Minify/shrink/full mode remain enabled. SDK, ABIs, identifiers, permissions,
+  and signing credentials unchanged. No dependencies added or removed.
+- Excluded existing release artifacts from future source archives.
+
+Important files: app.json; plugins/with-release-r8.js; plugins/with-gradle-config.js;
+modules/expo-pip-android/.../ExpoPipAndroidModule.kt;
+components/LocalVideoPlayer.tsx; components/V2PlayerContainer.tsx;
+components/RemoteImage.tsx; components/player/BroadcastCompanion.tsx;
+components/player/CountdownOverlay.tsx; __tests__/android-reliability.test.ts.
+
+## F. Verification results
+
+| Check | Result |
+| --- | --- |
+| All mobile Node tests, including new regression contracts | **205 passed**, 0 failed |
+| Mobile TypeScript | Passed |
+| Production Android JS/Hermes export | Passed, 7.2 MB HBC bundle |
+| Android prebuild | Passed; generated version now agrees with 1.0.70 / 138 |
+| Generated application R8 rules | Narrow rules present; blanket template rules absent |
+| Touched TS/TSX lint | 0 errors, 14 warnings (mostly existing disable directives and static require conventions) |
+| API test script | **33 passed**, 0 failed |
+| Player-core test script | No tests executed: existing script only echoes “vitest not available” |
+| Whole-repository lint | Failed: 18 errors, 137 warnings outside the remediation's targeted lint pass |
+| Whole-repository typecheck | API, admin, TV, mobile passed; overall run timed out at mockup sandbox |
+| Expo dependency compatibility check | Failed: 11 Expo patch-level mismatches; no upgrades attempted without native verification |
+| Gradle debug/release APK + release AAB invocation | Timed out during initialization, no output APK/AAB; Android SDK also absent |
+| Browser hero → player → back | Passed; player remained mounted for 5.2 seconds |
+| Live playback in browser preview | Not verified: direct Metro origin lacks API routes; SSE/WS and production-API CORS failures |
+| Device/emulator install, native PiP, notifications/radio | Not run: no SDK/adb/device |
+| Low-memory/stress, multi-hour soak, CPU/memory/ANR measurement | Not run: no device/instrumented release |
+
+The managed workflow bootstrap also reported React Native Metro-config peer
+drift (0.86.0 versus 0.86.3), a missing API test-only types peer, and a local
+DevTools binary missing libglib. Metro itself started and browser navigation
+was tested. These are not proven causes of production crashes.
+
+Regression contracts inspect native source/config; they do not execute Kotlin
+on Android. JavaScript export is not native compilation, R8 execution, signing,
+or verification of an installable AAB. Repository validation regenerated API
+declaration outputs, and workflow bootstrap refreshed lockfile peer metadata;
+neither represents an API behavior change.
+
+## G–H. Remaining risks and release decision
+
+**NOT READY FOR PRODUCTION.**
+
+Still required: obtain production crash/ANR clusters and exact image/R8
+diagnostics; resolve dependency/toolchain and repository-check blockers; build
+and inspect a signed minified release; verify its upload certificate; install
+on Android 12/12L (the corrected crash path) and other supported device classes;
+verify native hero navigation, playback, PiP, notifications, radio, offline/
+background transitions and sustained low-memory playback. Existing silent
+recovery paths need targeted follow-through using the diagnostic clusters.
+No claim is made that Play metrics have improved or all ANRs are eliminated.

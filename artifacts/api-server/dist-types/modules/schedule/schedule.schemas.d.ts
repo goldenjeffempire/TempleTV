@@ -13,10 +13,10 @@ export declare const ScheduleEntrySchema: z.ZodObject<{
     scheduledDate: z.ZodNullable<z.ZodString>;
     priorityOverride: z.ZodBoolean;
 }, "strip", z.ZodTypeAny, {
-    id: string;
-    createdAt: string;
     title: string;
+    id: string;
     isActive: boolean;
+    createdAt: string;
     dayOfWeek: number | null;
     startTime: string;
     endTime: string | null;
@@ -26,10 +26,10 @@ export declare const ScheduleEntrySchema: z.ZodObject<{
     scheduledDate: string | null;
     priorityOverride: boolean;
 }, {
-    id: string;
-    createdAt: string;
     title: string;
+    id: string;
     isActive: boolean;
+    createdAt: string;
     dayOfWeek: number | null;
     startTime: string;
     endTime: string | null;
@@ -54,10 +54,10 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
         scheduledDate: z.ZodNullable<z.ZodString>;
         priorityOverride: z.ZodBoolean;
     }, "strip", z.ZodTypeAny, {
-        id: string;
-        createdAt: string;
         title: string;
+        id: string;
         isActive: boolean;
+        createdAt: string;
         dayOfWeek: number | null;
         startTime: string;
         endTime: string | null;
@@ -67,10 +67,10 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
         scheduledDate: string | null;
         priorityOverride: boolean;
     }, {
-        id: string;
-        createdAt: string;
         title: string;
+        id: string;
         isActive: boolean;
+        createdAt: string;
         dayOfWeek: number | null;
         startTime: string;
         endTime: string | null;
@@ -83,10 +83,10 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
     total: z.ZodNumber;
 }, "strip", z.ZodTypeAny, {
     items: {
-        id: string;
-        createdAt: string;
         title: string;
+        id: string;
         isActive: boolean;
+        createdAt: string;
         dayOfWeek: number | null;
         startTime: string;
         endTime: string | null;
@@ -99,10 +99,10 @@ export declare const ListScheduleResponseSchema: z.ZodObject<{
     total: number;
 }, {
     items: {
-        id: string;
-        createdAt: string;
         title: string;
+        id: string;
         isActive: boolean;
+        createdAt: string;
         dayOfWeek: number | null;
         startTime: string;
         endTime: string | null;
