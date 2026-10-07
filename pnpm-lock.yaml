@@ -86,6 +86,9 @@ overrides:
   esbuild: '>=0.25.0'
 
 patchedDependencies:
+  expo-video@57.0.4:
+    hash: e4347270f0ab4391f1a1260abec282e6231b9490d520045518980b389c4b2ded
+    path: patches/expo-video@57.0.4.patch
   react-native-track-player@4.1.2:
     hash: 1b8dc7425dc88f2f8040fe850b20821158b8e2a4257b138520f0a99a87fc40db
     path: patches/react-native-track-player@4.1.2.patch
@@ -504,7 +507,7 @@ importers:
         version: 57.0.22(expo@57.0.23)(react-native@0.86.3(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
       expo-video:
         specifier: ~57.0.4
-        version: 57.0.4(expo@57.0.23)(react-native@0.86.3(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
+        version: 57.0.4(patch_hash=e4347270f0ab4391f1a1260abec282e6231b9490d520045518980b389c4b2ded)(expo@57.0.23)(react-native@0.86.3(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)
       hls.js:
         specifier: ^1.6.16
         version: 1.6.16
@@ -13948,7 +13951,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  expo-video@57.0.4(expo@57.0.23)(react-native@0.86.3(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3):
+  expo-video@57.0.4(patch_hash=e4347270f0ab4391f1a1260abec282e6231b9490d520045518980b389c4b2ded)(expo@57.0.23)(react-native@0.86.3(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3):
     dependencies:
       expo: 57.0.23(@babel/core@7.29.6)(@expo/metro-runtime@57.0.15)(expo-router@57.0.21)(react-dom@19.2.3(react@19.2.3))(react-native-web@0.21.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-native-webview@13.16.1(react-native@0.86.3(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native-worklets@0.10.1(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(react-native@0.86.3(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native@0.86.3(@babel/core@7.29.6)(@react-native/metro-config@0.86.0(@babel/core@7.29.6))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)(typescript@6.0.3)
       react: 19.2.3

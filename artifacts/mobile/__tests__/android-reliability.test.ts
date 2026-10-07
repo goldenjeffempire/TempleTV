@@ -9,6 +9,37 @@ const source = (path: string) =>
 describe("Android release reliability regression contracts", () => {
   const pip = source("modules/expo-pip-android/android/src/main/kotlin/expo/modules/pipandroid/ExpoPipAndroidModule.kt");
 
+  it("releases Android hero preview ownership while home is hidden or full player is open", async () => {
+    const { shouldMountHeroPreview } = await import("../lib/heroPreviewPolicy.js");
+    assert.equal(shouldMountHeroPreview("android", true, false), true);
+    assert.equal(shouldMountHeroPreview("android", false, false), false);
+    assert.equal(shouldMountHeroPreview("android", true, true), false);
+    assert.equal(shouldMountHeroPreview("android", false, true), false);
+    for (const platform of ["ios", "web"]) {
+      assert.equal(shouldMountHeroPreview(platform, false, true), true);
+    }
+  });
+
+  it("uses focus-aware preview mounting without removing the hero metadata subscription", () => {
+    const home = source("app/(tabs)/index.tsx");
+    assert.match(home, /useFocusEffect\(useCallback\(/);
+    assert.match(home, /setIsFocused\(true\)/);
+    assert.match(home, /return \(\) => setIsFocused\(false\)/);
+    assert.match(home, /shouldMountHeroPreview\(Platform\.OS, isFocused, isBroadcastMode\)/);
+    assert.match(home, /\{mountPreview && \(/);
+    assert.match(home, /snapshot: v2Snapshot, forceRebind/);
+  });
+
+  it("tracks the native release-timeout patch without moving ExoPlayer off its looper", () => {
+    const root = JSON.parse(source("../../package.json"));
+    const patchPath = root.pnpm.patchedDependencies["expo-video@57.0.4"];
+    assert.equal(patchPath, "patches/expo-video@57.0.4.patch");
+    const patch = source(`../../${patchPath}`);
+    assert.match(patch, /setLooper\(context\.mainLooper\)/);
+    assert.match(patch, /\+ {6}setReleaseTimeoutMs\(100L\)/);
+    assert.doesNotMatch(patch, /Dispatchers\.IO|Dispatchers\.Default/);
+  });
+
   it("sets an explicit media byte target without prioritizing time over size", async () => {
     const { ANDROID_VIDEO_BUFFER_OPTIONS: buffer } = await import("../lib/androidVideoBuffer.js");
     assert.equal(buffer.maxBufferBytes, 24 * 1024 * 1024);

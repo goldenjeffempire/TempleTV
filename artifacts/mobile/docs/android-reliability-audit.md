@@ -214,3 +214,59 @@ passed with a 2 GiB build-time allowance. This is not an Android-runtime result.
 The restarted Metro preview rendered the application shell/loading state;
 missing local API routes and WebSocket connections still prevent live-playback
 verification. Existing Metro peer/dependency and local DevTools warnings remain.
+
+## Confirmed native player-shutdown ANR and follow-through
+
+The supplied Android 14 / SDK 34 release-138 trace shows the **main thread**
+in timed waiting:
+
+```text
+Object.wait
+ConditionVariable.blockUninterruptible
+ExoPlayerImplInternal.release
+ExoPlayerImpl.release
+VideoPlayer$close$2.invokeSuspend
+```
+
+This confirms the sampled UI-thread blocking location is native player
+release. It does not show how long the wait lasted or provide detailed
+playback-thread stacks explaining slow native cleanup. Several playback/
+loader threads are listed; their presence alone is not proof of a leak.
+
+Two additional mitigations:
+
+1. The Android home hero now mounts its native preview only while home is
+   focused and the full broadcast player is not open. Its metadata/session
+   subscription remains alive, preserving broadcast state and allowing the
+   preview to resume on return. iOS/web behavior and full-player PiP ownership
+   are unchanged. This removes retained hidden preview decoders/buffers.
+2. A tracked **expo-video 57.0.4** pnpm patch configures Media3's supported
+   `setReleaseTimeoutMs(100L)` builder setting. ExoPlayer keeps its main
+   application looper; no release calls are moved to an incompatible thread.
+   The setting bounds the synchronous internal-release wait, not the entire
+   close method or native cleanup duration. Media3 can report a release timeout
+   on slow devices. The same API also governs foreground-mode waits.
+
+Media3 API contract:
+https://developer.android.com/reference/androidx/media3/exoplayer/ExoPlayer.Builder#setReleaseTimeoutMs(long)
+
+Patch, manifest registration and lockfile hash were generated together by
+pnpm. The initial commit's install reached a git-hook prepare script blocked
+by the workspace sandbox; repeating with lifecycle scripts disabled completed
+without modifying git configuration. Frozen-lockfile installation passed,
+and the resolved installed native source contains the timeout setting.
+Regenerate/revalidate the patch before upgrading expo-video.
+
+Additional files: app/(tabs)/index.tsx; lib/heroPreviewPolicy.ts;
+patches/expo-video@57.0.4.patch; root package.json/pnpm-lock.yaml patch metadata;
+__tests__/android-reliability.test.ts.
+
+Verification: **210 mobile tests passed**, TypeScript passed, production
+Android JS/Hermes export passed (7.2 MB), targeted lint **0 errors / 8 existing
+warnings**. After a lint-only regex correction, all 14 reliability contracts
+passed again. Native Kotlin compilation and device measurements remain blocked
+by the missing SDK/device. Neither mitigation is a verified production ANR
+elimination; test repeated navigation, PiP, app background/foreground and
+simultaneous radio ownership on slow/low-memory Android devices before shipping.
+
+**Release decision remains NOT READY FOR PRODUCTION.**

@@ -25,6 +25,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Animated,
   FlatList,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -36,7 +37,7 @@ import {
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
-import { Stack } from "expo-router";
+import { Stack, useFocusEffect } from "expo-router";
 import { safeNavPush } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
@@ -46,6 +47,7 @@ import { VideoCard } from "@/components/VideoCard";
 import { SectionHeader } from "@/components/SectionHeader";
 import { SkeletonVerticalCard, SkeletonHero } from "@/components/SkeletonCard";
 import { V2PlayerContainer } from "@/components/V2PlayerContainer";
+import { shouldMountHeroPreview } from "@/lib/heroPreviewPolicy";
 import { StreamStatusBadge } from "@/components/StreamStatusBadge";
 import { getApiBase } from "@/lib/apiBase";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
@@ -296,6 +298,12 @@ const HeroSection = React.memo(function HeroSection({
   // isBroadcastMode comes from the singleton player — used to suppress hero
   // watchdog events when the full-screen player is open so they don't race.
   const { isBroadcastMode } = usePlayer();
+  const [isFocused, setIsFocused] = useState(false);
+  useFocusEffect(useCallback(() => {
+    setIsFocused(true);
+    return () => setIsFocused(false);
+  }, []));
+  const mountPreview = shouldMountHeroPreview(Platform.OS, isFocused, isBroadcastMode);
   const { width } = useWindowDimensions();
   // True 16:9 video area + status-bar region above it = total hero height.
   // This lets the video fill the space that was previously occupied by the
@@ -593,22 +601,19 @@ const HeroSection = React.memo(function HeroSection({
         />
       )}
 
-      {/* V2 broadcast video — ALWAYS mounted (muted by default, minimal) to keep the
-          singleton FSM session warm. pointerEvents="none" lets hero touch events pass
-          through to the Pressable.
-          suppressEventsOverride=isBroadcastMode: when the player screen is open, the
-          full-screen player instance is the sole FSM driver — suppress watchdogs/events
-          from the hero so it can't fire spurious buffer-error/stall that interrupt the
-          player. heroMuted is reset to true automatically when isBroadcastMode becomes
-          true, preventing audio bleed between hero preview and the full player. */}
-      <View style={[StyleSheet.absoluteFill, { pointerEvents: "none" }]}>
-        <V2PlayerContainer
-          baseUrl={`${apiBase}/api/broadcast-v2`}
-          muted={heroMuted}
-          minimal
-          suppressEventsOverride={isBroadcastMode}
-        />
-      </View>
+      {/* The metadata hook above keeps the shared session warm. On Android,
+          release hidden preview players rather than retaining another decoder
+          pair behind the full player or another tab. iOS/web behavior is unchanged. */}
+      {mountPreview && (
+        <View style={[StyleSheet.absoluteFill, { pointerEvents: "none" }]}>
+          <V2PlayerContainer
+            baseUrl={`${apiBase}/api/broadcast-v2`}
+            muted={heroMuted}
+            minimal
+            suppressEventsOverride={isBroadcastMode}
+          />
+        </View>
+      )}
 
       {/* ── Mute / Unmute toggle — top-right corner ──────────────────────────
           Only shown when there is an active non-YouTube broadcast playing (so

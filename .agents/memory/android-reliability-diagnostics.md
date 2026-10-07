@@ -34,3 +34,17 @@ identify the unresolved framework method or the thread blocking shutdown.
 **How to apply:** Match titles to code to prioritize investigation, obtain
 expanded stacks for exact attribution, and distinguish buffer allocation
 targets from measured total memory use or verified OOM elimination.
+
+Do not fix a player-release ANR by moving ExoPlayer calls to an arbitrary
+background dispatcher. A coroutine running on Main can still block Main
+inside a synchronous native release wait.
+
+**Why:** A production ANR trace showed Main waiting in ExoPlayer internal
+release from expo-video's close coroutine. ExoPlayer calls must respect its
+application looper; thread switching can replace a freeze with wrong-thread
+exceptions.
+
+**How to apply:** Reduce retained hidden preview players and use supported
+release-wait bounds while preserving looper ownership. Keep native patches
+and lockfile metadata synchronized; revalidate them on dependency upgrades.
+Timeout bounds and JavaScript tests are not proof of native ANR elimination.
