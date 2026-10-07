@@ -9,6 +9,21 @@ const source = (path: string) =>
 describe("Android release reliability regression contracts", () => {
   const pip = source("modules/expo-pip-android/android/src/main/kotlin/expo/modules/pipandroid/ExpoPipAndroidModule.kt");
 
+  it("sets an explicit media byte target without prioritizing time over size", async () => {
+    const { ANDROID_VIDEO_BUFFER_OPTIONS: buffer } = await import("../lib/androidVideoBuffer.js");
+    assert.equal(buffer.maxBufferBytes, 24 * 1024 * 1024);
+    assert.equal(buffer.prioritizeTimeOverSizeThreshold, false);
+    assert.equal(buffer.preferredForwardBufferDuration, 20);
+    assert.equal(buffer.minBufferForPlayback, 2);
+    assert.ok(buffer.minBufferForPlayback <= buffer.preferredForwardBufferDuration);
+  });
+
+  it("applies the shared buffer policy to local and broadcast players on Android only", () => {
+    for (const file of ["components/LocalVideoPlayer.tsx", "components/V2PlayerContainer.tsx"]) {
+      assert.match(source(file), /if \(Platform\.OS === "android"\) \{\s*p\.bufferOptions = \{ \.\.\.ANDROID_VIDEO_BUFFER_OPTIONS \};\s*\}/);
+    }
+  });
+
   it("guards both PiP title calls with API 33, not Android 12 API 31", () => {
     const calls = [...pip.matchAll(/if \(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU\) \{[\s\S]*?\n\s*\}/g)]
       .filter((match) => match[0].includes("builder.setTitle(effectiveTitle)"));

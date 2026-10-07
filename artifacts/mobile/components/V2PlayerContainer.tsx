@@ -56,10 +56,11 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Animated, AppState, Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Animated, AppState, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { RemoteImage } from "@/components/RemoteImage";
 import { useVideoPlayer, VideoView } from "expo-video";
 import type { VideoSource } from "expo-video";
+import { ANDROID_VIDEO_BUFFER_OPTIONS } from "@/lib/androidVideoBuffer";
 import * as Sentry from "@sentry/react-native";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { MobileBufferState } from "@workspace/player-core/adapters/mobile";
@@ -232,6 +233,9 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   // useVideoPlayer is called unconditionally (Rules of Hooks).
   // Source changes use player.replaceAsync(), never a new player instance.
   const player = useVideoPlayer(null, (p) => {
+    if (Platform.OS === "android") {
+      p.bufferOptions = { ...ANDROID_VIDEO_BUFFER_OPTIONS };
+    }
     p.muted = true; // start silent; mute/volume synced in effects below
     p.loop = false;
     p.allowsExternalPlayback = true;

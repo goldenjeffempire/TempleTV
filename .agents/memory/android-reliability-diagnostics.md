@@ -21,3 +21,14 @@ new version and requested a fix.
 
 **How to apply:** Treat those reports as current-release defects; distinguish
 browser route checks from installed Android reproduction and release sign-off.
+
+Treat Play issue-list titles as diagnostic leads, not complete native traces.
+An event percentage on a mixed crash/ANR list is not a crash-rate percentage.
+
+**Why:** Production diagnostics identified a leading PiP NoSuchMethodError
+cluster and separate player memory/shutdown issues, but the list did not
+identify the unresolved framework method or the thread blocking shutdown.
+
+**How to apply:** Match titles to code to prioritize investigation, obtain
+expanded stacks for exact attribution, and distinguish buffer allocation
+targets from measured total memory use or verified OOM elimination.

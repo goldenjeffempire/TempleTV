@@ -24,6 +24,7 @@ import {
 } from "@/services/nowPlaying";
 import { postPlaybackTelemetryDelta } from "@/services/broadcast";
 import { useVideoPlayer, VideoView } from "expo-video";
+import { ANDROID_VIDEO_BUFFER_OPTIONS } from "@/lib/androidVideoBuffer";
 
 /** Strip query params/tokens from a URL for safe Sentry reporting. */
 function sanitizeUrl(url: string): string {
@@ -270,6 +271,9 @@ export function LocalVideoPlayer({
   // expo-video: useVideoPlayer must be called unconditionally (Rules of Hooks).
   // Pass null as initial source; source is set via player.replaceAsync() in an effect below.
   const nativePlayer = useVideoPlayer(null, (p) => {
+    if (Platform.OS === "android") {
+      p.bufferOptions = { ...ANDROID_VIDEO_BUFFER_OPTIONS };
+    }
     p.allowsExternalPlayback = true;
     p.timeUpdateEventInterval = 0.5; // replaces progressUpdateIntervalMillis={500}
     p.loop = false;

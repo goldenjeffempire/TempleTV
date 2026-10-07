@@ -170,3 +170,43 @@ verify native hero navigation, playback, PiP, notifications, radio, offline/
 background transitions and sustained low-memory playback. Existing silent
 recovery paths need targeted follow-through using the diagnostic clusters.
 No claim is made that Play metrics have improved or all ANRs are eliminated.
+
+## Additional Google Play evidence and targeted buffer mitigation
+
+The subsequently supplied release-138 issue-list screenshots identify:
+
+- `ExpoPipAndroidModule` / `java.lang.NoSuchMethodError`: **19 affected
+  users, 117 events, 86.7% of listed events**. This strongly supports the
+  corrected PiP API-compatibility defect as the leading issue. The list does
+  not identify the unresolved method or affected Android versions; obtain
+  the expanded stack before calling the exact method conclusively proven.
+- `ExoPlayerImplInternal.shouldContinueLoading` and
+  `DirectByteBuffer.asReadOnlyBuffer`: separate `OutOfMemoryError` clusters,
+  one event each. These prove production memory failures, not the total
+  allocation source or a specific leak.
+- `VideoPlayer.close` / `invokeSuspend`: an input-dispatch ANR during
+  native player shutdown. Removing redundant application teardown avoids
+  duplicate work but does not prove this library release ANR is fixed.
+- Other low-count clusters include native poll/input-dispatch ANRs, no-focus
+  ANRs, graphics shader/native crashes, GC waiting, FrameLayout NPE,
+  WebView/autofill, and IllegalStateException. Expanded traces are still
+  required; generic input-dispatch titles do not identify a culprit.
+
+Android local playback and both broadcast slot instances now use a shared
+24 MiB per-player media-buffer target, a 20-second forward window, and a
+2-second playback threshold. Time does not override the byte target.
+The iOS/web policy and intentional dual-slot handoff are unchanged.
+
+This is a targeted memory-pressure mitigation, not a measured OOM resolution
+or a hard cap on app memory. Native allocator granularity, decoded frames,
+WebView, images and other players have separate memory costs. Sustained
+low-memory/high-bitrate playback and source-transition tests remain required.
+The release decision remains **NOT READY FOR PRODUCTION**.
+
+Verification after this buffer change: **207 mobile tests passed**; mobile
+TypeScript passed; targeted lint reported **0 errors, 12 warnings**. The initial
+local type-check process exhausted its Node heap allowance; the same check
+passed with a 2 GiB build-time allowance. This is not an Android-runtime result.
+The restarted Metro preview rendered the application shell/loading state;
+missing local API routes and WebSocket connections still prevent live-playback
+verification. Existing Metro peer/dependency and local DevTools warnings remain.
