@@ -13,64 +13,80 @@
  */
 export {};
 
-async function bootSentry(): Promise<void> {
+async function bootSentry(): Promise<boolean> {
   const dsn = process.env.SENTRY_DSN;
-  if (!dsn) return;
+  if (!dsn) return false;
   try {
     const moduleName = "@sentry/node";
     const Sentry = await import(/* @vite-ignore */ moduleName).catch(() => null);
     if (Sentry && typeof (Sentry as { init?: unknown }).init === "function") {
-      (Sentry as { init: (opts: Record<string, unknown>) => void }).init({
+      const client = (Sentry as { init: (opts: Record<string, unknown>) => unknown }).init({
         dsn,
         environment: process.env.NODE_ENV ?? "development",
         tracesSampleRate: Number(process.env.SENTRY_TRACES_RATE ?? 0.05),
       });
-      console.log("[instrument] Sentry initialized");
+      if (client) {
+        console.log("[instrument] Sentry initialized");
+        return true;
+      }
     }
   } catch (err) {
     console.warn("[instrument] Sentry init failed (non-fatal):", err);
   }
+  return false;
 }
 
-async function bootOtel(): Promise<void> {
+async function bootOtel(sentryOwnsTracing: boolean): Promise<void> {
   try {
     const sdkName = "@opentelemetry/sdk-node";
     const autoName = "@opentelemetry/auto-instrumentations-node";
     const exporterName = "@opentelemetry/exporter-prometheus";
 
-    const [sdkPkg, autoPkg, exporterPkg] = await Promise.all([
+    const [sdkPkg, exporterPkg] = await Promise.all([
       import(/* @vite-ignore */ sdkName).catch(() => null),
-      import(/* @vite-ignore */ autoName).catch(() => null),
       import(/* @vite-ignore */ exporterName).catch(() => null),
     ]);
 
-    if (!sdkPkg || !autoPkg || !exporterPkg) return;
+    if (!sdkPkg || !exporterPkg) return;
 
     const exporter = new exporterPkg.PrometheusExporter({
       preventServerStart: true,
     });
 
-    const sdk = new sdkPkg.NodeSDK({
-      metricReader: exporter,
-      instrumentations: [
-        autoPkg.getNodeAutoInstrumentations({
-          // Disable fs instrumentation — too noisy and high cardinality
-          "@opentelemetry/instrumentation-fs": { enabled: false },
-        }),
-      ],
-    });
-
-    sdk.start();
+    if (sentryOwnsTracing) {
+      // NodeSDK.start() unconditionally registers a context manager and
+      // propagator, even with zero span processors. Sentry already owns both.
+      // Register only metrics here; keep Sentry crash reporting and tracing.
+      const meterProvider = new sdkPkg.metrics.MeterProvider({ readers: [exporter] });
+      if (!sdkPkg.api.metrics.setGlobalMeterProvider(meterProvider)) {
+        await meterProvider.shutdown();
+        throw new Error("OpenTelemetry meter provider was already registered");
+      }
+    } else {
+      const autoPkg = await import(/* @vite-ignore */ autoName).catch(() => null);
+      if (!autoPkg) return;
+      const sdk = new sdkPkg.NodeSDK({
+        metricReader: exporter,
+        instrumentations: [
+          autoPkg.getNodeAutoInstrumentations({
+            "@opentelemetry/instrumentation-fs": { enabled: false },
+          }),
+        ],
+      });
+      sdk.start();
+    }
 
     // Expose exporter for the /metrics route to merge OTel metrics with
     // the prom-client custom registry (see metrics.routes.ts).
     (globalThis as Record<string, unknown>).__otelPrometheusExporter = exporter;
 
-    console.log("[instrument] OpenTelemetry SDK + Prometheus exporter initialized");
+    console.log(sentryOwnsTracing
+      ? "[instrument] OpenTelemetry metrics initialized; Sentry owns tracing"
+      : "[instrument] OpenTelemetry SDK + Prometheus exporter initialized");
   } catch (err) {
     console.warn("[instrument] OpenTelemetry init failed (non-fatal):", err);
   }
 }
 
-await bootSentry();
-await bootOtel();
+const sentryOwnsTracing = await bootSentry();
+await bootOtel(sentryOwnsTracing);

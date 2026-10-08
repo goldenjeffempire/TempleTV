@@ -60,7 +60,43 @@ or broadcast-daemon restart was performed for this work.
 7. A controlled actual-API-restart probe was attempted. It observed prolonged
    API unavailability and reached its 90-second deadline before observing a
    successful rejoin. A subsequent running-server suite passed after the API
-   returned. **Actual-process restart recovery is not signed off.**
+    returned. The investigation below supersedes this failed development
+    attempt; it does not constitute production or installed-device sign-off.
+8. **Actual API-process restart recovery passed in development:** the corrected
+   five-minute probe required an independently verified process-ID change,
+   reused the original persisted credential, renewed presence and confirmed
+   departure-to-zero. The final run observed post-startup playback count
+   `0 → 1` in approximately **2.566 seconds**, followed by confirmed `0` after
+   leaving. The managed restart controller took approximately 62 seconds.
+   Controller/witness timing is not a production availability benchmark.
+9. **Restart-startup fixes verified:** four asynchronous binary-probe tests,
+   API build and API typecheck passed. Startup logs confirmed Sentry remained
+   initialized and the separate OpenTelemetry metrics provider initialized.
+   The admin preview rendered its sign-in page; that is not counter acceptance.
+
+## Restart investigation
+
+- A direct development Node SIGTERM completed promptly, whereas an observed
+  cold process creation-to-HTTP-ready interval was approximately 74 seconds.
+  The old 90-second end-to-end deadline could expire before a useful rejoin
+  observation. No viewer-credential loss was established by that timeout.
+- The initial new diagnostic polled the 60/min playback-state route too quickly
+  and could mistake throttling for an outage. Its apparent early success was
+  discarded. The corrected probe polls below that limit and requires a trusted
+  controller witness proving an actual new API process.
+- Per-thread CPU profiling identified an import-time synchronous FFmpeg
+  health check and expensive source-map decoding triggered by duplicate
+  OpenTelemetry global registration.
+- The FFmpeg health probe is now lazy, asynchronous, cached and bounded. Sentry
+  owns tracing when initialized; the secondary provider registers metrics only.
+  The full OpenTelemetry SDK remains the fallback when Sentry is unavailable.
+- The workspace API workflow now uses `exec` so Node receives workflow signals
+  directly, and no longer depends on the absent `fuser` utility. Temporary CPU
+  profiling flags were removed. Production supervisor/daemon settings were not
+  changed.
+- The restart protocol probes left no active controlled viewers. External API
+  ingress, installed mobile behavior and production cold-start/capacity targets
+  remain staging acceptance work.
 
 These clients were controlled development protocol participants. They are not
 evidence of real people watching real media. The browser pass did not prove
@@ -76,8 +112,9 @@ stopped.
   the continuously open admin UI.
 - Exercise actual API/daemon process restart, temporary database/network
   failures and a sustained target-concurrency load on isolated staging.
-  Two service objects and 100 database clients are not a production capacity
-  benchmark or proof of process-kill/device recovery.
+   The workspace API restart pass does not cover daemon failure, installed
+   devices or production capacity. Two service objects and 100 database clients
+   are not a production capacity benchmark.
 - Strengthen anonymous enrollment against automated inflation. A public
   capability issuer and rate limits do **not** prove installation uniqueness
   or that a human is watching. Native app attestation/verified enrollment and
@@ -87,7 +124,8 @@ stopped.
   resumption and client sequence ordering require the updated app protocol.
   Do not assume a backend-only deployment gives older binaries those features.
 - Validate admin EventSource reconnect/delivery directly, including reverse
-  proxy behavior. Polling convergence alone is not SSE acceptance.
+   proxy behavior and external staging API reachability. Polling/loopback
+   convergence alone is not SSE or ingress acceptance.
 - Obtain deployment approval and native/staging evidence before production
   sign-off. No numbers should be inserted into production to simulate viewers.
 
@@ -104,4 +142,15 @@ NODE_ENV=development RUN_VIEWER_DB_TESTS=1 \
 
 NODE_ENV=development RUN_VIEWER_HTTP_TESTS=1 \
   node --import tsx --test artifacts/api-server/tests/integration/viewer-http-lifecycle.test.ts
+
+NODE_ENV=development node --import tsx/esm --test \
+  artifacts/api-server/tests/unit/binary-availability.test.ts
 ```
+
+`scripts/verify-viewer-restart.mjs` is a development-only loopback probe. Pass a
+private witness-file path after the API URL. A trusted controller must verify
+the old/new API process IDs and write `{ previousPid, newPid, completedAt }`
+after restart, with a current millisecond timestamp. Stale or unchanged-process
+witnesses cannot pass. The probe refuses a nonzero baseline and never logs or
+saves its bearer credential. Count-change timestamps, not delayed witness
+timestamps, are the relevant convergence evidence.

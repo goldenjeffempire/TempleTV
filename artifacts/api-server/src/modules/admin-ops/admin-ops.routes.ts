@@ -29,7 +29,7 @@ import { performance } from "node:perf_hooks";
 import * as v8 from "node:v8";
 import * as os from "node:os";
 import type { Readable } from "node:stream";
-import { spawnSync } from "node:child_process";
+import { probeBinaryAvailability } from "../../lib/binary-availability.js";
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { z } from "zod";
@@ -90,14 +90,11 @@ const instanceId = `inst-${Math.random().toString(36).slice(2, 10)}`;
 // store declaration (same module, different statement); the store declaration
 // at line ~106 initialises the Map before any routes fire, so this is safe.
 
-// Cached once at module load — ffmpeg availability doesn't change at runtime.
-const FFMPEG_READY = (() => {
-  try {
-    return spawnSync("ffmpeg", ["-version"], { timeout: 5_000 }).status === 0;
-  } catch {
-    return false;
-  }
-})();
+// Probe lazily and asynchronously. An optional binary health check must not
+// block module evaluation, startup, or viewer heartbeat processing.
+let ffmpegReadyCheck: Promise<boolean> | undefined;
+const getFfmpegReady = () =>
+  ffmpegReadyCheck ??= probeBinaryAvailability("ffmpeg");
 
 // ── SSE sub-token store ──────────────────────────────────────────────────────
 // Short-lived (90 s) single-use-ish tokens so the admin EventSource URL
@@ -1416,7 +1413,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
             postgresql: { configured: true, connected: dbOk },
           },
           transcoder: {
-            ffmpegReady: FFMPEG_READY,
+            ffmpegReady: await getFfmpegReady(),
             cloudUploadEnabled: storage().enabled,
             pendingJobs: 0,
           },
