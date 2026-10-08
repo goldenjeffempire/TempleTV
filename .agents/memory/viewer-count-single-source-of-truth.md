@@ -27,3 +27,21 @@ despite the live player already sending presence heartbeats.
 similar names. Verify join and leave delivery end to end, including zero and
 HTTP/reconnect snapshots, without changing playback position. Keep the mobile
 vendored sync implementation aligned with the shared one.
+
+Viewer badges must represent tracked viewing sessions, not registered-device
+inventory or the daemon's transport diagnostics.
+
+**Why:** Those metrics measure different things and can disagree even when
+their individual data sources work correctly. A connected-device badge is
+not evidence that the live viewer count is operational.
+
+**How to apply:** Keep diagnostic/device metrics separately labelled; use the
+presence authority for viewer badges on both mobile and admin.
+
+Do not infer broadcast viewing from an unrelated player's control state.
+
+**Why:** Native broadcast playback bypasses the legacy VOD/live control stack,
+so its playback can be active while that other stack still reports stopped.
+
+**How to apply:** Derive presence from the player that actually owns playback,
+retain foreground/leave cleanup, and verify registration as well as delivery.

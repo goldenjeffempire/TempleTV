@@ -102,6 +102,14 @@ export function useMobileViewerPresence({
       }
       try {
         const response = await sendViewerHeartbeat(getApiBase(), session);
+        // Background/pause/unmount may have removed the session while this
+        // request was pending. Remove any late server registration as well.
+        if (sessionRef.current !== session || !mountedRef.current ||
+            !enabledRef.current || !watchingRef.current ||
+            appStateRef.current !== "active") {
+          await leaveViewerSession(getApiBase(), session);
+          return;
+        }
         if (response.status === 401) {
           sessionRef.current = null;
           clearTimers();

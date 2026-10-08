@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "wouter";
 import { api, isTransientError} from "@/lib/api";
 import { useSSE, useSSEEvent } from "@/contexts/sse-context";
+import { useViewerTracking } from "@/hooks/useViewerTracking";
 import { MetricCard } from "@/components/shared/metric-card";
 import { PageHeader } from "@/components/shared/page-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -130,7 +131,8 @@ export default function Dashboard() {
   });
 
   const isLive = lastStatusPayload?.isLive ?? false;
-  const viewerCount = lastStatusPayload?.deviceCount ?? 0;
+  const { data: viewerStats } = useViewerTracking();
+  const viewerCount = viewerStats?.totalCurrent ?? null;
   const dbOk = readyz?.dependencies?.database === "ok";
   const pendingJobs = transcodingQueue?.jobs?.filter(j => ["queued", "encoding", "processing"].includes(j.status)) ?? [];
 
@@ -214,7 +216,7 @@ export default function Dashboard() {
             value={statsLoading ? null : stats?.users?.total}
             icon={<Users size={16} />}
             loading={statsLoading}
-            subtitle={`${viewerCount} active now`}
+            subtitle={viewerCount === null ? "Viewer count unavailable" : `${viewerCount} active now`}
           />
           <MetricCard
             title="Transcoding Jobs"
@@ -356,7 +358,7 @@ export default function Dashboard() {
                 )}
               </div>
             )}
-            <div className="text-2xl font-bold">{viewerCount.toLocaleString()}</div>
+            <div className="text-2xl font-bold">{viewerCount?.toLocaleString() ?? "—"}</div>
             <p className="text-xs text-muted-foreground">Active viewers</p>
             {/* System dependencies health row */}
             <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground pt-0.5">
