@@ -99,6 +99,9 @@ active, without transferring the repository or changing the Expo project.
 Changing from local to remote credentials can silently select a different
 signing certificate; a successful cloud build was rejected by Google Play even
 though the original upload keystore was valid.
+Different cloud builds can share the same app version and version code while
+using different signing certificates; release labels alone cannot identify
+the correct artifact.
 
 **How to apply:** Check the repository's actual release source before queuing.
 Use a separate release branch and disable auto-submit. If Expo reports no
@@ -117,3 +120,7 @@ record: the dashboard keystore row's Edit action supports uploading an existing
 key and preserves the default selection. This avoids creating a second record
 while accidentally leaving the rejected key selected. Check the saved fingerprint,
 not just the upload success message.
+If Play still reports the previous certificate after a credential fix, inspect
+the exact newest downloaded AAB's certificate and signature before rebuilding.
+When that artifact is correct, deliver it with a distinct filename so old and
+new bundles with identical release metadata are not confused.

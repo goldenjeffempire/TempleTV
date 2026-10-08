@@ -320,3 +320,17 @@ mtime_ms = 1789562428270
 storage_uri = "gcs://replit-rams-assets-picard/rams/assets/repl:bb7f1829-d496-4434-9565-f4608de16c46/be0e4c2f-1442-43e9-8f2d-0663fc988bb8/7676b7f3-d69e-475c-b053-74b563ce3d13"
 storage_version_token = "1789562475137752"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "Zj5vO-nqVXpM1m8gvfnk0"
+uri = "file://attached_assets/temple-tv-1.0.71-139-verified.aab"
+type = "unspecified"
+title = "Temple TV 1.0.71 (139) — verified Play upload bundle"
+description = "Downloaded from the latest Expo build. JAR signature verified; signing certificate SHA-1 matches Google Play: 52:2C:16:01:87:CF:98:86:F2:FB:AB:3B:0A:3A:FC:B1:E8:BF:91:69."
+logical_id = "fef245aa-9dcc-4949-896e-66ae86b50d1b"
+content_hash = "sha256:14c9df19dcaa06c2bb2d19283fa1292219cc464ed730e4d382214bd4eb0e5083"
+size = 90352557
+mtime_ms = 1791448199634
+storage_uri = "gcs://replit-rams-assets-picard/rams/assets/repl:bb7f1829-d496-4434-9565-f4608de16c46/fef245aa-9dcc-4949-896e-66ae86b50d1b/ecfebd91-9f5a-4777-9578-83349bf599eb"
+storage_version_token = "1791448206202298"
+content_type = "application/octet-stream"
