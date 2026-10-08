@@ -3,32 +3,27 @@ name: Viewer count single source of truth
 description: How the dual viewer-counting systems were unified; read before touching viewer counts, ws.gateway.ts, sse.gateway.ts, or viewer-tracking.service.ts.
 ---
 
-Previously two independent viewer-counting systems existed: a raw in-memory
-socket counter (`realtime/viewer-tracker.ts`, wsCount+sseCount) that wrote
-directly to `broadcastEngine.setViewerCount()`, and a fully-built Redis-backed
-heartbeat/dedup service (`viewer-tracking.service.ts`) that no client ever
-called — so it was accurate but empty, while the raw counter was live but
-double-counted reconnects/tabs.
+Keep one deduplicated presence authority and one writer to the broadcast
+engine's viewer count. Do not introduce a competing raw socket counter.
 
-**Fix:** `realtime/viewer-tracker.ts` was deleted. `ws.gateway.ts`,
-`realtime/sse.gateway.ts`, and the legacy SSE endpoint in
-`broadcast/broadcast.routes.ts` now each auto-register a heartbeat session
-with `viewerTrackingService` on connect (random sessionId, streamId =
-`broadcastEngine.channelId`), refresh it every 10s (must stay under
-`VIEWER_TRACKING_SESSION_TTL_S`, default 25s), and call
-`viewerTrackingService.leave()` on cleanup. `viewerTrackingService`'s
-`_maybeNotifyAdmin` now unconditionally bridges the deduped count into
-`broadcastEngine.setViewerCount()` for the primary channel, so every existing
-consumer (admin ops routes, health routes, SSE `viewer-count` event) reads the
-corrected number automatically.
+**Why:** Independent raw transport and heartbeat counters previously raced,
+double-counted reconnects, and left the more accurate presence ledger empty.
 
-**Why:** the client-side apps (mobile/TV/admin) never needed to change —
-wiring the heartbeat at the gateway level (piggybacking on each gateway's
-existing ping/heartbeat interval) is far more robust than depending on every
-client to correctly call a heartbeat endpoint.
+**How to apply:** Route genuine viewer presence through the tracking service.
+Before auto-registering another gateway, check whether that client already
+has explicit active-player heartbeats. Mobile intentionally scopes presence
+to live playback: catalog navigation, VOD, pause, and background chrome must
+not acquire a second viewer session just because broadcast sync stays connected.
 
-**How to apply:** any new realtime transport (another WS/SSE endpoint) that
-represents "a viewer watching the broadcast" must register/refresh/leave a
-`viewerTrackingService` session the same way. Never write to
-`broadcastEngine.setViewerCount()` from anywhere else — there must be exactly
-one writer (the bridge inside `viewerTrackingService`) or counts will race.
+A correct server-side count does not guarantee a working mobile badge.
+Registration, initial snapshots, live frames, and client state are separate
+contracts and must all be connected.
+
+**Why:** The mobile playback transport discarded viewer-count events, omitted
+counts from snapshots, and the sync model retained its initial unknown count,
+despite the live player already sending presence heartbeats.
+
+**How to apply:** Trace the actual mobile transport, not an older gateway with
+similar names. Verify join and leave delivery end to end, including zero and
+HTTP/reconnect snapshots, without changing playback position. Keep the mobile
+vendored sync implementation aligned with the shared one.

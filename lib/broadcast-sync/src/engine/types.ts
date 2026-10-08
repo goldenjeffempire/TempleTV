@@ -26,6 +26,8 @@ export interface WirePlaybackItem {
 
 export interface WirePlaybackState {
   serverTimeMs: number;
+  /** Optional for compatibility with older API deployments. */
+  viewerCount?: number;
   current: WirePlaybackItem | null;
   next: WirePlaybackItem | null;
   nextNext: WirePlaybackItem | null;
@@ -47,6 +49,7 @@ export interface OmegaSignal {
 }
 
 export type WirePlaybackFrame =
+  | { type: "viewer-count"; count: number }
   | { type: "state";   reason: string;         state: WirePlaybackState }
   | { type: "preload"; leadMs: number;          state: WirePlaybackState }
   | { type: "ping";    serverTimeMs: number                              }

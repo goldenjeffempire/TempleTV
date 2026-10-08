@@ -63,6 +63,7 @@ const PlaybackItemSchema = z.object({
 
 const PlaybackStateSchema = z.object({
   serverTimeMs: z.number(),
+  viewerCount: z.number().int().nonnegative(),
   current: PlaybackItemSchema.nullable(),
   next: PlaybackItemSchema.nullable(),
   nextNext: PlaybackItemSchema.nullable(),
@@ -225,6 +226,7 @@ function buildState(): WireState {
 
       return {
         serverTimeMs: now,
+        viewerCount: broadcastEngine.getViewerCount(),
         current: currentOverride,
         next,
         nextNext,
@@ -245,6 +247,7 @@ function buildState(): WireState {
   const nextNext = projectItem(snap.upcoming[1] ?? null);
   return {
     serverTimeMs: now,
+    viewerCount: broadcastEngine.getViewerCount(),
     current,
     next,
     nextNext,
@@ -318,11 +321,12 @@ export async function playbackRoutes(app: FastifyInstance) {
           });
           break;
         case "viewer-count":
-          // Not part of the playback push contract; ignore.
+          send({ type: "viewer-count", count: e.data.count });
           break;
       }
     };
     broadcastEngine.on("event", onEvent);
+
 
     // Push a fresh state whenever an admin starts or stops a live override.
     // `overrideBus.active` is already updated before this fires, so
