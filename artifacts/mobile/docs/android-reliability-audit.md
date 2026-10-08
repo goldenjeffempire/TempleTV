@@ -270,3 +270,15 @@ elimination; test repeated navigation, PiP, app background/foreground and
 simultaneous radio ownership on slow/low-memory Android devices before shipping.
 
 **Release decision remains NOT READY FOR PRODUCTION.**
+
+### Local Android build verification — 2026-10-07
+
+Release configuration is 1.0.71, Android versionCode 139. The Android SDK is
+now available, and native Kotlin/C++ compilation and R8 optimization passed.
+The first packaging attempt failed while writing native symbols to Gradle's
+build cache because of a disk quota. A retry with build caching disabled passed
+that task but its build process terminated before bundle completion. No signed
+1.0.71 AAB has been verified or delivered, and no Expo cloud build was triggered.
+
+Installed-device tests and production crash/ANR measurements remain unverified.
+Successful compilation alone does not change the release-readiness decision.

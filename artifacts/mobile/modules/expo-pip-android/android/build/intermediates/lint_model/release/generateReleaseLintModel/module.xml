@@ -1,0 +1,18 @@
+<lint-module
+    format="1"
+    dir="/home/runner/workspace/artifacts/mobile/modules/expo-pip-android/android"
+    name=":expo-pip-android"
+    type="LIBRARY"
+    maven="Temple TV:expo-pip-android:unspecified"
+    agpVersion="8.12.0"
+    buildFolder="build"
+    bootClassPath="/nix/store/ddc6rbfbsv5awmb353r95ij796inmvza-androidsdk/libexec/android-sdk/platforms/android-36/android.jar:/nix/store/ddc6rbfbsv5awmb353r95ij796inmvza-androidsdk/libexec/android-sdk/build-tools/35.0.0/core-lambda-stubs.jar"
+    javaSourceLevel="17"
+    compileTarget="android-36"
+    neverShrinking="true">
+  <lintOptions
+      absolutePaths="true"
+      checkReleaseBuilds="true"
+      explainIssues="true"/>
+  <variant name="release"/>
+</lint-module>

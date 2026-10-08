@@ -216,6 +216,8 @@ function parseMajor(version: string): number | null {
 function specTargetsMajor(spec: string, major: number): boolean {
   const s = spec.trim();
   const M = major;
+  // Exact stable pin: M.y.z (e.g. 1.1.18), optionally prefixed with "=".
+  if (new RegExp(`^=?${M}\\.\\d+\\.\\d+$`).test(s)) return true;
   // Bare: 1, 1.x, 1.X, 1.*
   if (new RegExp(`^${M}(\\.([xX*](\\.([xX*]))?)?)?$`).test(s)) return true;
   // Caret: ^M.y.z

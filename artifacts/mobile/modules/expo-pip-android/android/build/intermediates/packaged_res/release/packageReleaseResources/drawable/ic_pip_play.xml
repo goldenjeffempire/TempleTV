@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Play icon for PiP remote-action controls and foreground notification.
+  White fill on transparent background so Android renders it correctly as
+  a notification small icon (API 21+ silhouette mode) and as a PiP overlay
+  RemoteAction icon.  Sized at 24 dp per Android icon-size conventions.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+      android:fillColor="#FFFFFFFF"
+      android:pathData="M8,5v14l11,-7z"/>
+</vector>

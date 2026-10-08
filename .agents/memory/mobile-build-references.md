@@ -26,3 +26,4 @@ clean-build behavior, patch synchronization, or native build compatibility.
 - [Local native module build constraints](expo-local-module-android-build.md)
 - [Archive cache-directory exclusion](eas-build-dotslash-cache-tarball.md)
 - [Workspace dependencies after merge](pnpm-overrides-workspacedep-merge-drift.md)
+- [Local Gradle toolchain and signing](android-local-gradle-build.md)
