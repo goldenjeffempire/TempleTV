@@ -47,6 +47,19 @@ reference. Switching to another key would make the release unusable on Play.
 validation status, not aliases/passwords/private material. Compare against a
 known accepted certificate and fail closed on mismatches.
 
+Desktop certificate-viewer errors do not prove an Android upload keystore is
+corrupt. A valid PKCS12 backup was rejected by the desktop viewer but passed
+Java certificate inspection and a private-key signing operation.
+
+**Why:** Treating the viewer error as corruption would unnecessarily replace
+the original Play-compatible key. Backup metadata also listed a null key
+password, while the private key actually opened with the keystore password.
+
+**How to apply:** Check format and certificate with `keytool`, and verify
+private-key access without exporting or printing secrets. When metadata lists
+a null key password, test the keystore password before advising what to enter;
+never tell the user to enter the literal word `null`.
+
 Disable JVM performance counters for local release builds in this container.
 
 **Why:** The Gradle launcher crashed with SIGBUS in
