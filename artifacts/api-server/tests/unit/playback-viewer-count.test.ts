@@ -19,12 +19,16 @@ const overrideBus = Object.assign(new EventEmitter(), {
 });
 const adminEventBus = new EventEmitter();
 const signalBus = new EventEmitter();
+const viewerTrackingService = Object.assign(new EventEmitter(), {
+  currentCount: () => engine.count, getStats: async () => ({}),
+});
 const code = transformSync(readFileSync(
   new URL("../../src/modules/playback/playback.routes.ts", import.meta.url), "utf8",
 ), { loader: "ts", format: "cjs" }).code;
 const mod = { exports: {} as { playbackRoutes: (app: unknown) => Promise<void> } };
 new Function("require", "module", "exports", code)((id: string) => {
   if (id.includes("queue.engine")) return { broadcastEngine: engine };
+  if (id.includes("viewer-tracking.service")) return { viewerTrackingService };
   if (id.includes("override-bus")) return { overrideBus };
   if (id.includes("signal-bus")) return { signalBus };
   if (id.includes("admin-event-bus")) return { adminEventBus };
@@ -58,7 +62,7 @@ describe("playback viewer count server contract", async () => {
     overrideBus.active = null;
   });
 
-  it("pushes changes and zero over WS and removes the listener on close", () => {
+  it("pushes changes and zero over WS and removes the listener on close", async () => {
     const socket = Object.assign(new EventEmitter(), {
       sent: [] as Array<any>,
       send(text: string) { this.sent.push(JSON.parse(text)); },
@@ -67,6 +71,7 @@ describe("playback viewer count server contract", async () => {
     engine.count = 3;
     const previousListeners = engine.listenerCount("event");
     routes.get("/ws")!.handler(socket, {});
+    await new Promise(resolve => setImmediate(resolve));
     try {
       assert.equal(socket.sent[0].state.viewerCount, 3);
       engine.emit("event", { type: "viewer-count", data: { count: 9 } });

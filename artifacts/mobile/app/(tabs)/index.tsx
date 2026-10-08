@@ -50,6 +50,9 @@ import { V2PlayerContainer } from "@/components/V2PlayerContainer";
 import { shouldMountHeroPreview } from "@/lib/heroPreviewPolicy";
 import { StreamStatusBadge } from "@/components/StreamStatusBadge";
 import { getApiBase } from "@/lib/apiBase";
+import { useMobileViewerPresence } from "@/lib/viewerTracking";
+import { useAuth } from "@/context/AuthContext";
+import { isLiveViewerWatching } from "@/lib/viewerPresence";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import { usePlayer } from "@/context/PlayerContext";
 import { useBroadcastSync } from "@/hooks/useBroadcastSync";
@@ -319,6 +322,14 @@ const HeroSection = React.memo(function HeroSection({
     baseUrl: `${apiBase}/api/broadcast-v2`,
   });
   const v2Server = v2Snapshot.lastServerSnapshot;
+  const { token: viewerAuthToken } = useAuth();
+  useMobileViewerPresence({
+    enabled: mountPreview && isFocused && !isBroadcastMode,
+    activelyWatching: isLiveViewerWatching({
+      isLive: true, isBroadcast: true, contextPlaying: false, broadcastState: v2Snapshot.state,
+    }),
+    token: viewerAuthToken,
+  });
 
   // ── Broadcast source classification ──────────────────────────────────────────
   // hasUploadedBroadcast: a non-YouTube item is currently live in the queue.
@@ -711,7 +722,7 @@ const HeroSection = React.memo(function HeroSection({
               hideWhenIdle={!hasActiveBroadcast}
             />
 
-            {hasActiveBroadcast && viewerCount != null && viewerCount > 0 && (
+            {hasActiveBroadcast && viewerCount != null && (
               <View style={styles.viewerBadge}>
                 <Feather name="users" size={9} color="rgba(255,255,255,0.75)" />
                 <Text style={styles.viewerText}>

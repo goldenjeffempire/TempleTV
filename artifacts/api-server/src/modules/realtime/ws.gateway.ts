@@ -5,7 +5,6 @@ import { overrideBus } from "../live-overrides/override-bus.js";
 import type { OverrideBusChange } from "../live-overrides/override-bus.js";
 import { signalBus } from "../network/signal-bus.js";
 import type { OmegaSignal } from "../network/signal-bus.js";
-import { viewerTrackingService } from "../viewer-tracking/viewer-tracking.service.js";
 import { wsCounter } from "../../infrastructure/ws-counter.js";
 import { logger } from "../../infrastructure/logger.js";
 
@@ -19,7 +18,7 @@ import { logger } from "../../infrastructure/logger.js";
  *          the connection alive and to maintain accurate viewer counts.
  *
  * Viewer counting: each connection auto-registers a session with
- * `viewerTrackingService` (Redis-backed, TTL + sessionId dedup) and
+ * explicit player leases (database-backed TTL + owner/session dedup) and
  * refreshes it on VIEWER_HEARTBEAT_INTERVAL_MS. That service is the single
  * source of truth for the broadcast engine's viewer count — this gateway
  * does not write to it directly, so there is only ever one writer.
@@ -29,7 +28,6 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 const ZOMBIE_TIMEOUT_MS = 60_000;
 // Must stay comfortably under the viewer-tracking session TTL (25 s default)
 // so a session never expires between refreshes for a live connection.
-const VIEWER_HEARTBEAT_INTERVAL_MS = 10_000;
 
 /** All active sockets — used by closeAllRealtimeWsSessions() on shutdown. */
 const _activeSockets = new Set<{ terminate?(): void }>();
@@ -53,17 +51,8 @@ export async function wsRoutes(app: FastifyInstance) {
     // This gateway is shared by TV, mobile native, and admin clients, so the
     // platform tag is left unset here — per-platform breakdowns come from the
     // dedicated /viewer-tracking/heartbeat endpoint when a client wants one.
-    let viewerSessionId = "";
-    void viewerTrackingService.issueCredential().then((credential) => {
-      viewerSessionId = credential;
-      return viewerTrackingService.heartbeat({ sessionId: credential, streamId: broadcastEngine.channelId });
-    }).catch(() => undefined);
-    const viewerHeartbeat = setInterval(() => {
-      void viewerTrackingService
-        .heartbeat({ sessionId: viewerSessionId, streamId: broadcastEngine.channelId })
-        .catch(() => undefined);
-    }, VIEWER_HEARTBEAT_INTERVAL_MS);
-    (viewerHeartbeat as unknown as { unref?: () => void }).unref?.();
+    // Synchronization sockets are observers, not evidence of active playback.
+    // Players explicitly acquire presence only while actually watching.
     _activeSockets.add(socket as unknown as { terminate?(): void });
 
     // Track liveness for zombie detection (server-ping + native pong paths).
@@ -140,9 +129,7 @@ export async function wsRoutes(app: FastifyInstance) {
 
     const cleanup = () => {
       wsCounter.dec();
-      void viewerTrackingService.leave(viewerSessionId, broadcastEngine.channelId).catch(() => undefined);
       clearInterval(heartbeat);
-      clearInterval(viewerHeartbeat);
       _activeSockets.delete(socket as unknown as { terminate?(): void });
       broadcastEngine.off("event", sendEvent);
       overrideBus.off("change", onOverrideChange);

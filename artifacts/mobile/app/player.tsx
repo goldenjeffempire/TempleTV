@@ -1694,7 +1694,7 @@ export default function PlayerScreen() {
                 {/* Row 3: viewer count + reactions */}
                 <View style={styles.liveInfoBottomRow}>
                   {/* Viewer count pill */}
-                  {sync.viewerCount != null && sync.viewerCount > 0 && (
+                  {sync.viewerCount != null && (
                     <View style={styles.liveInfoViewers} pointerEvents="none">
                       <Feather name="users" size={10} color="rgba(255,255,255,0.9)" />
                       <Text style={styles.liveInfoViewerText}>
@@ -1875,7 +1875,7 @@ export default function PlayerScreen() {
                         </Text>
                       </View>
                     )}
-                    {sync.viewerCount != null && sync.viewerCount > 0 && (
+                    {sync.viewerCount != null && (
                       <View
                         style={[
                           styles.viewerChip,
@@ -2399,7 +2399,7 @@ export default function PlayerScreen() {
                   {/* Viewer count — shown in fullscreen for live broadcasts.
                       Mirrors the same chip shown in the inline info block so
                       the user can see engagement without dropping out of fullscreen. */}
-                  {isLive && sync.viewerCount != null && sync.viewerCount > 0 && (
+                  {isLive && sync.viewerCount != null && (
                     <View style={styles.fsViewerChip}>
                       <Feather name="users" size={11} color="rgba(255,255,255,0.85)" />
                       <Text style={styles.fsViewerChipText}>

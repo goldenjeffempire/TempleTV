@@ -1,10 +1,15 @@
 export const MOBILE_VIEWER_STREAM_ID = "temple-tv-live";
 const REQUEST_TIMEOUT_MS = 8_000;
 
-export type ViewerSession = { sessionId: string; streamId: string };
+export type ViewerSession = { sessionId: string; streamId: string; nextSequence?: number };
+let lastSequence = 0;
+export function nextViewerSequence(): number {
+  lastSequence = Math.max(lastSequence + 1, Date.now() * 1000);
+  return lastSequence;
+}
 
 function endpoint(apiBase: string, path: string) {
-  return `${apiBase}${path}`;
+  return `${apiBase.replace(/\/+$/, "")}${path}`;
 }
 
 async function jsonRequest(
@@ -34,11 +39,12 @@ async function jsonRequest(
 export async function issueViewerCredential(
   apiBase: string,
   token?: string,
+  resumeSessionId?: string,
 ): Promise<ViewerSession> {
   const response = await jsonRequest(
     apiBase,
     "/api/viewer-tracking/issue",
-    { streamId: MOBILE_VIEWER_STREAM_ID, platform: "mobile" },
+    { streamId: MOBILE_VIEWER_STREAM_ID, platform: "mobile", ...(resumeSessionId ? { resumeSessionId } : {}) },
     token,
   );
   if (!response.ok) {
@@ -51,6 +57,7 @@ export async function issueViewerCredential(
   if (!value?.sessionId || value.streamId !== MOBILE_VIEWER_STREAM_ID) {
     throw new Error("Viewer credential response was invalid");
   }
+  if (Number.isSafeInteger(value.nextSequence)) lastSequence = Math.max(lastSequence, value.nextSequence!);
   return value;
 }
 
@@ -63,6 +70,7 @@ export async function sendViewerHeartbeat(
     streamId: session.streamId,
     platform: "mobile",
     clientTs: Date.now(),
+    sequence: nextViewerSequence(),
   });
 }
 
@@ -75,5 +83,6 @@ export async function leaveViewerSession(
   await jsonRequest(apiBase, "/api/viewer-tracking/leave", {
     sessionId: session.sessionId,
     streamId: session.streamId,
+    sequence: nextViewerSequence(),
   }).catch(() => {});
 }

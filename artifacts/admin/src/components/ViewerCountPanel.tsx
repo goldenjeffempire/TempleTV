@@ -95,7 +95,7 @@ function TrendIcon({ trend }: { trend: TrendPoint[] }) {
 }
 
 export const ViewerCountPanel = memo(function ViewerCountPanel({ streamId }: Props) {
-  const { data, isLoading } = useViewerTracking(streamId);
+  const { data, isLoading, error } = useViewerTracking(streamId);
 
   const totalCurrent = data?.totalCurrent ?? 0;
   const totalPeak    = data?.totalPeak    ?? 0;
@@ -131,7 +131,7 @@ export const ViewerCountPanel = memo(function ViewerCountPanel({ streamId }: Pro
             variant={totalCurrent > 0 ? "default" : "secondary"}
             className="ml-0.5 tabular-nums"
           >
-            {isLoading && totalCurrent === 0 ? "—" : totalCurrent.toLocaleString()}
+            {error ? "Unavailable" : !data || isLoading ? "—" : totalCurrent.toLocaleString()}
           </Badge>
           <TrendIcon trend={aggregateTrend} />
           <span className="ml-auto text-xs text-muted-foreground tabular-nums">
@@ -140,6 +140,7 @@ export const ViewerCountPanel = memo(function ViewerCountPanel({ streamId }: Pro
         </div>
       </CardHeader>
       <CardContent className="pb-4 space-y-3">
+        {error && <p role="status" className="text-xs text-muted-foreground">Viewer statistics are temporarily unavailable. Reconnecting…</p>}
         {/* Sparkline — 5-min rolling trend */}
         <Sparkline trend={aggregateTrend} />
 
@@ -157,7 +158,7 @@ export const ViewerCountPanel = memo(function ViewerCountPanel({ streamId }: Pro
           </div>
         )}
 
-        {!isLoading && totalCurrent === 0 && streams.length === 0 && (
+        {!isLoading && !error && data && totalCurrent === 0 && streams.length === 0 && (
           <p className="text-xs text-muted-foreground text-center py-1">
             No active viewers — heartbeats appear within 10 s of a session joining.
           </p>

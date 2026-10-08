@@ -28,6 +28,7 @@ export * from "./channel-graphics";
 export * from "./channel-queue";
 export * from "./emergency-alerts";
 export * from "./viewer-sessions";
+export * from "./viewer-presence";
 export * from "./series";
 export * from "./storage-blobs";
 export * from "./storage-blob-chunks";

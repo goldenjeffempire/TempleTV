@@ -26,6 +26,7 @@ import Hls from "hls.js";
 import { useV2Broadcast } from "@workspace/player-core/react";
 import { resolveApiOrigin } from "../lib/api";
 import { useAdManager } from "../hooks/useAdManager";
+import { useViewerPresence } from "../hooks/useViewerPresence";
 
 // ── Time formatting ───────────────────────────────────────────────────────────
 /** Format seconds as "m:ss" (< 1 h) or "h:mm:ss" (≥ 1 h). Tabular digits. */
@@ -412,6 +413,7 @@ export function LiveBroadcastV2({
     [],
   );
   const { snapshot, connected, attach, forceRebind } = useV2Broadcast({ baseUrl: effectiveBaseUrl, attachHls, attachYouTube });
+  useViewerPresence(snapshot.state);
   const fatalFiredRef = useRef(false);
 
   // Local video element refs — shadow attach.A / attach.B so we can find the

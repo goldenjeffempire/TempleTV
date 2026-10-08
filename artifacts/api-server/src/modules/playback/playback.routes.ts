@@ -12,6 +12,7 @@ import { signalBus, type OmegaSignal } from "../network/signal-bus.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
+import { viewerTrackingService } from "../viewer-tracking/viewer-tracking.service.js";
 
 // Module-level monotonic counter for library revision bumps.
 // Incremented every time adminEventBus fires "videos-library-updated".
@@ -63,7 +64,7 @@ const PlaybackItemSchema = z.object({
 
 const PlaybackStateSchema = z.object({
   serverTimeMs: z.number(),
-  viewerCount: z.number().int().nonnegative(),
+  viewerCount: z.number().int().nonnegative().nullable(),
   current: PlaybackItemSchema.nullable(),
   next: PlaybackItemSchema.nullable(),
   nextNext: PlaybackItemSchema.nullable(),
@@ -226,7 +227,7 @@ function buildState(): WireState {
 
       return {
         serverTimeMs: now,
-        viewerCount: broadcastEngine.getViewerCount(),
+        viewerCount: viewerTrackingService.currentCount(),
         current: currentOverride,
         next,
         nextNext,
@@ -247,7 +248,7 @@ function buildState(): WireState {
   const nextNext = projectItem(snap.upcoming[1] ?? null);
   return {
     serverTimeMs: now,
-    viewerCount: broadcastEngine.getViewerCount(),
+    viewerCount: viewerTrackingService.currentCount(),
     current,
     next,
     nextNext,
@@ -278,6 +279,10 @@ export async function playbackRoutes(app: FastifyInstance) {
     },
     async (_req, reply) => {
       reply.header("Cache-Control", "no-cache, no-store, must-revalidate");
+      // A newly joined viewer may be inside the 250ms coalescing window.
+      // Seed reconnect/HTTP snapshots from the same freshness barrier used
+      // by admin stats, not the previous cached engine count.
+      await viewerTrackingService.getStats().catch(() => undefined);
       const state = buildState();
       // If the engine is empty (e.g. DB was slow at startup), kick off a
       // background reload so the next request sees real data.
@@ -301,7 +306,12 @@ export async function playbackRoutes(app: FastifyInstance) {
 
     // Initial snapshot on connect — clients use this to seed their
     // dual-buffer pipeline before any change events arrive.
-    send({ type: "state", reason: "initial", state: buildState() });
+    let closed = false;
+    void viewerTrackingService.getStats().catch(() => undefined).then(() => {
+      if (!closed) send({ type: "state", reason: "initial", state: buildState() });
+    });
+    const onViewerUnavailable = () => send({ type: "viewer-count", count: null });
+    viewerTrackingService.on("unavailable", onViewerUnavailable);
 
     const onEvent = (e: BroadcastEvent) => {
       switch (e.type) {
@@ -405,7 +415,9 @@ export async function playbackRoutes(app: FastifyInstance) {
     });
 
     const cleanup = () => {
+      closed = true;
       clearInterval(heartbeat);
+      viewerTrackingService.off("unavailable", onViewerUnavailable);
       broadcastEngine.off("event", onEvent);
       overrideBus.off("change", onOverrideChange);
       signalBus.off("signal", onSignal);

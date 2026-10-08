@@ -45,3 +45,26 @@ so its playback can be active while that other stack still reports stopped.
 
 **How to apply:** Derive presence from the player that actually owns playback,
 retain foreground/leave cleanup, and verify registration as well as delivery.
+
+Do not consider viewer counting complete until real-world end-to-end tests
+confirm that the installed mobile app and admin display accurate synchronized
+counts. Development protocol clients and JavaScript transport tests are not
+installed-device or production acceptance.
+
+**Why:** The user explicitly requires real-world end-to-end confirmation before
+sign-off, including backgrounding, disconnections, reconnections and failures.
+
+**How to apply:** Report exactly what was exercised. Keep native-device,
+actual-media and controlled-production verification as blocking release gates
+when the required devices or deployment access are not available.
+
+Opaque guest capabilities and rate limits are not proof of a distinct physical
+device, a human viewer, or actual media playback.
+
+**Why:** A public guest issuer can be called repeatedly by an automated client;
+transport credentials alone cannot establish the stronger anti-manipulation
+guarantee requested for this product.
+
+**How to apply:** Describe capability validation as bounded abuse protection,
+not bot-proof counting. Require verified enrollment/attestation and an explicit
+guest policy before claiming production anti-inflation security.

@@ -3,7 +3,7 @@
  *
  * POST /viewer-tracking/heartbeat   — unauthenticated, rate-limited
  *   Called every ~10 s by every active player (TV, mobile, web).
- *   No DB write — pure Redis.
+ *   Durable, atomic lease renewal with coalesced aggregation.
  *
  * GET  /viewer-tracking/stats       — requireAuth("editor")
  *   Returns current viewer counts, peak, and 5-min trend per stream.
@@ -18,12 +18,23 @@ import { z } from "zod";
 import { attachPrincipal, requireAuth } from "../../middleware/auth.js";
 import { viewerTrackingService } from "./viewer-tracking.service.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
+import { InvalidViewerCredential, credentialHash } from "./viewer-presence.store.js";
+import { ServiceUnavailableError } from "../../shared/errors.js";
+import type { FastifyRequest } from "fastify";
+
+const sessionRateKey = (req: FastifyRequest) => {
+  const sessionId = (req.body as { sessionId?: unknown } | undefined)?.sessionId;
+  return typeof sessionId === "string" ? `viewer:${credentialHash(sessionId)}` : req.ip;
+};
+const SequenceSchema = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional();
+const UnavailableSchema = z.object({ error: z.string() });
 
 const HeartbeatBodySchema = z.object({
   sessionId: z.string().min(1).max(128),
   streamId:  z.string().min(1).max(128),
   platform:  z.enum(["tv", "mobile", "web"]).optional(),
   clientTs:  z.number().int().nonnegative().optional(),
+  sequence: SequenceSchema,
 });
 
 const TrendPointSchema = z.object({
@@ -53,18 +64,21 @@ const HeartbeatResponseSchema = z.object({
 });
 
 export async function viewerTrackingRoutes(app: FastifyInstance) {
+  app.addHook("onClose", async () => { viewerTrackingService.stop(); });
   const r = app.withTypeProvider<ZodTypeProvider>();
 
   // There is currently one supported public broadcast stream. Keeping this
-  // allowlist server-side prevents arbitrary Redis namespaces/count inflation.
+  // allowlist server-side prevents arbitrary namespaces/count inflation.
   const supportedStream = broadcastEngine.channelId;
   const IssueBodySchema = z.object({
     streamId: z.literal(supportedStream),
     platform: z.enum(["tv", "mobile", "web"]).optional(),
+    resumeSessionId: z.string().min(32).max(128).optional(),
   });
   const CredentialResponseSchema = z.object({
     sessionId: z.string(),
     streamId: z.literal(supportedStream),
+    nextSequence: z.number().int().nonnegative(),
   });
 
   r.post("/issue", {
@@ -82,11 +96,20 @@ export async function viewerTrackingRoutes(app: FastifyInstance) {
       response: {
         200: CredentialResponseSchema,
         429: z.object({ error: z.string() }),
+        503: UnavailableSchema,
       },
     },
   }, async (req, reply) => {
-    const sessionId = await viewerTrackingService.issueCredential(req.principal?.id);
-    return reply.code(200).send({ sessionId, streamId: req.body.streamId });
+    let sessionId: string;
+    try {
+      sessionId = await viewerTrackingService.issueCredential(req.principal?.id, req.body.resumeSessionId);
+    } catch {
+      throw new ServiceUnavailableError("Viewer session store is temporarily unavailable");
+    }
+    let nextSequence: number;
+    try { nextSequence = await viewerTrackingService.nextSequence(sessionId); }
+    catch { throw new ServiceUnavailableError("Viewer session store is temporarily unavailable"); }
+    return reply.code(200).send({ sessionId, streamId: req.body.streamId, nextSequence });
   });
 
   // ── POST /viewer-tracking/heartbeat ────────────────────────────────────
@@ -98,17 +121,20 @@ export async function viewerTrackingRoutes(app: FastifyInstance) {
     "/heartbeat",
     {
       config: {
-        rateLimit: { max: 60, timeWindow: "1 minute" },
+        // Count per opaque capability, not NAT address: hundreds of legitimate
+        // viewers may share one mobile carrier/public Wi-Fi IP.
+        rateLimit: { max: 60, timeWindow: "1 minute", hook: "preHandler", keyGenerator: sessionRateKey },
       },
       schema: {
         tags: ["viewer-tracking"],
-        summary: "Record a viewer heartbeat. Called every ~10 s by active players. No DB write — Redis only.",
+        summary: "Renew one durable active-player lease. Called every ~10 s.",
         body: HeartbeatBodySchema,
         response: {
           200: HeartbeatResponseSchema,
           429: z.object({ error: z.string() }),
           400: z.object({ error: z.string() }),
           401: z.object({ error: z.string() }),
+          503: UnavailableSchema,
         },
       },
     },
@@ -119,8 +145,11 @@ export async function viewerTrackingRoutes(app: FastifyInstance) {
       let result: { viewers: number; isNewSession: boolean };
       try {
         result = await viewerTrackingService.heartbeat(req.body);
-      } catch {
-        return reply.code(401).send({ error: "Invalid or expired viewer session credential" });
+      } catch (err) {
+        if (err instanceof InvalidViewerCredential) {
+          return reply.code(401).send({ error: "Invalid or expired viewer session credential" });
+        }
+        throw new ServiceUnavailableError("Viewer session store is temporarily unavailable");
       }
       const { viewers, isNewSession } = result;
       return reply.code(200).send({
@@ -133,19 +162,25 @@ export async function viewerTrackingRoutes(app: FastifyInstance) {
   );
 
   r.post("/leave", {
+    config: { rateLimit: { max: 30, timeWindow: "1 minute", hook: "preHandler", keyGenerator: sessionRateKey } },
     schema: {
       tags: ["viewer-tracking"],
-      body: z.object({ sessionId: z.string().min(1).max(128), streamId: z.literal(supportedStream) }),
+      body: z.object({ sessionId: z.string().min(1).max(128), streamId: z.literal(supportedStream), sequence: SequenceSchema }),
       response: {
         204: z.null(),
         401: z.object({ error: z.string() }),
+        429: z.object({ error: z.string() }),
+        503: UnavailableSchema,
       },
     },
   }, async (req, reply) => {
     try {
-      await viewerTrackingService.leave(req.body.sessionId, req.body.streamId);
-    } catch {
-      return reply.code(401).send({ error: "Invalid or expired viewer session credential" });
+      await viewerTrackingService.leave(req.body.sessionId, req.body.streamId, req.body.sequence);
+    } catch (err) {
+      if (err instanceof InvalidViewerCredential) {
+        return reply.code(401).send({ error: "Invalid or expired viewer session credential" });
+      }
+      throw new ServiceUnavailableError("Viewer session store is temporarily unavailable");
     }
     return reply.code(204).send(null);
   });
@@ -161,12 +196,17 @@ export async function viewerTrackingRoutes(app: FastifyInstance) {
         summary: "Aggregate viewer stats across all streams — current, peak, 5-min trend.",
         response: {
           200: AggregateStatsSchema,
+          503: UnavailableSchema,
         },
       },
     },
     async (_req, reply) => {
-      const stats = await viewerTrackingService.getStats();
-      return reply.code(200).send(stats);
+      try {
+        const stats = await viewerTrackingService.getStats();
+        return reply.code(200).send(stats);
+      } catch {
+        throw new ServiceUnavailableError("Viewer statistics are temporarily unavailable");
+      }
     },
   );
 
@@ -181,12 +221,17 @@ export async function viewerTrackingRoutes(app: FastifyInstance) {
         params: z.object({ streamId: z.string().min(1).max(128) }),
         response: {
           200: AggregateStatsSchema,
+          503: UnavailableSchema,
         },
       },
     },
     async (req, reply) => {
-      const stats = await viewerTrackingService.getStats(req.params.streamId);
-      return reply.code(200).send(stats);
+      try {
+        const stats = await viewerTrackingService.getStats(req.params.streamId);
+        return reply.code(200).send(stats);
+      } catch {
+        throw new ServiceUnavailableError("Viewer statistics are temporarily unavailable");
+      }
     },
   );
 }

@@ -10,11 +10,12 @@ describe("mobile broadcast viewer count delivery", async () => {
     };
     return { engine, frame: (frame: unknown) => transport.sync.handleFrame(frame) };
   };
+  let serverClock = Date.now();
   const snapshot = (viewerCount?: number) => ({
     type: "state",
     reason: "snapshot",
     state: {
-      serverTimeMs: Date.now(),
+      serverTimeMs: ++serverClock,
       current: null, next: null, nextNext: null,
       liveOverride: null, source: "empty",
       ...(viewerCount === undefined ? {} : { viewerCount }),
@@ -54,12 +55,22 @@ describe("mobile broadcast viewer count delivery", async () => {
   it("rejects malformed counts and ignores frames after cleanup", () => {
     const { engine, frame } = makeEngine();
     frame({ type: "viewer-count", count: 3 });
-    for (const count of [-1, 0.5, NaN, Infinity, "4", null]) {
+    for (const count of [-1, 0.5, NaN, Infinity, "4"]) {
       frame({ type: "viewer-count", count });
     }
     assert.equal(engine.getState().viewerCount, 3);
     engine.stop();
     frame({ type: "viewer-count", count: 4 });
     assert.equal(engine.getState().viewerCount, 3);
+  });
+
+  it("clears stale counts when the server reports unavailable", () => {
+    const { engine, frame } = makeEngine();
+    frame(snapshot(7));
+    frame({ type: "viewer-count", count: null });
+    assert.equal(engine.getState().viewerCount, null);
+    frame(snapshot(0));
+    assert.equal(engine.getState().viewerCount, 0);
+    engine.stop();
   });
 });

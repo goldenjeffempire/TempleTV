@@ -137,7 +137,7 @@ export class BroadcastEngine {
     _reason: string,
     _leadMs?: number,
   ): void {
-    if (Number.isInteger(wire.viewerCount) && wire.viewerCount! >= 0) {
+    if (wire.viewerCount === null || (Number.isInteger(wire.viewerCount) && wire.viewerCount! >= 0)) {
       this.state = { ...this.state, viewerCount: wire.viewerCount! };
     }
     // Update queue manager.
@@ -184,7 +184,7 @@ export class BroadcastEngine {
 
   private handleConnection(status: ConnectionStatus): void {
     const connected = status === "connected";
-    this.patch({ connected });
+    this.patch({ connected, ...(!connected ? { viewerCount: null } : {}) });
     this.dispatchConnectionEvent(connected);
   }
 

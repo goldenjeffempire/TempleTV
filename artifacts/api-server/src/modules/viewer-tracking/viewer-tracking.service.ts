@@ -1,600 +1,159 @@
-/**
- * Viewer Tracking Service
- *
- * Production-grade real-time viewer counting, fully decoupled from the
- * broadcast engine.  Clients send a heartbeat every ~10 s; the server
- * maintains per-stream active-viewer counts using Redis sorted sets so
- * no DB write occurs per heartbeat.  Survives API/worker restarts
- * because all ephemeral state lives in Redis with TTL-based expiry.
- *
- * Redis key schema
- * ──────────────────────────────────────────────────────────────────
- *  vt:session:{sessionId}   → JSON blob, TTL = SESSION_TTL_S (25 s)
- *                             Auto-expires on missed heartbeats.
- *  vt:active:{streamId}     → Sorted set, score = expireAtMs, member = sessionId
- *                             Queried with ZRANGEBYSCORE to count live sessions.
- *  vt:peak:{streamId}       → integer string, no TTL (persists across restarts)
- *  vt:trend:{streamId}      → Sorted set, score = timestamp ms, member = "{ts}:{count}"
- *                             Pruned to a 5-min rolling window.
- *  vt:pubsub                → Pub/Sub channel for cross-instance count fan-out
- *
- * In-process fallback (no Redis)
- * ──────────────────────────────────────────────────────────────────
- *  Map<sessionId, SessionEntry> with a periodic sweep timer.
- *  Same public interface — callers never need to branch on Redis availability.
- *
- * Scalability: ZADD / ZRANGEBYSCORE / ZCARD are all O(log N + k) where k is
- * the number of entries swept.  Supports 100k+ concurrent sessions.
- */
-
 import { EventEmitter } from "node:events";
-import { randomBytes } from "node:crypto";
-import type { Redis } from "ioredis";
-import { getRedis } from "../../infrastructure/redis.js";
-import { createRedisSubscriberClient, INSTANCE_ID } from "../../infrastructure/redis-client.js";
 import { adminEventBus } from "../admin-ops/admin-event-bus.js";
 import { logger } from "../../infrastructure/logger.js";
 import { env } from "../../config/env.js";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
+import { ViewerPresenceStore } from "./viewer-presence.store.js";
 
-// ── Constants ──────────────────────────────────────────────────────────────
-const SESSION_TTL_S = env.VIEWER_TRACKING_SESSION_TTL_S;   // 25 s default
-const SESSION_TTL_MS = SESSION_TTL_S * 1_000;
-
-const TREND_WINDOW_MS   = 5 * 60_000;   // 5-minute rolling window
-const TREND_SNAPSHOT_MS = 15_000;        // snapshot every 15 s (20 points across 5 min)
-const ADMIN_SSE_DEBOUNCE_MS = 3_000;     // max 1 admin-SSE push per 3 s per stream
-const FALLBACK_SWEEP_MS = 10_000;        // in-process map sweep cadence
-
-const KEY_SESSION  = (sid: string)   => `vt:session:${sid}`;
-const KEY_CREDENTIAL = (sid: string) => `vt:credential:${sid}`;
-const KEY_ACTIVE   = (stream: string) => `vt:active:${stream}`;
-const KEY_PEAK     = (stream: string) => `vt:peak:${stream}`;
-const KEY_TREND    = (stream: string) => `vt:trend:${stream}`;
-const PUBSUB_CHANNEL = "vt:pubsub";
-
-// ── Types ──────────────────────────────────────────────────────────────────
 export interface HeartbeatPayload {
   sessionId: string;
-  streamId:  string;
-  userId?:   string;
-  platform?: "tv" | "mobile" | "web" | string;
-  clientTs?: number;
-}
-
-export interface ViewerStats {
-  streamId:    string;
-  current:     number;
-  peak:        number;
-  trend:       TrendPoint[];
-  updatedAtMs: number;
-}
-
-export interface TrendPoint {
-  ts:    number;
-  count: number;
-}
-
-export interface AggregateStats {
-  streams:     ViewerStats[];
-  totalCurrent: number;
-  totalPeak:   number;
-}
-
-interface SessionData {
-  sessionId: string;
-  streamId:  string;
-  userId?:   string;
+  streamId: string;
   platform?: string;
-  joinedAtMs: number;
+  sequence?: number;
 }
-
-interface FallbackEntry {
-  data:      SessionData;
-  expireAtMs: number;
+export interface TrendPoint { ts: number; count: number }
+export interface ViewerStats {
+  streamId: string; current: number; peak: number; trend: TrendPoint[]; updatedAtMs: number;
 }
-interface CredentialData {
-  sessionId: string;
-  userId?: string;
-  issuedAtMs: number;
-}
+export interface AggregateStats { streams: ViewerStats[]; totalCurrent: number; totalPeak: number }
 
-// Pub/sub message shape
-interface PubSubMsg {
-  instanceId: string;
-  streamId:   string;
-  count:      number;
-  delta:      "join" | "leave" | "update";
-}
+/**
+ * Every API/daemon instance reads the same PostgreSQL leases. Fixed-cost
+ * two-second reconciliation restores state after restart, publishes expiry
+ * (including zero) and repairs missed realtime events. Burst refreshes are
+ * coalesced; heartbeat traffic doesn't each perform a global count/SCAN.
+ */
+export class ViewerTrackingService extends EventEmitter {
+  private started = false;
+  private timer?: NodeJS.Timeout;
+  private refreshTimer?: NodeJS.Timeout;
+  private refreshing?: Promise<void>;
+  private dirty = false;
+  private healthy = false;
+  private stats: AggregateStats = { streams: [], totalCurrent: 0, totalPeak: 0 };
+  private trends = new Map<string, TrendPoint[]>();
+  private lastPrune = 0;
+  constructor(private readonly store = new ViewerPresenceStore(undefined, env.VIEWER_TRACKING_SESSION_TTL_S)) {
+    super();
+    // Every playback socket subscribes to availability. Cleanup removes each
+    // listener; legitimate concurrency is not bounded by EventEmitter's 10.
+    this.setMaxListeners(0);
+  }
 
-// ── Service ────────────────────────────────────────────────────────────────
-class ViewerTrackingService extends EventEmitter {
-  private redis: Redis | null        = null;
-  private sub:   Redis | null        = null;
-  private started                    = false;
-
-  // In-process fallback state (used when Redis is unavailable)
-  private fallbackSessions = new Map<string, FallbackEntry>();
-  // Map<streamId, count> for fast in-process reads
-  private fallbackCounts   = new Map<string, number>();
-  private fallbackCredentials = new Map<string, CredentialData>();
-
-  // Debounce tracking for admin SSE pushes  Map<streamId, lastPushMs>
-  private lastSsePush      = new Map<string, number>();
-
-  // Snapshot / sweep timers
-  private trendTimer?: NodeJS.Timeout;
-  private sweepTimer?: NodeJS.Timeout;
-
-  // Track last emitted count per stream for change detection
-  private lastCount        = new Map<string, number>();
-
-  // ── Lifecycle ────────────────────────────────────────────────────────────
-
-  start(): void {
+  async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
-
-    this.redis = getRedis();
-    if (this.redis) {
-      this.sub = createRedisSubscriberClient();
-      this._attachPubSub();
-      logger.info("[viewer-tracking] Redis mode — sorted-set heartbeat store");
-    } else {
-      logger.info("[viewer-tracking] No Redis — in-process fallback mode");
-      this._startFallbackSweep();
-    }
-
-    this._startTrendSnapshots();
-    logger.info(
-      { sessionTtlS: SESSION_TTL_S, trendWindowMs: TREND_WINDOW_MS },
-      "[viewer-tracking] service started",
-    );
+    this.timer = setInterval(() => {
+      void this.refresh().catch((err) => logger.warn({ err }, "[viewer-tracking] reconciliation unavailable"));
+    }, 2000);
+    this.timer.unref();
+    // Arm retries BEFORE initial I/O. A temporary startup database failure
+    // must not permanently disable expiry/restart reconciliation.
+    await this.refresh();
   }
 
   stop(): void {
-    if (!this.started) return;
     this.started = false;
-    if (this.trendTimer) { clearInterval(this.trendTimer); this.trendTimer = undefined; }
-    if (this.sweepTimer) { clearInterval(this.sweepTimer); this.sweepTimer = undefined; }
-    if (this.sub) {
-      this.sub.quit().catch(() => undefined);
-      this.sub = null;
-    }
+    if (this.timer) clearInterval(this.timer);
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.timer = this.refreshTimer = undefined;
   }
 
-  // ── Heartbeat (hot path) ─────────────────────────────────────────────────
+  async issueCredential(userId?: string, resumeSessionId?: string): Promise<string> {
+    return this.store.issue(userId, resumeSessionId);
+  }
+
+  async nextSequence(sessionId: string): Promise<number> {
+    return this.store.nextSequence(sessionId);
+  }
+
+  currentCount(streamId = broadcastEngine.channelId): number | null {
+    const stream = this.stats.streams.find(s => s.streamId === streamId);
+    return this.healthy && stream && Date.now() - stream.updatedAtMs <= 5000 ? stream.current : null;
+  }
 
   async heartbeat(payload: HeartbeatPayload): Promise<{ viewers: number; isNewSession: boolean }> {
-    const now = Date.now();
-    const expireAt = now + SESSION_TTL_MS;
-
-    if (this.redis) {
-      return this._redisHeartbeat(payload, now, expireAt);
-    }
-    return this._fallbackHeartbeat(payload, now, expireAt);
+    const result = await this.store.record(payload.sessionId, payload.streamId,
+      payload.sequence ?? Date.now() * 1000, true, payload.platform);
+    if (result.changed) this.scheduleRefresh();
+    // This response is an acknowledgement; realtime/stat snapshots carry the
+    // authoritative count. No global aggregation for each individual heartbeat.
+    return { viewers: this.stats.streams.find(s => s.streamId === payload.streamId)?.current ?? 0, isNewSession: result.isNewSession };
   }
 
-  /** Issue an opaque, server-generated credential. It is deliberately not a
-   * JWT: possession is the only client capability and the random value is
-   * stored server-side, so clients cannot mint or alter identity/stream. */
-  async issueCredential(userId?: string): Promise<string> {
-    const sessionId = randomBytes(32).toString("base64url");
-    const data: CredentialData = { sessionId, userId, issuedAtMs: Date.now() };
-    if (this.redis) {
-      await this.redis.set(KEY_CREDENTIAL(sessionId), JSON.stringify(data), "EX", SESSION_TTL_S);
-    } else {
-      this.fallbackCredentials.set(sessionId, data);
-    }
-    return sessionId;
+  async leave(sessionId: string, streamId: string, sequence?: number): Promise<void> {
+    await this.store.record(sessionId, streamId, sequence ?? Date.now() * 1000, false);
+    this.scheduleRefresh();
   }
 
-  async validateCredential(sessionId: string): Promise<CredentialData | null> {
-    if (this.redis) {
-      const raw = await this.redis.get(KEY_CREDENTIAL(sessionId)).catch(() => null);
-      if (!raw) return null;
-      try { return JSON.parse(raw) as CredentialData; } catch { return null; }
-    }
-    const credential = this.fallbackCredentials.get(sessionId);
-    if (!credential || Date.now() - credential.issuedAtMs > SESSION_TTL_MS) {
-      if (credential) this.fallbackCredentials.delete(sessionId);
-      return null;
-    }
-    return credential;
+  private scheduleRefresh(): void {
+    this.dirty = true;
+    if (this.refreshTimer) return;
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = undefined;
+      void this.refresh().catch((err) => logger.warn({ err }, "[viewer-tracking] refresh unavailable"));
+    }, 250);
+    this.refreshTimer.unref();
   }
-
-  // ── Stats ────────────────────────────────────────────────────────────────
 
   async getStats(streamId?: string): Promise<AggregateStats> {
-    if (this.redis) {
-      return this._redisStats(streamId);
-    }
-    return this._fallbackStats(streamId);
-  }
-
-  // ── Explicit leave (fast-path disconnect) ───────────────────────────────
-  // Heartbeats naturally expire after SESSION_TTL_S with no action needed —
-  // this is the safety net for zombie/crashed connections. But a clean
-  // disconnect (gateway "close"/"error" event) can remove the session
-  // immediately so the visible count drops in real time instead of waiting
-  // up to SESSION_TTL_S for the TTL sweep.
-  async leave(sessionId: string, streamId: string): Promise<void> {
-    if (!await this.validateCredential(sessionId)) {
-      throw new Error("Invalid or expired viewer session credential");
-    }
-    const now = Date.now();
-    if (this.redis) {
-      const r = this.redis;
-      const activeKey = KEY_ACTIVE(streamId);
-      const pipeline = r.pipeline();
-      pipeline.zrem(activeKey, sessionId);
-      pipeline.del(KEY_SESSION(sessionId));
-      pipeline.zremrangebyscore(activeKey, 0, now);
-      pipeline.zcard(activeKey);
-      const results = await pipeline.exec().catch(() => null);
-      const count = (results?.[3]?.[1] as number | null) ?? 0;
-      const msg: PubSubMsg = { instanceId: INSTANCE_ID, streamId, count, delta: "leave" };
-      r.publish(PUBSUB_CHANNEL, JSON.stringify(msg)).catch(() => undefined);
-      this._maybeNotifyAdmin(streamId, count, now);
-    } else {
-      const existing = this.fallbackSessions.get(sessionId);
-      if (existing) this.fallbackSessions.delete(sessionId);
-      const count = this._fallbackCount(streamId);
-      this._maybeNotifyAdmin(streamId, count, now);
-    }
-    this.emit("leave", { sessionId, streamId });
-  }
-
-  // ── Redis implementation ─────────────────────────────────────────────────
-
-  private async _redisHeartbeat(
-    payload: HeartbeatPayload,
-    now: number,
-    expireAt: number,
-  ): Promise<{ viewers: number; isNewSession: boolean }> {
-    const { sessionId, streamId } = payload;
-    const r = this.redis!;
-
-    const sessionKey = KEY_SESSION(sessionId);
-    const activeKey  = KEY_ACTIVE(streamId);
-
-    // Resolve credential, prior membership and duplicate status in one Redis
-    // round trip. The credential lookup is intentionally server-side; no
-    // request-supplied identity participates in this hot path.
-    const lookup = r.pipeline();
-    lookup.get(KEY_CREDENTIAL(sessionId));
-    lookup.get(sessionKey);
-    lookup.zscore(activeKey, sessionId);
-    const lookupResults = await lookup.exec();
-    const credentialRaw = (lookupResults?.[0]?.[1] as string | null) ?? null;
-    let credential: CredentialData | null = null;
-    try { credential = credentialRaw ? JSON.parse(credentialRaw) as CredentialData : null; } catch { credential = null; }
-    if (!credential) throw new Error("Invalid or expired viewer session credential");
-    const priorRaw = (lookupResults?.[1]?.[1] as string | null) ?? null;
-    let prior: SessionData | undefined;
-    try { prior = priorRaw ? JSON.parse(priorRaw) as SessionData : undefined; } catch { /* treat as new */ }
-
-    // Detect new session: check existing score in the active sorted set
-    const existingScore = (lookupResults?.[2]?.[1] as string | null) ?? null;
-    const isNewSession  = existingScore === null;
-
-    // Upsert session data
-    const sessionData: SessionData = {
-      sessionId,
-      streamId,
-      userId:     credential.userId,
-      platform:   payload.platform,
-      joinedAtMs: isNewSession ? now : Number(existingScore ?? now),
+    // Bounded freshness and single-flight even with many simultaneous readers.
+    if (!this.healthy || this.dirty || Date.now() - (this.stats.streams[0]?.updatedAtMs ?? 0) > 2000) await this.refresh();
+    const streams = this.stats.streams.filter(s => !streamId || s.streamId === streamId);
+    return {
+      streams,
+      totalCurrent: streams.reduce((n, s) => n + s.current, 0),
+      totalPeak: streams.reduce((n, s) => n + s.peak, 0),
     };
-    const moveFrom = prior?.streamId && prior.streamId !== streamId ? prior.streamId : undefined;
-
-    // Update sorted set: member = sessionId, score = expireAtMs
-    // Sweep expired entries then get live count — single pipeline for atomicity
-    const pipeline = r.pipeline();
-    if (moveFrom) {
-      pipeline.zrem(KEY_ACTIVE(moveFrom), sessionId);
-      pipeline.zcard(KEY_ACTIVE(moveFrom));
-    }
-    pipeline.set(sessionKey, JSON.stringify(sessionData), "EX", SESSION_TTL_S);
-    pipeline.expire(KEY_CREDENTIAL(sessionId), SESSION_TTL_S);
-    pipeline.zadd(activeKey, expireAt, sessionId);
-    pipeline.zremrangebyscore(activeKey, 0, now);  // remove expired
-    pipeline.zcard(activeKey);                     // live count after sweep
-    // Keep empty/stale stream namespaces self-cleaning while retaining enough
-    // time for stats readers to observe the last heartbeat.
-    pipeline.expire(activeKey, SESSION_TTL_S);
-    const results = await pipeline.exec();
-
-    const count = (results?.[(moveFrom ? 6 : 4)]?.[1] as number | null) ?? 0;
-    if (moveFrom) {
-      // move pipeline: ZREM old=0, ZCARD old=1, SET=2, EXPIRE credential=3,
-      // ZADD=4, ZREMRANGEBYSCORE=5, ZCARD new=6, EXPIRE active=7.
-      const oldCount = (results?.[1]?.[1] as number | null) ?? 0;
-      this._maybeNotifyAdmin(moveFrom, oldCount, now);
-    }
-
-    // Peak tracking: update if count exceeds stored peak
-    const peakKey = KEY_PEAK(streamId);
-    // Compare-and-set in Redis, rather than a GET followed by SET, so
-    // concurrent API instances cannot lose a higher peak.
-    await r.eval(
-      "local p=redis.call('GET',KEYS[1]); if (not p) or (tonumber(ARGV[1]) > tonumber(p)) then redis.call('SET',KEYS[1],ARGV[1]) end; return 1",
-      1,
-      peakKey,
-      String(count),
-    );
-
-    // Publish cross-instance update
-    const msg: PubSubMsg = {
-      instanceId: INSTANCE_ID,
-      streamId,
-      count,
-      delta: isNewSession ? "join" : "update",
-    };
-    r.publish(PUBSUB_CHANNEL, JSON.stringify(msg)).catch(() => undefined);
-
-    // Push admin SSE if count changed (debounced)
-    this._maybeNotifyAdmin(streamId, count, now);
-
-    if (isNewSession) {
-      this.emit("join", { sessionId, streamId, platform: payload.platform });
-    }
-
-    return { viewers: count, isNewSession };
   }
 
-  private async _redisStats(filterStreamId?: string): Promise<AggregateStats> {
-    const r = this.redis!;
+  private refresh(): Promise<void> {
+    if (this.refreshing) return this.refreshing;
+    this.dirty = false;
+    this.refreshing = this.reconcile().catch((err) => {
+      this.healthy = false;
+      this.emit("unavailable");
+      adminEventBus.push("viewer-count-updated", { unavailable: true, ts: Date.now() });
+      throw err;
+    }).finally(() => {
+      this.refreshing = undefined;
+      if (this.dirty) this.scheduleRefresh();
+    });
+    return this.refreshing;
+  }
+
+  private async reconcile(): Promise<void> {
+    const rows = await this.store.counts();
     const now = Date.now();
-
-    // Discover known streams: scan for active keys
-    let streamIds: string[] = [];
-    if (filterStreamId) {
-      streamIds = [filterStreamId];
-    } else {
-      // SCAN for vt:active:* keys
-      const keys = await this._scanKeys(r, "vt:active:*");
-      streamIds = keys.map((k) => k.replace("vt:active:", ""));
+    if (!rows.some(s => s.streamId === broadcastEngine.channelId)) {
+      rows.push({ streamId: broadcastEngine.channelId, current: 0, peak: 0 });
     }
-
-    const streams: ViewerStats[] = await Promise.all(
-      streamIds.map((sid) => this._redisStreamStats(sid, now)),
-    );
-
-    const totalCurrent = streams.reduce((s, v) => s + v.current, 0);
-    const totalPeak    = streams.reduce((s, v) => s + v.peak, 0);
-
-    return { streams, totalCurrent, totalPeak };
-  }
-
-  private async _redisStreamStats(streamId: string, now: number): Promise<ViewerStats> {
-    const r = this.redis!;
-    const activeKey = KEY_ACTIVE(streamId);
-    const peakKey   = KEY_PEAK(streamId);
-    const trendKey  = KEY_TREND(streamId);
-
-    // Sweep + count in pipeline
-    const pipeline = r.pipeline();
-    pipeline.zremrangebyscore(activeKey, 0, now);
-    pipeline.zcard(activeKey);
-    pipeline.get(peakKey);
-    pipeline.zrangebyscore(trendKey, now - TREND_WINDOW_MS, "+inf", "WITHSCORES");
-    const results = await pipeline.exec();
-
-    const current  = (results?.[1]?.[1] as number | null) ?? 0;
-    const peakRaw  = (results?.[2]?.[1] as string | null) ?? "0";
-    const peak     = Math.max(current, Number(peakRaw));
-    const trendRaw = (results?.[3]?.[1] as string[] | null) ?? [];
-
-    // Parse trend: [member0, score0, member1, score1, ...]
-    const trend: TrendPoint[] = [];
-    for (let i = 0; i + 1 < trendRaw.length; i += 2) {
-      const member = trendRaw[i] ?? "";
-      const ts = Number(trendRaw[i + 1] ?? 0);
-      const colonIdx = member.lastIndexOf(":");
-      const count = colonIdx >= 0 ? Number(member.slice(colonIdx + 1)) : 0;
-      if (!isNaN(ts) && !isNaN(count)) {
-        trend.push({ ts, count });
+    const streams = rows.map(row => {
+      const trend = (this.trends.get(row.streamId) ?? []).filter(p => p.ts > now - 300_000);
+      if (!trend.length || now - trend[trend.length - 1]!.ts >= 15_000) trend.push({ ts: now, count: row.current });
+      this.trends.set(row.streamId, trend);
+      return { ...row, trend, updatedAtMs: now };
+    });
+    const previous = this.stats;
+    const wasHealthy = this.healthy;
+    this.stats = {
+      streams,
+      totalCurrent: streams.reduce((n, s) => n + s.current, 0),
+      totalPeak: streams.reduce((n, s) => n + s.peak, 0),
+    };
+    this.healthy = true;
+    for (const stream of streams) {
+      const changed = previous.streams.find(s => s.streamId === stream.streamId)?.current !== stream.current;
+      if (stream.streamId === broadcastEngine.channelId) broadcastEngine.setViewerCount(stream.current);
+      if (changed || !wasHealthy) {
+        adminEventBus.push("viewer-count-updated", { streamId: stream.streamId, current: stream.current, ts: now });
+        this.emit("count", { streamId: stream.streamId, count: stream.current });
       }
     }
-
-    return { streamId, current, peak, trend, updatedAtMs: now };
-  }
-
-  private async _scanKeys(r: Redis, pattern: string): Promise<string[]> {
-    const keys: string[] = [];
-    let cursor = "0";
-    do {
-      const [next, batch] = await r.scan(cursor, "MATCH", pattern, "COUNT", 100);
-      cursor = next;
-      keys.push(...batch);
-    } while (cursor !== "0");
-    return keys;
-  }
-
-  // ── In-process fallback implementation ──────────────────────────────────
-
-  private _fallbackHeartbeat(
-    payload: HeartbeatPayload,
-    now: number,
-    expireAt: number,
-  ): { viewers: number; isNewSession: boolean } {
-    const { sessionId, streamId } = payload;
-    const credential = this.fallbackCredentials.get(sessionId);
-    if (!credential) throw new Error("Invalid or expired viewer session credential");
-    const existing = this.fallbackSessions.get(sessionId);
-    const isNewSession = !existing;
-    const movedFrom = existing && existing.data.streamId !== streamId ? existing.data.streamId : undefined;
-
-    const data: SessionData = {
-      sessionId,
-      streamId,
-      userId:     credential.userId,
-      platform:   payload.platform,
-      joinedAtMs: existing ? existing.data.joinedAtMs : now,
-    };
-    if (movedFrom) {
-      // Reassignment is a single synchronous operation in fallback mode.
-      this.fallbackSessions.delete(sessionId);
-      this._maybeNotifyAdmin(movedFrom, this._fallbackCount(movedFrom), now);
+    if (now - this.lastPrune > 60_000) {
+      this.lastPrune = now;
+      void this.store.prune().catch(err => logger.warn({ err }, "[viewer-tracking] credential cleanup deferred"));
     }
-    this.fallbackSessions.set(sessionId, { data, expireAtMs: expireAt });
-
-    // Recount for this stream
-    const count = this._fallbackCount(streamId);
-    this._maybeNotifyAdmin(streamId, count, now);
-
-    if (isNewSession) {
-      this.emit("join", { sessionId, streamId, platform: payload.platform });
-    }
-    return { viewers: count, isNewSession };
-  }
-
-  private _fallbackCount(streamId: string): number {
-    const now = Date.now();
-    let count = 0;
-    for (const entry of this.fallbackSessions.values()) {
-      if (entry.data.streamId === streamId && entry.expireAtMs > now) count++;
-    }
-    this.fallbackCounts.set(streamId, count);
-    return count;
-  }
-
-  private _fallbackStats(filterStreamId?: string): AggregateStats {
-    const now = Date.now();
-    const streamCounts = new Map<string, number>();
-    for (const entry of this.fallbackSessions.values()) {
-      if (entry.expireAtMs <= now) continue;
-      const sid = entry.data.streamId;
-      if (filterStreamId && sid !== filterStreamId) continue;
-      streamCounts.set(sid, (streamCounts.get(sid) ?? 0) + 1);
-    }
-
-    const streams: ViewerStats[] = [];
-    for (const [streamId, current] of streamCounts) {
-      streams.push({
-        streamId,
-        current,
-        peak: current,    // fallback mode has no persistent peak
-        trend: [],
-        updatedAtMs: now,
-      });
-    }
-
-    const totalCurrent = streams.reduce((s, v) => s + v.current, 0);
-    const totalPeak    = streams.reduce((s, v) => s + v.peak, 0);
-    return { streams, totalCurrent, totalPeak };
-  }
-
-  private _startFallbackSweep(): void {
-    this.sweepTimer = setInterval(() => {
-      const now = Date.now();
-      for (const [sid, entry] of this.fallbackSessions) {
-        if (entry.expireAtMs <= now) {
-          const { streamId } = entry.data;
-          this.fallbackSessions.delete(sid);
-          this.emit("leave", { sessionId: sid, streamId });
-          const count = this._fallbackCount(streamId);
-          this._maybeNotifyAdmin(streamId, count, now);
-        }
-      }
-    }, FALLBACK_SWEEP_MS);
-    this.sweepTimer.unref?.();
-  }
-
-  // ── Trend snapshots ──────────────────────────────────────────────────────
-
-  private _startTrendSnapshots(): void {
-    this.trendTimer = setInterval(() => {
-      void this._snapshotTrends();
-    }, TREND_SNAPSHOT_MS);
-    this.trendTimer.unref?.();
-  }
-
-  private async _snapshotTrends(): Promise<void> {
-    if (!this.redis) return;  // fallback mode: no persistent trend
-    const r = this.redis;
-    const now = Date.now();
-
-    // Get known stream ids
-    const keys = await this._scanKeys(r, "vt:active:*").catch(() => []);
-    if (keys.length === 0) return;
-
-    const pipeline = r.pipeline();
-    for (const key of keys) {
-      // We do a pipeline sweep + count for each stream
-      pipeline.zremrangebyscore(key, 0, now);
-      pipeline.zcard(key);
-    }
-    const results = await pipeline.exec().catch(() => null);
-    if (!results) return;
-
-    const trendPipeline = r.pipeline();
-    for (let i = 0; i < keys.length; i++) {
-      const streamId = (keys[i] ?? "").replace("vt:active:", "");
-      const count    = (results[i * 2 + 1]?.[1] as number | null) ?? 0;
-      const trendKey = KEY_TREND(streamId);
-      const member   = `${now}:${count}`;
-      trendPipeline.zadd(trendKey, now, member);
-      trendPipeline.zremrangebyscore(trendKey, 0, now - TREND_WINDOW_MS);
-      // Expire the trend key after 2× window so empty streams clean themselves up
-      trendPipeline.expire(trendKey, Math.ceil((TREND_WINDOW_MS * 2) / 1000));
-    }
-    await trendPipeline.exec().catch(() => undefined);
-  }
-
-  // ── Admin SSE notification ────────────────────────────────────────────────
-
-  private _maybeNotifyAdmin(streamId: string, count: number, now: number): void {
-    // Bridge into the broadcast engine unconditionally (not debounced) so
-    // every consumer of broadcastEngine.getViewerCount() — the "viewer-count"
-    // SSE/WS event, admin-ops routes, health routes, network routes — reads
-    // the same deduplicated, TTL-based count that this service computes.
-    // This is the single source of truth for the primary channel; the old
-    // raw-socket counter (realtime/viewer-tracker.ts) has been retired so
-    // there is no longer a second writer racing this one.
-    if (streamId === broadcastEngine.channelId) {
-      broadcastEngine.setViewerCount(count);
-    }
-
-    const prev      = this.lastCount.get(streamId);
-    const lastPush  = this.lastSsePush.get(streamId) ?? 0;
-    const elapsed   = now - lastPush;
-
-    // Push when: count changed AND debounce window has passed
-    if (count === prev && elapsed < ADMIN_SSE_DEBOUNCE_MS) return;
-
-    this.lastCount.set(streamId, count);
-    if (elapsed < ADMIN_SSE_DEBOUNCE_MS && count === prev) return;
-
-    this.lastSsePush.set(streamId, now);
-    adminEventBus.push("viewer-count-updated", {
-      streamId,
-      current:    count,
-      ts:         now,
-    });
-  }
-
-  // ── Pub/Sub fan-out (cross-instance sync) ────────────────────────────────
-
-  private _attachPubSub(): void {
-    if (!this.sub) return;
-    this.sub.subscribe(PUBSUB_CHANNEL, (err) => {
-      if (err) logger.warn({ err: err.message }, "[viewer-tracking] pub/sub subscribe error");
-    });
-    this.sub.on("message", (channel: string, raw: string) => {
-      if (channel !== PUBSUB_CHANNEL) return;
-      try {
-        const msg = JSON.parse(raw) as PubSubMsg;
-        // Skip our own messages (already processed in the command path)
-        if (msg.instanceId === INSTANCE_ID) return;
-        // Notify admin SSE from cross-instance update
-        const now = Date.now();
-        this._maybeNotifyAdmin(msg.streamId, msg.count, now);
-      } catch {
-        /* ignore malformed */
-      }
-    });
   }
 }
 

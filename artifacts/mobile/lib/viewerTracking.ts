@@ -1,6 +1,7 @@
 import { AppState, type AppStateStatus } from "react-native";
 import { useCallback, useEffect, useRef } from "react";
 import { getApiBase } from "@/lib/apiBase";
+import { secureStorage } from "@/lib/secureStorage";
 import {
   issueViewerCredential,
   leaveViewerSession,
@@ -10,6 +11,21 @@ import {
 
 const HEARTBEAT_MS = 10_000;
 const MAX_RETRY_MS = 60_000;
+const storedCredentialKey = () => `viewer_presence_${getApiBase().replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+let credentialQueue: Promise<unknown> = Promise.resolve();
+const activeOwners = new Set<symbol>();
+function acquireInstallationSession(token?: string): Promise<ViewerSession> {
+  // Serialize overlapping hero/fullscreen mounts; both must use the same
+  // installation capability even on first launch before storage is populated.
+  const next = credentialQueue.catch(() => {}).then(async () => {
+    const resume = await secureStorage.getItem(storedCredentialKey());
+    const session = await issueViewerCredential(getApiBase(), token, resume ?? undefined);
+    await secureStorage.setItem(storedCredentialKey(), session.sessionId);
+    return session;
+  });
+  credentialQueue = next;
+  return next;
+}
 
 /**
  * Tracks one live player only. The opaque server credential lives in a ref for
@@ -27,6 +43,7 @@ export function useMobileViewerPresence({
   reconnectKey?: unknown;
 }) {
   const sessionRef = useRef<ViewerSession | null>(null);
+  const ownerRef = useRef(Symbol("live-player"));
   const mountedRef = useRef(true);
   const generationRef = useRef(0);
   const issueRef = useRef<Promise<ViewerSession | null> | null>(null);
@@ -39,7 +56,8 @@ export function useMobileViewerPresence({
   const tokenRef = useRef(token);
   const heartbeatRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const heartbeatBusyRef = useRef(false);
-  const reconnectRef = useRef(reconnectKey);
+  const wakeRequestedRef = useRef(false);
+  const identityRef = useRef(token);
   watchingRef.current = activelyWatching;
   enabledRef.current = enabled;
   tokenRef.current = token;
@@ -56,6 +74,10 @@ export function useMobileViewerPresence({
     const session = sessionRef.current;
     sessionRef.current = null;
     generationRef.current++;
+    activeOwners.delete(ownerRef.current);
+    // Hero/fullscreen transitions can overlap. Leaving one mounted surface
+    // must not withdraw the installation lease used by another active player.
+    if (activeOwners.size > 0) return;
     if (session) await leaveViewerSession(getApiBase(), session);
   }, [clearTimers]);
 
@@ -65,10 +87,7 @@ export function useMobileViewerPresence({
     if (sessionRef.current) return sessionRef.current;
     if (issueRef.current) return issueRef.current;
     const generation = generationRef.current;
-    const pending = issueViewerCredential(
-      getApiBase(),
-      tokenRef.current ?? undefined,
-    ).then((session) => {
+    const pending = acquireInstallationSession(tokenRef.current ?? undefined).then((session) => {
       if (!mountedRef.current || generation !== generationRef.current ||
           !enabledRef.current || !watchingRef.current) return null;
       sessionRef.current = session;
@@ -82,9 +101,10 @@ export function useMobileViewerPresence({
   }, []);
 
   const heartbeat = useCallback(async () => {
-    if (heartbeatBusyRef.current) return;
+    if (heartbeatBusyRef.current) { wakeRequestedRef.current = true; return; }
     if (!mountedRef.current || !enabledRef.current || !watchingRef.current ||
         appStateRef.current !== "active") return;
+    activeOwners.add(ownerRef.current);
     heartbeatBusyRef.current = true;
     try {
       if (retryTimerRef.current) {
@@ -107,7 +127,7 @@ export function useMobileViewerPresence({
         if (sessionRef.current !== session || !mountedRef.current ||
             !enabledRef.current || !watchingRef.current ||
             appStateRef.current !== "active") {
-          await leaveViewerSession(getApiBase(), session);
+          if (activeOwners.size === 0) await leaveViewerSession(getApiBase(), session);
           return;
         }
         if (response.status === 401) {
@@ -133,21 +153,28 @@ export function useMobileViewerPresence({
       }
     } finally {
       heartbeatBusyRef.current = false;
+      if (wakeRequestedRef.current) {
+        wakeRequestedRef.current = false;
+        if (mountedRef.current && enabledRef.current && watchingRef.current && appStateRef.current === "active") {
+          void heartbeatRef.current();
+        }
+      }
     }
   }, [clearTimers, issue]);
 
   heartbeatRef.current = heartbeat;
 
   useEffect(() => {
-    const reconnecting = reconnectRef.current !== reconnectKey;
-    reconnectRef.current = reconnectKey;
-    if (reconnecting) {
+    const identityChanged = identityRef.current !== token;
+    identityRef.current = token;
+    if (identityChanged) {
       void leave().then(() => heartbeatRef.current());
     } else {
+      // Transport reconnects must not withdraw a still-playing HTTP lease.
       void heartbeatRef.current();
     }
     return clearTimers;
-  }, [enabled, activelyWatching, reconnectKey, clearTimers, leave]); // intentional: foreground/play/reconnect reissues
+  }, [enabled, activelyWatching, reconnectKey, token, clearTimers, leave]); // intentional: foreground/play/reconnect resumes
 
   useEffect(() => {
     mountedRef.current = true;

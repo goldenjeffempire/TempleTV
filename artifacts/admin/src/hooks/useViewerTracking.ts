@@ -80,7 +80,9 @@ export function useViewerTracking(streamId?: string): {
     staleTime:   10_000,
     gcTime:      60_000,
     refetchInterval: fallbackInterval,
+    retry: 1,
   });
 
-  return { data, isLoading, error };
+  // A cached value is not a live count when the latest request failed.
+  return { data: error ? undefined : data, isLoading, error };
 }
