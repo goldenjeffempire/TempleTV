@@ -80,6 +80,9 @@ export class BroadcastEngine {
       onStateChanged: () => this.emitMerged(),
     });
     this.sync  = new StateSyncService(opts, {
+      onViewerCount: (count) => {
+        if (!this.destroyed && this.state.viewerCount !== count) this.patch({ viewerCount: count });
+      },
       onState: (wire, reason, leadMs) => this.handleWireState(wire, reason, leadMs),
       onOmegaSignal: (sig) => this.handleOmegaSignal(sig),
       onConnectionChanged: (status) => this.handleConnection(status),
@@ -134,6 +137,9 @@ export class BroadcastEngine {
     _reason: string,
     _leadMs?: number,
   ): void {
+    if (Number.isInteger(wire.viewerCount) && wire.viewerCount! >= 0) {
+      this.state = { ...this.state, viewerCount: wire.viewerCount! };
+    }
     // Update queue manager.
     this.queue.update(wire);
 

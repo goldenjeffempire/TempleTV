@@ -51,6 +51,7 @@ const WS_HANDSHAKE_TIMEOUT_MS = 10_000;
 // ── Callbacks ─────────────────────────────────────────────────────────────────
 
 export interface StateSyncCallbacks {
+  onViewerCount?(count: number): void;
   onState(wire: WirePlaybackState, reason: string, leadMs?: number): void;
   onOmegaSignal(signal: OmegaSignal): void;
   onConnectionChanged(status: ConnectionStatus): void;
@@ -221,6 +222,11 @@ export class StateSyncService {
 
   private handleFrame(frame: WirePlaybackFrame): void {
     switch (frame.type) {
+      case "viewer-count":
+        if (Number.isInteger(frame.count) && frame.count >= 0) {
+          this.cb.onViewerCount?.(frame.count);
+        }
+        break;
       case "state":
         this.applyWire(frame.state, frame.reason);
         break;

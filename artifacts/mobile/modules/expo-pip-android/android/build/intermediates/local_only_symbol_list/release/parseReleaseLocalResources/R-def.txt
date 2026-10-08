@@ -1,0 +1,5 @@
+R_DEF: Internal format may change without notice
+local
+drawable ic_pip_expand
+drawable ic_pip_pause
+drawable ic_pip_play

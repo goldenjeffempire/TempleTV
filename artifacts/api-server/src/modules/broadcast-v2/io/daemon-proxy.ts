@@ -399,15 +399,29 @@ function wsDaemonProxyHandler(clientSocket: WebSocket, request: FastifyRequest):
   clientSocket.on("error", () => closeClient());
   clientSocket.on("close", () => { clientClosed = true; });
 
-  // Attempt to connect (or reconnect) to the daemon, retrying for up to WS_RECONNECT_MAX_MS.
-  const retryDeadline = Date.now() + WS_RECONNECT_MAX_MS;
+  // Each outage gets its own retry window.  A connection which was healthy for
+  // hours must not inherit the deadline from the initial connect attempt.
+  let retryDeadline = Date.now() + WS_RECONNECT_MAX_MS;
+  let reconnectGeneration = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let upstreamSocket: WebSocket | null = null;
 
   function tryConnect() {
     if (clientClosed) return; // Client left while we were waiting — no point reconnecting.
 
     const upstream = new WebSocket(daemonWsUrl, { headers });
+    upstreamSocket = upstream;
 
     upstream.on("open", () => {
+      // Ignore an old socket's late open event after a newer attempt won.
+      if (clientClosed || upstreamSocket !== upstream) {
+        try { upstream.close(); } catch { /* already closed */ }
+        return;
+      }
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       // Drain any messages buffered while we were (re)connecting.
       for (const msg of pending.splice(0)) {
         try { upstream.send(msg); } catch { /* upstream gone */ }
@@ -430,7 +444,12 @@ function wsDaemonProxyHandler(clientSocket: WebSocket, request: FastifyRequest):
 
       // When upstream drops, attempt to reconnect transparently.
       upstream.once("close", () => {
-        if (clientClosed) return;
+        if (clientClosed || upstreamSocket !== upstream) return;
+        upstreamSocket = null;
+        // A fresh outage starts now, rather than consuming the old outage's
+        // remaining deadline (important after long healthy broadcasts).
+        reconnectGeneration += 1;
+        retryDeadline = Date.now() + WS_RECONNECT_MAX_MS;
         logger.debug({ daemonWsUrl }, "[broadcast-daemon-proxy] WS upstream closed — scheduling reconnect");
 
         // Restore buffering so client messages during reconnect are not lost.
@@ -444,6 +463,7 @@ function wsDaemonProxyHandler(clientSocket: WebSocket, request: FastifyRequest):
     });
 
     upstream.on("error", (err: Error) => {
+      if (upstreamSocket !== upstream) return;
       logger.debug({ err, daemonWsUrl }, "[broadcast-daemon-proxy] WS upstream error");
       upstream.removeAllListeners();
       scheduleReconnect();
@@ -452,12 +472,17 @@ function wsDaemonProxyHandler(clientSocket: WebSocket, request: FastifyRequest):
 
   function scheduleReconnect() {
     if (clientClosed) return;
+    const generation = reconnectGeneration;
+    if (reconnectTimer !== null) return;
     if (Date.now() >= retryDeadline) {
       logger.warn({ daemonWsUrl }, "[broadcast-daemon-proxy] WS daemon unavailable after retry window — closing client");
       closeClient(1011, "broadcast daemon unavailable");
       return;
     }
-    setTimeout(() => tryConnect(), WS_RECONNECT_INTERVAL_MS);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      if (!clientClosed && generation === reconnectGeneration) tryConnect();
+    }, WS_RECONNECT_INTERVAL_MS);
   }
 
   tryConnect();

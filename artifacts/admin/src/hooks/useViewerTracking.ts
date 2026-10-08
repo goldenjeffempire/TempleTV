@@ -38,8 +38,8 @@ const QUERY_KEY = (streamId?: string) =>
 
 async function fetchViewerStats(streamId?: string): Promise<ViewerTrackingData> {
   const path = streamId
-    ? `/api/viewer-tracking/stats/${encodeURIComponent(streamId)}`
-    : "/api/viewer-tracking/stats";
+    ? `/viewer-tracking/stats/${encodeURIComponent(streamId)}`
+    : "/viewer-tracking/stats";
   return api.get<ViewerTrackingData>(path);
 }
 
@@ -63,10 +63,16 @@ export function useViewerTracking(streamId?: string): {
       void qc.invalidateQueries({ queryKey: ["viewer-tracking"] });
     }
   });
+  // The engine emits this event immediately; the tracking-service event
+  // is debounced. Both should refresh the same authoritative query.
+  useSSEEvent("viewer-count", () => {
+    void qc.invalidateQueries({ queryKey: ["viewer-tracking"] });
+  });
 
   // Fallback polling when SSE is degraded/offline; SSE push-invalidation
   // handles freshness while connected, so no interval polling is needed then.
-  const fallbackInterval = useSseGatedInterval(false, 15_000);
+  // Safety refresh also covers missed/debounced events and reconnected SSE.
+  const fallbackInterval = useSseGatedInterval(15_000, 15_000);
 
   const { data, isLoading, error } = useQuery<ViewerTrackingData, Error>({
     queryKey:    key,

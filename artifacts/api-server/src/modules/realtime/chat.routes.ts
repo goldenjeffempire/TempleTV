@@ -15,6 +15,7 @@ import {
   type ChatSocket,
   type RoomMember,
 } from "./chat.hub.js";
+import { consumeChatWsTicket, issueChatWsTicket } from "./ws-tickets.js";
 import type {
   ChatClientFrame,
   ChatMessage as ChatMessageDto,
@@ -240,6 +241,27 @@ export async function chatRoutes(app: FastifyInstance) {
   );
 
   r.post(
+    "/:channelId/ticket",
+    {
+      preHandler: requireAuth("user"),
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+      schema: {
+        tags: ["chat"],
+        summary: "Issue a one-time ticket for the chat WebSocket",
+        params: z.object({ channelId: z.string().min(1).max(128) }),
+        security: [{ bearerAuth: [] }],
+        response: { 200: z.object({ ticket: z.string(), expiresInMs: z.number().int() }) },
+      },
+    },
+    async (req) => issueChatWsTicket({
+      channelId: req.params.channelId,
+      userId: req.principal!.id,
+      email: req.principal!.email,
+      role: req.principal!.role,
+    }),
+  );
+
+  r.post(
     "/:channelId/messages",
     {
       preHandler: requireAuth("user"),
@@ -360,9 +382,19 @@ export async function chatRoutes(app: FastifyInstance) {
 
       const url = new URL(req.url ?? "/", "http://localhost");
       const channelId = url.searchParams.get("channel") || "temple-tv-live";
-      const token = url.searchParams.get("token");
-
-      const identity = await resolveWsIdentity(token);
+      const ticket = url.searchParams.get("ticket");
+      const ticketIdentity = consumeChatWsTicket(ticket, channelId);
+      // No query bearer token is accepted. Anonymous viewers can still join
+      // without credentials; authenticated viewers must use a one-time ticket.
+      const identity = ticketIdentity
+        ? {
+            userId: ticketIdentity.userId,
+            email: ticketIdentity.email,
+            isModerator: ["admin", "editor", "moderator"].includes(ticketIdentity.role ?? ""),
+            role: jwtRoleToChatRole(ticketIdentity.role),
+            jwtRole: ticketIdentity.role,
+          }
+        : await resolveWsIdentity(null);
       const sessionId = nanoid(12);
       const ipHash = hashIp(req.ip);
       const displayName = identity.email?.split("@")[0] || guestName(sessionId);

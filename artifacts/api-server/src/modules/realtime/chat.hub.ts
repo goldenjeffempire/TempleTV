@@ -73,6 +73,9 @@ const SEND_TOKENS_PER_WINDOW = 5;
 /** Minimum ms between typing frame broadcasts per member (rate-limit guard). */
 const TYPING_RATE_MS = 1_000;
 const MAX_ROOMS = 256;
+const MAX_REACTION_MESSAGES = 5_000;
+const MAX_REACTION_USERS = 20_000;
+const REACTION_TTL_MS = 60 * 60 * 1_000;
 
 export class ChatHub extends EventEmitter {
   private rooms = new Map<string, Set<RoomMember>>();
@@ -82,6 +85,8 @@ export class ChatHub extends EventEmitter {
   private _reactions = new Map<string, Record<string, number>>();
   /** `${messageId}:${userKey}` → emoji reacted with (one per user per message) */
   private _reactionUsers = new Map<string, string>();
+  private _reactionTouched = new Map<string, number>();
+  private _reactionChannels = new Map<string, string>();
   private _batchQueues = new Map<string, ChatMessage[]>();
   private _batchTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -89,6 +94,36 @@ export class ChatHub extends EventEmitter {
     super();
     this._batchTimer = setInterval(() => this._flushBatches(), BATCH_FLUSH_MS);
     this._batchTimer.unref();
+    const cleanup = setInterval(() => this._evictReactions(), 60_000);
+    cleanup.unref();
+  }
+
+  private _evictReactions(): void {
+    const cutoff = Date.now() - REACTION_TTL_MS;
+    for (const [messageId, touched] of this._reactionTouched) {
+      if (touched < cutoff) this.removeReactions(messageId);
+    }
+    while (this._reactions.size > MAX_REACTION_MESSAGES) {
+      const oldest = this._reactionTouched.keys().next().value;
+      if (oldest === undefined) break;
+      this.removeReactions(oldest);
+    }
+    while (this._reactionUsers.size > MAX_REACTION_USERS) {
+      const oldest = this._reactionUsers.keys().next().value;
+      if (oldest === undefined) break;
+      this.removeReactions(oldest.slice(0, oldest.indexOf(":")));
+    }
+  }
+
+  /** Remove all ephemeral reaction state for a deleted message. */
+  removeReactions(messageId: string): void {
+    this._reactions.delete(messageId);
+    this._reactionTouched.delete(messageId);
+    this._reactionChannels.delete(messageId);
+    const prefix = `${messageId}:`;
+    for (const key of this._reactionUsers.keys()) {
+      if (key.startsWith(prefix)) this._reactionUsers.delete(key);
+    }
   }
 
   private _flushBatches(): void {
@@ -136,6 +171,9 @@ export class ChatHub extends EventEmitter {
     }
     if (room.size === 0) {
       this.rooms.delete(channelId);
+      for (const [messageId, reactionChannel] of this._reactionChannels) {
+        if (reactionChannel === channelId) this.removeReactions(messageId);
+      }
     } else {
       this._broadcastPresence(channelId);
     }
@@ -185,6 +223,7 @@ export class ChatHub extends EventEmitter {
   }
 
   publishDelete(channelId: string, messageId: string): void {
+    this.removeReactions(messageId);
     this._broadcastRaw(channelId, { type: "delete", channelId, messageId });
   }
 
@@ -308,6 +347,7 @@ export class ChatHub extends EventEmitter {
     emoji: string,
     userKey: string,
   ): Record<string, number> {
+    this._evictReactions();
     const reactions = { ...(this._reactions.get(messageId) ?? {}) };
     const userReactionKey = `${messageId}:${userKey}`;
     const existing = this._reactionUsers.get(userReactionKey);
@@ -330,7 +370,15 @@ export class ChatHub extends EventEmitter {
       reactions[emoji] = (reactions[emoji] ?? 0) + 1;
     }
 
-    this._reactions.set(messageId, reactions);
+    if (Object.keys(reactions).length === 0) {
+      this.removeReactions(messageId);
+    } else {
+      this._reactions.set(messageId, reactions);
+      this._reactionTouched.delete(messageId);
+      this._reactionTouched.set(messageId, Date.now());
+      this._reactionChannels.set(messageId, channelId);
+    }
+    this._evictReactions();
     this._broadcastRaw(channelId, { type: "reaction", channelId, messageId, reactions });
     return reactions;
   }

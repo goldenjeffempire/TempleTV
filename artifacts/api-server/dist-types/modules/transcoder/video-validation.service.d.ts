@@ -97,6 +97,12 @@ export declare function runVideoValidation(videoId: string, objectKey: string, o
  */
 export declare function scheduleVideoValidation(videoId: string, objectKey: string, opts?: RunValidationOpts): void;
 /**
+ * Recover one local MP4 validation left unfinished by a process restart or an
+ * older upload flow that predated validation. Terminal results are never
+ * revisited; a running job must be stale before it may be reclaimed.
+ */
+export declare function recoverIncompleteVideoValidation(): Promise<void>;
+/**
  * Return the stored validation report from the DB without re-running checks.
  * Returns null if the video has not yet been validated.
  */

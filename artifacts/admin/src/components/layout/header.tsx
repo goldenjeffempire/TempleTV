@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/contexts/use-auth";
 import { useTheme } from "@/contexts/theme-context";
 import { useSSE } from "@/contexts/sse-context";
+import { useViewerTracking } from "@/hooks/useViewerTracking";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem,
@@ -64,8 +65,9 @@ function SSEIndicator() {
 
 function LivePill() {
   const { lastStatusPayload } = useSSE();
+  const { data: viewerStats } = useViewerTracking();
   const isLive = lastStatusPayload?.isLive;
-  const viewerCount = lastStatusPayload?.deviceCount ?? 0;
+  const viewerCount = viewerStats?.totalCurrent ?? null;
 
   if (!isLive) return null;
   return (
@@ -78,7 +80,7 @@ function LivePill() {
       </TooltipTrigger>
       <TooltipContent>
         <span className="flex items-center gap-1">
-          <Users size={12} /> {viewerCount} viewer{viewerCount !== 1 ? "s" : ""}
+          <Users size={12} /> {viewerCount ?? "—"} viewer{viewerCount !== 1 ? "s" : ""}
         </span>
       </TooltipContent>
     </Tooltip>

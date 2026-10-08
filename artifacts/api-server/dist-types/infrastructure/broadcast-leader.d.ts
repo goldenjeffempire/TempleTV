@@ -40,6 +40,7 @@ export declare class BroadcastLeader {
     private _isWriter;
     private renewalTimer;
     private readonly lostCallbacks;
+    private readonly gainedCallbacks;
     constructor(redis: Redis, channelId: string, instanceId: string);
     /**
      * Attempt to acquire the leader lock.
@@ -59,6 +60,8 @@ export declare class BroadcastLeader {
      * Callbacks run synchronously inside the renewal timer tick.
      */
     onLeadershipLost(cb: () => void): void;
+    /** Register a callback invoked when a reader acquires leadership. */
+    onLeadershipGained(cb: () => void): void;
     /**
      * Start the 10 s renewal timer.
      *

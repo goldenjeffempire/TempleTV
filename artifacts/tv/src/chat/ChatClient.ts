@@ -44,7 +44,7 @@ export interface ChatSnapshot {
 
 const DEFAULT_BUFFER = 60;
 
-function buildUrl(opts: ChatClientOptions): string {
+function buildUrl(opts: ChatClientOptions, ticket?: string): string {
   if (opts.url) return opts.url;
   // Use resolveApiOrigin() instead of window.location.host so that packaged
   // TV apps (Tizen, webOS, FireTV) loaded via file:// don't produce
@@ -55,7 +55,7 @@ function buildUrl(opts: ChatClientOptions): string {
   const host = origin.replace(/^https?:\/\//, "");
   const params = new URLSearchParams();
   if (opts.channelId) params.set("channel", opts.channelId);
-  if (opts.token) params.set("token", opts.token);
+  if (ticket) params.set("ticket", ticket);
   const qs = params.toString();
   return `${proto}//${host}/api/chat/ws${qs ? `?${qs}` : ""}`;
 }
@@ -150,12 +150,34 @@ export class ChatClient {
     return this.cachedSnapshot;
   }
 
-  private connect(): void {
+  private async connect(): Promise<void> {
     if (this.closedByUser) return;
     this.setState(this.reconnectAttempts === 0 ? "connecting" : "reconnecting");
+    let ticket: string | undefined;
+    if (this.opts.token && this.opts.channelId) {
+      try {
+        const response = await fetch(`${resolveApiOrigin()}/api/chat/${encodeURIComponent(this.opts.channelId)}/ticket`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${this.opts.token}` },
+        });
+        if (!response.ok) throw new Error(`Chat ticket request failed (${response.status})`);
+        ticket = (await response.json() as { ticket?: string }).ticket;
+        if (!ticket) throw new Error("Chat ticket response was invalid");
+      } catch (err) {
+        this.lastError = {
+          code: "auth",
+          message: err instanceof Error ? err.message : "Chat authentication failed",
+          atMs: Date.now(),
+        };
+        this.scheduleReconnect();
+        this.emit();
+        return;
+      }
+    }
+    const url = buildUrl(this.opts, ticket);
     let ws: WebSocket;
     try {
-      ws = new WebSocket(buildUrl(this.opts));
+      ws = new WebSocket(url);
     } catch (err) {
       this.scheduleReconnect();
       this.lastError = {

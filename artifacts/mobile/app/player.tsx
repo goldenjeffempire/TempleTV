@@ -90,6 +90,7 @@ import * as audioController from "@/services/audioController";
 import { usePageSeo } from "@/hooks/usePageSeo";
 import { usePlayer } from "@/context/PlayerContext";
 import { useMobileViewerPresence } from "@/lib/viewerTracking";
+import { isLiveViewerWatching } from "@/lib/viewerPresence";
 import {
   ReactionButton,
   PrayerSection,
@@ -339,6 +340,12 @@ export default function PlayerScreen() {
   useMobileViewerPresence({
     enabled: isLive,
     activelyWatching: isLive && isPlaying,
+    activelyWatching: isLiveViewerWatching({
+      isLive,
+      isBroadcast: isBroadcastV2,
+      contextPlaying: isPlaying,
+      broadcastState: v2Snapshot.state,
+    }),
     token: authToken,
     reconnectKey: v2Connected,
   });

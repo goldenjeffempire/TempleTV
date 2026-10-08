@@ -96,3 +96,4 @@ docker-compose.override.yml
 # Mobile build artifacts (.aab/.apk) - regenerate via EAS build, never commit to git/LFS
 build-output/
 artifacts/mobile/build-output/
+/artifacts/mobile/builds/

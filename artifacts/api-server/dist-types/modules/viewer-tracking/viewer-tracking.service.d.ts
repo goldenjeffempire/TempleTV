@@ -50,12 +50,18 @@ export interface AggregateStats {
     totalCurrent: number;
     totalPeak: number;
 }
+interface CredentialData {
+    sessionId: string;
+    userId?: string;
+    issuedAtMs: number;
+}
 declare class ViewerTrackingService extends EventEmitter {
     private redis;
     private sub;
     private started;
     private fallbackSessions;
     private fallbackCounts;
+    private fallbackCredentials;
     private lastSsePush;
     private trendTimer?;
     private sweepTimer?;
@@ -66,6 +72,11 @@ declare class ViewerTrackingService extends EventEmitter {
         viewers: number;
         isNewSession: boolean;
     }>;
+    /** Issue an opaque, server-generated credential. It is deliberately not a
+     * JWT: possession is the only client capability and the random value is
+     * stored server-side, so clients cannot mint or alter identity/stream. */
+    issueCredential(userId?: string): Promise<string>;
+    validateCredential(sessionId: string): Promise<CredentialData | null>;
     getStats(streamId?: string): Promise<AggregateStats>;
     leave(sessionId: string, streamId: string): Promise<void>;
     private _redisHeartbeat;

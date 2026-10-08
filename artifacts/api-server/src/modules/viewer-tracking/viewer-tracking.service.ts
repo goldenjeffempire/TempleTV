@@ -28,6 +28,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import { randomBytes } from "node:crypto";
 import type { Redis } from "ioredis";
 import { getRedis } from "../../infrastructure/redis.js";
 import { createRedisSubscriberClient, INSTANCE_ID } from "../../infrastructure/redis-client.js";
@@ -46,6 +47,7 @@ const ADMIN_SSE_DEBOUNCE_MS = 3_000;     // max 1 admin-SSE push per 3 s per str
 const FALLBACK_SWEEP_MS = 10_000;        // in-process map sweep cadence
 
 const KEY_SESSION  = (sid: string)   => `vt:session:${sid}`;
+const KEY_CREDENTIAL = (sid: string) => `vt:credential:${sid}`;
 const KEY_ACTIVE   = (stream: string) => `vt:active:${stream}`;
 const KEY_PEAK     = (stream: string) => `vt:peak:${stream}`;
 const KEY_TREND    = (stream: string) => `vt:trend:${stream}`;
@@ -91,6 +93,11 @@ interface FallbackEntry {
   data:      SessionData;
   expireAtMs: number;
 }
+interface CredentialData {
+  sessionId: string;
+  userId?: string;
+  issuedAtMs: number;
+}
 
 // Pub/sub message shape
 interface PubSubMsg {
@@ -110,6 +117,7 @@ class ViewerTrackingService extends EventEmitter {
   private fallbackSessions = new Map<string, FallbackEntry>();
   // Map<streamId, count> for fast in-process reads
   private fallbackCounts   = new Map<string, number>();
+  private fallbackCredentials = new Map<string, CredentialData>();
 
   // Debounce tracking for admin SSE pushes  Map<streamId, lastPushMs>
   private lastSsePush      = new Map<string, number>();
@@ -167,6 +175,34 @@ class ViewerTrackingService extends EventEmitter {
     return this._fallbackHeartbeat(payload, now, expireAt);
   }
 
+  /** Issue an opaque, server-generated credential. It is deliberately not a
+   * JWT: possession is the only client capability and the random value is
+   * stored server-side, so clients cannot mint or alter identity/stream. */
+  async issueCredential(userId?: string): Promise<string> {
+    const sessionId = randomBytes(32).toString("base64url");
+    const data: CredentialData = { sessionId, userId, issuedAtMs: Date.now() };
+    if (this.redis) {
+      await this.redis.set(KEY_CREDENTIAL(sessionId), JSON.stringify(data), "EX", SESSION_TTL_S);
+    } else {
+      this.fallbackCredentials.set(sessionId, data);
+    }
+    return sessionId;
+  }
+
+  async validateCredential(sessionId: string): Promise<CredentialData | null> {
+    if (this.redis) {
+      const raw = await this.redis.get(KEY_CREDENTIAL(sessionId)).catch(() => null);
+      if (!raw) return null;
+      try { return JSON.parse(raw) as CredentialData; } catch { return null; }
+    }
+    const credential = this.fallbackCredentials.get(sessionId);
+    if (!credential || Date.now() - credential.issuedAtMs > SESSION_TTL_MS) {
+      if (credential) this.fallbackCredentials.delete(sessionId);
+      return null;
+    }
+    return credential;
+  }
+
   // ── Stats ────────────────────────────────────────────────────────────────
 
   async getStats(streamId?: string): Promise<AggregateStats> {
@@ -183,6 +219,9 @@ class ViewerTrackingService extends EventEmitter {
   // immediately so the visible count drops in real time instead of waiting
   // up to SESSION_TTL_S for the TTL sweep.
   async leave(sessionId: string, streamId: string): Promise<void> {
+    if (!await this.validateCredential(sessionId)) {
+      throw new Error("Invalid or expired viewer session credential");
+    }
     const now = Date.now();
     if (this.redis) {
       const r = this.redis;
@@ -219,37 +258,71 @@ class ViewerTrackingService extends EventEmitter {
     const sessionKey = KEY_SESSION(sessionId);
     const activeKey  = KEY_ACTIVE(streamId);
 
+    // Resolve credential, prior membership and duplicate status in one Redis
+    // round trip. The credential lookup is intentionally server-side; no
+    // request-supplied identity participates in this hot path.
+    const lookup = r.pipeline();
+    lookup.get(KEY_CREDENTIAL(sessionId));
+    lookup.get(sessionKey);
+    lookup.zscore(activeKey, sessionId);
+    const lookupResults = await lookup.exec();
+    const credentialRaw = (lookupResults?.[0]?.[1] as string | null) ?? null;
+    let credential: CredentialData | null = null;
+    try { credential = credentialRaw ? JSON.parse(credentialRaw) as CredentialData : null; } catch { credential = null; }
+    if (!credential) throw new Error("Invalid or expired viewer session credential");
+    const priorRaw = (lookupResults?.[1]?.[1] as string | null) ?? null;
+    let prior: SessionData | undefined;
+    try { prior = priorRaw ? JSON.parse(priorRaw) as SessionData : undefined; } catch { /* treat as new */ }
+
     // Detect new session: check existing score in the active sorted set
-    const existingScore = await r.zscore(activeKey, sessionId);
+    const existingScore = (lookupResults?.[2]?.[1] as string | null) ?? null;
     const isNewSession  = existingScore === null;
 
     // Upsert session data
     const sessionData: SessionData = {
       sessionId,
       streamId,
-      userId:     payload.userId,
+      userId:     credential.userId,
       platform:   payload.platform,
       joinedAtMs: isNewSession ? now : Number(existingScore ?? now),
     };
-    await r.set(sessionKey, JSON.stringify(sessionData), "EX", SESSION_TTL_S);
+    const moveFrom = prior?.streamId && prior.streamId !== streamId ? prior.streamId : undefined;
 
     // Update sorted set: member = sessionId, score = expireAtMs
     // Sweep expired entries then get live count — single pipeline for atomicity
     const pipeline = r.pipeline();
+    if (moveFrom) {
+      pipeline.zrem(KEY_ACTIVE(moveFrom), sessionId);
+      pipeline.zcard(KEY_ACTIVE(moveFrom));
+    }
+    pipeline.set(sessionKey, JSON.stringify(sessionData), "EX", SESSION_TTL_S);
+    pipeline.expire(KEY_CREDENTIAL(sessionId), SESSION_TTL_S);
     pipeline.zadd(activeKey, expireAt, sessionId);
     pipeline.zremrangebyscore(activeKey, 0, now);  // remove expired
     pipeline.zcard(activeKey);                     // live count after sweep
+    // Keep empty/stale stream namespaces self-cleaning while retaining enough
+    // time for stats readers to observe the last heartbeat.
+    pipeline.expire(activeKey, SESSION_TTL_S);
     const results = await pipeline.exec();
 
-    const count = (results?.[2]?.[1] as number | null) ?? 0;
+    const count = (results?.[(moveFrom ? 6 : 4)]?.[1] as number | null) ?? 0;
+    if (moveFrom) {
+      // move pipeline: ZREM old=0, ZCARD old=1, SET=2, EXPIRE credential=3,
+      // ZADD=4, ZREMRANGEBYSCORE=5, ZCARD new=6, EXPIRE active=7.
+      const oldCount = (results?.[1]?.[1] as number | null) ?? 0;
+      this._maybeNotifyAdmin(moveFrom, oldCount, now);
+    }
 
     // Peak tracking: update if count exceeds stored peak
     const peakKey = KEY_PEAK(streamId);
-    const peakRaw = await r.get(peakKey);
-    const peak    = peakRaw ? Number(peakRaw) : 0;
-    if (count > peak) {
-      await r.set(peakKey, String(count));
-    }
+    // Compare-and-set in Redis, rather than a GET followed by SET, so
+    // concurrent API instances cannot lose a higher peak.
+    await r.eval(
+      "local p=redis.call('GET',KEYS[1]); if (not p) or (tonumber(ARGV[1]) > tonumber(p)) then redis.call('SET',KEYS[1],ARGV[1]) end; return 1",
+      1,
+      peakKey,
+      String(count),
+    );
 
     // Publish cross-instance update
     const msg: PubSubMsg = {
@@ -347,16 +420,24 @@ class ViewerTrackingService extends EventEmitter {
     expireAt: number,
   ): { viewers: number; isNewSession: boolean } {
     const { sessionId, streamId } = payload;
+    const credential = this.fallbackCredentials.get(sessionId);
+    if (!credential) throw new Error("Invalid or expired viewer session credential");
     const existing = this.fallbackSessions.get(sessionId);
     const isNewSession = !existing;
+    const movedFrom = existing && existing.data.streamId !== streamId ? existing.data.streamId : undefined;
 
     const data: SessionData = {
       sessionId,
       streamId,
-      userId:     payload.userId,
+      userId:     credential.userId,
       platform:   payload.platform,
       joinedAtMs: existing ? existing.data.joinedAtMs : now,
     };
+    if (movedFrom) {
+      // Reassignment is a single synchronous operation in fallback mode.
+      this.fallbackSessions.delete(sessionId);
+      this._maybeNotifyAdmin(movedFrom, this._fallbackCount(movedFrom), now);
+    }
     this.fallbackSessions.set(sessionId, { data, expireAtMs: expireAt });
 
     // Recount for this stream

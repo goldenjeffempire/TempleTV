@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { randomUUID } from "node:crypto";
 import { broadcastEngine } from "../broadcast/queue.engine.js";
 import type { BroadcastEvent } from "../broadcast/queue.engine.js";
 import { overrideBus } from "../live-overrides/override-bus.js";
@@ -54,10 +53,11 @@ export async function wsRoutes(app: FastifyInstance) {
     // This gateway is shared by TV, mobile native, and admin clients, so the
     // platform tag is left unset here — per-platform breakdowns come from the
     // dedicated /viewer-tracking/heartbeat endpoint when a client wants one.
-    const viewerSessionId = randomUUID();
-    void viewerTrackingService
-      .heartbeat({ sessionId: viewerSessionId, streamId: broadcastEngine.channelId })
-      .catch(() => undefined);
+    let viewerSessionId = "";
+    void viewerTrackingService.issueCredential().then((credential) => {
+      viewerSessionId = credential;
+      return viewerTrackingService.heartbeat({ sessionId: credential, streamId: broadcastEngine.channelId });
+    }).catch(() => undefined);
     const viewerHeartbeat = setInterval(() => {
       void viewerTrackingService
         .heartbeat({ sessionId: viewerSessionId, streamId: broadcastEngine.channelId })

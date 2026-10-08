@@ -41,8 +41,12 @@ export interface RoomMember {
     lastSentAtMs: number;
     /** Body of the last message sent — used for duplicate detection. */
     lastMsgBody: string;
+    /** Epoch-ms of the last typing frame sent (rate-limit guard). */
+    lastTypingMs: number;
+    /** Whether the server currently considers this member as typing. */
+    isTyping: boolean;
 }
-declare class ChatHub extends EventEmitter {
+export declare class ChatHub extends EventEmitter {
     private rooms;
     private _settings;
     private _pinnedMessages;
@@ -50,9 +54,14 @@ declare class ChatHub extends EventEmitter {
     private _reactions;
     /** `${messageId}:${userKey}` → emoji reacted with (one per user per message) */
     private _reactionUsers;
+    private _reactionTouched;
+    private _reactionChannels;
     private _batchQueues;
     private _batchTimer;
     constructor();
+    private _evictReactions;
+    /** Remove all ephemeral reaction state for a deleted message. */
+    removeReactions(messageId: string): void;
     private _flushBatches;
     join(channelId: string, member: RoomMember): {
         viewers: number;
@@ -70,6 +79,13 @@ declare class ChatHub extends EventEmitter {
     publishMessage(channelId: string, message: ChatMessage): void;
     publishDelete(channelId: string, messageId: string): void;
     publishModeration(channelId: string, action: "mute" | "ban", subjectKind: "user" | "ip", subjectId: string, expiresAtMs: number | null): void;
+    /**
+     * Broadcast a typing indicator to all other room members.
+     * Rate-limited: each member may broadcast at most one typing frame per
+     * TYPING_RATE_MS to prevent keystroke-level flooding. The frame is only
+     * sent to *other* members (the sender already knows their own state).
+     */
+    broadcastTyping(channelId: string, member: RoomMember, isTyping: boolean): void;
     getSettings(channelId: string): ChatSettings;
     /**
      * Update the in-memory settings cache.
@@ -130,4 +146,3 @@ export declare function createMember(args: {
     role: ChatRole;
     ipHash: string | null;
 }): RoomMember;
-export {};

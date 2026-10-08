@@ -3,6 +3,7 @@
     "name": "Temple TV",
     "slug": "temple-tv-mobile",
     "version": "1.0.71",
+    "version": "1.0.72",
     "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "templetv",
@@ -89,6 +90,7 @@
     "android": {
       "package": "com.templetv.jctm",
       "versionCode": 139,
+      "versionCode": 140,
       "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon-foreground.png",

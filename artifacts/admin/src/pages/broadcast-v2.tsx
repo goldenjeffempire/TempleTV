@@ -76,6 +76,7 @@ import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { apiBase } from "@/lib/api-base";
 import { api, HttpError } from "@/lib/api";
 import { useSSE, useSSEEvent } from "@/contexts/sse-context";
+import { useViewerTracking } from "@/hooks/useViewerTracking";
 import { useSseGatedInterval } from "@/hooks/useSseGatedInterval";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -1517,15 +1518,15 @@ interface ViewerPlatformBreakdown {
  * alongside each other so the operator can see both signals at a glance.
  */
 function LiveViewerCountCard() {
+  const { data: viewerStats } = useViewerTracking();
   const [total, setTotal] = useState<number | null>(null);
   const [breakdown, setBreakdown] = useState<ViewerPlatformBreakdown | null>(null);
   const [prevTotal, setPrevTotal] = useState<number | null>(null);
   const [flash, setFlash] = useState<"up" | "down" | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useSSEEvent("viewer-count", useCallback((data: unknown) => {
-    const d = data as { count?: number } | null;
-    const n = typeof d?.count === "number" ? d.count : null;
+  useEffect(() => {
+    const n = viewerStats?.totalCurrent ?? null;
     if (n === null) return;
     setTotal((prev) => {
       setPrevTotal(prev);
@@ -1536,7 +1537,7 @@ function LiveViewerCountCard() {
       }
       return n;
     });
-  }, []));
+  }, [viewerStats?.totalCurrent]);
 
   useSSEEvent("viewer-platform-breakdown", useCallback((data: unknown) => {
     const d = data as ViewerPlatformBreakdown | null;
@@ -2583,6 +2584,7 @@ function BroadcastV2PageInner() {
   const apiOrigin = apiBase().replace(/\/$/, "");
   const sse = useSSE();
   const qc = useQueryClient();
+  const { data: viewerStats } = useViewerTracking();
 
   // ── SSE-gated poll intervals ───────────────────────────────────────────────
   // Return `false` (no polling) while SSE is connected — push-invalidation via
@@ -4637,7 +4639,7 @@ function BroadcastV2PageInner() {
         currentItem={server?.current}
         nextTitle={server?.next?.title ?? null}
         activeQueueCount={activeQueueCount}
-        viewerCount={diagnostics?.analytics?.activeSessions ?? null}
+        viewerCount={viewerStats?.totalCurrent ?? null}
         sequence={server?.sequence}
       />
 
