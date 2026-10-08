@@ -112,3 +112,8 @@ Play's expected fingerprint before queuing. A correct local backup does not
 prove Expo's remote default uses the same key. If the connected tools cannot
 upload credentials, have the user update them securely in Expo; do not repeat
 a build with a known wrong key or generate a replacement.
+Prefer replacing the keystore within the existing default build-credentials
+record: the dashboard keystore row's Edit action supports uploading an existing
+key and preserves the default selection. This avoids creating a second record
+while accidentally leaving the rejected key selected. Check the saved fingerprint,
+not just the upload success message.
