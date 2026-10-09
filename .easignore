@@ -14,6 +14,17 @@ dist/
 .env.*
 .DS_Store
 *.log
+attached_assets/
+.agents/
+credentials.json
+google-service-account.json
+*.jks
+*.keystore
+*.p12
+*.p8
+*.key
+*.aab
+*.apk
 
 # dotslash-downloaded dev tool binaries (e.g. React Native DevTools) land in
 # a project-root .cache/ dir with read-only files on some entries, which

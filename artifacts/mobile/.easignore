@@ -32,6 +32,12 @@ ios/
 *.key
 *.mobileprovision
 
+# Diagnostic uploads and agent state are not application sources.
+attached_assets/
+.agents/
+# Local signing is not bundled as application source; EAS provisions credentials.
+credentials.json
+
 # Metro
 .metro-health-check*
 
