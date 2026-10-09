@@ -38,9 +38,9 @@ channel. Do not publish production updates to that channel.
    - **Clean test device:** the prepared APK can be installed without touching
      an existing production installation.
    - **Device with Temple TV already installed:** check version code and signing
-     identity first. The workspace declares 1.0.73 / code 141, while the supplied
+     identity first. The workspace declares 1.0.74 / code 142, while the supplied
      Play report identifies 1.0.72 / code 140. Auto-increment is disabled.
-     Before a Play upload, confirm that code 141 has not been used by another
+     Before a Play upload, confirm that code 142 has not been used by another
      upload outside the checked Expo history.
      Play's app-signing certificate can differ from the EAS upload certificate,
      even when the upload key is correct. A higher version code alone does not
