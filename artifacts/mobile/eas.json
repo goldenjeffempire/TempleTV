@@ -181,6 +181,16 @@
         "resourceClass": "medium"
       }
     },
+    "android-validation": {
+      "extends": "production-cloud",
+      "distribution": "internal",
+      "developmentClient": false,
+      "channel": "android-validation",
+      "autoIncrement": false,
+      "android": {
+        "buildType": "apk"
+      }
+    },
     "firetv": {
       "autoIncrement": true,
       "channel": "firetv",
