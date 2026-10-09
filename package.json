@@ -64,9 +64,9 @@
   },
   "pnpm": {
     "patchedDependencies": {
-      "expo-updates@57.0.22": "patches/expo-updates@57.0.22.patch",
+      "expo-updates@57.0.25": "patches/expo-updates@57.0.22.patch",
       "react-native-track-player@4.1.2": "patches/react-native-track-player@4.1.2.patch",
-      "expo-video@57.0.4": "patches/expo-video@57.0.4.patch"
+      "expo-video@57.0.5": "patches/expo-video@57.0.4.patch"
     },
     "overrides": {
       "@types/react": "19.2.14",
@@ -115,6 +115,6 @@
   "dependencies": {
     "expo": "~57.0.6",
     "react": "catalog:",
-    "react-native": "0.86.0"
+    "react-native": "0.86.3"
   }
 }

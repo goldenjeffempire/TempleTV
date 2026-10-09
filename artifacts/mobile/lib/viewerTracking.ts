@@ -13,14 +13,24 @@ const HEARTBEAT_MS = 10_000;
 const MAX_RETRY_MS = 60_000;
 const storedCredentialKey = () => `viewer_presence_${getApiBase().replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 let credentialQueue: Promise<unknown> = Promise.resolve();
+let installationSession: ViewerSession | null = null;
+let installationApiBase: string | undefined;
+export function invalidateInstallationSession(sessionId: string) {
+  if (installationSession?.sessionId === sessionId) installationSession = null;
+}
 const activeOwners = new Set<symbol>();
-function acquireInstallationSession(token?: string): Promise<ViewerSession> {
+export function acquireInstallationSession(token?: string): Promise<ViewerSession> {
   // Serialize overlapping hero/fullscreen mounts; both must use the same
   // installation capability even on first launch before storage is populated.
   const next = credentialQueue.catch(() => {}).then(async () => {
+    // Capabilities identify installations, not accounts. Sharing the credential
+    // avoids a second issuer call for foreground tracking/hero/fullscreen.
+    if (installationSession && installationApiBase === getApiBase()) return installationSession;
     const resume = await secureStorage.getItem(storedCredentialKey());
     const session = await issueViewerCredential(getApiBase(), token, resume ?? undefined);
     await secureStorage.setItem(storedCredentialKey(), session.sessionId);
+    installationSession = session;
+    installationApiBase = getApiBase();
     return session;
   });
   credentialQueue = next;
@@ -89,7 +99,7 @@ export function useMobileViewerPresence({
     const generation = generationRef.current;
     const pending = acquireInstallationSession(tokenRef.current ?? undefined).then((session) => {
       if (!mountedRef.current || generation !== generationRef.current ||
-          !enabledRef.current || !watchingRef.current) return null;
+           !enabledRef.current || !watchingRef.current || appStateRef.current !== "active") return null;
       sessionRef.current = session;
       retryMsRef.current = HEARTBEAT_MS;
       return session;
@@ -131,6 +141,7 @@ export function useMobileViewerPresence({
           return;
         }
         if (response.status === 401) {
+          invalidateInstallationSession(session.sessionId);
           sessionRef.current = null;
           clearTimers();
           retryTimerRef.current = setTimeout(() => { void heartbeatRef.current(); }, HEARTBEAT_MS);

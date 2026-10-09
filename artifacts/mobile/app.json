@@ -88,7 +88,7 @@
     },
     "android": {
       "package": "com.templetv.jctm",
-      "versionCode": 142,
+      "versionCode": 143,
       "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon-foreground.png",

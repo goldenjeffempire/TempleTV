@@ -15,7 +15,7 @@ export interface TrendPoint { ts: number; count: number }
 export interface ViewerStats {
   streamId: string; current: number; peak: number; trend: TrendPoint[]; updatedAtMs: number;
 }
-export interface AggregateStats { streams: ViewerStats[]; totalCurrent: number; totalPeak: number }
+export interface AggregateStats { streams: ViewerStats[]; totalCurrent: number; totalPeak: number; activeAppUsers: number }
 
 /**
  * Every API/daemon instance reads the same PostgreSQL leases. Fixed-cost
@@ -30,7 +30,7 @@ export class ViewerTrackingService extends EventEmitter {
   private refreshing?: Promise<void>;
   private dirty = false;
   private healthy = false;
-  private stats: AggregateStats = { streams: [], totalCurrent: 0, totalPeak: 0 };
+  private stats: AggregateStats = { streams: [], totalCurrent: 0, totalPeak: 0, activeAppUsers: 0 };
   private trends = new Map<string, TrendPoint[]>();
   private lastPrune = 0;
   constructor(private readonly store = new ViewerPresenceStore(undefined, env.VIEWER_TRACKING_SESSION_TTL_S)) {
@@ -86,6 +86,11 @@ export class ViewerTrackingService extends EventEmitter {
     this.scheduleRefresh();
   }
 
+  async appHeartbeat(sessionId: string, sequence: number, active: boolean): Promise<void> {
+    await this.store.recordApp(sessionId, sequence, active);
+    this.scheduleRefresh();
+  }
+
   private scheduleRefresh(): void {
     this.dirty = true;
     if (this.refreshTimer) return;
@@ -104,6 +109,7 @@ export class ViewerTrackingService extends EventEmitter {
       streams,
       totalCurrent: streams.reduce((n, s) => n + s.current, 0),
       totalPeak: streams.reduce((n, s) => n + s.peak, 0),
+      activeAppUsers: this.stats.activeAppUsers,
     };
   }
 
@@ -124,6 +130,7 @@ export class ViewerTrackingService extends EventEmitter {
 
   private async reconcile(): Promise<void> {
     const rows = await this.store.counts();
+    const activeAppUsers = await this.store.appCount();
     const now = Date.now();
     if (!rows.some(s => s.streamId === broadcastEngine.channelId)) {
       rows.push({ streamId: broadcastEngine.channelId, current: 0, peak: 0 });
@@ -140,8 +147,12 @@ export class ViewerTrackingService extends EventEmitter {
       streams,
       totalCurrent: streams.reduce((n, s) => n + s.current, 0),
       totalPeak: streams.reduce((n, s) => n + s.peak, 0),
+      activeAppUsers,
     };
     this.healthy = true;
+    if (!wasHealthy || previous.activeAppUsers !== activeAppUsers) {
+      adminEventBus.push("viewer-count-updated", { activeAppUsers, ts: now });
+    }
     for (const stream of streams) {
       const changed = previous.streams.find(s => s.streamId === stream.streamId)?.current !== stream.current;
       if (stream.streamId === broadcastEngine.channelId) broadcastEngine.setViewerCount(stream.current);

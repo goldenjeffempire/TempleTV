@@ -1,5 +1,5 @@
 import React, { memo } from "react";
-import { Image as ExpoImage } from "expo-image";
+import { RemoteImage } from "@/components/RemoteImage";
 import { Platform, Pressable, Share, StyleSheet, Text, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
@@ -14,8 +14,6 @@ const SERMON_CARD_VERTICAL_THUMB_H = Math.round(SERMON_CARD_VERTICAL_WIDTH / CAR
 const SERMON_CARD_HORIZ_THUMB_W = 120;
 const SERMON_CARD_HORIZ_THUMB_H = Math.round(SERMON_CARD_HORIZ_THUMB_W / CARD_ASPECT_RATIO);
 
-const PLACEHOLDER = require("@/assets/images/sermon-placeholder.png");
-
 interface SermonCardProps {
   sermon: Sermon;
   onPress: (sermon: Sermon) => void;
@@ -26,13 +24,11 @@ interface SermonCardProps {
 
 const SmartImage = memo(function SmartImage({ uri, style }: { uri: string; style: object }) {
   return (
-    <ExpoImage
-      source={uri || PLACEHOLDER}
-      placeholder={PLACEHOLDER}
+    <RemoteImage
+      uri={uri}
       contentFit="cover"
       transition={150}
       style={style}
-      cachePolicy="disk"
     />
   );
 });

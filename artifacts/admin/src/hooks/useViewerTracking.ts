@@ -31,6 +31,7 @@ export interface ViewerTrackingData {
   streams:      StreamViewerStats[];
   totalCurrent: number;
   totalPeak:    number;
+  activeAppUsers: number;
 }
 
 const QUERY_KEY = (streamId?: string) =>

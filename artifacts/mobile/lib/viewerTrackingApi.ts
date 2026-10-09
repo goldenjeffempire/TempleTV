@@ -86,3 +86,11 @@ export async function leaveViewerSession(
     sequence: nextViewerSequence(),
   }).catch(() => {});
 }
+
+export async function sendAppPresence(apiBase: string, session: ViewerSession, active: boolean): Promise<Response> {
+  return jsonRequest(apiBase, "/api/viewer-tracking/app/heartbeat", {
+    sessionId: session.sessionId,
+    sequence: nextViewerSequence(),
+    active,
+  });
+}

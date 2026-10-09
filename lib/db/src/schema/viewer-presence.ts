@@ -25,3 +25,11 @@ export const viewerPresenceMetrics = pgTable("viewer_presence_metrics", {
   streamId: text("stream_id").primaryKey(),
   peak: integer("peak").notNull().default(0),
 });
+
+export const appPresenceLeases = pgTable("app_presence_leases", {
+  tokenHash: text("token_hash").primaryKey()
+    .references(() => viewerPresenceCredentials.tokenHash, { onDelete: "cascade" }),
+  sequence: bigint("sequence", { mode: "number" }).notNull(),
+  active: boolean("active").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, t => [index("app_presence_live_expiry_idx").on(t.expiresAt).where(sql`${t.active} = true`)]);

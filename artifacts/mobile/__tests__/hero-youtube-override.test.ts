@@ -138,7 +138,7 @@ describe("native YouTube player surface layout", () => {
     assert.equal(source.includes('backgroundColor: "rgba(0,0,0,0.88)"'), false);
     assert.equal(source.includes('backgroundColor: "rgba(0,0,0,0.90)"'), false);
     assert.equal(
-      (source.match(/resizeMode="cover"/g) ?? []).length,
+      (source.match(/style=\{styles\.thumbnail\} contentFit="cover"/g) ?? []).length,
       2,
       "loading and fallback thumbnails must fill the player rectangle",
     );

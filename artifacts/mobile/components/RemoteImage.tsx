@@ -16,7 +16,8 @@ export function RemoteImage({ uri, ...props }: Props) {
       allowDownscaling
       contentFit="cover"
       {...props}
-      source={failedUri === uri ? PLACEHOLDER : { uri }}
+      recyclingKey={uri}
+      source={!uri || failedUri === uri ? PLACEHOLDER : { uri }}
       placeholder={PLACEHOLDER}
       onError={() => setFailedUri(uri)}
     />

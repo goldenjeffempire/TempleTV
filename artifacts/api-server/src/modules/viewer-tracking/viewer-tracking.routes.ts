@@ -54,6 +54,7 @@ const AggregateStatsSchema = z.object({
   streams:      z.array(ViewerStatsSchema),
   totalCurrent: z.number(),
   totalPeak:    z.number(),
+  activeAppUsers: z.number().int().nonnegative(),
 });
 
 const HeartbeatResponseSchema = z.object({
@@ -79,6 +80,35 @@ export async function viewerTrackingRoutes(app: FastifyInstance) {
     sessionId: z.string(),
     streamId: z.literal(supportedStream),
     nextSequence: z.number().int().nonnegative(),
+  });
+
+  r.post("/app/heartbeat", {
+    config: { rateLimit: { max: 1200, timeWindow: "1 minute" } },
+    schema: {
+      tags: ["viewer-tracking"],
+      summary: "Renew or withdraw a foreground app installation lease",
+      body: z.object({
+        sessionId: z.string().min(32).max(128),
+        sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+        active: z.boolean(),
+      }),
+      response: {
+        204: z.null(),
+        401: z.object({ error: z.string() }),
+        429: z.object({ error: z.string() }),
+        503: UnavailableSchema,
+      },
+    },
+  }, async (req, reply) => {
+    try {
+      await viewerTrackingService.appHeartbeat(req.body.sessionId, req.body.sequence, req.body.active);
+    } catch (err) {
+      if (err instanceof InvalidViewerCredential) {
+        return reply.code(401).send({ error: "Invalid or expired installation credential" });
+      }
+      throw new ServiceUnavailableError("App presence is temporarily unavailable");
+    }
+    return reply.code(204).send(null);
   });
 
   r.post("/issue", {

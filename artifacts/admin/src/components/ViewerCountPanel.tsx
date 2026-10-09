@@ -2,7 +2,7 @@
  * ViewerCountPanel
  *
  * Real-time viewer tracking card for the Master Control page.
- * Powered by the viewer-tracking heartbeat system (Redis ZSET backend).
+ * Powered by durable PostgreSQL installation leases.
  *
  * Shows:
  *  - Current live viewer count across all streams (or a specific streamId)

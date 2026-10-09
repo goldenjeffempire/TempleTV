@@ -32,7 +32,7 @@ describe("Android release reliability regression contracts", () => {
 
   it("tracks the native release-timeout patch without moving ExoPlayer off its looper", () => {
     const root = JSON.parse(source("../../package.json"));
-    const patchPath = root.pnpm.patchedDependencies["expo-video@57.0.4"];
+    const patchPath = root.pnpm.patchedDependencies["expo-video@57.0.5"];
     assert.equal(patchPath, "patches/expo-video@57.0.4.patch");
     const patch = source(`../../${patchPath}`);
     assert.match(patch, /setLooper\(context\.mainLooper\)/);
