@@ -1,7 +1,9 @@
 // Expo Config Plugin — Android TV / Amazon Fire TV Support
 // Adds <uses-feature android:name="android.software.leanback" android:required="false"/>
 // and <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
-// plus a LEANBACK_LAUNCHER intent filter to the main activity.
+// Playback does not require a microphone. Keep it optional so library recording
+// permissions cannot implicitly exclude TVs and other microphone-free devices.
+// Also adds a LEANBACK_LAUNCHER intent filter to the main activity.
 
 const { withAndroidManifest } = require("@expo/config-plugins");
 
@@ -18,8 +20,12 @@ module.exports = function androidTVPlugin(config) {
     const features = manifest.manifest["uses-feature"];
 
     const ensureFeature = (name, required) => {
-      const exists = features.some((f) => f.$?.["android:name"] === name);
-      if (!exists) {
+      const existing = features.filter((f) => f.$?.["android:name"] === name);
+      if (existing.length > 0) {
+        for (const feature of existing) {
+          feature.$["android:required"] = String(required);
+        }
+      } else {
         features.push({ $: { "android:name": name, "android:required": String(required) } });
       }
     };
@@ -28,6 +34,7 @@ module.exports = function androidTVPlugin(config) {
     ensureFeature("android.hardware.touchscreen", false);
     ensureFeature("android.hardware.touchscreen.multitouch", false);
     ensureFeature("android.hardware.wifi", false);
+    ensureFeature("android.hardware.microphone", false);
 
     // ── LEANBACK_LAUNCHER intent filter ───────────────────────────────────────
     const application = manifest.manifest.application?.[0];

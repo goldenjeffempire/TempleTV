@@ -147,3 +147,4 @@
 - [Android reliability diagnosis](android-reliability-diagnostics.md) — check method-level API gates; browser navigation checks do not establish installed Android release behavior.
 - [Node startup profiling](node-startup-profiling.md) — preserve per-thread evidence; quiet telemetry registration can still trigger expensive source-map work.
 - [Expo preview capture timing](expo-preview-startup-capture.md) — screenshots can precede font readiness; a blank early capture is not proof of a render failure.
+- [Android device coverage](android-device-coverage.md) — broad form-factor goal; library removal can expose recording permissions and implicitly exclude microphone-free devices.
