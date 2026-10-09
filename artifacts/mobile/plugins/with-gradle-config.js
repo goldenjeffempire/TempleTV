@@ -37,6 +37,11 @@
 //     to honour all ProGuard rules written in the -keep style.  This is the AGP 8+
 //     default for new projects but not for projects migrated from earlier AGP.
 //
+//   android.r8.optimizedResourceShrinking=true
+//     Opts AGP 8.12/8.13 into integrated code and resource shrinking. Release
+//     minification and resource shrinking remain enabled by expo-build-properties.
+//     This uses the current toolchain; it does not require an AGP 9 upgrade.
+//
 //   android.enableJetifier=false
 //     Disables the Jetifier pre-processing step that rewrites legacy Support Library
 //     imports to AndroidX. All dependencies in React Native 0.86 / Expo SDK 57 are
@@ -89,6 +94,10 @@ module.exports = function withGradleConfig(config) {
     // Library consumer rules guard JNI/reflection entry points. App rules must
     // stay narrow; validate every release after changes to the dependency graph.
     upsert("android.enableR8.fullMode", "true");
+
+    // AGP 8.12+ supports this opt-in; AGP 9 enables it by default.
+    // https://developer.android.com/build/shrink-code
+    upsert("android.r8.optimizedResourceShrinking", "true");
 
     // ── Non-transitive R classes (AGP 8.x best practice) ─────────────────────
     // Each module's R.java only references its OWN resources, not the merged

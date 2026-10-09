@@ -114,6 +114,51 @@ describe("Android release reliability regression contracts", () => {
     assert.doesNotMatch(props.extraProguardRules, /-keep (?:class|interface) [\w.]+\.\*\*/);
     assert.doesNotMatch(props.extraProguardRules, /-dontwarn|expo\.modules\.av|com\.brentvatne/);
     assert.match(props.extraProguardRules, /allowoptimization,allowobfuscation/);
+    assert.ok(config.plugins.includes("./plugins/with-gradle-config.js"));
+  });
+
+  it("generates optimized resource shrinking and R8 full mode with the Gradle plugin", async () => {
+    const require = createRequire(import.meta.url);
+    const plugin = require("../plugins/with-gradle-config.js");
+    const config = plugin({ name: "R8 regression", slug: "r8-regression" });
+    const result = await config.mods.android.gradleProperties({
+      ...config,
+      modRequest: { platform: "android", modName: "gradleProperties", projectRoot: process.cwd() },
+      modResults: [],
+    });
+    for (const key of ["android.r8.optimizedResourceShrinking", "android.enableR8.fullMode"]) {
+      const matching = result.modResults.filter((p: { type: string; key?: string }) =>
+        p.type === "property" && p.key === key);
+      assert.equal(matching.length, 1);
+      assert.equal(matching[0].value, "true");
+    }
+  });
+
+  it("overrides a disabled shrinking flag idempotently and preserves unrelated properties", async () => {
+    const require = createRequire(import.meta.url);
+    const plugin = require("../plugins/with-gradle-config.js");
+    const config = plugin({ name: "R8 regression", slug: "r8-regression" });
+    const input = {
+      ...config,
+      modRequest: { platform: "android", modName: "gradleProperties", projectRoot: process.cwd() },
+      modResults: [
+        { type: "comment", value: "Preserve this comment" },
+        { type: "property", key: "custom.setting", value: "unchanged" },
+        { type: "property", key: "android.r8.optimizedResourceShrinking", value: "false" },
+      ],
+    };
+    const first = await config.mods.android.gradleProperties(input);
+    const expected = JSON.parse(JSON.stringify(first.modResults));
+    const second = await config.mods.android.gradleProperties(first);
+    assert.deepEqual(second.modResults, expected);
+    const matching = second.modResults.filter((p: { type: string; key?: string }) =>
+      p.type === "property" && p.key === "android.r8.optimizedResourceShrinking");
+    assert.equal(matching.length, 1);
+    assert.equal(matching[0].value, "true");
+    assert.ok(second.modResults.some((p: { type: string; key?: string; value?: string }) =>
+      p.key === "custom.setting" && p.value === "unchanged"));
+    assert.ok(second.modResults.some((p: { type: string; value?: string }) =>
+      p.type === "comment" && p.value === "Preserve this comment"));
   });
 
   it("removes only known blanket template rules without touching consumer rules", () => {
