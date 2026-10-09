@@ -5,6 +5,20 @@ description: How Android 15 edge-to-edge compliance and Picture-in-Picture were 
 
 ## Edge-to-edge (Android 15 / API 35) — current correct approach
 
+### Google Play warning interpretation
+
+Do not promise that an app-theme change or an `enableEdgeToEdge()` call will eliminate Google Play's deprecated-API warning. Compatibility calls inside compiled React Native, AndroidX, Material, and Expo dependencies can still be reported.
+
+**Why:** The Play report names dependency entry points as well as obfuscated classes; modern app-owned configuration alone does not establish that the signed bundle contains no deprecated calls.
+
+**How to apply:** Match the report to its exact release and use that release's R8 mapping for obfuscated entry points before patching dependencies. Check the resolved Expo-compatible Gradle toolchain before changing AGP. Treat older claims below about clearing Play warnings as implementation intent, not verification.
+
+When an Expo Android bundle is available, check its embedded `BUNDLE-METADATA/com.android.tools.build.obfuscation/proguard.map` before asking the user to upload a mapping file.
+
+**Why:** The bundle's own mapping established that some Play "image downloading" locations were video data sources, while others were existing image-library decoders or intentional crop processing. Replacing them indiscriminately would be incorrect.
+
+**How to apply:** Retrieve the matching completed build through Expo, extract only its mapping, and identify the original classes before deciding which app-owned paths need changes.
+
 **Why:** Apps targeting API 35+ have edge-to-edge enforced automatically. The old theme-attribute approach (`android:statusBarColor`, `android:navigationBarColor`, etc.) is deprecated in API 35 and flagged by Google Play as "deprecated APIs or parameters for edge-to-edge".
 
 **Two-part fix (both plugins required):**
