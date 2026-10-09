@@ -173,4 +173,77 @@ describe("Android release reliability regression contracts", () => {
     assert.equal(removeTemplateKeeps(input), libraryRule);
     assert.equal(removeTemplateKeeps(libraryRule), libraryRule);
   });
+
+  it("sets RN edge-to-edge state before Activity startup on Android 15+ only", async () => {
+    const require = createRequire(import.meta.url);
+    const plugin = require("../plugins/with-enable-edge-to-edge.js");
+    const config = plugin({ name: "Window regression", slug: "window-regression" });
+    for (const argument of ["null", "savedInstanceState"]) {
+      const original = `package com.templetv.jctm
+import expo.modules.ReactActivityDelegateWrapper
+class MainActivity {
+  override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(${argument})
+  }
+}`;
+      const first = await config.mods.android.mainActivity({
+        ...config,
+        modRequest: { platform: "android", modName: "mainActivity", projectRoot: process.cwd() },
+        modResults: { language: "kt", contents: original },
+      });
+      const output = first.modResults.contents;
+      assert.match(output, /if \(android\.os\.Build\.VERSION\.SDK_INT >= 35\) \{\s+setEdgeToEdgeFeatureFlagOn\(\)/);
+      assert.match(output, /import com\.facebook\.react\.views\.view\.setEdgeToEdgeFeatureFlagOn/);
+      assert.ok(output.indexOf("setEdgeToEdgeFeatureFlagOn()") < output.indexOf("enableEdgeToEdge()"));
+      assert.ok(output.indexOf("enableEdgeToEdge()") < output.indexOf("super.onCreate("));
+      const second = await config.mods.android.mainActivity(first);
+      assert.equal(second.modResults.contents, output);
+    }
+    assert.match(source("node_modules/react-native/ReactAndroid/src/main/java/com/facebook/react/views/view/WindowUtil.kt"),
+      /public fun setEdgeToEdgeFeatureFlagOn\(\)/);
+  });
+
+  it("fails closed when the generated Kotlin Activity no longer matches the template", async () => {
+    const require = createRequire(import.meta.url);
+    const plugin = require("../plugins/with-enable-edge-to-edge.js");
+    const config = plugin({ name: "Window regression", slug: "window-regression" });
+    await assert.rejects(config.mods.android.mainActivity({
+      ...config,
+      modRequest: { platform: "android", modName: "mainActivity", projectRoot: process.cwd() },
+      modResults: { language: "kt", contents: "package changed\nclass MainActivity {}" },
+    }), /MainActivity onCreate pattern changed/);
+  });
+
+  it("does not ship the unused Cropper activity or request unused photo permissions", () => {
+    const pkg = JSON.parse(source("package.json"));
+    const config = JSON.parse(source("app.json")).expo;
+    assert.equal(pkg.dependencies["expo-image-picker"], undefined);
+    assert.ok(!config.plugins.some((p: string | string[]) =>
+      (Array.isArray(p) ? p[0] : p) === "expo-image-picker"));
+  });
+
+  it("uses cached, downsampled Expo images in YouTube and full-player posters", () => {
+    for (const file of ["components/YoutubePlayer.native.tsx", "components/YoutubePlayer.web.tsx", "app/player.tsx"]) {
+      const text = source(file);
+      assert.match(text, /import \{ Image \} from "expo-image"/);
+      assert.match(text, /cachePolicy="memory-disk"/);
+      assert.match(text, /allowDownscaling/);
+      assert.doesNotMatch(text, /resizeMode=/);
+    }
+  });
+
+  it("uses a lifecycle-cleared image library instead of raw reload-screen downloads and decoding", () => {
+    const native = source("node_modules/expo-updates/android/src/main/java/expo/modules/updates/reloadscreen/ReloadScreenView.kt");
+    const gradle = source("node_modules/expo-updates/android/build.gradle");
+    assert.match(gradle, /implementation "com\.github\.bumptech\.glide:glide:5\.0\.5"/);
+    assert.match(source("node_modules/expo-image/android/build.gradle"), /GLIDE_VERSION = "5\.0\.5"/);
+    assert.match(native, /Glide\.with\(context\.applicationContext\)/);
+    assert.match(native, /diskCacheStrategy\(DiskCacheStrategy\.AUTOMATIC\)/);
+    assert.match(native, /timeout\(15_000\)/);
+    assert.match(native, /this\.imageView !== imageView/);
+    assert.match(native, /imageView = null[\s\S]*currentConfiguration = configuration/);
+    assert.match(native, /onLoadFailed[\s\S]*handleImageLoadFailure/);
+    assert.equal((native.match(/\.clear\(it\)/g) ?? []).length, 2);
+    assert.doesNotMatch(native, /BitmapFactory|HttpURLConnection|scope\.launch|java\.net\.URL/);
+  });
 });

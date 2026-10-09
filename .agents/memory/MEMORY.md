@@ -146,3 +146,4 @@
 - [Mobile Node test import resolution](mobile-node-test-import-resolution.md) — local TypeScript modules in Node tests must use dynamic `.js` imports; static imports fail under the current tsx loader.
 - [Android reliability diagnosis](android-reliability-diagnostics.md) — check method-level API gates; browser navigation checks do not establish installed Android release behavior.
 - [Node startup profiling](node-startup-profiling.md) — preserve per-thread evidence; quiet telemetry registration can still trigger expensive source-map work.
+- [Expo preview capture timing](expo-preview-startup-capture.md) — screenshots can precede font readiness; a blank early capture is not proof of a render failure.

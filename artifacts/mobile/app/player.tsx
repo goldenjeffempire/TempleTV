@@ -36,7 +36,6 @@ import {
   AppState,
   type AppStateStatus,
   BackHandler,
-  Image,
   Modal,
   Platform,
   Pressable,
@@ -47,6 +46,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
+import { Image } from "expo-image";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
@@ -1570,7 +1570,9 @@ export default function PlayerScreen() {
               <Image
                 source={thumbnailUrl ? { uri: thumbnailUrl } : PLACEHOLDER}
                 style={[StyleSheet.absoluteFill, { opacity: 0.35 }]}
-                resizeMode="contain"
+                contentFit="contain"
+                cachePolicy="memory-disk"
+                allowDownscaling
               />
               <Feather name="alert-triangle" size={28} color="#fff" style={{ marginBottom: 10 }} />
               <Text style={styles.noSourceText}>This video is unavailable</Text>
@@ -1590,7 +1592,9 @@ export default function PlayerScreen() {
             <Image
               source={thumbnailUrl ? { uri: thumbnailUrl } : PLACEHOLDER}
               style={StyleSheet.absoluteFill}
-              resizeMode="contain"
+              contentFit="contain"
+              cachePolicy="memory-disk"
+              allowDownscaling
             />
           )}
 
@@ -2318,7 +2322,9 @@ export default function PlayerScreen() {
                 <Image
                   source={thumbnailUrl ? { uri: thumbnailUrl } : PLACEHOLDER}
                   style={[StyleSheet.absoluteFill, { opacity: 0.35 }]}
-                  resizeMode="contain"
+                  contentFit="contain"
+                  cachePolicy="memory-disk"
+                  allowDownscaling
                 />
                 <Feather name="alert-triangle" size={28} color="#fff" style={{ marginBottom: 10 }} />
                 <Text style={styles.noSourceText}>This video is unavailable</Text>
@@ -2338,7 +2344,9 @@ export default function PlayerScreen() {
               <Image
                 source={thumbnailUrl ? { uri: thumbnailUrl } : PLACEHOLDER}
                 style={StyleSheet.absoluteFill}
-                resizeMode="contain"
+                contentFit="contain"
+                cachePolicy="memory-disk"
+                allowDownscaling
               />
             )}
           </View>

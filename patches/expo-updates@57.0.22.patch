@@ -1,0 +1,128 @@
+diff --git a/android/build.gradle b/android/build.gradle
+--- a/android/build.gradle
++++ b/android/build.gradle
+@@ -154,6 +154,7 @@
+   implementation project(':expo-json-utils')
+   implementation project(':expo-eas-client')
+   implementation "com.facebook.react:react-android"
++  implementation "com.github.bumptech.glide:glide:5.0.5"
+ 
+   def room_version = "2.6.1"
+   def mockk_version = "1.13.11"
+diff --git a/android/src/main/java/expo/modules/updates/reloadscreen/ReloadScreenView.kt b/android/src/main/java/expo/modules/updates/reloadscreen/ReloadScreenView.kt
+--- a/android/src/main/java/expo/modules/updates/reloadscreen/ReloadScreenView.kt
++++ b/android/src/main/java/expo/modules/updates/reloadscreen/ReloadScreenView.kt
+@@ -1,25 +1,18 @@
+ package expo.modules.updates.reloadscreen
+ 
+ import android.content.Context
+-import android.graphics.BitmapFactory
+ import android.graphics.Color
++import android.graphics.drawable.Drawable
++import com.bumptech.glide.Glide
++import com.bumptech.glide.load.engine.DiskCacheStrategy
++import com.bumptech.glide.request.target.BitmapImageViewTarget
+ import android.net.Uri
+ import android.util.AttributeSet
+-import android.util.Base64
+ import android.view.Gravity
+ import android.view.View
+ import android.widget.FrameLayout
+ import android.widget.ImageView
+ import android.widget.ProgressBar
+-import kotlinx.coroutines.CancellationException
+-import kotlinx.coroutines.CoroutineScope
+-import kotlinx.coroutines.Dispatchers
+-import kotlinx.coroutines.cancel
+-import kotlinx.coroutines.launch
+-import kotlinx.coroutines.withContext
+-import java.io.InputStream
+-import java.net.HttpURLConnection
+-import java.net.URL
+ 
+ class ReloadScreenView @JvmOverloads constructor(
+   context: Context,
+@@ -29,13 +22,15 @@
+   private var progressBar: ProgressBar? = null
+   private var imageView: ImageView? = null
+   private var currentConfiguration: ReloadScreenConfiguration? = null
+-  private val scope = CoroutineScope(Dispatchers.IO)
+ 
+   init {
+     layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+   }
+ 
+   fun updateConfiguration(configuration: ReloadScreenConfiguration) {
++    imageView?.let { Glide.with(context.applicationContext).clear(it) }
++    imageView = null
++    progressBar = null
+     currentConfiguration = configuration
+     removeAllViews()
+     if (configuration.image != null && configuration.imageFullScreen) {
+@@ -104,45 +99,21 @@
+   }
+ 
+   private fun loadImageFromUrl(uri: Uri, imageView: ImageView) {
+-    scope.launch {
+-      try {
+-        val bitmap = when (uri.scheme) {
+-          "http", "https" -> {
+-            val url = URL(uri.toString())
+-            val connection = url.openConnection() as HttpURLConnection
+-            connection.doInput = true
+-            connection.connect()
+-            val inputStream: InputStream = connection.inputStream
+-            BitmapFactory.decodeStream(inputStream)
+-          }
+-          "file" -> {
+-            BitmapFactory.decodeFile(uri.path)
+-          }
+-          "data" -> {
+-            val dataString = uri.toString()
+-            if (dataString.startsWith("data:image/")) {
+-              val base64String = dataString.substring(dataString.indexOf(",") + 1)
+-              val decodedBytes = Base64.decode(base64String, Base64.DEFAULT)
+-              BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+-            } else {
+-              null
++    imageView.post {
++      if (!isAttachedToWindow || this.imageView !== imageView) return@post
++      Glide.with(context.applicationContext)
++        .asBitmap()
++        .load(uri.toString())
++        .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
++        .timeout(15_000)
++        .into(object : BitmapImageViewTarget(imageView) {
++          override fun onLoadFailed(errorDrawable: Drawable?) {
++            super.onLoadFailed(errorDrawable)
++            if (this@ReloadScreenView.imageView === imageView) {
++              handleImageLoadFailure()
+             }
+           }
+-          else -> null
+-        }
+-
+-        withContext(Dispatchers.Main) {
+-          bitmap?.let {
+-            imageView.setImageBitmap(it)
+-          } ?: handleImageLoadFailure()
+-        }
+-      } catch (e: CancellationException) {
+-        throw e
+-      } catch (e: Exception) {
+-        withContext(Dispatchers.Main) {
+-          handleImageLoadFailure()
+-        }
+-      }
++        })
+     }
+   }
+ 
+@@ -160,6 +131,6 @@
+ 
+   override fun onDetachedFromWindow() {
+     super.onDetachedFromWindow()
+-    scope.cancel()
++    imageView?.let { Glide.with(context.applicationContext).clear(it) }
+   }
+ }

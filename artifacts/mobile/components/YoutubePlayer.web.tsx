@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
-  Image,
   Linking,
   Platform,
   Pressable,
@@ -10,6 +9,7 @@ import {
   Text,
   View,
 } from "react-native";
+import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
 import { useColors } from "@/hooks/useColors";
 import { usePlayer } from "@/context/PlayerContext";
@@ -177,7 +177,7 @@ function WebAudioModeCard({
         <View style={webAudioStyles.discOuter}>
           <View style={webAudioStyles.discMid}>
             {thumb ? (
-              <Image source={{ uri: thumb }} style={webAudioStyles.discImage} />
+              <Image source={{ uri: thumb }} style={webAudioStyles.discImage} cachePolicy="memory-disk" allowDownscaling />
             ) : (
               <View style={[webAudioStyles.discImage, { backgroundColor: "rgba(106,13,173,0.2)", alignItems: "center", justifyContent: "center" }]}>
                 <Feather name="radio" size={32} color="rgba(106,13,173,0.6)" />

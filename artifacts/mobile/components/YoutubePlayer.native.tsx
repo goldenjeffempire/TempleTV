@@ -4,7 +4,6 @@ import {
   Animated,
   AppState,
   type AppStateStatus,
-  Image,
   Linking,
   Platform,
   Pressable,
@@ -13,6 +12,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
+import { Image } from "expo-image";
 import { Feather } from "@expo/vector-icons";
 import * as WebBrowser from "expo-web-browser";
 import * as Haptics from "expo-haptics";
@@ -126,7 +126,7 @@ function AudioModeCard({
         <View style={audioStyles.discOuter}>
           <View style={audioStyles.discMid}>
             {thumb ? (
-              <Image source={{ uri: thumb }} style={audioStyles.discImage} />
+              <Image source={{ uri: thumb }} style={audioStyles.discImage} cachePolicy="memory-disk" allowDownscaling />
             ) : (
               <View style={[audioStyles.discImage, { backgroundColor: "rgba(106,13,173,0.2)", alignItems: "center", justifyContent: "center" }]}>
                 <Feather name="radio" size={28} color="rgba(106,13,173,0.6)" />
@@ -502,7 +502,7 @@ export function YoutubePlayer({
           style={[styles.transitionOverlay, { opacity: transitionOpacity, pointerEvents: "none" }]}
         >
           {thumb && (
-            <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="cover" />
+            <Image source={{ uri: thumb }} style={styles.thumbnail} contentFit="cover" cachePolicy="memory-disk" allowDownscaling />
           )}
           <View style={[styles.loadingCenter, { backgroundColor: "rgba(0,0,0,0.5)" }]}>
             <ActivityIndicator color={c.primary} size="large" />
@@ -518,7 +518,7 @@ export function YoutubePlayer({
   return (
     <View style={styles.container}>
       {thumb && (
-        <Image source={{ uri: thumb }} style={styles.thumbnail} resizeMode="cover" />
+        <Image source={{ uri: thumb }} style={styles.thumbnail} contentFit="cover" cachePolicy="memory-disk" allowDownscaling />
       )}
       <View style={[styles.overlay, { backgroundColor: "rgba(0,0,0,0.38)" }]}>
         <Pressable

@@ -186,14 +186,6 @@
         }
       ],
       [
-        "expo-image-picker",
-        {
-          "photosPermission": "Temple TV needs access to your photo library so you can choose a profile picture.",
-          "cameraPermission": false,
-          "microphonePermission": false
-        }
-      ],
-      [
         "expo-secure-store",
         {
           "faceIDPermission": "Allow Temple TV to use Face ID to keep your account signed in securely."
