@@ -13,7 +13,7 @@ After the split:
 - Daemon: `RUN_MODE=broadcast`, `PORT=9000`. Owns the queue, all workers, SSE/WS frames.
 - API: `RUN_MODE=all` + `BROADCAST_DAEMON_URL` set → `ensureBroadcastV2Started()` is skipped (`main.ts:798`). All `/broadcast-v2` traffic proxied via `daemon-proxy.ts`.
 
-**Why:** API deployments restart the `web` service. A `pserv` is independent — it only redeploys when `buildFilter.paths` includes a changed file (broadcast engine code, not admin/TV/mobile changes).
+**Why:** Restarting only the API web service does not restart the private daemon. This is separate from the repository deployment-trigger policy below: every pushed main-branch commit currently triggers daemon deployment too.
 
 ## fromService wiring in render.yaml
 
@@ -74,3 +74,13 @@ The memory watchdog triggers graceful SIGTERM (not OOM kill), so `flushCheckpoin
 - Do not set `RUN_MODE=broadcast` on the API service (it would start the engine there again)
 - Do not remove the `if (!env.BROADCAST_DAEMON_URL)` guard in `main.ts:798`
 - Do not rename the daemon service (the `fromService.name` must match exactly)
+
+## Free API private-network diagnosis
+
+Do not assume that the API's Free instance type prevents it from calling the paid private daemon.
+
+**Why:** Render's official Free and private-network documentation allows Free web services to send private-network requests, although they cannot receive them. Services must be in the same workspace and region.
+
+**How to apply:** Check the actual daemon service status, its own startup logs, internal host/port wiring, and workspace/region before suggesting a paid-plan change. An API-process `broadcast.started=false` is not proof that the separate daemon is stopped.
+
+Sources: https://render.com/docs/free and https://render.com/docs/private-network.
