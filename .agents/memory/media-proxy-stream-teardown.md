@@ -5,6 +5,12 @@ description: Proxying a fetch web ReadableStream through Fastify must explicitly
 
 ## The rule
 
+For long-lived SSE responses, use the outgoing response's close event to detect a departed client, not the incoming request's close/destroyed state. Keep upstream abort propagation attached for the entire response, and wait for drain when a streaming write returns false.
+
+**Why:** Modern Node can close/destroy the incoming GET message after request completion while the SSE response remains open. Treating that as disconnection creates a reconnect loop; treating a full output buffer as disconnection does the same for slow clients.
+
+**How to apply:** Test real HTTP streams across GET completion, client cancellation, and backpressure. Preserve bounded slow-client safeguards without closing on a single full-buffer write.
+
 Any route that streams a `fetch()` web `ReadableStream` body to the client (e.g. `media-proxy.routes.ts` sending `upstream.body`) MUST tear the upstream down when the client disconnects mid-stream:
 
 1. Convert to a Node stream you own: `Readable.fromWeb(upstream.body)`.

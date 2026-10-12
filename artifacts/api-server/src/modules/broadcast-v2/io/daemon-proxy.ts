@@ -25,6 +25,7 @@ import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
 import { startDaemonLivenessMonitor, stopDaemonLivenessMonitor } from "../engine/daemon-liveness-monitor.js";
 import { validateDaemonHealthBody } from "./daemon-health-contract.js";
+import { bindSseClientLifetime, writeSseChunk } from "./sse-client-lifetime.js";
 
 /** Build the full daemon URL for a given absolute path. */
 function daemonUrl(path: string): string {
@@ -84,10 +85,11 @@ async function sseDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promise
   const headers = proxyRequestHeaders(req);
 
   // clientAbort fires when the client disconnects — aborts all pending retries
-  const clientAbort = new AbortController();
-  const onClientClose = () => clientAbort.abort();
-  req.raw.on("close", onClientClose);
-  req.raw.on("error", onClientClose);
+  const lifetime = bindSseClientLifetime(req.raw, reply.raw);
+  const clientAbort = lifetime.controller;
+  let disconnectUpstream: (() => void) | undefined;
+
+  try {
 
   const retryDeadline = Date.now() + SSE_RETRY_MAX_MS;
   let headersWritten = false;
@@ -99,7 +101,9 @@ async function sseDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promise
     if (headersWritten) return true;
     headersWritten = true;
     try {
+      reply.hijack();
       reply.raw.writeHead(200, SSE_HEADERS);
+      reply.raw.write("retry: 5000\n\n");
       return true;
     } catch {
       return false;
@@ -120,7 +124,14 @@ async function sseDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promise
       upstreamRes = null;
     } finally {
       clearTimeout(probeTimeout);
-      clientAbort.signal.removeEventListener("abort", onClientAbort);
+      if (upstreamRes?.ok && upstreamRes.body) {
+        // Keep disconnect cancellation attached throughout the stream, not
+        // just until fetch resolves its response headers.
+        disconnectUpstream = () => clientAbort.signal.removeEventListener("abort", onClientAbort);
+      } else {
+        clientAbort.signal.removeEventListener("abort", onClientAbort);
+        try { await upstreamRes?.body?.cancel(); } catch { /* noop */ }
+      }
     }
 
     if (upstreamRes?.ok && upstreamRes.body) break; // Connected!
@@ -141,14 +152,16 @@ async function sseDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promise
 
     // Wait before the next retry, interruptible by client disconnect.
     await new Promise<void>((resolve) => {
-      const t = setTimeout(resolve, SSE_RETRY_INTERVAL_MS);
-      clientAbort.signal.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+      const finish = () => {
+        clearTimeout(t);
+        clientAbort.signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      const t = setTimeout(finish, SSE_RETRY_INTERVAL_MS);
+      clientAbort.signal.addEventListener("abort", finish, { once: true });
+      if (clientAbort.signal.aborted) finish();
     });
   }
-
-  // Unregister client-close listeners before piping or closing.
-  req.raw.off("close", onClientClose);
-  req.raw.off("error", onClientClose);
 
   if (!upstreamRes || !upstreamRes.body) {
     // Daemon still unavailable after retry window.
@@ -167,7 +180,7 @@ async function sseDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promise
 
   // Successfully connected — commit SSE headers if not already done.
   if (!ensureHeaders()) {
-    try { upstreamRes.body.cancel(); } catch { /* noop */ }
+    try { await upstreamRes.body.cancel(); } catch { /* noop */ }
     return;
   }
 
@@ -177,16 +190,20 @@ async function sseDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promise
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      const ok = reply.raw.write(value);
-      if (!ok) break; // client backpressure / disconnect
+      if (!await writeSseChunk(reply.raw, value, clientAbort.signal)) break;
     }
   } catch (err) {
     if ((err as { name?: string }).name !== "AbortError") {
       logger.debug({ err }, "[broadcast-daemon-proxy] SSE pipe ended unexpectedly");
     }
   } finally {
-    try { reader.cancel(); } catch { /* noop */ }
+    try { await reader.cancel(); } catch { /* noop */ }
     try { reply.raw.end(); } catch { /* noop */ }
+  }
+  } finally {
+    clientAbort.abort();
+    disconnectUpstream?.();
+    lifetime.cleanup();
   }
 }
 

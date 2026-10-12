@@ -118,8 +118,9 @@ export async function sseRoutes(app: FastifyInstance) {
         sseConnectionsPerIp.set(ip, prev - 1);
       }
     };
-    req.raw.on("close", releaseCounter);
+    reply.raw.once("close", releaseCounter);
 
+    reply.hijack();
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
@@ -133,6 +134,7 @@ export async function sseRoutes(app: FastifyInstance) {
       // never sees a complete event until the connection closes.
       "Content-Encoding": "identity",
     });
+    reply.raw.write("retry: 5000\n\n");
 
     const lastEventId = req.headers["last-event-id"];
     // Also accept lastSequence as a query param so page reloads (where
@@ -218,7 +220,7 @@ export async function sseRoutes(app: FastifyInstance) {
     // race after the await and perform an inline teardown instead.
     let aborted = false;
     const markAborted = () => { aborted = true; };
-    req.raw.once("close", markAborted);
+    reply.raw.once("close", markAborted);
 
     // Replay any events the client missed while disconnected.
     // The EventSource API automatically carries the last `id:` value as
@@ -250,7 +252,7 @@ export async function sseRoutes(app: FastifyInstance) {
 
     // Remove the early-disconnect sentinel: from this point the full cleanup()
     // function registered below takes ownership of connection teardown.
-    req.raw.off("close", markAborted);
+    reply.raw.off("close", markAborted);
 
     // Switch from the buffer to the live listener, flushing any frames that
     // arrived during the DB replay await so no events are silently dropped.
@@ -274,13 +276,14 @@ export async function sseRoutes(app: FastifyInstance) {
     broadcastOrchestrator.on("frame", onFrame);
     broadcastOrchestrator.off("frame", bufferFrame);
 
-    // Guard: if the client disconnected during the async replay phase, `req.raw`
+    // Guard: if the client disconnected during the async replay phase, the response
     // is already destroyed. The `close` event already fired (setting `aborted`)
     // before `cleanup()` existed. Perform an inline teardown here so neither
     // `onFrame` nor the heartbeat interval are registered against a dead stream.
     if (aborted) {
       broadcastOrchestrator.off("frame", onFrame);
       releaseCounter();
+      reply.raw.off("close", releaseCounter);
       sseCounter.dec();
       activeSseConnections.dec({ surface: "broadcast-v2", ...SERVICE_LABELS });
       return;
@@ -305,6 +308,8 @@ export async function sseRoutes(app: FastifyInstance) {
       // releaseCounter is idempotent — safe even if the early handler
       // fired (e.g. client disconnected during event log replay above).
       releaseCounter();
+      reply.raw.off("close", releaseCounter);
+      reply.raw.off("close", cleanup);
       sseCounter.dec();
       activeSseConnections.dec({ surface: "broadcast-v2", ...SERVICE_LABELS });
       try {
@@ -320,16 +325,11 @@ export async function sseRoutes(app: FastifyInstance) {
 
     openSseCleanups.add(cleanup);
     openSseSenders.add(send);
-    req.raw.on("close", cleanup);
+    reply.raw.once("close", cleanup);
 
-    // Narrow-race guard: `markAborted` was removed from req.raw at line 189,
-    // so a "close" event that fires AFTER the `aborted` check above (line 202)
-    // but BEFORE `req.raw.on("close", cleanup)` above cannot set `aborted` and
-    // would therefore leave `heartbeat` + `onFrame` registered against a dead
-    // socket. Checking `req.raw.destroyed` here — which is set synchronously by
-    // Node when the socket closes — catches that window and performs a safe
-    // inline teardown via the now-registered `cleanup()`.
-    if (req.raw.destroyed) {
+    // Request completion can mark IncomingMessage.destroyed while the SSE
+    // response is still healthy. Check the actual outgoing stream instead.
+    if (reply.raw.destroyed || reply.raw.writableEnded || req.raw.aborted) {
       cleanup();
       return;
     }

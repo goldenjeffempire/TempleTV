@@ -138,7 +138,10 @@ export interface MediaScanReport {
 }
 
 const PROBE_TIMEOUT_MS = 8_000;
-const MAX_CONCURRENT = 4;
+// These probes can cross into the API's five-slot database pool. Leave room
+// for actual media reads and interactive requests instead of probing four
+// assets at once while other background workers are also accessing storage.
+const MAX_CONCURRENT = 2;
 const DEFAULT_INTERVAL_MS = 5 * 60_000;
 // INITIAL_DELAY_MS is read from env.MEDIA_SCANNER_INITIAL_DELAY_MS (default 90 s).
 // Using a function to defer the env read until after env.ts is fully initialised
