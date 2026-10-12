@@ -35,4 +35,8 @@ This produces a 22.2 MB archive (full workspace root, via git enumeration) which
 
 **Important:** `credentials.json` and `release.keystore` must be present in `artifacts/mobile/` before running. They are gitignored (`.gitignore`) but NOT in `.easignore`, so they ARE included in the EAS archive via git's untracked-file inclusion.
 
-**The `production-android` profile uses `credentialsSource: "local"`.** Always use this profile (not `production`) for Play Store Android builds — `production` uses remote credentials which were previously rotated by EAS, breaking Play Store signing.
+**The `production-android` profile uses `credentialsSource: "local"`.** The
+cloud profile uses remote credentials whose certificate must be verified;
+consult [Play upload key source](android-play-upload-key-source.md). The original
+remote-key mismatch does not imply that the subsequently corrected remote key
+is unusable.

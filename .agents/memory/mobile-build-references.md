@@ -27,3 +27,4 @@ clean-build behavior, patch synchronization, or native build compatibility.
 - [Archive cache-directory exclusion](eas-build-dotslash-cache-tarball.md)
 - [Workspace dependencies after merge](pnpm-overrides-workspacedep-merge-drift.md)
 - [Local Gradle toolchain and signing](android-local-gradle-build.md)
+- [GitHub checkout blocked by generated AABs in LFS](expo-github-lfs-build-source.md)
