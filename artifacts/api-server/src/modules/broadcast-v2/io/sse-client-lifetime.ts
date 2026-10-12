@@ -1,4 +1,17 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage, OutgoingHttpHeaders, ServerResponse } from "node:http";
+import type { FastifyReply } from "fastify";
+
+/** Hijacking skips Fastify's header flush, including its approved CORS headers. */
+export function writeSseHeaders(reply: FastifyReply, streamHeaders: OutgoingHttpHeaders): void {
+  const headers: OutgoingHttpHeaders = {};
+  for (const [name, value] of Object.entries(reply.getHeaders())) {
+    headers[name] = typeof value === "number" ? String(value) : value;
+  }
+  Object.assign(headers, streamHeaders);
+  delete headers["content-length"];
+  reply.hijack();
+  reply.raw.writeHead(200, headers);
+}
 
 /** IncomingMessage.close means the GET request finished, not the SSE client left. */
 export function bindSseClientLifetime(request: IncomingMessage, response: ServerResponse) {

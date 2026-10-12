@@ -3,10 +3,53 @@ import { test } from "node:test";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import Fastify from "fastify";
+import cors from "@fastify/cors";
 import {
   bindSseClientLifetime,
   writeSseChunk,
+  writeSseHeaders,
 } from "../../src/modules/broadcast-v2/io/sse-client-lifetime.js";
+
+test("raw SSE preserves approved CORS and security headers without reflecting unapproved origins", async () => {
+  const app = Fastify();
+  await app.register(cors, {
+    origin: ["https://admin.templetv.org.ng"],
+    credentials: true,
+  });
+  app.get("/events", async (_request, reply) => {
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("content-length", "0");
+    writeSseHeaders(reply, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      "content-encoding": "identity",
+    });
+    reply.raw.end('retry: 5000\n\nevent: hello\ndata: {"type":"hello"}\n\n');
+  });
+  try {
+    const allowed = await app.inject({
+      method: "GET",
+      url: "/events",
+      headers: { origin: "https://admin.templetv.org.ng" },
+    });
+    assert.equal(allowed.statusCode, 200);
+    assert.equal(allowed.headers["access-control-allow-origin"], "https://admin.templetv.org.ng");
+    assert.equal(allowed.headers["access-control-allow-credentials"], "true");
+    assert.match(String(allowed.headers.vary), /origin/i);
+    assert.equal(allowed.headers["x-content-type-options"], "nosniff");
+    assert.equal(allowed.headers["content-length"], undefined);
+    assert.match(allowed.body, /event: hello/);
+    const denied = await app.inject({
+      method: "GET",
+      url: "/events",
+      headers: { origin: "https://unapproved.invalid" },
+    });
+    assert.equal(denied.headers["access-control-allow-origin"], undefined);
+  } finally {
+    await app.close();
+  }
+});
 
 test("completed GET does not abort SSE; response disconnect does", () => {
   const request = new EventEmitter() as IncomingMessage;

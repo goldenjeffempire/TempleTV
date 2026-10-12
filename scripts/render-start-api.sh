@@ -8,4 +8,9 @@ echo "==> [render-start-api] Applying database schema"
 pnpm --filter @workspace/db run push-force
 
 echo "==> [render-start-api] Starting API"
-exec pnpm --filter @workspace/api-server run start:render-free
+# Keep the API's existing package-script working directory and Node flags,
+# without retaining pnpm's Node process alongside the API on a 512 MB host.
+cd artifacts/api-server
+exec node --max-old-space-size=256 --max-http-header-size=16384 \
+  --expose-gc --enable-source-maps \
+  --import ./dist/instrument.mjs ./dist/index.mjs

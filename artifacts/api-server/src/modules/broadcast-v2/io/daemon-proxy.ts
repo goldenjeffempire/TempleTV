@@ -25,7 +25,7 @@ import { logger } from "../../../infrastructure/logger.js";
 import { env } from "../../../config/env.js";
 import { startDaemonLivenessMonitor, stopDaemonLivenessMonitor } from "../engine/daemon-liveness-monitor.js";
 import { validateDaemonHealthBody } from "./daemon-health-contract.js";
-import { bindSseClientLifetime, writeSseChunk } from "./sse-client-lifetime.js";
+import { bindSseClientLifetime, writeSseChunk, writeSseHeaders } from "./sse-client-lifetime.js";
 
 /** Build the full daemon URL for a given absolute path. */
 function daemonUrl(path: string): string {
@@ -101,8 +101,7 @@ async function sseDaemonProxy(req: FastifyRequest, reply: FastifyReply): Promise
     if (headersWritten) return true;
     headersWritten = true;
     try {
-      reply.hijack();
-      reply.raw.writeHead(200, SSE_HEADERS);
+      writeSseHeaders(reply, SSE_HEADERS);
       reply.raw.write("retry: 5000\n\n");
       return true;
     } catch {
