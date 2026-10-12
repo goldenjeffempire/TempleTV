@@ -1,7 +1,15 @@
 ---
 name: Production restart-loop root causes + fixes
-description: Memory restart cascade on 2 GiB host — root causes, correct thresholds, log-only watchdog, faststart concurrency semaphore, process isolation.
+description: Host-specific memory budgets; the production API uses a 512 MB Render instance, while older 2 GiB tuning below is historical.
 ---
+
+## Current production API capacity
+
+The user's Render screenshot on 2026-10-12 shows the production API on a 512 MB instance and an instance failure for exceeding that limit. The older 2 GiB recommendations below do not apply to this API instance.
+
+**Why:** Applying thresholds sized for a larger host lets the platform kill the process before memory relief can help.
+
+**How to apply:** Confirm the current service capacity before recommending limits. Budget total container memory, including Node's heap, Buffers/native allocations, and resident command wrappers. A V8 heap limit is not an RSS limit. Do not treat higher watchdog thresholds as a remedy for a host-level OOM, or assume this API's capacity also describes the separate daemon.
 
 ## Root causes (original)
 
