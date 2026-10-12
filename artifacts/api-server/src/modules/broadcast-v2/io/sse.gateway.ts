@@ -5,6 +5,7 @@ import type { V2EventType, V2ServerFrame } from "../domain/types.js";
 import { activeSseConnections, SERVICE_LABELS } from "../../../infrastructure/metrics.js";
 import { logger } from "../../../infrastructure/logger.js";
 import { sseCounter } from "../../../infrastructure/sse-counter.js";
+import { writeSseHeaders } from "./sse-client-lifetime.js";
 
 /**
  * Per-IP SSE connection counter. Prevents a single client or runaway browser
@@ -120,8 +121,7 @@ export async function sseRoutes(app: FastifyInstance) {
     };
     reply.raw.once("close", releaseCounter);
 
-    reply.hijack();
-    reply.raw.writeHead(200, {
+    writeSseHeaders(reply, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
