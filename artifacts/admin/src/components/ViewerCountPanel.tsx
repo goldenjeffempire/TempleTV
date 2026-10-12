@@ -141,6 +141,12 @@ export const ViewerCountPanel = memo(function ViewerCountPanel({ streamId }: Pro
       </CardHeader>
       <CardContent className="pb-4 space-y-3">
         {error && <p role="status" className="text-xs text-muted-foreground">Viewer statistics are temporarily unavailable. Reconnecting…</p>}
+        <div className="flex items-center justify-between border-b pb-3 text-sm">
+          <span className="text-muted-foreground">Active app users</span>
+          <span className="font-semibold tabular-nums">
+            {error || data?.activeAppUsers == null ? "Unavailable" : data.activeAppUsers.toLocaleString()}
+          </span>
+        </div>
         {/* Sparkline — 5-min rolling trend */}
         <Sparkline trend={aggregateTrend} />
 

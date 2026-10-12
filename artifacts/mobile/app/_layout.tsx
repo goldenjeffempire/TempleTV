@@ -25,6 +25,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { setupMobileBroadcastStorage } from "@/lib/mobileBroadcastStorage";
+import { useAppPresence } from "@/hooks/useAppPresence";
 
 // ── Mobile broadcast storage ──────────────────────────────────────────────────
 // Wire the AsyncStorage-backed storage adapter for player-core's transport.
@@ -822,6 +823,11 @@ function RootLayoutNav() {
   );
 }
 
+function AppPresenceTracker(): null {
+  useAppPresence();
+  return null;
+}
+
 
 // Detect a REAL browser environment, not just Platform.OS === "web".
 // The Expo dev tools' "Simulate on Android/iOS" toggle changes Platform.OS
@@ -1021,6 +1027,7 @@ function RootLayout() {
             <DownloadProvider>
             <RadioStreamProvider>
             <PlayerProvider>
+              <AppPresenceTracker />
               <LiveBroadcastSupervisor />
               <GestureHandlerRootView style={{ flex: 1 }}>
                 <SafeKeyboardProvider>

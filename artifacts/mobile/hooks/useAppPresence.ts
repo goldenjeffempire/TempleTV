@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { AppState } from "react-native";
+import { AppState, Platform } from "react-native";
 import { useAuth } from "@/context/AuthContext";
 import { getApiBase } from "@/lib/apiBase";
 import { acquireInstallationSession, invalidateInstallationSession } from "@/lib/viewerTracking";
@@ -11,6 +11,7 @@ export function useAppPresence() {
   const tokenRef = useRef(token);
   tokenRef.current = token;
   useEffect(() => {
+    if (Platform.OS === "web") return;
     let disposed = false;
     let foreground = AppState.currentState === "active";
     let session: ViewerSession | null = null;
