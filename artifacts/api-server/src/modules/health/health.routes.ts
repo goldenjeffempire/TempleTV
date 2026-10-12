@@ -12,6 +12,9 @@ import { liveOverridesService } from "../live-overrides/live-overrides.service.j
 import { env } from "../../config/env.js";
 import { isShuttingDown } from "../../infrastructure/shutdown-flag.js";
 import { getAllCircuitStatuses } from "../../infrastructure/circuit-breaker.js";
+import { createDaemonReadinessProbe } from "./daemon-readiness.js";
+
+const probeDaemonReadiness = createDaemonReadinessProbe();
 
 const HealthSchema = z.object({
   status: z.enum(["ok", "degraded", "down"]),
@@ -214,8 +217,21 @@ export async function healthRoutes(app: FastifyInstance) {
       // load time — so a freshly started orchestrator on a long-lived process
       // is not falsely flagged as stuck.
       let v2Status: "ok" | "stuck" | "down" = "ok";
+      let broadcastHasCurrent = snap.current !== null;
+      let v2EngineBody = {
+        ok: false,
+        mode: env.BROADCAST_DAEMON_URL ? "daemon_unavailable" : "stopped",
+        sequence: 0,
+        uptimeMs: 0,
+        itemCount: 0,
+      };
       try {
-        if (!broadcastOrchestrator.isStarted()) {
+        if (env.BROADCAST_DAEMON_URL) {
+          const daemon = await probeDaemonReadiness(env.BROADCAST_DAEMON_URL);
+          v2Status = daemon?.status ?? "down";
+          broadcastHasCurrent = daemon?.hasCurrent ?? false;
+          if (daemon) v2EngineBody = daemon.engine;
+        } else if (!broadcastOrchestrator.isStarted()) {
           v2Status = "down";
         } else {
           const seq = broadcastOrchestrator.getSequence();
@@ -225,6 +241,13 @@ export async function healthRoutes(app: FastifyInstance) {
           if (seq === 0 && itemCount > 0 && orchestratorUptimeMs > 30_000) {
             v2Status = "stuck";
           }
+          v2EngineBody = {
+            ok: v2Status === "ok",
+            mode: broadcastOrchestrator.snapshot().mode ?? "unknown",
+            sequence: seq,
+            uptimeMs: Math.max(0, orchestratorUptimeMs),
+            itemCount,
+          };
         }
       } catch {
         v2Status = "down";
@@ -251,17 +274,8 @@ export async function healthRoutes(app: FastifyInstance) {
         broadcast: {
           channelId: snap.channelId,
           viewerCount: broadcastEngine.getViewerCount(),
-          hasCurrent: snap.current !== null,
+          hasCurrent: broadcastHasCurrent,
         },
-      };
-      const v2Started = broadcastOrchestrator.isStarted();
-      const v2StartedAtMs = broadcastOrchestrator.getStartedAtMs();
-      const v2EngineBody = {
-        ok: v2Started && v2Status !== "down" && v2Status !== "stuck",
-        mode: v2Started ? (broadcastOrchestrator.snapshot().mode ?? "unknown") : "stopped",
-        sequence: broadcastOrchestrator.getSequence(),
-        uptimeMs: v2StartedAtMs > 0 ? Math.max(0, Date.now() - v2StartedAtMs) : 0,
-        itemCount: broadcastOrchestrator.getItemCount(),
       };
       // Expose storage reconciliation stats for production monitoring.
       // Lazy-import so the health endpoint works even before the reconciliation

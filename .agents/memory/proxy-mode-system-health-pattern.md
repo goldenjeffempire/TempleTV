@@ -24,3 +24,11 @@ Treat both daemon health and aggregated platform health as progressive payloads.
 **Why:** The private daemon uses a minimal runtime and may not establish `req.principal` for a proxied public health request. It then correctly returns the public payload, while an admin page that assumes `prodSync`, `drift`, or `skipInfo` exists can crash despite a healthy ON AIR broadcast.
 
 **How to apply:** Normalize each health response once at the client query boundary, preserve all reported values, and clearly label missing diagnostic groups as unavailable. A partial platform-health response must render as degraded, not healthy. Never let optional diagnostics gate or crash core Master Control playback controls.
+
+## Split-process readiness
+
+API readiness must judge broadcast health using the daemon when the API is a proxy. An intentionally inactive API-local engine is not evidence of a stopped broadcast.
+
+**Why:** Production returned successful daemon health and advancing playback while API readiness simultaneously returned 503 based on its unused local engine.
+
+**How to apply:** Validate remote runtime identity and boot state, bound the probe timeout, and share concurrent probes briefly. Unreachable or invalid remote health must remain unready; never turn a failed daemon probe into a successful local fallback. Keep viewer totals independent of transport connection totals.
