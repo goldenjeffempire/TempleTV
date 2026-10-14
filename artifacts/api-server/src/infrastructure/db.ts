@@ -1701,11 +1701,8 @@ export async function runPreBuildBootSequence(): Promise<void> {
         ON scheduled_notifications (scheduled_at ASC)
         WHERE status = 'pending'
     `);
-    await run("idx_scheduled_notifications_topic_status", `
-      CREATE INDEX IF NOT EXISTS idx_scheduled_notifications_topic_status
-        ON scheduled_notifications (topic)
-        WHERE status = 'pending' AND topic IS NOT NULL
-    `);
+    // scheduled_notifications has no topic column; pending dispatches are
+    // covered by idx_scheduled_notifications_dispatch above.
     await run("idx_managed_videos_category_lower", `
       CREATE INDEX IF NOT EXISTS idx_managed_videos_category_lower
         ON managed_videos (lower(category))
@@ -1739,18 +1736,18 @@ export async function runPreBuildBootSequence(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_storage_blobs_key
         ON storage_blobs (key text_pattern_ops)
     `);
-    await run("idx_storage_upload_parts_session", `
-      CREATE INDEX IF NOT EXISTS idx_storage_upload_parts_session
-        ON storage_upload_parts (session_id, part_number)
+    await run("idx_storage_upload_parts_upload", `
+      CREATE INDEX IF NOT EXISTS idx_storage_upload_parts_upload
+        ON storage_upload_parts (upload_id, part_number)
     `);
     await run("idx_upload_sessions_status_created", `
       CREATE INDEX IF NOT EXISTS idx_upload_sessions_status_created
         ON upload_sessions (status, created_at DESC)
     `);
-    await run("idx_upload_sessions_video_id", `
-      CREATE INDEX IF NOT EXISTS idx_upload_sessions_video_id
-        ON upload_sessions (video_id)
-        WHERE video_id IS NOT NULL
+    await run("idx_upload_sessions_completed_video_id", `
+      CREATE INDEX IF NOT EXISTS idx_upload_sessions_completed_video_id
+        ON upload_sessions (completed_video_id)
+        WHERE completed_video_id IS NOT NULL
     `);
     // NOTE: idx_broadcast_queue_active_order was removed — the column "queue_order"
     // does not exist in the schema (the correct column is "sort_order", already
