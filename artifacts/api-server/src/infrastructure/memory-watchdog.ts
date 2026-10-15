@@ -34,6 +34,7 @@ import { processRssGauge, SERVICE_LABELS } from "./metrics.js";
 import { sampleNamedStorePeaks, getRegisteredCacheStats, purgeExpiredCacheEntries } from "./cache.js";
 import { getEventLoopLagMs, isEventLoopLagAlertActive } from "./event-loop-lag.js";
 import { adminEventBus } from "../modules/admin-ops/admin-event-bus.js";
+import { pauseStorageReadAdmission } from "./storage-read-admission.js";
 
 /**
  * Reduced from 30 s → 10 s for faster Exit-Code-134 (V8 OOM abort) prevention.
@@ -734,6 +735,9 @@ function sample() {
   ) {
     criticalExitInFlight = true;
     const heapUsedMbHC  = Math.round(mem.heapUsed  / (1024 * 1024));
+    // HLS admission is a removed-pipeline stub. Pause actual MP4/storage
+    // reads while existing readers drain; HEAD probes and heartbeats stay up.
+    pauseStorageReadAdmission(15_000);
     const heapTotalMbHC = Math.round(mem.heapTotal  / (1024 * 1024));
     const externalMbHC  = Math.round(mem.external   / (1024 * 1024));
     logger.error(
@@ -826,14 +830,7 @@ function sample() {
       // In-flight requests that already entered will finish naturally; once
       // they complete, their Buffers become GC-eligible.  New requests get
       // an immediate 503 and fall back to their failoverHlsUrl.
-      let restoreHlsConcurrency: (() => void) | null = null;
-      try {
-        const { setHlsConcurrencyOverride } = await import("../modules/video-serve/video-serve.routes.js");
-        setHlsConcurrencyOverride(0);
-        restoreHlsConcurrency = () => {
-          try { setHlsConcurrencyOverride(null); } catch { /* noop */ }
-        };
-      } catch { /* non-fatal — module may not be loaded */ }
+      pauseStorageReadAdmission(RELIEF_WAIT_MS);
 
       // Step 2: faststart pipeline removed — no jobs to cancel.
 
@@ -860,8 +857,7 @@ function sample() {
       await new Promise<void>((r) => setTimeout(r, RELIEF_WAIT_MS - 5_000));
       if (gcFn) gcFn();
 
-      // Restore normal HLS concurrency before we re-measure.
-      restoreHlsConcurrency?.();
+      // Storage admission resumes automatically after the relief window.
 
       // Step 7: re-measure
       const recoveredMem = process.memoryUsage();
