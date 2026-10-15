@@ -4,6 +4,8 @@ import { sql } from "drizzle-orm";
 import { db } from "./db.js";
 import { logger } from "./logger.js";
 import { env } from "../config/env.js";
+import { readBoundedChunks, STORAGE_READ_CHUNK_BYTES, type StoredChunk } from "./bounded-chunk-reader.js";
+import { assertStorageReadAdmission } from "./storage-read-admission.js";
 
 /**
  * PostgreSQL BYTEA object storage — zero-copy streaming implementation.
@@ -44,35 +46,17 @@ import { env } from "../config/env.js";
  *  HLS_MAX_CONCURRENT=10 that is ≤ 120 MiB external pressure from HLS alone
  *  (vs 240 MiB at 8 MiB chunks).  The extra round-trips add < 1 ms of
  *  latency per segment on a local PostgreSQL connection.                  */
-const STORAGE_READ_CHUNK_BYTES = 4 * 1024 * 1024;
 
 // ── Permanent chunked storage — streaming helpers ─────────────────────────────
 //
 // These read the row-per-chunk storage_blob_chunks table produced by
 // completeMultipartUpload()'s promotion step (see below). One row is fetched
-// at a time in chunk_index order — peak Node.js memory is bounded by a single
-// chunk's size (≤16 MiB) regardless of how many chunks (and thus how large
-// the overall object) exist. This is what removes the PostgreSQL varlena/
-// TOAST ~1 GiB single-value ceiling from the media pipeline.
+// at a time in chunk_index order. SQL SUBSTRING caps each transferred value
+// at 4 MiB, including tiny byte-range probes. Loading a whole 16 MiB row and
+// slicing it retained the row Buffer and its pg decoding overhead per reader.
 
-async function* readPermanentChunks(blobKey: string, chunkCount: number): AsyncGenerator<Buffer> {
-  for (let idx = 1; idx <= chunkCount; idx++) {
-    if (_shuttingDown) break;
-    type Row = { data: Buffer };
-    const result = await db.execute<Row>(sql`
-      SELECT data FROM storage_blob_chunks
-      WHERE blob_key = ${blobKey} AND chunk_index = ${idx}
-      LIMIT 1
-    `);
-    const row = firstRow<Row>(result);
-    if (!row?.data) {
-      throw Object.assign(
-        new Error(`[storage] readPermanentChunks: chunk ${idx}/${chunkCount} missing for key "${blobKey}"`),
-        { code: "STORAGE_READ_ERROR" },
-      );
-    }
-    yield toBuffer(row.data);
-  }
+async function* readPermanentChunks(blobKey: string, chunkCount: number, stopped: () => boolean): AsyncGenerator<Buffer> {
+  yield* readPermanentChunksRange(blobKey, 0, Number.MAX_SAFE_INTEGER, chunkCount, stopped);
 }
 
 /**
@@ -80,41 +64,26 @@ async function* readPermanentChunks(blobKey: string, chunkCount: number): AsyncG
  * object. Reads only the chunk-metadata (index + size, no bytes) to compute
  * offsets, then fetches and slices only the chunks that overlap the range.
  */
-async function* readPermanentChunksRange(blobKey: string, start: number, end: number): AsyncGenerator<Buffer> {
-  type MetaRow = { chunk_index: number; size_bytes: number };
-  const metaResult = await db.execute<MetaRow>(sql`
+async function* readPermanentChunksRange(blobKey: string, start: number, end: number, expectedCount?: number, stopped: () => boolean = () => false): AsyncGenerator<Buffer> {
+  if (_shuttingDown || stopped()) return;
+  const metaResult = await db.execute<StoredChunk>(sql`
     SELECT chunk_index, size_bytes FROM storage_blob_chunks
     WHERE blob_key = ${blobKey}
     ORDER BY chunk_index ASC
   `);
-  const metaRows = allRows<MetaRow>(metaResult);
-  let cursor = 0;
-  for (const meta of metaRows) {
-    if (_shuttingDown) break;
-    const chunkStart = cursor;
-    const chunkEnd = cursor + meta.size_bytes - 1; // inclusive
-    cursor += meta.size_bytes;
-    if (chunkEnd < start) continue; // entirely before range
-    if (chunkStart > end) break; // entirely after range — done
-    type DataRow = { data: Buffer };
-    const dataResult = await db.execute<DataRow>(sql`
-      SELECT data FROM storage_blob_chunks
-      WHERE blob_key = ${blobKey} AND chunk_index = ${meta.chunk_index}
+  const metaRows = allRows<StoredChunk>(metaResult);
+  if (metaRows.length === 0 || (expectedCount !== undefined && metaRows.length !== expectedCount)) {
+    throw Object.assign(new Error("Stored chunk metadata missing"), { code: "STORAGE_READ_ERROR" });
+  }
+  yield* readBoundedChunks(metaRows, start, end, async (index, offset, length) => {
+    const dataResult = await db.execute<{ data: Buffer }>(sql`
+      SELECT SUBSTRING(data FROM ${offset + 1} FOR ${length}) AS data FROM storage_blob_chunks
+      WHERE blob_key = ${blobKey} AND chunk_index = ${index}
       LIMIT 1
     `);
-    const row = firstRow<DataRow>(dataResult);
-    if (!row?.data) {
-      throw Object.assign(
-        new Error(`[storage] readPermanentChunksRange: chunk ${meta.chunk_index} missing for key "${blobKey}"`),
-        { code: "STORAGE_READ_ERROR" },
-      );
-    }
-    const buf = toBuffer(row.data);
-    const sliceStart = Math.max(0, start - chunkStart);
-    const sliceEndExclusive = Math.min(buf.length, end - chunkStart + 1);
-    if (sliceStart >= sliceEndExclusive) continue;
-    yield buf.subarray(sliceStart, sliceEndExclusive);
-  }
+    const row = firstRow<{ data: Buffer }>(dataResult);
+    return row?.data ? toBuffer(row.data) : Buffer.alloc(0);
+  }, () => _shuttingDown || stopped());
 }
 
 // ── Active-stream tracking for graceful shutdown ──────────────────────────────
@@ -372,6 +341,7 @@ class PostgresObjectStorage implements ObjectStorage {
   }
 
   async getObject(key: string): Promise<{ body: Readable; contentType?: string; contentLength?: number }> {
+    assertStorageReadAdmission();
     if (_shuttingDown) {
       throw Object.assign(new Error("Storage shutting down"), { code: "STORAGE_SHUTDOWN" });
     }
@@ -395,7 +365,7 @@ class PostgresObjectStorage implements ObjectStorage {
     const capturedKey = key;
 
     if (head.chunked) {
-      const body = Readable.from(readPermanentChunks(capturedKey, head.chunkCount ?? 0), { objectMode: false });
+      const body: Readable = Readable.from(readPermanentChunks(capturedKey, head.chunkCount ?? 0, () => body.destroyed), { objectMode: false });
       _activeStreamCount++;
       let _decChunked = false;
       const decChunked = (): void => {
@@ -509,13 +479,14 @@ class PostgresObjectStorage implements ObjectStorage {
       chunkCount?: number;
     },
   ): Promise<{ body: Readable; contentType?: string; contentLength: number } | null> {
+    assertStorageReadAdmission();
     if (_shuttingDown) return null;
     const rangeLength = end - start + 1;
 
     const head = preloadedHead ?? await this.headObject(key);
     if (!head.exists) return null;
     if (head.chunked) {
-      const body = Readable.from(readPermanentChunksRange(key, start, end), { objectMode: false });
+      const body: Readable = Readable.from(readPermanentChunksRange(key, start, end, head.chunkCount, () => body.destroyed), { objectMode: false });
       _activeStreamCount++;
       let _decChunkedRange = false;
       const decChunkedRange = (): void => {

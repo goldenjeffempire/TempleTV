@@ -152,3 +152,4 @@
 - [Android device coverage](android-device-coverage.md) — broad form-factor goal; library removal can expose recording permissions and implicitly exclude microphone-free devices.
 - [Managed GitHub pushes](github-managed-push.md) — native Git auth can fail while the connected App still has write access; preserve remote history and run pre-push checks.
 - [Raw SSE response headers](raw-sse-response-headers.md) — hijacked streams must preserve approved CORS headers; HTTP 200 without an Origin check does not prove browser compatibility.
+- [MP4 memory pressure](mp4-memory-pressure.md) — relief must target active storage reads, not obsolete HLS controls; bound transferred bytes, not just rows.

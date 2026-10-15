@@ -387,7 +387,12 @@ export async function videoServeRoutes(app: FastifyInstance) {
         }
         setUploadCorsHeaders(reply, isImage);
         return reply.send(obj.body);
-      } catch {
+      } catch (error) {
+        if ((error as { code?: string }).code === "STORAGE_MEMORY_PRESSURE") {
+          return reply.code(503)
+            .header("Retry-After", String((error as { retryAfterSeconds?: number }).retryAfterSeconds ?? 15))
+            .send({ error: "Media temporarily unavailable during memory recovery" });
+        }
         return reply.code(404).send({ error: "File not found in storage" });
       }
     },
