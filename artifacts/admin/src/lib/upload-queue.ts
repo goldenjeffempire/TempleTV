@@ -9,7 +9,8 @@
  * ─────────────
  * • MAX_CONCURRENT_FILES (10) files upload in parallel. Within each file,
  *   chunk-level concurrency is determined adaptively by the Network Information
- *   API (1–4 parallel chunks per file). On fast connections each chunk is
+ *   API (1–4 queued chunks per file), subject to a shared three-chunk budget
+ *   across all files. On fast connections each chunk is
  *   16 MiB so a 4 GB file uses 256 chunks instead of 512, halving DB round-trips.
  * • Pause: sets a `paused` flag and aborts the current AbortController so the
  *   in-flight XHR throws AbortError. The catch branch sees `paused=true`
@@ -30,6 +31,7 @@
  */
 
 import { apiBase } from "./api-base";
+import { chunkUploadBudget, fileHashBudget } from "./upload-request-budget";
 import { tokenStore, ensureFreshToken, forceRefreshToken } from "./api";
 import { notifyUploadActivity, setUploadActive } from "./session-activity";
 import {
@@ -1055,7 +1057,7 @@ class UploadQueueEngine {
 
     // ── XHR-based chunk upload with real-time byte progress ───────────────────
 
-    const uploadChunk = async (chunkIndex: number): Promise<void> => {
+    const uploadChunk = (chunkIndex: number): Promise<void> => chunkUploadBudget.run(signal, async () => {
       const start = chunkIndex * CHUNK_SIZE;
       const end = Math.min(start + CHUNK_SIZE, file.size);
       const buffer = await file.slice(start, end).arrayBuffer();
@@ -1216,13 +1218,22 @@ class UploadQueueEngine {
             // already called. If the signal is already set, reject directly
             // instead of relying on the "abort" event handler below.
             const abortHandler = () => xhr.abort();
+            xhr.addEventListener("loadend", () => {
+              signal.removeEventListener("abort", abortHandler);
+            }, { once: true });
             signal.addEventListener("abort", abortHandler, { once: true });
             if (signal.aborted) {
               signal.removeEventListener("abort", abortHandler);
               clearStall();
               reject(new DOMException("Upload aborted", "AbortError"));
             } else {
-              xhr.send(buffer);
+              try {
+                xhr.send(buffer);
+              } catch (error) {
+                signal.removeEventListener("abort", abortHandler);
+                clearStall();
+                reject(error);
+              }
             }
           });
 
@@ -1294,7 +1305,7 @@ class UploadQueueEngine {
         new Error(`Chunk ${chunkIndex} failed after ${MAX_CHUNK_RETRIES} attempts`),
         { transient: true },
       );
-    };
+    });
 
     try {
       const sessionId = this.items.get(id)!.sessionId;
@@ -1319,9 +1330,12 @@ class UploadQueueEngine {
       const SHA256_SIZE_LIMIT = 200 * 1024 * 1024; // 200 MiB
       if (file.size <= SHA256_SIZE_LIMIT) {
         try {
-          const fileBuffer = await file.arrayBuffer();
-          fileSha256 = await sha256Hex(fileBuffer);
+          fileSha256 = await fileHashBudget.run(signal, async () => {
+            const fileBuffer = await file.arrayBuffer();
+            return sha256Hex(fileBuffer);
+          });
         } catch {
+          if (signal.aborted) throw new DOMException("Upload aborted", "AbortError");
           // Non-fatal — proceed without file hash
         }
       }
