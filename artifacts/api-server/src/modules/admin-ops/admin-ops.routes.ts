@@ -26,6 +26,7 @@
  * prefixes by `registerDomainRoutes()` in `app.ts`.
  */
 import { performance } from "node:perf_hooks";
+import { bindSseClientLifetime, writeSseHeaders } from "../broadcast-v2/io/sse-client-lifetime.js";
 import * as v8 from "node:v8";
 import * as os from "node:os";
 import type { Readable } from "node:stream";
@@ -4199,7 +4200,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       // an SSE stream is never closed by a socket timeout).
       reply.raw.socket?.setTimeout(0);
 
-      reply.raw.writeHead(200, {
+      writeSseHeaders(reply, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
@@ -4293,9 +4294,13 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       zombieCheck.unref?.();
 
       let adminSseClosed = false;
+      const lifetime = bindSseClientLifetime(req.raw, reply.raw);
+      const onDisconnect = () => cleanup("client-close");
       const cleanup = (reason = "client-close") => {
         if (adminSseClosed) return;
         adminSseClosed = true;
+        lifetime.controller.signal.removeEventListener("abort", onDisconnect);
+        lifetime.cleanup();
         openAdminSseCleanups.delete(cleanup);
         openAdminSseSends.delete(send);
         clearInterval(heartbeat);
@@ -4315,8 +4320,8 @@ export async function adminOpsRoutes(app: FastifyInstance) {
 
       openAdminSseCleanups.add(cleanup);
       openAdminSseSends.add(send);
-      req.raw.on("close", () => cleanup("client-close"));
-      req.raw.on("error", () => cleanup("socket-error"));
+      lifetime.controller.signal.addEventListener("abort", onDisconnect, { once: true });
+      if (lifetime.controller.signal.aborted) onDisconnect();
     },
   );
 
