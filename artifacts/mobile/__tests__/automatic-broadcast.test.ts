@@ -37,6 +37,7 @@ describe("automatic broadcast lineup", async () => {
     assert.equal(mayPrepareBroadcast(true, { ...connected, type: "CELLULAR" }, true), true);
     assert.equal(mayPrepareBroadcast(false, { ...connected, type: "WIFI" }), false);
     assert.equal(mayPrepareBroadcast(true, { ...connected, type: "WIFI", isInternetReachable: false }), false);
+    assert.equal(mayPrepareBroadcast(true, { ...connected, type: "WIFI" }, false, false), false);
   });
   function fixture() {
     let stored: unknown = null;

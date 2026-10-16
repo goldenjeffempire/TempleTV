@@ -100,6 +100,7 @@ export class OfflineDownloadEngine {
         !["failed", "paused"].includes(existing.status)) return;
     // Never mutate the authorization mode of an in-flight manual transfer.
     if (this.workers.has(video.videoId)) return;
+    if (!existing.automaticBroadcast) existing.retainManualCopy = true;
     existing.automaticBroadcast = true;
     existing.status = "queued"; existing.error = null; existing.retryAt = 0;
     existing.retryCount = 0; existing.autoResume = false;
@@ -127,7 +128,7 @@ export class OfflineDownloadEngine {
   }
   private async reclaimOutdatedBroadcasts(requiredFree: number): Promise<void> {
     if (!this.broadcastLineupInitialized) return;
-    const outdated = [...this.items.values()].filter(item => item.automaticBroadcast &&
+    const outdated = [...this.items.values()].filter(item => item.automaticBroadcast && !item.retainManualCopy &&
       item.status === "completed" && !this.broadcastLineup.has(item.videoId) &&
       !this.playbackPins.has(item.videoId)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     for (const item of outdated) {

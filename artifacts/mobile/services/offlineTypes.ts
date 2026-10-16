@@ -26,6 +26,8 @@ export interface DownloadItem {
   retryAt?: number;
   positionSecs?: number;
   automaticBroadcast?: boolean;
+  /** A manual download must not be evicted just because it also broadcasts. */
+  retainManualCopy?: boolean;
   offlinePolicy?: "public-recording-7-days" | "public-broadcast-recording";
 }
 

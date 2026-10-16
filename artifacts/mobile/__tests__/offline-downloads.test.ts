@@ -238,6 +238,7 @@ describe("offline recording lifecycle", async () => {
     await engine.prepareBroadcast(video());
     await until(() => engine.getItem("recording-1")?.offlinePolicy === "public-broadcast-recording");
     assert.equal(f.transfers(), transfers);
+    assert.equal(engine.getItem("recording-1")?.retainManualCopy, true);
     await engine.clearAll();
   });
   it("bounds automatic preparation to one transfer while preserving all queued recordings", async () => {

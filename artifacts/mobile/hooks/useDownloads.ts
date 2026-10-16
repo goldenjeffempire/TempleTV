@@ -7,6 +7,7 @@ import { automaticBroadcast } from "@/services/automaticBroadcast";
 import type { BroadcastPreparation } from "@/services/offlineBroadcastEngine";
 import * as Network from "expo-network";
 import Constants from "expo-constants";
+import { usePathname } from "expo-router";
 import { mayPrepareBroadcast } from "@/lib/broadcastDownloadPolicy";
 
 export function useDownloads() {
@@ -14,6 +15,7 @@ export function useDownloads() {
   const [initialized, setInitialized] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { isOnline } = useNetworkStatus();
+  const pathname = usePathname();
   const [broadcastPreparation, setBroadcastPreparation] = useState<BroadcastPreparation>(
     { total: 0, ready: 0, preparing: false, error: null });
   const [automaticAllowed, setAutomaticAllowed] = useState(false);
@@ -24,7 +26,8 @@ export function useDownloads() {
     let generation = 0;
     const allowCellular = Constants.expoConfig?.extra?.offlineBroadcast?.allowCellular === true;
     const apply = (network: Network.NetworkState) => {
-      const allowed = mayPrepareBroadcast(isOnline, network, allowCellular);
+      const broadcastVisible = pathname === "/" || pathname === "/player" || pathname === "/offline-player";
+      const allowed = mayPrepareBroadcast(isOnline, network, allowCellular, broadcastVisible);
       setAutomaticAllowed(allowed);
       void downloadManager.setAutomaticTransfersAllowed(allowed).catch(e =>
         setError(e instanceof Error ? e.message : "Automatic broadcast transfer could not be paused"));
@@ -40,7 +43,7 @@ export function useDownloads() {
       mounted = false; subscription.remove();
       void downloadManager.setAutomaticTransfersAllowed(false).catch(() => {});
     };
-  }, [isOnline]);
+  }, [isOnline, pathname]);
 
   useEffect(() => {
     if (Platform.OS === "web") return;

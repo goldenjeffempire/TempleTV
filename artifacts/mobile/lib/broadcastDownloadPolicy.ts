@@ -6,9 +6,9 @@ export interface DownloadNetwork {
 
 /** Unknown transports and VPNs are blocked, not assumed to be free Wi-Fi. */
 export function mayPrepareBroadcast(
-  apiOnline: boolean, network: DownloadNetwork, allowCellular = false,
+  apiOnline: boolean, network: DownloadNetwork, allowCellular = false, broadcastVisible = true,
 ): boolean {
-  return apiOnline && network.isConnected === true && network.isInternetReachable !== false &&
+  return broadcastVisible && apiOnline && network.isConnected === true && network.isInternetReachable !== false &&
     (network.type === "WIFI" || network.type === "ETHERNET" ||
       (allowCellular && network.type === "CELLULAR"));
 }
