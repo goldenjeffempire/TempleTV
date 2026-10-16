@@ -379,6 +379,9 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
   const lastFrameAt = useRef<number>(Date.now());
   // Guards against concurrent connect() calls.
   const connecting = useRef(false);
+  // Invalidate unresolved token requests when an effect is cleaned up or the
+  // network goes offline; mounted alone is insufficient after a remount.
+  const connectionGeneration = useRef(0);
   // Provider-mount guard — prevents socket leaks after unmount.
   const mounted = useRef(true);
   // Tracks whether we've ever successfully connected in this session.
@@ -423,18 +426,26 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
 
   const scheduleReconnect = useCallback(() => {
     if (!mounted.current) return;
+    clearTimeout(reconnectTimer.current);
 
     if (reconnectingGraceTimer.current === null) {
       reconnectingGraceTimer.current = setTimeout(() => {
         reconnectingGraceTimer.current = null;
-        if (!mounted.current || esRef.current) return;
+        if (!mounted.current) return;
+        if (connecting.current) {
+          if (everConnected.current || attempt.current >= RECONNECTING_AFTER_ATTEMPTS) {
+            setStateSynced("reconnecting");
+          }
+          return;
+        }
+        if (esRef.current) return;
 
         if (attempt.current >= OFFLINE_THRESHOLD_ATTEMPTS) {
           // Check whether the HTTP API is actually reachable before
           // surfacing the red "Offline" badge — prevents false positives
           // when only the SSE channel is unavailable.
           void checkApiHealth().then((reachable) => {
-            if (!mounted.current || esRef.current) return;
+            if (!mounted.current || esRef.current || connecting.current) return;
             setStateSynced(reachable ? "degraded" : "offline");
           });
         } else if (everConnected.current || attempt.current >= RECONNECTING_AFTER_ATTEMPTS) {
@@ -469,7 +480,9 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
 
   // ── connect ─────────────────────────────────────────────────────────────────
   const connect = useCallback(() => {
-    if (connecting.current) return;
+    if (!mounted.current || connecting.current) return;
+    clearTimeout(reconnectTimer.current);
+    const generation = ++connectionGeneration.current;
     connecting.current = true;
 
     esRef.current?.close();
@@ -477,8 +490,11 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
 
     fetchSseSubToken()
       .then((sseToken) => {
+        if (!mounted.current || connectionGeneration.current !== generation) return;
         consecutiveAuthFailures.current = 0; // reset on success
-        if (!mounted.current) return;
+        if (stateRef.current === "offline" || stateRef.current === "degraded") {
+          setStateSynced("reconnecting");
+        }
 
         const apiOrigin = apiBase();
         const url = new URL(
@@ -505,6 +521,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
         // retry rather than letting it hang for up to 15 s.
         const openTimeout = setTimeout(() => {
           if (!mounted.current || esRef.current !== es) return;
+          connecting.current = false;
           es.close();
           esRef.current = null;
           scheduleReconnect();
@@ -518,6 +535,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
           // ignore it so we don't incorrectly flip state to "connected" for a
           // connection that no longer exists.
           if (esRef.current !== es) return;
+          connecting.current = false;
           if (reconnectingGraceTimer.current !== null) {
             clearTimeout(reconnectingGraceTimer.current);
             reconnectingGraceTimer.current = null;
@@ -578,6 +596,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
         // of waiting up to 45 s for the zombie watchdog to fire.
         es.addEventListener("reconnect", (e: MessageEvent) => {
           if (esRef.current !== es) return;
+          connecting.current = false;
           clearTimeout(openTimeout);
           let retryMs = 2_000;
           try {
@@ -589,6 +608,7 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
           // Reset attempt counter: the server told us it's restarting, so
           // treat this as a first attempt rather than a failure.
           attempt.current = 0;
+          clearTimeout(reconnectTimer.current);
           reconnectTimer.current = setTimeout(() => {
             if (mounted.current) connect();
           }, retryMs) as unknown as NodeJS.Timeout;
@@ -607,12 +627,14 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
           // → Connecting → … that never settles on "Connected".
           // Fix: only act when this ES is still the authoritative connection.
           if (esRef.current !== es) return;
+          connecting.current = false;
           es.close();
           esRef.current = null;
           scheduleReconnect();
         };
       })
       .catch((err: unknown) => {
+        if (!mounted.current || connectionGeneration.current !== generation) return;
         // Token fetch failed — could be 401 (expired session), network, or
         // timeout. Only 401s count toward the auth-failure limit because
         // network blips should never force a sign-out.
@@ -630,9 +652,13 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
         }
       })
       .finally(() => {
-        connecting.current = false;
-        // If no EventSource was created, schedule next attempt.
-        if (!esRef.current && mounted.current) scheduleReconnect();
+        if (!mounted.current || connectionGeneration.current !== generation) return;
+        // Keep ownership throughout the EventSource handshake, not just its
+        // token fetch. Otherwise the 30s health poll cancels a valid 45s open.
+        if (!esRef.current) {
+          connecting.current = false;
+          scheduleReconnect();
+        }
       });
   }, [emit, pushActivity, scheduleReconnect, setStateSynced]);
 
@@ -674,6 +700,8 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
     // ── Network loss ────────────────────────────────────────────────────────
     const onOffline = () => {
       if (!mounted.current) return;
+      connectionGeneration.current++;
+      connecting.current = false;
       clearTimeout(reconnectTimer.current);
       if (reconnectingGraceTimer.current !== null) {
         clearTimeout(reconnectingGraceTimer.current);
@@ -717,6 +745,8 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
 
       const reachable = await checkApiHealth();
       if (!mounted.current) return;
+      // A reconnect may have started or completed during the HTTP probe.
+      if (connecting.current || (esRef.current && stateRef.current === "connected")) return;
 
       if (reachable) {
         if (
@@ -747,6 +777,8 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       mounted.current = false;
+      connectionGeneration.current++;
+      connecting.current = false;
       clearInterval(watchdog);
       clearInterval(healthMonitor);
       esRef.current?.close();
