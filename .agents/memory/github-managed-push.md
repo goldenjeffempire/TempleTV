@@ -26,3 +26,13 @@ Revalidate an isolated release checkout's Git root before staging; its files sur
 **Why:** A retained release directory without its own Git metadata resolved Git commands to the enclosing workspace repository instead of the intended release checkout.
 
 **How to apply:** Confirm `git -C <release-directory> rev-parse --show-toplevel` points to that directory and its HEAD matches the current remote base. If it does not, create a fresh remote-based checkout rather than staging through the enclosing repository.
+
+Pace Git object writes through the connector separately from GitHub's own rate
+limits.
+
+**Why:** A parallel blob-upload batch hit the connector's per-repl limit
+(`11/10 RPS`), even though repository access remained authorized.
+
+**How to apply:** Use sequential uploads or small paced batches and honor
+`Retry-After` on 429 responses. Recheck branch state after an interrupted write;
+do not assume the branch is unchanged or retry a build-creation request blindly.
