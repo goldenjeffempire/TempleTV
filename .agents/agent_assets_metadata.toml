@@ -334,3 +334,17 @@ mtime_ms = 1791448199634
 storage_uri = "gcs://replit-rams-assets-picard/rams/assets/repl:bb7f1829-d496-4434-9565-f4608de16c46/fef245aa-9dcc-4949-896e-66ae86b50d1b/ecfebd91-9f5a-4777-9578-83349bf599eb"
 storage_version_token = "1791448206202298"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "6d_rBNiavrzzKQI4Nt09c"
+uri = "file://reports/offline-broadcast-1.0.76.html"
+type = "html"
+title = "Offline broadcast implementation and validation report"
+description = "Implemented behavior, 36 passing software tests, Android build details, data-use limits, and remaining production/device acceptance gates."
+logical_id = "d33848bc-b8f3-4797-aca7-3d7872f59ca5"
+content_hash = "sha256:9c67edf1ae223fa1161c510e9699c252b7d7e48cb07b15b8d1d7dc0d6cd6aadc"
+size = 8296
+mtime_ms = 1792164722572
+storage_uri = "gcs://replit-rams-assets-picard/rams/assets/repl:bb7f1829-d496-4434-9565-f4608de16c46/d33848bc-b8f3-4797-aca7-3d7872f59ca5/ee4f54b8-b2dd-4e94-9ea3-ecaa91853997"
+storage_version_token = "1792164752501632"
+content_type = "text/html"

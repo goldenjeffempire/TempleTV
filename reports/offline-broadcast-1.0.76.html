@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Temple TV — Offline broadcast implementation report</title>
+<style>
+body{font:16px/1.6 system-ui,sans-serif;color:#202027;background:#f7f5fa;margin:0;padding:32px}
+main{max-width:950px;margin:auto;background:white;padding:36px;border-radius:16px}
+h1,h2{line-height:1.2}h1{color:#6a0dad}h2{margin-top:32px}
+table{border-collapse:collapse;width:100%}td,th{padding:10px;border:1px solid #ddd;text-align:left;vertical-align:top}
+.notice{background:#fff4dc;border-left:5px solid #b67a00;padding:16px}
+code{overflow-wrap:anywhere;font-size:.9em}a{color:#6a0dad}
+@media(max-width:600px){body{padding:12px}main{padding:18px}td,th{padding:7px}}
+</style>
+<main>
+<h1>Temple TV: automatic offline broadcasts</h1>
+<p>Implementation and verification report · 16 October 2026 · requested Android release <strong>1.0.76 / 146</strong>.</p>
+<p class="notice"><strong>Not yet production-accepted.</strong> Software checks pass, but the new API has not been rolled out to production and installed-Android offline playback has not been verified. A production AAB build has been submitted to Expo; this report does not certify a finished or tested AAB.</p>
+<h2>Architecture inspected</h2>
+<ul>
+<li>The backend serves administrator-uploaded original MP4-family files from PostgreSQL-backed storage, including chunked objects and HTTP range delivery. HLS/transcoding is currently disabled.</li>
+<li>The mobile app already had an Expo FileSystem download engine, durable queue metadata, integrity checking and an offline recording player.</li>
+<li>The broadcast uses a server-directed two-buffer player. Live streams and YouTube content cannot be made genuinely offline through this mechanism.</li>
+</ul>
+<h2>Implemented changes</h2>
+<ul>
+<li>A paginated, short-lived cached backend manifest identifies eligible first-party uploaded recordings in the active broadcast lineup. Broadcast-specific grants reject unrelated/provider content.</li>
+<li>Automatic preparation reuses the existing transfer queue; no new broadcast download button is required. It defaults to Wi-Fi/Ethernet, only runs in the foreground on broadcast surfaces, and pauses on cellular or navigation away from those surfaces.</li>
+<li>One automatic transfer runs at a time. Other existing manual downloads keep their separate behavior. Duplicate video IDs share the same stored file.</li>
+<li>Files are promoted from temporary storage only after length and SHA-256 verification. Legacy sources without a server checksum receive a persisted local digest; this does not independently prove publisher authenticity.</li>
+<li>Durable broadcast copies persist across restarts and do not require a seven-day access renewal or a backend check to play locally. Existing manual-recording expiry policy remains separate.</li>
+<li>The online broadcast player can reuse complete local copies on a subsequent bind. Speculative remote MP4 standby loading is suppressed on cellular/unknown transports without blocking actual playback handoff.</li>
+<li>Offline broadcast mode selects a saved recording and progresses through locally available complete recordings without a server playlist request. Unverifiable files and decoder failures are skipped when another usable recording exists.</li>
+<li>Automatic preparation reserves 256 MiB of free storage. Under pressure it may reclaim outdated automatic copies outside the current lineup, excluding pinned playback and copies originally downloaded manually. It does not guarantee that every catalog video fits on every device.</li>
+<li>Thumbnails and completed media already held by the download engine are reused. Offline recording playback does not create a live viewer lease or pretend to be a live stream.</li>
+</ul>
+<h2>Verification performed</h2>
+<table>
+<tr><th>Check</th><th>Result and evidence boundary</th></tr>
+<tr><td>Mobile engine/policy tests</td><td>32 passed. Covered complete-file promotion, corruption, duplicate IDs, queue limits, interruptions, foreground/background transitions, Wi-Fi/cellular policy, storage pressure, restart recovery, retained files, playlist selection and source-buffer policy. These use injected test I/O, not an installed Android player.</td></tr>
+<tr><td>Backend offline eligibility tests</td><td>4 passed. Covered first-party recordings and rejection of providers, manifests, unsafe paths and invalid integrity metadata.</td></tr>
+<tr><td>Type checks</td><td>Mobile and API passed.</td></tr>
+<tr><td>Android JavaScript export</td><td>Production Android/Hermes export succeeded after the 1.0.76 update. This is not a Gradle/native compilation or a playback test.</td></tr>
+<tr><td>API build and runtime</td><td>API built and started in development. The manifest returned HTTP 200 with an empty eligible lineup; invalid grant purpose returned HTTP 400. This development catalog had no eligible uploaded local recordings, so this is not positive end-to-end upload/download coverage.</td></tr>
+<tr><td>Dependency checks</td><td>Frozen lockfile installation and mobile lockfile invariants passed. Two existing informational checks reported absent obsolete consumer patterns.</td></tr>
+<tr><td>Preview</td><td>Web preview mounted without a new fatal render error. It displayed loading content with API/WebSocket request failures; it cannot verify native file I/O, Android decoding or offline playback.</td></tr>
+</table>
+<h2>Android build</h2>
+<p>Target: <strong>1.0.76 / versionCode 146</strong>; runtime policy resolves to the new app version. The obsolete queued 1.0.75 build was cancelled. No build was submitted to Google Play automatically.</p>
+<p><a href="https://expo.dev/accounts/mobileapptemples-team/projects/temple-tv-mobile/builds/31fdf65c-5b1f-4694-aaa2-2ed164dbea99">Track the requested production AAB build in Expo</a></p>
+<p>Source is on <code>build/automatic-offline-broadcast-146</code>, not main. Building that branch does not deploy the new backend routes.</p>
+<h2>Data consumption: what is and is not established</h2>
+<ul>
+<li>Engine tests confirm that repeated local playback/validation does not start another media transfer or renew a durable broadcast grant.</li>
+<li>Cellular is denied for automatic full-file preparation by default. An application configuration change is needed to permit it. Wi-Fi may itself be a metered hotspot; the transport check is not proof that the connection is unmetered.</li>
+<li>The first preparation still transfers the original uploaded file's complete size. Source compression and new adaptive HLS renditions were <strong>not</strong> enabled on the memory-constrained API. Existing live/provider behavior is preserved.</li>
+<li>No real-device before/after byte totals, battery measurements or slow-network throughput measurements were collected. No percentage saving is claimed.</li>
+</ul>
+<h2>Remaining release gates</h2>
+<ol>
+<li>Finish and inspect the Expo native build, including its version, signing identity and release checks.</li>
+<li>Approve and deploy the manifest/grant API changes before expecting production clients to prepare recordings.</li>
+<li>Install the resulting release on representative supported Android devices. Verify complete preparation of real uploaded recordings over Wi-Fi; track actual bytes transferred.</li>
+<li>Enable airplane mode, stop the backend, force-close/reopen the app, and play multiple complete recordings through consecutive transitions. Verify seek/resume, audio, fullscreen and decoder compatibility.</li>
+<li>Repeat with slow/limited connectivity, Wi-Fi-to-cellular switching, background/foreground changes, interrupted transfers and low disk space. Confirm that manual downloads and active playback are never evicted.</li>
+<li>Confirm repeated playback generates no media network traffic, and that live streams/YouTube are never labelled as offline recordings.</li>
+</ol>
+<p><strong>Physical limits:</strong> no app can play a recording it has never received. Initial preparation needs connectivity, enough foreground preparation time and sufficient storage. App uninstall/data clearing removes private stored files. Original source codec compatibility and installed-device behavior remain validation requirements.</p>
+</main>
+</html>
