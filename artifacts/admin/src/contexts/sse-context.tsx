@@ -10,6 +10,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { tokenStore, forceRefreshToken } from "@/lib/api";
 import { apiBase } from "@/lib/api-base";
+import { checkAdminApiHealth } from "@/lib/admin-api-health";
 
 export type SSEConnectionState =
   | "connecting"
@@ -345,25 +346,13 @@ async function fetchSseSubToken(): Promise<string> {
 
 // ── HTTP health check ─────────────────────────────────────────────────────────
 //
-// Probes the public /broadcast-v2/health endpoint (no auth required).
+// Probes the API's lightweight liveness endpoint (no auth required).
 // Returns true if the API is reachable and responding with 2xx.
 // Used to distinguish "SSE proxy failure" (→ degraded) from
 // "API completely unreachable" (→ offline).
 
 async function checkApiHealth(): Promise<boolean> {
-  try {
-    const ac = new AbortController();
-    const tid = setTimeout(() => ac.abort(), 5_000);
-    const res = await fetch(`${apiBase()}/broadcast-v2/health`, {
-      signal: ac.signal,
-      credentials: "omit",
-      cache: "no-store",
-    });
-    clearTimeout(tid);
-    return res.ok;
-  } catch {
-    return false;
-  }
+  return checkAdminApiHealth();
 }
 
 // ── Provider ──────────────────────────────────────────────────────────────────
