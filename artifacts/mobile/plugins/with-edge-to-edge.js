@@ -16,7 +16,9 @@
 //       → content extends into the display cutout (notch/punch-hole) in EVERY
 //         orientation (portrait AND landscape).  "shortEdges" only applied the
 //         cutout extension in landscape — "always" is the correct value for a
-//         fully immersive edge-to-edge video app on Android 9+ (API 28+).
+//         fully immersive edge-to-edge video app on API 30+. The final resource
+//         compatibility mod moves this to values-v30, with shortEdges on API
+//         28–29, so it is not emitted into the Android 7+ base theme.
 //
 // NOTE: SafeAreaProvider at the app root (app/_layout.tsx) + useSafeAreaInsets()
 // in player.tsx continue to supply insets that keep interactive UI clear of bars.
@@ -35,11 +37,11 @@ module.exports = function withEdgeToEdge(config) {
 
     if (!Array.isArray(appTheme.item)) appTheme.item = [];
 
-    // Items to keep / add (valid in API 28+ through API 36+).
+    // The finalized resource compatibility mod applies the API qualifiers.
     const EDGE_TO_EDGE_ITEMS = [
       // Display cutout: content extends into notch/punch-hole in ALL orientations
       // so the video player fills the full screen edge-to-edge.  "always" is the
-      // modern value (API 28+); the deprecated "shortEdges" only worked landscape.
+      // modern value (API 30+); API 28–29 require the shortEdges fallback.
       { name: "android:windowLayoutInDisplayCutoutMode", value: "always" },
     ];
 

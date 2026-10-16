@@ -249,6 +249,7 @@
       "./plugins/with-edge-to-edge.js",
       "./plugins/with-large-heap.js",
       "./plugins/with-predictive-back.js",
+      "./plugins/with-android-resource-compatibility.js",
       [
         "expo-screen-orientation",
         {

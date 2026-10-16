@@ -5,11 +5,13 @@
 // permissions cannot implicitly exclude TVs and other microphone-free devices.
 // Also adds a LEANBACK_LAUNCHER intent filter to the main activity.
 
-const { withAndroidManifest } = require("@expo/config-plugins");
+const { withAndroidManifest, withDangerousMod } = require("@expo/config-plugins");
+const { mkdir, copyFile } = require("node:fs/promises");
+const path = require("node:path");
 
 /** @param {import('@expo/config-plugins').ExpoConfig} config */
 module.exports = function androidTVPlugin(config) {
-  return withAndroidManifest(config, (mod) => {
+  config = withAndroidManifest(config, (mod) => {
     const manifest = mod.modResults;
 
     // ── uses-feature ──────────────────────────────────────────────────────────
@@ -39,6 +41,8 @@ module.exports = function androidTVPlugin(config) {
     // ── LEANBACK_LAUNCHER intent filter ───────────────────────────────────────
     const application = manifest.manifest.application?.[0];
     if (!application) return mod;
+    application.$ ??= {};
+    application.$["android:banner"] = "@drawable/tv_banner";
 
     const activities = application.activity ?? [];
     const mainActivity = activities.find(
@@ -74,4 +78,17 @@ module.exports = function androidTVPlugin(config) {
 
     return mod;
   });
+  return withDangerousMod(config, ["android", async (mod) => {
+    // Android TV requires a 320×180 xhdpi launcher banner. Keep it in the
+    // prebuild plugin so clean EAS builds include the resource as well.
+    const directory = path.join(
+      mod.modRequest.platformProjectRoot, "app/src/main/res/drawable-xhdpi",
+    );
+    await mkdir(directory, { recursive: true });
+    await copyFile(
+      path.join(__dirname, "../assets/images/tv-banner.png"),
+      path.join(directory, "tv_banner.png"),
+    );
+    return mod;
+  }]);
 };

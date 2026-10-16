@@ -33,15 +33,28 @@ for (const setting of [
 // scripts ("Cannot find a KaModule for the VirtualFile"). Use the supported
 // K1 lint frontend consistently across modules; do not skip lint or its errors.
 // This changes lint analysis only, not the Kotlin compiler used for the app.
-execFileSync("./gradlew", [
-  ":app:lintRelease",
-  "-Pandroid.lint.useK2Uast=false",
-  "--no-daemon",
-  "--console=plain",
-], {
-  cwd: android,
-  stdio: "inherit",
-});
+try {
+  execFileSync("./gradlew", [
+    ":app:lintRelease",
+    "-Pandroid.lint.useK2Uast=false",
+    "--no-daemon",
+    "--console=plain",
+  ], {
+    cwd: android,
+    stdio: "inherit",
+  });
+} catch (error) {
+  // Gradle's console summary prints only the first lint error. Preserve all
+  // findings in EAS logs before failing so subsequent fixes are evidence-based.
+  const report = path.join(android,
+    "app/build/intermediates/lint_intermediate_text_report/release/lintReportRelease/lint-results-release.txt");
+  if (existsSync(report)) {
+    console.error("ANDROID_RELEASE_LINT_REPORT_BEGIN");
+    console.error(readFileSync(report, "utf8"));
+    console.error("ANDROID_RELEASE_LINT_REPORT_END");
+  }
+  throw error;
+}
 const bundle = path.join(android, "app/build/outputs/bundle/release/app-release.aab");
 assert.ok(existsSync(bundle), "Release AAB was not generated");
 execFileSync("jarsigner", ["-verify", bundle], { stdio: "ignore" });
