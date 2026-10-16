@@ -88,7 +88,8 @@
     },
     "android": {
       "package": "com.templetv.jctm",
-      "versionCode": 144,
+      "versionCode": 145,
+      "runtimeVersion": "1.0.75-offline-145",
       "allowBackup": false,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon-foreground.png",
@@ -258,6 +259,9 @@
        ]
      ],
     "extra": {
+      "offlineBroadcast": {
+        "allowCellular": false
+      },
       "router": {
         "origin": "https://templetv.org.ng"
       },

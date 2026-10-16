@@ -151,7 +151,7 @@ export default function PlayerScreen() {
   const { width, height } = useWindowDimensions();
   const isLandscape = width > height;
   const c = useColors();
-  const { isOnline } = useNetworkStatus();
+  const { isOnline, apiUnreachable } = useNetworkStatus();
 
   // V2 broadcast snapshot — attaches to the singleton session (same WS/SSE
   // connection as V2PlayerContainer, zero extra connections). Reads live
@@ -1195,12 +1195,12 @@ export default function PlayerScreen() {
   // point that was missing. Only a direct server-hosted MP4 (localVideoUrl) is
   // downloadable — HLS manifests and YouTube are excluded (DownloadResumable
   // saves a single file, and offline playback reads that file back).
-  const { addDownload, isDownloaded, getDownloadItem, cancelDownload } = useDownloadContext();
-  const recording = isLive && !v2ServerSnap?.override && v2ServerSnap?.current?.source.kind === "mp4"
+  const { addDownload, isDownloaded, getDownloadItem, cancelDownload, broadcastPreparation } = useDownloadContext();
+  const recording = isLive && !isYoutube && !v2ServerSnap?.override && v2ServerSnap?.current?.source.kind === "mp4"
     ? v2ServerSnap.current : null;
   const downloadVideoId = recording?.videoId || (isLive ? "" : videoId);
   const downloadMp4Url = recording?.source.url || params.localVideoUrl || "";
-  const canDownload = !!downloadVideoId && !!downloadMp4Url && !isYoutube &&
+  const canDownload = !isLive && !!downloadVideoId && !!downloadMp4Url && !isYoutube &&
     !/^(file:|content:)|\.m3u8(?:[?#]|$)/i.test(downloadMp4Url);
   const downloadItem = getDownloadItem(downloadVideoId);
   const alreadyDownloaded = isDownloaded(downloadVideoId);
@@ -1208,15 +1208,24 @@ export default function PlayerScreen() {
     downloadItem?.status === "downloading" || downloadItem?.status === "queued" || downloadItem?.status === "verifying";
   const offlineCopyId = isLive ? recording?.videoId : videoId;
   const hasOfflineCopy = !!offlineCopyId && isDownloaded(offlineCopyId);
+  const hasAutomaticBroadcastCopy = !!offlineCopyId &&
+    getDownloadItem(offlineCopyId)?.offlinePolicy === "public-broadcast-recording" && hasOfflineCopy;
   const offlineUnavailable = !isOnline;
 
   useEffect(() => {
-    if (isOnline || !hasOfflineCopy || !offlineCopyId) return;
+    // Uploaded broadcasts prefer complete local media, even while online.
+    // True live/provider overrides retain their existing online behavior.
+    if (isLive ? !(hasAutomaticBroadcastCopy || (isBroadcastV2 && !v2ServerSnap?.override &&
+        (!v2ServerSnap || !isOnline || apiUnreachable === true) && broadcastPreparation.ready > 0))
+      : (isOnline || !hasOfflineCopy || !offlineCopyId)) return;
     safeNavReplace("/offline-player", {
-      id: offlineCopyId,
-      positionSecs: String(Math.max(0, currentPositionMsRef.current / 1000)),
+      ...(offlineCopyId ? { id: offlineCopyId } : {}),
+      ...(isLive ? { broadcast: "true" } : {}),
+      ...((isLive ? hasAutomaticBroadcastCopy : hasOfflineCopy) ?
+        { positionSecs: String(Math.max(0, currentPositionMsRef.current / 1000)) } : {}),
     }, "offline-recording-handoff");
-  }, [isOnline, hasOfflineCopy, offlineCopyId]);
+  }, [isOnline, apiUnreachable, hasOfflineCopy, hasAutomaticBroadcastCopy, offlineCopyId, isLive,
+    isBroadcastV2, v2ServerSnap, broadcastPreparation.ready]);
 
   const handleDownloadPress = useCallback(() => {
     if (alreadyDownloaded) {
@@ -1485,10 +1494,18 @@ export default function PlayerScreen() {
           {isLive ? (liveTitle || "Live Broadcast") : title}
         </Text>
         {isLive && isOnline && <LiveBadge size="small" />}
-        <Pressable onPress={() => safeNavPush("/downloads", {}, "offline-library")}
+        {isLive && broadcastPreparation.total > 0 && (
+          <Text accessibilityLiveRegion="polite" style={{ color: c.mutedForeground, fontSize: 12 }}>
+            {broadcastPreparation.ready}/{broadcastPreparation.total} complete broadcasts stored on this device
+            {broadcastPreparation.error ? ` · ${broadcastPreparation.error}` :
+              broadcastPreparation.waitingForWifi ? " · Waiting for Wi-Fi" :
+                broadcastPreparation.preparing ? " · Preparing automatically" : ""}
+          </Text>
+        )}
+        {!isLive && <Pressable onPress={() => safeNavPush("/downloads", {}, "offline-library")}
           accessibilityRole="button" accessibilityLabel="Open Offline Broadcasts" hitSlop={12}>
           <Feather name="download" size={20} color={c.primary} />
-        </Pressable>
+        </Pressable>}
       </View>
 
       <ScrollView

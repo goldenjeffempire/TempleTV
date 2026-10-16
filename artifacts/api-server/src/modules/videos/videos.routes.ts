@@ -39,7 +39,8 @@ const OfflineRecordingSchema = z.object({
   duration: z.string(), category: z.string(), preacher: z.string(),
   sourceUrl: z.string(), sizeBytes: z.number().int().positive(),
   sha256: z.string().regex(/^[a-f0-9]{64}$/i).nullable(),
-  expiresAt: z.string(), policy: z.literal("public-recording-7-days"),
+  expiresAt: z.string().nullable(),
+  policy: z.enum(["public-recording-7-days", "public-broadcast-recording"]),
 });
 
 // Explicit column projection — only select the 14 fields that toDto() and
@@ -351,6 +352,56 @@ function buildWhere(
 export async function videosRoutes(app: FastifyInstance) {
   const r = app.withTypeProvider<ZodTypeProvider>();
 
+  // Metadata only: never read BYTEA movie data or hash entire movies here.
+  // Paginate by immutable queue ID so a complete lineup is not silently capped.
+  r.get("/offline-broadcast", {
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+    schema: {
+      tags: ["videos"],
+      querystring: z.object({ cursor: z.string().max(128).optional() }),
+      response: {
+        200: z.object({
+          items: z.array(z.object({
+            videoId: z.string(), videoTitle: z.string(), thumbnailUrl: z.string(),
+            duration: z.string(), category: z.string(), preacher: z.string(),
+            sourceUrl: z.string(), order: z.number().int(),
+          })),
+          nextCursor: z.string().nullable(),
+        }),
+        429: z.object({ error: z.string() }),
+        503: z.object({ error: z.string() }),
+      },
+    },
+  }, async (req, reply) => {
+    reply.header("Cache-Control", "public, max-age=30");
+    return cache().getOrSet(`offline-broadcast:v1:${req.query.cursor ?? ""}`, 30, async () => {
+    const queue = schema.broadcastQueueTable;
+    const rows = await db.select({
+      queueId: queue.id, order: queue.sortOrder,
+      videoId: videos.id, videoTitle: videos.title, thumbnailUrl: videos.thumbnailUrl,
+      duration: videos.duration, category: videos.category, preacher: videos.preacher,
+      videoSource: videos.videoSource, localVideoUrl: videos.localVideoUrl,
+      objectPath: videos.objectPath, checksumSha256: videos.checksumSha256,
+      validationStatus: videos.validationStatus, transcodingErrorCode: videos.transcodingErrorCode,
+    }).from(queue).innerJoin(videos, eq(queue.videoId, videos.id))
+      .where(and(eq(queue.isActive, true),
+        req.query.cursor ? sql`${queue.id} > ${req.query.cursor}` : undefined))
+      .orderBy(asc(queue.id)).limit(101);
+    const page = rows.slice(0, 100);
+    return {
+      items: page.flatMap(row => {
+        const key = offlineRecordingKey(row);
+        return key ? [{
+          videoId: row.videoId, videoTitle: row.videoTitle, thumbnailUrl: row.thumbnailUrl,
+          duration: row.duration, category: row.category, preacher: row.preacher,
+          sourceUrl: `/api/v1/${key}`, order: row.order,
+        }] : [];
+      }),
+      nextCursor: rows.length > 100 ? page[page.length - 1]!.queueId : null,
+    };
+    });
+  });
+
   // Public recordings follow the same public-media access policy as /uploads.
   // This is NOT an entitlement for DRM, third-party, private or live sources.
   r.get("/:id/offline", {
@@ -358,6 +409,7 @@ export async function videosRoutes(app: FastifyInstance) {
     schema: {
       tags: ["videos"],
       params: z.object({ id: z.string().min(1).max(128) }),
+      querystring: z.object({ purpose: z.enum(["recording", "broadcast"]).default("recording") }),
       response: {
         200: OfflineRecordingSchema,
         404: z.object({ error: z.string() }),
@@ -379,6 +431,13 @@ export async function videosRoutes(app: FastifyInstance) {
     if (!video) return reply.code(404).send({ error: "Recording no longer available" });
     const key = offlineRecordingKey(video);
     if (!key) return reply.code(409).send({ error: "This recording is not available for verified offline download" });
+    const broadcast = req.query.purpose === "broadcast";
+    if (broadcast) {
+      const queue = schema.broadcastQueueTable;
+      const [member] = await db.select({ id: queue.id }).from(queue)
+        .where(and(eq(queue.videoId, video.id), eq(queue.isActive, true))).limit(1);
+      if (!member) return reply.code(409).send({ error: "This recording is not in the uploaded broadcast lineup" });
+    }
     const head = await storage().headObject(key);
     if (!head.exists || !head.contentLength) {
       return reply.code(503).send({ error: "Recording storage is temporarily unavailable" });
@@ -388,8 +447,8 @@ export async function videosRoutes(app: FastifyInstance) {
       duration: video.duration, category: video.category, preacher: video.preacher,
       sourceUrl: `/api/v1/${key}`, sizeBytes: head.contentLength,
       sha256: video.checksumSha256?.toLowerCase() ?? null,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-      policy: "public-recording-7-days" as const,
+      expiresAt: broadcast ? null : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      policy: broadcast ? "public-broadcast-recording" as const : "public-recording-7-days" as const,
     };
   });
 

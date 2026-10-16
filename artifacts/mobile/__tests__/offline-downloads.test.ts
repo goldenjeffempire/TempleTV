@@ -36,11 +36,12 @@ function fixture(saved: DownloadItem[] = []) {
       if (stopped()) throw new Error("cancelled");
       return createHash("sha256").update(files.get(path) ?? Buffer.alloc(0)).digest("hex");
     },
-    async authorize(id): Promise<OfflineGrant> {
+    async authorize(id, broadcast = false): Promise<OfflineGrant> {
       grants++;
       if (denied) throw Object.assign(new Error("revoked"), { permanent: true });
       return { ...video(id), sizeBytes: bytes.length, sha256: hasServerHash ? digest : null,
-        expiresAt: new Date(Date.now() + 7 * 86400_000).toISOString(), policy: "public-recording-7-days" };
+        expiresAt: broadcast ? null : new Date(Date.now() + 7 * 86400_000).toISOString(),
+        policy: broadcast ? "public-broadcast-recording" : "public-recording-7-days" };
     },
     async thumbnail() { return false; },
     task(_url, path, _resume, progress) {
@@ -210,4 +211,110 @@ describe("offline recording lifecycle", async () => {
     await assert.rejects(engine.addDownload(video("../private")), /identifier/);
     assert.equal(f.grants(), 0);
   });
+  it("automatically prepares durable broadcast files and plays after restart with no backend", async () => {
+    const f = fixture(); const engine = new OfflineDownloadEngine(f.io);
+    await engine.prepareBroadcast(video());
+    assert.equal(f.transfers(), 0);
+    await engine.setAutomaticTransfersAllowed(true);
+    await engine.setConnectivity(true);
+    await until(() => engine.isDownloaded("recording-1"));
+    assert.equal(engine.getItem("recording-1")?.offlinePolicy, "public-broadcast-recording");
+    assert.equal(engine.getItem("recording-1")?.expiresAt, undefined);
+    await engine.setConnectivity(false);
+    f.deny();
+    const requests = f.grants();
+    const reopened = new OfflineDownloadEngine(f.io);
+    assert.equal((await reopened.validateForPlayback("recording-1")).localPath, "file:///private/recording-1.mp4");
+    assert.equal(f.grants(), requests);
+    await reopened.clearAll();
+  });
+  it("upgrades a complete manual copy to a broadcast copy without transferring again", async () => {
+    const f = fixture(); const engine = new OfflineDownloadEngine(f.io);
+    await engine.addDownload(video()); await engine.setConnectivity(true);
+    await until(() => engine.isDownloaded("recording-1"));
+    await tick();
+    const transfers = f.transfers();
+    await engine.setAutomaticTransfersAllowed(true);
+    await engine.prepareBroadcast(video());
+    await until(() => engine.getItem("recording-1")?.offlinePolicy === "public-broadcast-recording");
+    assert.equal(f.transfers(), transfers);
+    await engine.clearAll();
+  });
+  it("bounds automatic preparation to one transfer while preserving all queued recordings", async () => {
+    const f = fixture(); f.block();
+    const engine = new OfflineDownloadEngine(f.io);
+    await engine.setAutomaticTransfersAllowed(true);
+    for (let i = 0; i < 5; i++) await engine.prepareBroadcast(video(`broadcast-${i}`));
+    await engine.setConnectivity(true);
+    await until(() => f.transfers() === 1);
+    assert.equal(f.peak(), 1);
+    f.release();
+    await until(() => engine.getAll().every(item => item.status === "completed"));
+    assert.equal(f.transfers(), 5); assert.equal(f.peak(), 1);
+    await engine.clearAll();
+  });
+  it("reserves device storage for automatic preparation and recovers without deleting manual content", async () => {
+    const f = fixture(); f.setFree(100 * 1024 * 1024);
+    const engine = new OfflineDownloadEngine(f.io);
+    await engine.setAutomaticTransfersAllowed(true);
+    await engine.prepareBroadcast(video()); await engine.setConnectivity(true);
+    await until(() => engine.getItem("recording-1")?.status === "failed");
+    assert.equal(f.transfers(), 0);
+    f.setFree(1024 ** 3); await engine.prepareBroadcast(video());
+    await until(() => engine.isDownloaded("recording-1"));
+    await engine.clearAll();
+  });
+  it("never revalidates a durable broadcast recording with the backend", async () => {
+    const f = fixture(); const engine = new OfflineDownloadEngine(f.io);
+    await engine.setAutomaticTransfersAllowed(true);
+    await engine.prepareBroadcast(video()); await engine.setConnectivity(true);
+    await until(() => engine.isDownloaded("recording-1"));
+    const stored = f.saved(); stored[0]!.checkedAt = 0;
+    const restored = fixture(stored);
+    restored.files.set("file:///private/recording-1.mp4", bytes);
+    restored.deny();
+    const reopened = new OfflineDownloadEngine(restored.io);
+    await reopened.setConnectivity(true); await reopened.refreshAccess();
+    assert.equal(restored.grants(), 0);
+    assert.equal((await reopened.validateForPlayback("recording-1")).videoId, "recording-1");
+    await reopened.clearAll(); await engine.clearAll();
+  });
+  it("does not transfer automatically on cellular and parks immediately when Wi-Fi is lost", async () => {
+    const f = fixture(); f.block();
+    const engine = new OfflineDownloadEngine(f.io);
+    await engine.prepareBroadcast(video()); await engine.setConnectivity(true);
+    await tick(); assert.equal(f.transfers(), 0);
+    await engine.setAutomaticTransfersAllowed(true);
+    await until(() => f.transfers() === 1);
+    await engine.setAutomaticTransfersAllowed(false);
+    await until(() => engine.getItem("recording-1")?.status === "paused");
+    assert.equal(engine.getItem("recording-1")?.autoResume, true);
+    f.release(); await engine.setAutomaticTransfersAllowed(true);
+    await until(() => engine.isDownloaded("recording-1"));
+    await engine.clearAll();
+  });
+  it("reclaims only outdated automatic copies, never an active playback or manual file", async () => {
+    const f = fixture([completeForStorage("old"), completeForStorage("playing"),
+      { ...completeForStorage("manual"), automaticBroadcast: false }]);
+    for (const id of ["old", "playing", "manual"]) f.files.set(`file:///private/${id}.mp4`, bytes);
+    const engine = new OfflineDownloadEngine(f.io);
+    await engine.init(); engine.setBroadcastLineup(["new"]);
+    const releasePin = engine.pinForPlayback("playing");
+    f.setFree(100);
+    await engine.setAutomaticTransfersAllowed(true);
+    await engine.prepareBroadcast(video("new")); await engine.setConnectivity(true);
+    await until(() => engine.getItem("new")?.status === "failed");
+    assert.equal(engine.getItem("old"), undefined);
+    assert.equal(f.files.has("file:///private/playing.mp4"), true);
+    assert.equal(f.files.has("file:///private/manual.mp4"), true);
+    releasePin(); await engine.clearAll();
+  });
 });
+
+function completeForStorage(id: string): DownloadItem {
+  return { ...video(id), localPath: `file:///private/${id}.mp4`, status: "completed", progress: 1,
+    totalBytes: bytes.length, downloadedBytes: bytes.length, sha256: digest,
+    offlinePolicy: "public-broadcast-recording", automaticBroadcast: true,
+    createdAt: new Date(0).toISOString(), completedAt: new Date(0).toISOString(),
+    retryCount: 0, error: null };
+}

@@ -1,24 +1,73 @@
 import { useEffect, useState, useCallback } from "react";
-import { AppState } from "react-native";
+import { AppState, Platform } from "react-native";
 import { downloadManager, type DownloadItem } from "@/services/downloadManager";
 import type { Sermon } from "@/types";
 import { useNetworkStatus } from "./useNetworkStatus";
+import { automaticBroadcast } from "@/services/automaticBroadcast";
+import type { BroadcastPreparation } from "@/services/offlineBroadcastEngine";
+import * as Network from "expo-network";
+import Constants from "expo-constants";
+import { mayPrepareBroadcast } from "@/lib/broadcastDownloadPolicy";
 
 export function useDownloads() {
   const [downloads, setDownloads] = useState<DownloadItem[]>([]);
   const [initialized, setInitialized] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { isOnline } = useNetworkStatus();
+  const [broadcastPreparation, setBroadcastPreparation] = useState<BroadcastPreparation>(
+    { total: 0, ready: 0, preparing: false, error: null });
+  const [automaticAllowed, setAutomaticAllowed] = useState(false);
+
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    let mounted = true;
+    let generation = 0;
+    const allowCellular = Constants.expoConfig?.extra?.offlineBroadcast?.allowCellular === true;
+    const apply = (network: Network.NetworkState) => {
+      const allowed = mayPrepareBroadcast(isOnline, network, allowCellular);
+      setAutomaticAllowed(allowed);
+      void downloadManager.setAutomaticTransfersAllowed(allowed).catch(e =>
+        setError(e instanceof Error ? e.message : "Automatic broadcast transfer could not be paused"));
+    };
+    const request = ++generation;
+    void Network.getNetworkStateAsync().then(network => {
+      if (mounted && request === generation) apply(network);
+    }).catch(() => { if (mounted) apply({}); });
+    const subscription = Network.addNetworkStateListener(network => {
+      generation++; if (mounted) apply(network);
+    });
+    return () => {
+      mounted = false; subscription.remove();
+      void downloadManager.setAutomaticTransfersAllowed(false).catch(() => {});
+    };
+  }, [isOnline]);
+
+  useEffect(() => {
+    if (Platform.OS === "web") return;
+    const update = () => setBroadcastPreparation(automaticBroadcast.state());
+    const unsubscribe = automaticBroadcast.subscribe(update);
+    const downloadsChanged = downloadManager.subscribe(update);
+    void automaticBroadcast.init().then(update).catch(e => setBroadcastPreparation(
+      { total: 0, ready: 0, preparing: false, error: e instanceof Error ? e.message : "Broadcast storage unavailable" }));
+    return () => { unsubscribe(); downloadsChanged(); };
+  }, []);
 
   useEffect(() => {
     const update = (active: boolean) => {
+      if (Platform.OS === "web") return;
+      automaticBroadcast.setActive(isOnline && automaticAllowed && active);
       void downloadManager.setConnectivity(isOnline, active).catch(e =>
         setError(e instanceof Error ? e.message : "Offline library could not be opened"));
+      if (isOnline && automaticAllowed && active) void automaticBroadcast.sync();
     };
     update(AppState.currentState === "active");
     const subscription = AppState.addEventListener("change", state => update(state === "active"));
-    return () => subscription.remove();
-  }, [isOnline]);
+    // One app-wide owner, no network traffic while backgrounded/offline.
+    const poll = setInterval(() => {
+      if (AppState.currentState === "active" && isOnline && automaticAllowed) void automaticBroadcast.sync();
+    }, 5 * 60_000);
+    return () => { subscription.remove(); clearInterval(poll); automaticBroadcast.setActive(false); };
+  }, [isOnline, automaticAllowed]);
 
   useEffect(() => {
     let mounted = true;
@@ -125,6 +174,9 @@ export function useDownloads() {
 
   return {
     downloads,
+    broadcastPreparation: { ...broadcastPreparation,
+      waitingForWifi: !automaticAllowed && broadcastPreparation.ready < broadcastPreparation.total },
+    automaticTransfersAllowed: automaticAllowed,
     completed,
     active,
     failed,

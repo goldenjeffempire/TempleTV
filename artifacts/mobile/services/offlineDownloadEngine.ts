@@ -1,5 +1,5 @@
 import {
-  isSafeVideoId, usableOfflineGrant,
+  isSafeVideoId, usableOfflineGrant, validOfflineAccess,
   type DownloadItem, type OfflineIO, type OfflineTask,
 } from "./offlineTypes";
 
@@ -18,6 +18,10 @@ export class OfflineDownloadEngine {
   private timer?: ReturnType<typeof setTimeout>;
   private syncing = false;
   private lastNotify = new Map<string, number>();
+  private automaticTransfersAllowed = false;
+  private broadcastLineup = new Set<string>();
+  private broadcastLineupInitialized = false;
+  private playbackPins = new Set<string>();
 
   constructor(private io: OfflineIO) {}
   private path(id: string, suffix = ".mp4"): string {
@@ -76,7 +80,7 @@ export class OfflineDownloadEngine {
   }
   private async changed(): Promise<void> { this.notify(); await this.persist(); }
 
-  async addDownload(video: Pick<DownloadItem, "videoId" | "videoTitle" | "thumbnailUrl" | "duration" | "category" | "preacher" | "sourceUrl">): Promise<void> {
+  async addDownload(video: Pick<DownloadItem, "videoId" | "videoTitle" | "thumbnailUrl" | "duration" | "category" | "preacher" | "sourceUrl"> & { automaticBroadcast?: boolean }): Promise<void> {
     await this.init();
     this.path(video.videoId);
     if (this.items.has(video.videoId)) return;
@@ -86,6 +90,50 @@ export class OfflineDownloadEngine {
       createdAt: new Date().toISOString(), completedAt: null, retryCount: 0, error: null });
     try { await this.changed(); } catch (error) { this.items.delete(video.videoId); this.notify(); throw error; }
     this.processQueue();
+  }
+  /** Upgrade an existing manual copy without deleting or retransferring it. */
+  async prepareBroadcast(video: Parameters<OfflineDownloadEngine["addDownload"]>[0]): Promise<void> {
+    await this.init();
+    const existing = this.items.get(video.videoId);
+    if (!existing) return this.addDownload({ ...video, automaticBroadcast: true });
+    if (existing.offlinePolicy === "public-broadcast-recording" &&
+        !["failed", "paused"].includes(existing.status)) return;
+    // Never mutate the authorization mode of an in-flight manual transfer.
+    if (this.workers.has(video.videoId)) return;
+    existing.automaticBroadcast = true;
+    existing.status = "queued"; existing.error = null; existing.retryAt = 0;
+    existing.retryCount = 0; existing.autoResume = false;
+    await this.changed(); this.processQueue();
+  }
+  async setAutomaticTransfersAllowed(allowed: boolean): Promise<void> {
+    this.automaticTransfersAllowed = allowed;
+    await this.init();
+    if (!allowed) {
+      await Promise.all([...this.workers.keys()].filter(id => this.items.get(id)?.automaticBroadcast)
+        .map(id => this.pause(id, true)));
+    } else {
+      for (const item of this.items.values()) if (item.automaticBroadcast && item.status === "paused" && item.autoResume) {
+        item.status = "queued"; item.autoResume = false;
+      }
+      await this.changed(); this.processQueue();
+    }
+  }
+  setBroadcastLineup(ids: string[]): void {
+    this.broadcastLineup = new Set(ids); this.broadcastLineupInitialized = true;
+  }
+  pinForPlayback(id: string): () => void {
+    this.playbackPins.add(id);
+    return () => { this.playbackPins.delete(id); };
+  }
+  private async reclaimOutdatedBroadcasts(requiredFree: number): Promise<void> {
+    if (!this.broadcastLineupInitialized) return;
+    const outdated = [...this.items.values()].filter(item => item.automaticBroadcast &&
+      item.status === "completed" && !this.broadcastLineup.has(item.videoId) &&
+      !this.playbackPins.has(item.videoId)).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    for (const item of outdated) {
+      if (await this.io.freeBytes() >= requiredFree) break;
+      await this.cancelDownload(item.videoId, true);
+    }
   }
   async setConnectivity(online: boolean, foreground = this.foreground): Promise<void> {
     this.online = online; this.foreground = foreground;
@@ -133,8 +181,9 @@ export class OfflineDownloadEngine {
     await this.changed(); this.processQueue();
   }
   async retryDownload(id: string): Promise<void> { await this.resumeDownload(id); }
-  async cancelDownload(id: string): Promise<void> {
+  async cancelDownload(id: string, onlyIfUnpinned = false): Promise<void> {
     await this.init();
+    if (onlyIfUnpinned && this.playbackPins.has(id)) return;
     const worker = this.workers.get(id);
     if (worker) worker.stopped = true;
     this.items.delete(id); this.lastNotify.delete(id);
@@ -163,6 +212,10 @@ export class OfflineDownloadEngine {
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     for (const item of queued) {
       if (this.workers.size >= 2) break;
+      if (item.automaticBroadcast && !this.automaticTransfersAllowed) continue;
+      // A full broadcast can be many GB. One automatic transfer at a time
+      // bounds radio, disk and origin pressure without slowing manual VOD.
+      if (item.automaticBroadcast && [...this.workers.keys()].some(id => this.items.get(id)?.automaticBroadcast)) continue;
       if (this.workers.has(item.videoId) || (item.retryAt ?? 0) > Date.now()) continue;
       const worker: Worker = { stopped: false };
       this.workers.set(item.videoId, worker);
@@ -190,11 +243,11 @@ export class OfflineDownloadEngine {
     const stopped = () => worker.stopped || this.items.get(id) !== item;
     try {
       await this.changed();
-      const grant = await this.io.authorize(id);
+      const grant = await this.io.authorize(id, item.automaticBroadcast === true);
       if (stopped()) return;
       if (grant.videoId !== id || (grant.sha256 !== null && !/^[a-f0-9]{64}$/i.test(grant.sha256)) ||
           !Number.isSafeInteger(grant.sizeBytes) || grant.sizeBytes <= 0 ||
-          Date.parse(grant.expiresAt) <= Date.now() || !Number.isFinite(Date.parse(grant.expiresAt))) {
+          !validOfflineAccess(grant, item.automaticBroadcast === true)) {
         throw Object.assign(new Error("Invalid offline authorization"), { permanent: true });
       }
       if ((grant.sha256 && item.sha256 && item.sha256 !== grant.sha256) ||
@@ -211,19 +264,28 @@ export class OfflineDownloadEngine {
         if (stopped()) return;
         Object.assign(item, { videoTitle: grant.videoTitle, duration: grant.duration,
           category: grant.category, preacher: grant.preacher, sourceUrl: grant.sourceUrl,
-          sha256: knownHash.toLowerCase(), expiresAt: grant.expiresAt, checkedAt: Date.now(),
+          sha256: knownHash.toLowerCase(), expiresAt: grant.expiresAt ?? undefined,
+          offlinePolicy: grant.policy, checkedAt: Date.now(),
           localPath: this.path(id), status: "completed", progress: 1,
           totalBytes: grant.sizeBytes, downloadedBytes: grant.sizeBytes, error: null, resumeData: undefined });
         await this.changed(); return;
       }
       const partial = await this.io.info(this.path(id, ".part"));
-      if (await this.io.freeBytes() < Math.max(0, grant.sizeBytes - partial.size) + RESERVE) {
+      // Without a native resume checkpoint the partial will be restarted.
+      // Do not subtract its bytes from the required capacity in that case.
+      const requiredFree = Math.max(0, grant.sizeBytes - (item.resumeData ? partial.size : 0)) +
+        (item.automaticBroadcast ? 256 * 1024 * 1024 : RESERVE);
+      if (item.automaticBroadcast && await this.io.freeBytes() < requiredFree) {
+        await this.reclaimOutdatedBroadcasts(requiredFree);
+      }
+      if (await this.io.freeBytes() < requiredFree) {
         throw Object.assign(new Error("Not enough storage. Free space and tap Retry."), { permanent: true });
       }
       if (stopped()) return;
       Object.assign(item, { videoTitle: grant.videoTitle, thumbnailUrl: grant.thumbnailUrl,
         duration: grant.duration, category: grant.category, preacher: grant.preacher,
-        sourceUrl: grant.sourceUrl, sha256: grant.sha256 ?? undefined, expiresAt: grant.expiresAt,
+        sourceUrl: grant.sourceUrl, sha256: grant.sha256 ?? undefined,
+        expiresAt: grant.expiresAt ?? undefined, offlinePolicy: grant.policy,
         totalBytes: grant.sizeBytes, checkedAt: Date.now(), error: null });
       await this.changed();
       if (stopped()) return;
@@ -308,12 +370,15 @@ export class OfflineDownloadEngine {
         if (!this.online || !this.foreground) break;
         if (item.status !== "completed" || Date.now() - (item.checkedAt ?? 0) < 60 * 60 * 1000) continue;
         try {
-          const grant = await this.io.authorize(item.videoId);
+          // Broadcast copies are durable public recordings, not expiring VOD
+          // grants. No backend response can interrupt an offline session.
+          if (item.offlinePolicy === "public-broadcast-recording") continue;
+          const grant = await this.io.authorize(item.videoId, item.automaticBroadcast === true);
           if (this.items.get(item.videoId) !== item) continue;
           if ((grant.sha256 && grant.sha256.toLowerCase() !== item.sha256) || grant.sizeBytes !== item.totalBytes) {
             throw Object.assign(new Error("Recording was replaced. Download the current version."), { permanent: true });
           }
-          item.expiresAt = grant.expiresAt; item.checkedAt = Date.now();
+          item.expiresAt = grant.expiresAt ?? undefined; item.offlinePolicy = grant.policy; item.checkedAt = Date.now();
         } catch (error) {
           if ((error as { permanent?: boolean }).permanent) {
             item.status = "failed"; item.localPath = null;

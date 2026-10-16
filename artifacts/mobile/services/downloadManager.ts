@@ -9,7 +9,7 @@ import { Platform } from "react-native";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { getApiBase } from "../lib/apiBase";
 import { OfflineDownloadEngine } from "./offlineDownloadEngine";
-import type { OfflineGrant, OfflineIO } from "./offlineTypes";
+import { validOfflineAccess, type OfflineGrant, type OfflineIO } from "./offlineTypes";
 export type { DownloadItem, DownloadStatus } from "./offlineTypes";
 
 const STORAGE_KEY = "@temple_tv/downloads_v1";
@@ -66,8 +66,8 @@ const io: OfflineIO = {
       return Array.from(hash.digest(), byte => byte.toString(16).padStart(2, "0")).join("");
     } finally { handle.close(); hash.destroy(); }
   },
-  async authorize(id) {
-    const response = await fetch(`${getApiBase()}/api/videos/${encodeURIComponent(id)}/offline`, {
+  async authorize(id, broadcast = false) {
+    const response = await fetch(`${getApiBase()}/api/videos/${encodeURIComponent(id)}/offline${broadcast ? "?purpose=broadcast" : ""}`, {
       signal: AbortSignal.timeout(15_000), cache: "no-store",
     });
     if (!response.ok) {
@@ -77,12 +77,11 @@ const io: OfflineIO = {
       { permanent: [400, 401, 403, 404, 409, 410].includes(response.status) });
     }
     const grant = await response.json() as OfflineGrant;
-    if (grant.policy !== "public-recording-7-days" || grant.videoId !== id ||
-        !["videoTitle", "thumbnailUrl", "duration", "category", "preacher", "sourceUrl", "expiresAt"]
+    if (!validOfflineAccess(grant, broadcast) || grant.videoId !== id ||
+        !["videoTitle", "thumbnailUrl", "duration", "category", "preacher", "sourceUrl"]
           .every(key => typeof grant[key as keyof OfflineGrant] === "string") ||
         (grant.sha256 !== null && !/^[a-f0-9]{64}$/i.test(grant.sha256)) ||
-        !Number.isSafeInteger(grant.sizeBytes) || grant.sizeBytes <= 0 ||
-        !Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= Date.now()) {
+        !Number.isSafeInteger(grant.sizeBytes) || grant.sizeBytes <= 0) {
       throw Object.assign(new Error("Invalid offline recording authorization"), { permanent: true });
     }
     grant.sourceUrl = appMediaUrl(grant.sourceUrl);
