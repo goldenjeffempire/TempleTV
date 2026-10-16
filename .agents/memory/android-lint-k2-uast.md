@@ -30,3 +30,17 @@ hook tests from actual cloud lint and installed-device acceptance.
 
 The option is defined in Android tools' `OptionalBooleanOption`:
 https://android.googlesource.com/platform/tools/base/+/studio-2025.1.2/build-system/gradle-core/src/main/java/com/android/build/gradle/options/OptionalBooleanOption.kt
+
+Retain Expo's generated intent-filter markers when resolving their narrowly
+scoped `MissingPrefix` false positive; do not delete the markers or disable that
+lint issue globally.
+
+**Why:** The SDK emits build-only unqualified metadata that survives native
+bundling but is flagged by full release lint. Expo also uses it to replace
+previously generated deep-link filters during incremental prebuilds.
+
+**How to apply:** Limit any annotation to the known Expo metadata, keep unknown
+unqualified attributes reportable, and verify both clean and repeated prebuilds.
+Generated manifests and splash styles must be checked after all Expo generators
+finish; editing an earlier intermediate resource does not establish that the
+final build input is safe.
