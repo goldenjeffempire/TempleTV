@@ -29,7 +29,16 @@ for (const setting of [
   "android.enableR8.fullMode=true",
 ]) assert.ok(props.split(/\r?\n/).includes(setting), `Missing release setting: ${setting}`);
 
-execFileSync("./gradlew", [":app:lintRelease", "--no-daemon", "--console=plain"], {
+// AGP 8.12's K2 UAST analysis crashes on Worklets' applied Kotlin Gradle
+// scripts ("Cannot find a KaModule for the VirtualFile"). Use the supported
+// K1 lint frontend consistently across modules; do not skip lint or its errors.
+// This changes lint analysis only, not the Kotlin compiler used for the app.
+execFileSync("./gradlew", [
+  ":app:lintRelease",
+  "-Pandroid.lint.useK2Uast=false",
+  "--no-daemon",
+  "--console=plain",
+], {
   cwd: android,
   stdio: "inherit",
 });

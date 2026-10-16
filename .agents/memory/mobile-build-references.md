@@ -19,6 +19,7 @@ clean-build behavior, patch synchronization, or native build compatibility.
 - [Patch and lockfile synchronization](pnpm-patch-lockfile-sync.md)
 - [Clean-store patch validation](stale-patch-eas-failure.md)
 - [Gradle configuration-cache incompatibility](gradle-config-cache-incompatibility.md)
+- [Release lint Kotlin UAST crash](android-lint-k2-uast.md)
 - [Archive/git-index environment constraints](eas-replit-git-index-workaround.md)
 - [Build memory limits](eas-build-oom.md)
 - [Workspace override drift](eas-workspace-overrides-lockfile-mismatch.md)
