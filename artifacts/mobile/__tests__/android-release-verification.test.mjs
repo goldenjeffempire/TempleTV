@@ -43,7 +43,13 @@ function runHook(overrides = {}) {
     const executable = (file, source) => writeFileSync(file,
       "#!/usr/bin/env node\n" + source, { mode: 0o755 });
     executable(path.join(android, "gradlew"), `
-      require("node:fs").writeFileSync("lint-args.json", JSON.stringify(process.argv.slice(2)));
+      const fs = require("node:fs");
+      fs.writeFileSync("lint-args.json", JSON.stringify(process.argv.slice(2)));
+      if (process.env.TEST_LINT_REPORT) {
+        const dir = "app/build/intermediates/lint_intermediate_text_report/release/lintReportRelease";
+        fs.mkdirSync(dir, {recursive:true});
+        fs.writeFileSync(dir + "/lint-results-release.txt", process.env.TEST_LINT_REPORT);
+      }
       process.exit(Number(process.env.TEST_LINT_EXIT || 0));
     `);
     executable(path.join(bin, "jarsigner"), `
@@ -96,6 +102,15 @@ describe("Android release verification hook", () => {
   it("still fails closed when release lint fails", () => {
     const result = runHook({ TEST_LINT_EXIT: "1" });
     assert.notEqual(result.status, 0);
+    assert.equal(result.audit, null);
+  });
+
+  it("prints the complete lint report and still fails closed", () => {
+    const report = "First error [MissingTvBanner]\nSecond error [NewApi]\n";
+    const result = runHook({ TEST_LINT_EXIT: "1", TEST_LINT_REPORT: report });
+    assert.notEqual(result.status, 0);
+    assert.ok(result.stderr.includes(report));
+    assert.ok(result.stderr.includes("ANDROID_RELEASE_LINT_REPORT_END"));
     assert.equal(result.audit, null);
   });
 

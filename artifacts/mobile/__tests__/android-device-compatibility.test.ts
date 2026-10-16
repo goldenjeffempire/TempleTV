@@ -1,7 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const require = createRequire(import.meta.url);
 const app = JSON.parse(readFileSync(new URL("../app.json", import.meta.url), "utf8")).expo;
@@ -52,6 +54,7 @@ describe("Android Play device compatibility", () => {
       assert.equal(feature.$["android:required"], "false", name);
     }
     const activity = manifest.application[0].activity[0];
+    assert.equal(manifest.application[0].$["android:banner"], "@drawable/tv_banner");
     assert.ok(activity["intent-filter"].some((f: any) =>
       f.category.some((c: any) => c.$["android:name"] === "android.intent.category.LEANBACK_LAUNCHER"),
     ));
@@ -87,5 +90,27 @@ describe("Android Play device compatibility", () => {
       Array.isArray(p) && p[0] === "expo-build-properties",
     );
     assert.equal(properties[1].android.minSdkVersion, 24);
+  });
+
+  it("copies the real 320×180 TV banner into clean Android builds", async () => {
+    const android = mkdtempSync(path.join(tmpdir(), "tv-banner-"));
+    try {
+      const config = androidTVPlugin({ name: "TV test", slug: "tv-test" });
+      const request = {
+        ...config,
+        modRequest: {
+          platform: "android", modName: "dangerous", platformProjectRoot: android,
+        },
+        modResults: {},
+      };
+      await config.mods.android.dangerous(request);
+      await config.mods.android.dangerous(request);
+      const copied = readFileSync(path.join(android, "app/src/main/res/drawable-xhdpi/tv_banner.png"));
+      assert.deepEqual(copied, readFileSync(new URL("../assets/images/tv-banner.png", import.meta.url)));
+      assert.equal(copied.readUInt32BE(16), 320);
+      assert.equal(copied.readUInt32BE(20), 180);
+    } finally {
+      rmSync(android, { recursive: true, force: true });
+    }
   });
 });
