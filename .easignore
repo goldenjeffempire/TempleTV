@@ -1,4 +1,5 @@
 # Root-level EAS build ignore
+/generated-artifacts/
 # Only the mobile app and its workspace dependencies are needed.
 # Source code for non-mobile packages is excluded to keep the archive small,
 # BUT each package's package.json MUST remain so pnpm can resolve all

@@ -171,6 +171,8 @@ function LocalAudioModeCard({
 }
 
 interface LocalVideoPlayerProps {
+  /** Saved recording: never emit live playback telemetry or warm network URLs. */
+  offlinePlayback?: boolean;
   videoUrl: string;
   hlsMasterUrl?: string;
   thumbnailUrl?: string;
@@ -238,6 +240,7 @@ interface LocalVideoPlayerProps {
 }
 
 export function LocalVideoPlayer({
+  offlinePlayback = false,
   videoUrl,
   hlsMasterUrl,
   thumbnailUrl,
@@ -265,7 +268,8 @@ export function LocalVideoPlayer({
   const effectiveNextUrl = nextHlsMasterUrl || nextVideoUrl || null;
   const c = useColors();
   const { width } = useWindowDimensions();
-  const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, isPlaying, dataSaver, isRadioMode, toggleRadioMode } = usePlayer();
+  const { updatePlayback, playerPlayRef, playerPauseRef, playerSeekRef, isPlaying, dataSaver, isRadioMode: contextRadioMode, toggleRadioMode } = usePlayer();
+  const isRadioMode = offlinePlayback ? false : contextRadioMode;
   const [loading, setLoading] = useState(true);
   const retryCountRef = useRef(0);
   // expo-video: useVideoPlayer must be called unconditionally (Rules of Hooks).
@@ -1145,7 +1149,7 @@ export function LocalVideoPlayer({
   // never sees a UI side-effect. Slot swaps and counter-resets re-baseline
   // so the next sample doesn't emit a synthetic spike.
   useEffect(() => {
-    if (Platform.OS !== "web") return;
+    if (Platform.OS !== "web" || offlinePlayback) return;
     const TELEMETRY_INTERVAL_MS = 5_000;
     let baselineSlot: "A" | "B" = webActiveSlotRef.current;
     let baselineDecoded = 0;
@@ -1180,7 +1184,7 @@ export function LocalVideoPlayer({
 
     const id = setInterval(tick, TELEMETRY_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [getWebVideo]);
+  }, [getWebVideo, offlinePlayback]);
 
   // ── Effect: cleanup hls instances on unmount ─────────────────────────
   useEffect(() => () => {

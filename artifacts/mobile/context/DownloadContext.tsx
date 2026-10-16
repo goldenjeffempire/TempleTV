@@ -10,6 +10,7 @@ interface DownloadContextValue {
   failed: DownloadItem[];
   paused: DownloadItem[];
   initialized: boolean;
+  error: string | null;
   addDownload: (sermon: Sermon) => Promise<void>;
   pauseDownload: (videoId: string) => Promise<void>;
   resumeDownload: (videoId: string) => Promise<void>;

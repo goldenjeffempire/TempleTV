@@ -693,6 +693,7 @@ function RootLayoutNav() {
   return (
     <Stack screenOptions={noHeader}>
       <Stack.Screen name="(tabs)" options={noHeader} />
+      <Stack.Screen name="offline-player" options={{ ...noHeader, gestureEnabled: false }} />
       <Stack.Screen
         name="player"
         options={{

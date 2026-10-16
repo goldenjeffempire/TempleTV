@@ -1,560 +1,133 @@
 /**
- * DownloadManager — singleton that manages offline video downloads.
- *
- * Uses expo-file-system's DownloadResumable API which supports:
- *   • Background downloads with byte-level progress callbacks
- *   • Pause / resume via serialised resume data persisted to AsyncStorage
- *   • Cancel
- *   • Retry on failure
- *
- * Only videos with a direct `localVideoUrl` (server-hosted MP4) are downloadable.
- * YouTube videos cannot be downloaded (Terms of Service).
- *
- * Storage layout:
- *   Files: FileSystem.documentDirectory + "temple_tv_downloads/<videoId>.mp4"
- *   Metadata: AsyncStorage key "@temple_tv/downloads_v1"
+ * Native adapter for verified, app-private recording downloads.
+ * No native dependency added: Expo FileSystem handles transfer and disk IO.
  */
-
-// expo-file-system v19+ moved the classic URI-based API to the /legacy
-// sub-path. Import from there so documentDirectory, DownloadResumable,
-// getInfoAsync, createDownloadResumable, makeDirectoryAsync, deleteAsync,
-// and InfoOptions are all still available without deprecation runtime throws.
 import * as FileSystem from "expo-file-system/legacy";
+import { File } from "expo-file-system";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-
-export type DownloadStatus =
-  | "queued"
-  | "downloading"
-  | "paused"
-  | "completed"
-  | "failed";
-
-export interface DownloadItem {
-  videoId: string;
-  videoTitle: string;
-  thumbnailUrl: string;
-  duration: string;
-  category: string;
-  preacher: string;
-  /** Original URL used to download (localVideoUrl from server) */
-  sourceUrl: string;
-  /** Absolute local filesystem path once completed */
-  localPath: string | null;
-  status: DownloadStatus;
-  /** 0–1 */
-  progress: number;
-  totalBytes: number | null;
-  downloadedBytes: number;
-  createdAt: string;
-  completedAt: string | null;
-  retryCount: number;
-  error: string | null;
-}
+import { Platform } from "react-native";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { getApiBase } from "../lib/apiBase";
+import { OfflineDownloadEngine } from "./offlineDownloadEngine";
+import type { OfflineGrant, OfflineIO } from "./offlineTypes";
+export type { DownloadItem, DownloadStatus } from "./offlineTypes";
 
 const STORAGE_KEY = "@temple_tv/downloads_v1";
-const DOWNLOADS_DIR = FileSystem.documentDirectory + "temple_tv_downloads/";
-const MAX_CONCURRENT = 2;
-// Permanent failures (bad request, not found, forbidden) will never succeed
-// on retry — fail fast instead of burning the user's time/battery.
-const MAX_PERMANENT_RETRIES = 0;
-// Transient failures (network drops, timeouts, 5xx, momentary disk hiccups)
-// are overwhelmingly recoverable — give them a much higher ceiling than a
-// permanent error before asking the user to intervene manually.
-const MAX_TRANSIENT_RETRIES = 8;
-const MAX_RETRY_BACKOFF_MS = 30_000;
+const directory = (FileSystem.documentDirectory ?? "") + "temple_tv_downloads/";
 
-/** True for a client-error HTTP status that will never succeed by re-requesting the same URL. */
-function isPermanentDownloadError(message: string): boolean {
-  const m = /Server returned status (\d+)/.exec(message);
-  if (!m || !m[1]) return false;
-  const status = parseInt(m[1], 10);
-  // 401/403/404/410 etc — the resource is gone or access is denied; 408/429
-  // and 5xx are excluded since those are transient by nature.
-  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+function appMediaUrl(value: string): string {
+  const base = getApiBase();
+  const url = new URL(value, base);
+  if (!base || (!__DEV__ && url.protocol !== "https:") || url.origin !== new URL(base).origin ||
+      !/^\/api\/(?:v1\/)?uploads\/[a-zA-Z0-9/_-]+\.(mp4|m4v|mov)$/i.test(url.pathname) ||
+      url.search || url.hash || url.username || url.password) {
+    throw Object.assign(new Error("Only authorized app-hosted recordings can be downloaded"), { permanent: true });
+  }
+  return url.toString();
 }
 
-type Listener = (downloads: DownloadItem[]) => void;
-
-class DownloadManager {
-  private items: Map<string, DownloadItem> = new Map();
-  private resumables: Map<string, FileSystem.DownloadResumable> = new Map();
-  private listeners: Set<Listener> = new Set();
-  private initialized = false;
-  private initPromise: Promise<void> | null = null;
-  // Whether the downloads directory could be created/verified on this device.
-  // When false, new downloads must fail fast with a clear message instead of
-  // sitting in "queued" forever — startDownload would otherwise throw on
-  // every write and silently retry against a storage target that can never
-  // succeed.
-  private dirReady = false;
-
-  async init(): Promise<void> {
-    if (this.initialized) return;
-    if (this.initPromise) return this.initPromise;
-    this.initPromise = this._init();
-    return this.initPromise;
-  }
-
-  private async _init(): Promise<void> {
+const io: OfflineIO = {
+  directory,
+  async prepare() {
+    if (Platform.OS === "web" || !FileSystem.documentDirectory) {
+      throw new Error("Offline downloads require the installed Android or iOS app.");
+    }
+    await FileSystem.makeDirectoryAsync(directory, { intermediates: true });
+  },
+  async load() {
+    const value = await AsyncStorage.getItem(STORAGE_KEY);
+    if (!value) return [];
+    try { return JSON.parse(value); } catch {
+      // Leave malformed metadata on disk for diagnosis; do not silently erase
+      // an existing offline library or its media files.
+      throw new Error("Offline library metadata is damaged. Please contact support before clearing app data.");
+    }
+  },
+  async save(items) { await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(items)); },
+  async list() { return FileSystem.readDirectoryAsync(directory); },
+  async info(path) {
+    const info = await FileSystem.getInfoAsync(path);
+    return { exists: info.exists, size: info.exists && !info.isDirectory ? info.size : 0 };
+  },
+  async freeBytes() { return FileSystem.getFreeDiskStorageAsync(); },
+  async remove(path) { await FileSystem.deleteAsync(path, { idempotent: true }); },
+  async move(from, to) { await FileSystem.moveAsync({ from, to }); },
+  async hash(path, stopped) {
+    // Native file handle reads bounded byte arrays, never a full base64 movie.
+    // SHA-256 is incremental; the UI gets a scheduling turn between 1 MiB reads.
+    const handle = new File(path).open();
+    const hash = sha256.create();
     try {
-      const dirInfo = await FileSystem.getInfoAsync(DOWNLOADS_DIR);
-      if (!dirInfo.exists) {
-        await FileSystem.makeDirectoryAsync(DOWNLOADS_DIR, { intermediates: true });
+      while ((handle.offset ?? 0) < (handle.size ?? 0)) {
+        if (stopped()) throw new Error("Verification cancelled");
+        hash.update(handle.readBytes(Math.min(1024 * 1024, (handle.size ?? 0) - (handle.offset ?? 0))));
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
       }
-      // Re-verify: some devices report makeDirectoryAsync as resolved even
-      // when the underlying write failed (e.g. storage full, permission
-      // revoked mid-call). Only trust it once existence is confirmed.
-      this.dirReady = (await FileSystem.getInfoAsync(DOWNLOADS_DIR)).exists;
-    } catch {
-      // Directory could not be created — device storage is likely full or
-      // permission was denied. Leave dirReady=false so addDownload()/
-      // startDownload() fail fast with a clear message instead of leaving
-      // items stuck in "queued" indefinitely with no explanation.
-      this.dirReady = false;
+      return Array.from(hash.digest(), byte => byte.toString(16).padStart(2, "0")).join("");
+    } finally { handle.close(); hash.destroy(); }
+  },
+  async authorize(id) {
+    const response = await fetch(`${getApiBase()}/api/videos/${encodeURIComponent(id)}/offline`, {
+      signal: AbortSignal.timeout(15_000), cache: "no-store",
+    });
+    if (!response.ok) {
+      throw Object.assign(new Error(response.status === 409
+        ? "This recording is not approved for verified offline viewing."
+        : `Offline authorization HTTP ${response.status}`),
+      { permanent: [400, 401, 403, 404, 409, 410].includes(response.status) });
     }
-
+    const grant = await response.json() as OfflineGrant;
+    if (grant.policy !== "public-recording-7-days" || grant.videoId !== id ||
+        !["videoTitle", "thumbnailUrl", "duration", "category", "preacher", "sourceUrl", "expiresAt"]
+          .every(key => typeof grant[key as keyof OfflineGrant] === "string") ||
+        (grant.sha256 !== null && !/^[a-f0-9]{64}$/i.test(grant.sha256)) ||
+        !Number.isSafeInteger(grant.sizeBytes) || grant.sizeBytes <= 0 ||
+        !Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= Date.now()) {
+      throw Object.assign(new Error("Invalid offline recording authorization"), { permanent: true });
+    }
+    grant.sourceUrl = appMediaUrl(grant.sourceUrl);
+    return grant;
+  },
+  async thumbnail(value, path) {
+    const base = getApiBase();
+    const url = new URL(value, base);
+    // Never forward credentials to artwork hosts, and never follow arbitrary
+    // third-party URLs for offline recordings.
+    if (url.origin !== new URL(base).origin || url.protocol !== new URL(base).protocol) return false;
+    const temporary = path + ".part";
+    const task = FileSystem.createDownloadResumable(url.toString(), temporary, {}, progress => {
+      if (progress.totalBytesWritten > 10 * 1024 * 1024) void task.cancelAsync().catch(() => {});
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const raw = await AsyncStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as DownloadItem[];
-        for (const item of parsed) {
-          // Reset in-progress downloads to paused on app restart
-          if (item.status === "downloading") {
-            item.status = "paused";
-          }
-          this.items.set(item.videoId, item);
-        }
-      }
-    } catch {
-      // Corrupted storage — start fresh
+      const result = await Promise.race([
+        task.downloadAsync(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            void task.cancelAsync().catch(() => {});
+            reject(new Error("Artwork download timed out"));
+          }, 10_000);
+        }),
+      ]);
+      const info = await FileSystem.getInfoAsync(temporary);
+      if (result?.status !== 200 || !info.exists || info.size <= 0 || info.size > 10 * 1024 * 1024) return false;
+      await FileSystem.moveAsync({ from: temporary, to: path });
+      return true;
+    } finally {
+      if (timer) clearTimeout(timer);
+      await task.cancelAsync().catch(() => {});
+      await FileSystem.deleteAsync(temporary, { idempotent: true });
     }
-
-    // Verify completed files still exist on disk
-    for (const [id, item] of this.items.entries()) {
-      if (item.status === "completed" && item.localPath) {
-        try {
-          const info = await FileSystem.getInfoAsync(item.localPath);
-          if (!info.exists) {
-            item.status = "failed";
-            item.localPath = null;
-            item.error = "File was deleted from device storage";
-            this.items.set(id, item);
-          }
-        } catch {
-          // File check failed — mark as failed
-          item.status = "failed";
-          item.localPath = null;
-          this.items.set(id, item);
-        }
-      }
-    }
-
-    this.initialized = true;
-    await this.persist();
-    this.notify();
-  }
-
-  subscribe(listener: Listener): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-
-  getAll(): DownloadItem[] {
-    return Array.from(this.items.values()).sort(
-      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
-  }
-
-  getItem(videoId: string): DownloadItem | undefined {
-    return this.items.get(videoId);
-  }
-
-  isDownloaded(videoId: string): boolean {
-    const item = this.items.get(videoId);
-    return item?.status === "completed" && !!item.localPath;
-  }
-
-  getLocalPath(videoId: string): string | null {
-    const item = this.items.get(videoId);
-    if (item?.status === "completed") return item.localPath ?? null;
-    return null;
-  }
-
-  async addDownload(video: {
-    videoId: string;
-    videoTitle: string;
-    thumbnailUrl: string;
-    duration: string;
-    category: string;
-    preacher: string;
-    sourceUrl: string;
-  }): Promise<void> {
-    await this.init();
-    if (this.items.has(video.videoId)) return;
-
-    const item: DownloadItem = {
-      ...video,
-      localPath: null,
-      // Fail fast and visibly when this device's downloads directory could
-      // not be created (storage full / permission denied) — previously this
-      // silently sat as "queued" forever with no explanation.
-      status: this.dirReady ? "queued" : "failed",
-      progress: 0,
-      totalBytes: null,
-      downloadedBytes: 0,
-      createdAt: new Date().toISOString(),
-      completedAt: null,
-      retryCount: 0,
-      error: this.dirReady
-        ? null
-        : "Couldn't access device storage for downloads. Check available space and storage permissions, then tap retry.",
+  },
+  task(url, path, resumeData, progress) {
+    const resumable = FileSystem.createDownloadResumable(appMediaUrl(url), path, {},
+      update => progress(update.totalBytesWritten), resumeData);
+    return {
+      async run() { return resumeData ? resumable.resumeAsync() : resumable.downloadAsync(); },
+      async pause() { return (await resumable.pauseAsync()).resumeData; },
+      async cancel() { await resumable.cancelAsync(); },
     };
-    this.items.set(video.videoId, item);
-    await this.persist();
-    this.notify();
-    if (this.dirReady) void this.processQueue();
-  }
+  },
+};
 
-  async pauseDownload(videoId: string): Promise<void> {
-    await this.init();
-    const item = this.items.get(videoId);
-    if (!item || item.status !== "downloading") return;
-
-    const resumable = this.resumables.get(videoId);
-    if (resumable) {
-      try {
-        const pauseResult = await resumable.pauseAsync();
-        // Persist resume data so we can resume even after app restart
-        const updatedItem: DownloadItem = {
-          ...item,
-          status: "paused",
-          error: null,
-        };
-        // Store resume data alongside item in a separate key
-        if (pauseResult.resumeData) {
-          await AsyncStorage.setItem(
-            `@temple_tv/dl_resume_${videoId}`,
-            pauseResult.resumeData,
-          );
-        }
-        this.items.set(videoId, updatedItem);
-        this.resumables.delete(videoId);
-        await this.persist();
-        this.notify();
-      } catch {
-        // If pause fails, mark as paused anyway (will retry from start)
-        this.items.set(videoId, { ...item, status: "paused" });
-        this.resumables.delete(videoId);
-        await this.persist();
-        this.notify();
-      }
-    }
-  }
-
-  async resumeDownload(videoId: string): Promise<void> {
-    await this.init();
-    const item = this.items.get(videoId);
-    if (!item || (item.status !== "paused" && item.status !== "failed")) return;
-
-    this.items.set(videoId, { ...item, status: "queued", error: null });
-    await this.persist();
-    this.notify();
-    void this.processQueue();
-  }
-
-  async cancelDownload(videoId: string): Promise<void> {
-    await this.init();
-    const resumable = this.resumables.get(videoId);
-    if (resumable) {
-      try { await resumable.cancelAsync(); } catch { /* ignore */ }
-      this.resumables.delete(videoId);
-    }
-    const item = this.items.get(videoId);
-    if (item?.localPath) {
-      try { await FileSystem.deleteAsync(item.localPath, { idempotent: true }); } catch { /* ignore */ }
-    }
-    await AsyncStorage.removeItem(`@temple_tv/dl_resume_${videoId}`).catch(() => {});
-    this.items.delete(videoId);
-    await this.persist();
-    this.notify();
-    void this.processQueue();
-  }
-
-  async retryDownload(videoId: string): Promise<void> {
-    await this.init();
-    const item = this.items.get(videoId);
-    if (!item) return;
-    if (!this.dirReady) {
-      this.items.set(videoId, {
-        ...item,
-        status: "failed",
-        error: "Couldn't access device storage for downloads. Check available space and storage permissions, then tap retry.",
-      });
-      await this.persist();
-      this.notify();
-      return;
-    }
-    this.items.set(videoId, {
-      ...item,
-      status: "queued",
-      progress: 0,
-      downloadedBytes: 0,
-      // A manual retry is an explicit new attempt from the user — reset the
-      // automatic-retry counter so it isn't already exhausted by prior
-      // background retries and fail after just one more transient hiccup.
-      retryCount: 0,
-      error: null,
-    });
-    await this.persist();
-    this.notify();
-    void this.processQueue();
-  }
-
-  async clearCompleted(): Promise<void> {
-    await this.init();
-    const toDelete = Array.from(this.items.values()).filter(
-      (i) => i.status === "completed",
-    );
-    for (const item of toDelete) {
-      if (item.localPath) {
-        try { await FileSystem.deleteAsync(item.localPath, { idempotent: true }); } catch { /* ignore */ }
-      }
-      this.items.delete(item.videoId);
-    }
-    await this.persist();
-    this.notify();
-  }
-
-  async clearAll(): Promise<void> {
-    await this.init();
-    // Cancel active downloads first
-    for (const [videoId, resumable] of this.resumables.entries()) {
-      try { await resumable.cancelAsync(); } catch { /* ignore */ }
-      this.resumables.delete(videoId);
-    }
-    // Delete all files
-    for (const item of this.items.values()) {
-      if (item.localPath) {
-        try { await FileSystem.deleteAsync(item.localPath, { idempotent: true }); } catch { /* ignore */ }
-      }
-      await AsyncStorage.removeItem(`@temple_tv/dl_resume_${item.videoId}`).catch(() => {});
-    }
-    this.items.clear();
-    await this.persist();
-    this.notify();
-  }
-
-  async getTotalStorageBytes(): Promise<number> {
-    let total = 0;
-    for (const item of this.items.values()) {
-      if (item.status === "completed" && item.localPath) {
-        try {
-          // In expo-file-system/legacy, InfoOptions only supports { md5 } —
-          // the size field is always present in FileInfo when the file exists.
-          const info = await FileSystem.getInfoAsync(item.localPath);
-          if (info.exists && "size" in info) {
-            total += (info as { size: number }).size;
-          }
-        } catch { /* ignore */ }
-      }
-    }
-    return total;
-  }
-
-  private activeCount(): number {
-    return Array.from(this.items.values()).filter(
-      (i) => i.status === "downloading",
-    ).length;
-  }
-
-  private async processQueue(): Promise<void> {
-    const queued = Array.from(this.items.values())
-      .filter((i) => i.status === "queued")
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-
-    for (const item of queued) {
-      if (this.activeCount() >= MAX_CONCURRENT) break;
-      void this.startDownload(item.videoId);
-    }
-  }
-
-  private async startDownload(videoId: string): Promise<void> {
-    const item = this.items.get(videoId);
-    if (!item) return;
-
-    if (!this.dirReady) {
-      this.items.set(videoId, {
-        ...item,
-        status: "failed",
-        error: "Couldn't access device storage for downloads. Check available space and storage permissions, then tap retry.",
-      });
-      await this.persist();
-      this.notify();
-      return;
-    }
-
-    const localPath = DOWNLOADS_DIR + videoId + ".mp4";
-    this.items.set(videoId, { ...item, status: "downloading", localPath, error: null });
-    await this.persist();
-    this.notify();
-
-    try {
-      // Try to resume from saved resume data first
-      const resumeData = await AsyncStorage.getItem(`@temple_tv/dl_resume_${videoId}`).catch(() => null);
-
-      let resumable: FileSystem.DownloadResumable;
-
-      if (resumeData) {
-        resumable = FileSystem.createDownloadResumable(
-          item.sourceUrl,
-          localPath,
-          {},
-          (progress) => this.onProgress(videoId, progress),
-          resumeData,
-        );
-      } else {
-        resumable = FileSystem.createDownloadResumable(
-          item.sourceUrl,
-          localPath,
-          {},
-          (progress) => this.onProgress(videoId, progress),
-        );
-      }
-
-      this.resumables.set(videoId, resumable);
-
-      const result = resumeData
-        ? await resumable.resumeAsync()
-        : await resumable.downloadAsync();
-
-      this.resumables.delete(videoId);
-      await AsyncStorage.removeItem(`@temple_tv/dl_resume_${videoId}`).catch(() => {});
-
-      const current = this.items.get(videoId);
-      if (!current || current.status === "paused") {
-        // Was paused during the download — respect that
-        return;
-      }
-
-      if (!result || !result.uri) {
-        throw new Error("Download produced no output file");
-      }
-
-      // Expo returns 206 when a DownloadResumable continues a server-side
-      // byte-range request.  It is a successful completion, not a failed
-      // download (a fresh download still normally returns 200).
-      if (result.status !== 200 && result.status !== 206) {
-        throw new Error(`Server returned status ${result.status}`);
-      }
-
-      this.items.set(videoId, {
-        ...current,
-        status: "completed",
-        localPath: result.uri,
-        progress: 1,
-        completedAt: new Date().toISOString(),
-        error: null,
-      });
-    } catch (err: unknown) {
-      const current = this.items.get(videoId);
-      if (!current) return;
-
-      // Don't overwrite a paused state set by pauseDownload()
-      if (current.status === "paused") return;
-
-      const message = err instanceof Error ? err.message : "Download failed";
-      const retryCount = (current.retryCount ?? 0) + 1;
-      const permanent = isPermanentDownloadError(message);
-      const retryCeiling = permanent ? MAX_PERMANENT_RETRIES : MAX_TRANSIENT_RETRIES;
-
-      if (retryCount <= retryCeiling) {
-        // Auto-retry with brief exponential delay, capped so a long string of
-        // transient failures doesn't back off indefinitely.
-        this.items.set(videoId, {
-          ...current,
-          status: "queued",
-          retryCount,
-          error: null,
-        });
-        await this.persist();
-        this.notify();
-        const delay = Math.min(2000 * retryCount, MAX_RETRY_BACKOFF_MS);
-        await new Promise<void>((r) => setTimeout(r, delay));
-        void this.processQueue();
-        return;
-      }
-
-      this.items.set(videoId, {
-        ...current,
-        status: "failed",
-        retryCount,
-        error: permanent
-          ? `${message} — this video is no longer available for download.`
-          : `${message} — retried ${retryCount} times. Tap retry once your connection improves.`,
-      });
-      this.resumables.delete(videoId);
-    }
-
-    await this.persist();
-    this.notify();
-    void this.processQueue();
-  }
-
-  /**
-   * Per-video timestamp of the last notify() that fired from onProgress.
-   * Limits UI re-renders to at most one per PROGRESS_THROTTLE_MS per active
-   * download, preventing the O(listeners × downloads × freq) snapshot churn
-   * that caused OOM on multi-GB downloads with many active subscribers.
-   */
-  private readonly _lastProgressNotify = new Map<string, number>();
-  private static readonly PROGRESS_THROTTLE_MS = 250;
-
-  private onProgress(
-    videoId: string,
-    progress: FileSystem.DownloadProgressData,
-  ): void {
-    const item = this.items.get(videoId);
-    if (!item) return;
-    const { totalBytesExpectedToWrite, totalBytesWritten } = progress;
-    const pct =
-      totalBytesExpectedToWrite > 0
-        ? totalBytesWritten / totalBytesExpectedToWrite
-        : 0;
-
-    // Always update in-memory state for accuracy.
-    this.items.set(videoId, {
-      ...item,
-      progress: Math.min(pct, 1),
-      downloadedBytes: totalBytesWritten,
-      totalBytes: totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : null,
-    });
-
-    // Throttle subscriber notifications: fire at most once per
-    // PROGRESS_THROTTLE_MS per video so large concurrent downloads don't flood
-    // React's render queue with thousands of state updates per second.
-    const now = Date.now();
-    const last = this._lastProgressNotify.get(videoId) ?? 0;
-    if (now - last < DownloadManager.PROGRESS_THROTTLE_MS) return;
-    this._lastProgressNotify.set(videoId, now);
-
-    this.notify();
-  }
-
-  private notify(): void {
-    // getAll() returns a flat array copy — not the full item Map snapshot —
-    // so each listener receives its own defensive copy without re-reading BYTEA
-    // data or large metadata objects.
-    const snapshot = this.getAll();
-    for (const l of this.listeners) {
-      try { l(snapshot); } catch { /* ignore listener errors */ }
-    }
-  }
-
-  private async persist(): Promise<void> {
-    try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(this.getAll()));
-    } catch { /* Non-critical */ }
-  }
-}
-
-export const downloadManager = new DownloadManager();
+export const downloadManager = new OfflineDownloadEngine(io);

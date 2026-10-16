@@ -1,10 +1,24 @@
 import { useEffect, useState, useCallback } from "react";
+import { AppState } from "react-native";
 import { downloadManager, type DownloadItem } from "@/services/downloadManager";
 import type { Sermon } from "@/types";
+import { useNetworkStatus } from "./useNetworkStatus";
 
 export function useDownloads() {
   const [downloads, setDownloads] = useState<DownloadItem[]>([]);
   const [initialized, setInitialized] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { isOnline } = useNetworkStatus();
+
+  useEffect(() => {
+    const update = (active: boolean) => {
+      void downloadManager.setConnectivity(isOnline, active).catch(e =>
+        setError(e instanceof Error ? e.message : "Offline library could not be opened"));
+    };
+    update(AppState.currentState === "active");
+    const subscription = AppState.addEventListener("change", state => update(state === "active"));
+    return () => subscription.remove();
+  }, [isOnline]);
 
   useEffect(() => {
     let mounted = true;
@@ -12,11 +26,11 @@ export function useDownloads() {
       if (!mounted) return;
       setDownloads(downloadManager.getAll());
       setInitialized(true);
-    }).catch(() => {
+    }).catch((e) => {
       // init() wraps all failures internally — this catch guards against any
       // unexpected throw (e.g. storage permission error on a new OS version)
       // and still marks the hook as initialized so UI doesn't hang forever.
-      if (mounted) setInitialized(true);
+      if (mounted) { setInitialized(true); setError(e instanceof Error ? e.message : "Offline library could not be opened"); }
     });
     const unsub = downloadManager.subscribe((updated) => {
       if (mounted) setDownloads(updated);
@@ -28,8 +42,10 @@ export function useDownloads() {
   }, []);
 
   const addDownload = useCallback(async (sermon: Sermon) => {
-    const sourceUrl = sermon.localVideoUrl ?? sermon.hlsMasterUrl;
-    if (!sourceUrl || sermon.videoSource === "youtube") return;
+    const sourceUrl = sermon.localVideoUrl;
+    if (!sourceUrl || sermon.videoSource === "youtube" || /\.m3u8(?:[?#]|$)/i.test(sourceUrl)) {
+      throw new Error("Only authorized app-hosted recordings can be downloaded");
+    }
     try {
       await downloadManager.addDownload({
         videoId: sermon.id,
@@ -90,8 +106,8 @@ export function useDownloads() {
 
   const isDownloadable = useCallback((sermon: Sermon): boolean => {
     return (
-      sermon.videoSource !== "youtube" &&
-      !!(sermon.localVideoUrl || sermon.hlsMasterUrl)
+      sermon.videoSource === "local" &&
+      !!sermon.localVideoUrl && !/^(file:|content:)|\.m3u8(?:[?#]|$)/i.test(sermon.localVideoUrl)
     );
   }, []);
 
@@ -102,7 +118,7 @@ export function useDownloads() {
 
   const completed = downloads.filter((d) => d.status === "completed");
   const active = downloads.filter(
-    (d) => d.status === "downloading" || d.status === "queued",
+    (d) => ["downloading", "queued", "verifying"].includes(d.status),
   );
   const failed = downloads.filter((d) => d.status === "failed");
   const paused = downloads.filter((d) => d.status === "paused");
@@ -114,6 +130,7 @@ export function useDownloads() {
     failed,
     paused,
     initialized,
+    error,
     addDownload,
     pauseDownload,
     resumeDownload,

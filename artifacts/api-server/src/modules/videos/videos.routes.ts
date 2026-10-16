@@ -6,6 +6,8 @@ import { createHash } from "node:crypto";
 import { db, schema } from "../../infrastructure/db.js";
 import { cache } from "../../infrastructure/cache.js";
 import { isUndefinedColumnError } from "../../infrastructure/db-schema-guard.js";
+import { storage } from "../../infrastructure/storage.js";
+import { offlineRecordingKey } from "./offline-recording-policy.js";
 
 /**
  * Public video catalogue surface.
@@ -31,6 +33,14 @@ import { isUndefinedColumnError } from "../../infrastructure/db-schema-guard.js"
  */
 
 const videos = schema.videosTable;
+
+const OfflineRecordingSchema = z.object({
+  videoId: z.string(), videoTitle: z.string(), thumbnailUrl: z.string(),
+  duration: z.string(), category: z.string(), preacher: z.string(),
+  sourceUrl: z.string(), sizeBytes: z.number().int().positive(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/i).nullable(),
+  expiresAt: z.string(), policy: z.literal("public-recording-7-days"),
+});
 
 // Explicit column projection — only select the 14 fields that toDto() and
 // PublicVideoSchema need. This guards against "column does not exist" 500s on
@@ -340,6 +350,48 @@ function buildWhere(
 
 export async function videosRoutes(app: FastifyInstance) {
   const r = app.withTypeProvider<ZodTypeProvider>();
+
+  // Public recordings follow the same public-media access policy as /uploads.
+  // This is NOT an entitlement for DRM, third-party, private or live sources.
+  r.get("/:id/offline", {
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    schema: {
+      tags: ["videos"],
+      params: z.object({ id: z.string().min(1).max(128) }),
+      response: {
+        200: OfflineRecordingSchema,
+        404: z.object({ error: z.string() }),
+        409: z.object({ error: z.string() }),
+        429: z.object({ error: z.string() }),
+        503: z.object({ error: z.string() }),
+      },
+    },
+  }, async (req, reply) => {
+    reply.header("Cache-Control", "no-store");
+    const [video] = await db.select({
+      id: videos.id, title: videos.title, thumbnailUrl: videos.thumbnailUrl,
+      duration: videos.duration, category: videos.category, preacher: videos.preacher,
+      videoSource: videos.videoSource, localVideoUrl: videos.localVideoUrl,
+      objectPath: videos.objectPath, checksumSha256: videos.checksumSha256,
+      validationStatus: videos.validationStatus,
+      transcodingErrorCode: videos.transcodingErrorCode,
+    }).from(videos).where(eq(videos.id, req.params.id)).limit(1);
+    if (!video) return reply.code(404).send({ error: "Recording no longer available" });
+    const key = offlineRecordingKey(video);
+    if (!key) return reply.code(409).send({ error: "This recording is not available for verified offline download" });
+    const head = await storage().headObject(key);
+    if (!head.exists || !head.contentLength) {
+      return reply.code(503).send({ error: "Recording storage is temporarily unavailable" });
+    }
+    return {
+      videoId: video.id, videoTitle: video.title, thumbnailUrl: video.thumbnailUrl,
+      duration: video.duration, category: video.category, preacher: video.preacher,
+      sourceUrl: `/api/v1/${key}`, sizeBytes: head.contentLength,
+      sha256: video.checksumSha256?.toLowerCase() ?? null,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      policy: "public-recording-7-days" as const,
+    };
+  });
 
   // ── GET /videos — paginated catalogue with search / filter / sort ──────────
   r.get(

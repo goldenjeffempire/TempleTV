@@ -49,10 +49,10 @@ import {
 import { Image } from "expo-image";
 import { StatusBar } from "expo-status-bar";
 import { LinearGradient } from "expo-linear-gradient";
-import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
+import { router, useFocusEffect, useLocalSearchParams, usePathname } from "expo-router";
 import { parseBoolParam, parseNumberParam } from "@/lib/params";
 import { navLogger } from "@/lib/navLogger";
-import { safeNavReplace } from "@/lib/safeNavPush";
+import { safeNavReplace, safeNavPush } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Feather } from "@expo/vector-icons";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
@@ -115,6 +115,9 @@ const SITE_ORIGIN: string = process.env.EXPO_PUBLIC_DOMAIN
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function PlayerScreen() {
+  // Expo keeps previous stack screens mounted. An offline recording owns the
+  // sole video surface; never retain a hidden live decoder or viewer lease.
+  const offlinePlaybackElsewhere = usePathname().endsWith("/offline-player");
   const apiBase = getApiBase() ?? "";
   const { token: authToken } = useAuth();
   const params = useLocalSearchParams<{
@@ -338,7 +341,7 @@ export default function PlayerScreen() {
   // Presence is deliberately scoped to this live player route. VOD, radio,
   // catalog screens, and background app chrome must not create viewer sessions.
   useMobileViewerPresence({
-    enabled: isLive,
+    enabled: isLive && isOnline && !offlinePlaybackElsewhere,
     activelyWatching: isLiveViewerWatching({
       isLive,
       isBroadcast: isBroadcastV2,
@@ -1193,12 +1196,27 @@ export default function PlayerScreen() {
   // downloadable — HLS manifests and YouTube are excluded (DownloadResumable
   // saves a single file, and offline playback reads that file back).
   const { addDownload, isDownloaded, getDownloadItem, cancelDownload } = useDownloadContext();
-  const downloadMp4Url = params.localVideoUrl || "";
-  const canDownload = isVod && !isYoutube && !!downloadMp4Url;
-  const downloadItem = getDownloadItem(videoId);
-  const alreadyDownloaded = isDownloaded(videoId);
+  const recording = isLive && !v2ServerSnap?.override && v2ServerSnap?.current?.source.kind === "mp4"
+    ? v2ServerSnap.current : null;
+  const downloadVideoId = recording?.videoId || (isLive ? "" : videoId);
+  const downloadMp4Url = recording?.source.url || params.localVideoUrl || "";
+  const canDownload = !!downloadVideoId && !!downloadMp4Url && !isYoutube &&
+    !/^(file:|content:)|\.m3u8(?:[?#]|$)/i.test(downloadMp4Url);
+  const downloadItem = getDownloadItem(downloadVideoId);
+  const alreadyDownloaded = isDownloaded(downloadVideoId);
   const isDownloadingNow =
-    downloadItem?.status === "downloading" || downloadItem?.status === "queued";
+    downloadItem?.status === "downloading" || downloadItem?.status === "queued" || downloadItem?.status === "verifying";
+  const offlineCopyId = isLive ? recording?.videoId : videoId;
+  const hasOfflineCopy = !!offlineCopyId && isDownloaded(offlineCopyId);
+  const offlineUnavailable = !isOnline;
+
+  useEffect(() => {
+    if (isOnline || !hasOfflineCopy || !offlineCopyId) return;
+    safeNavReplace("/offline-player", {
+      id: offlineCopyId,
+      positionSecs: String(Math.max(0, currentPositionMsRef.current / 1000)),
+    }, "offline-recording-handoff");
+  }, [isOnline, hasOfflineCopy, offlineCopyId]);
 
   const handleDownloadPress = useCallback(() => {
     if (alreadyDownloaded) {
@@ -1210,7 +1228,7 @@ export default function PlayerScreen() {
           {
             text: "Remove",
             style: "destructive",
-            onPress: () => { void cancelDownload(videoId); },
+            onPress: () => { void cancelDownload(downloadVideoId); },
           },
         ],
       );
@@ -1225,7 +1243,7 @@ export default function PlayerScreen() {
           {
             text: "Cancel download",
             style: "destructive",
-            onPress: () => { void cancelDownload(videoId); },
+            onPress: () => { void cancelDownload(downloadVideoId); },
           },
         ],
       );
@@ -1234,9 +1252,9 @@ export default function PlayerScreen() {
     void (async () => {
       try {
         await addDownload({
-          id: videoId,
-          title,
-          thumbnailUrl,
+          id: downloadVideoId,
+          title: recording?.title || title,
+          thumbnailUrl: recording?.thumbnailUrl || thumbnailUrl,
           youtubeId,
           description,
           duration,
@@ -1246,7 +1264,7 @@ export default function PlayerScreen() {
           videoSource: "local",
           localVideoUrl: downloadMp4Url,
         });
-        Alert.alert("Download started", "Find it under Settings → Downloads to watch offline.");
+        Alert.alert("Download queued", "Find it in Offline Broadcasts. Only a complete, verified recording can play without internet.");
       } catch {
         Alert.alert(
           "Download failed",
@@ -1259,7 +1277,9 @@ export default function PlayerScreen() {
     isDownloadingNow,
     cancelDownload,
     addDownload,
-    videoId,
+    downloadVideoId,
+    recording?.title,
+    recording?.thumbnailUrl,
     title,
     thumbnailUrl,
     youtubeId,
@@ -1464,7 +1484,11 @@ export default function PlayerScreen() {
         >
           {isLive ? (liveTitle || "Live Broadcast") : title}
         </Text>
-        {isLive && <LiveBadge size="small" />}
+        {isLive && isOnline && <LiveBadge size="small" />}
+        <Pressable onPress={() => safeNavPush("/downloads", {}, "offline-library")}
+          accessibilityRole="button" accessibilityLabel="Open Offline Broadcasts" hitSlop={12}>
+          <Feather name="download" size={20} color={c.primary} />
+        </Pressable>
       </View>
 
       <ScrollView
@@ -1478,7 +1502,15 @@ export default function PlayerScreen() {
         {/* Live broadcasts: compact 16:9 height so chat is immediately visible.
             VOD: adaptive height based on video aspect ratio, max 60% of screen. */}
         <View style={[styles.playerShell, { height: inlinePlayerHeight }]}>
-          {isBroadcastV2 && v2YouTubeVideoId ? (
+          {offlinePlaybackElsewhere ? null : offlineUnavailable ? (
+            <View style={[StyleSheet.absoluteFill, styles.noSourceContainer]}>
+              <Text style={styles.noSourceText}>{hasOfflineCopy ? "Opening saved recording…" : "Unavailable offline"}</Text>
+              <Text style={styles.noSourceSubtext}>A live broadcast needs internet. Only complete, verified recordings can play offline.</Text>
+              <Pressable onPress={() => safeNavPush("/downloads", {}, "offline-library")} accessibilityRole="button">
+                <Text style={styles.noSourceText}>Open Offline Broadcasts</Text>
+              </Pressable>
+            </View>
+          ) : isBroadcastV2 && v2YouTubeVideoId ? (
             /* V2 YouTube override — swaps inline to YoutubePlayer the moment
                the server snapshot arrives with override.kind="youtube" (e.g.
                the YouTube shuffle fallback). This eliminates the "Watch on
@@ -2043,7 +2075,7 @@ export default function PlayerScreen() {
             </Pressable>
           )}
 
-          {/* Download for offline — VOD, server-hosted MP4 only (not YouTube/HLS/live) */}
+          {/* Save the authorized recording, never the live stream or YouTube. */}
           {canDownload && (
             <Pressable
               onPress={handleDownloadPress}
@@ -2238,7 +2270,7 @@ export default function PlayerScreen() {
           player left off. For live streams the V2 engine reconnects within
           ~1 s, which is acceptable for a user-initiated fullscreen action. */}
       <Modal
-        visible={isFullscreen}
+        visible={isFullscreen && !offlinePlaybackElsewhere}
         animationType="fade"
         statusBarTranslucent
         onRequestClose={exitFullscreen}
@@ -2249,7 +2281,12 @@ export default function PlayerScreen() {
 
           {/* Player fills the entire modal */}
           <View style={styles.fsPlayerWrap}>
-            {isBroadcastV2 && v2YouTubeVideoId ? (
+            {offlinePlaybackElsewhere ? null : offlineUnavailable ? (
+              <View style={[StyleSheet.absoluteFill, styles.noSourceContainer]}>
+                <Text style={styles.noSourceText}>Unavailable offline</Text>
+                <Text style={styles.noSourceSubtext}>Close fullscreen to open your saved recordings.</Text>
+              </View>
+            ) : isBroadcastV2 && v2YouTubeVideoId ? (
               /* YouTube override — same inline swap as the inline player shell:
                  embed the YouTube video directly rather than showing the
                  "Watch on YouTube" external-link overlay from V2PlayerContainer. */

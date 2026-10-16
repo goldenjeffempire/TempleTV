@@ -53,15 +53,10 @@ function DownloadRow({ item }: { item: DownloadItem }) {
   const handlePlay = () => {
     if (!item.localPath) return;
     safeNavPush(
-      "/player",
+      "/offline-player",
       {
         id: item.videoId,
         title: item.videoTitle,
-        localVideoUrl: item.localPath,
-        thumbnailUrl: item.thumbnailUrl,
-        duration: item.duration,
-        category: item.category,
-        preacher: item.preacher,
       },
       "downloads",
     );
@@ -73,12 +68,12 @@ function DownloadRow({ item }: { item: DownloadItem }) {
       `Cancel downloading "${item.videoTitle}"?`,
       [
         { text: "Keep", style: "cancel" },
-        { text: "Cancel Download", style: "destructive", onPress: () => cancelDownload(item.videoId) },
+        { text: "Cancel Download", style: "destructive", onPress: () => { void cancelDownload(item.videoId).catch(showDownloadError); } },
       ],
     );
   };
 
-  const isActive = item.status === "downloading" || item.status === "queued";
+  const isActive = ["downloading", "queued", "verifying"].includes(item.status);
   const isPaused = item.status === "paused";
   const isCompleted = item.status === "completed";
   const isFailed = item.status === "failed";
@@ -93,6 +88,7 @@ function DownloadRow({ item }: { item: DownloadItem }) {
   const statusLabel =
     isCompleted ? "Downloaded" :
     isFailed ? (item.error ?? "Failed") :
+    item.status === "verifying" ? "Verifying recording…" :
     item.status === "queued" ? "Waiting…" :
     item.status === "downloading" ? `${progressPct}%` :
     "Paused";
@@ -102,7 +98,7 @@ function DownloadRow({ item }: { item: DownloadItem }) {
       {/* Thumbnail */}
       <View style={styles.thumb}>
         <Image
-          source={item.thumbnailUrl ? { uri: item.thumbnailUrl } : PLACEHOLDER}
+          source={item.localThumbnail ? { uri: item.localThumbnail } : PLACEHOLDER}
           placeholder={PLACEHOLDER}
           style={styles.thumbImg}
           contentFit="cover"
@@ -126,6 +122,7 @@ function DownloadRow({ item }: { item: DownloadItem }) {
             {item.preacher}
           </Text>
         )}
+        {!!item.duration && <Text style={[styles.preacher, { color: c.mutedForeground }]}>{item.duration}</Text>}
 
         {/* Progress bar for active / paused */}
         {(isActive || isPaused) && (
@@ -154,7 +151,7 @@ function DownloadRow({ item }: { item: DownloadItem }) {
       <View style={styles.actions}>
         {isActive && (
           <Pressable
-            onPress={() => pauseDownload(item.videoId)}
+            onPress={() => { void pauseDownload(item.videoId).catch(showDownloadError); }}
             style={styles.actionBtn}
             accessibilityLabel="Pause download"
             hitSlop={8}
@@ -164,7 +161,7 @@ function DownloadRow({ item }: { item: DownloadItem }) {
         )}
         {isPaused && (
           <Pressable
-            onPress={() => resumeDownload(item.videoId)}
+            onPress={() => { void resumeDownload(item.videoId).catch(showDownloadError); }}
             style={styles.actionBtn}
             accessibilityLabel="Resume download"
             hitSlop={8}
@@ -174,7 +171,7 @@ function DownloadRow({ item }: { item: DownloadItem }) {
         )}
         {isFailed && (
           <Pressable
-            onPress={() => retryDownload(item.videoId)}
+            onPress={() => { void retryDownload(item.videoId).catch(showDownloadError); }}
             style={styles.actionBtn}
             accessibilityLabel="Retry download"
             hitSlop={8}
@@ -199,7 +196,7 @@ function DownloadRow({ item }: { item: DownloadItem }) {
               `Delete the downloaded copy of "${item.videoTitle}"?`,
               [
                 { text: "Cancel", style: "cancel" },
-                { text: "Delete", style: "destructive", onPress: () => cancelDownload(item.videoId) },
+                { text: "Delete", style: "destructive", onPress: () => { void cancelDownload(item.videoId).catch(showDownloadError); } },
               ],
             );
           } : handleCancel}
@@ -214,10 +211,14 @@ function DownloadRow({ item }: { item: DownloadItem }) {
   );
 }
 
+function showDownloadError(error: unknown) {
+  Alert.alert("Offline library", error instanceof Error ? error.message : "The action could not be completed. Please try again.");
+}
+
 export default function DownloadsScreen() {
   const insets = useSafeAreaInsets();
   const c = useColors();
-  const { downloads, clearCompleted, clearAll, getTotalStorageBytes } = useDownloadContext();
+  const { downloads, error, clearCompleted, clearAll, getTotalStorageBytes } = useDownloadContext();
   const [totalStorage, setTotalStorage] = useState<number>(0);
 
   useEffect(() => {
@@ -235,7 +236,7 @@ export default function DownloadsScreen() {
       "Delete all downloaded videos from your device?",
       [
         { text: "Cancel", style: "cancel" },
-        { text: "Delete All", style: "destructive", onPress: () => clearAll() },
+        { text: "Delete All", style: "destructive", onPress: () => { void clearAll().catch(showDownloadError); } },
       ],
     );
   }, [downloads.length, clearAll]);
@@ -246,7 +247,7 @@ export default function DownloadsScreen() {
       "Delete all completed downloads from your device?",
       [
         { text: "Cancel", style: "cancel" },
-        { text: "Delete", style: "destructive", onPress: () => clearCompleted() },
+        { text: "Delete", style: "destructive", onPress: () => { void clearCompleted().catch(showDownloadError); } },
       ],
     );
   }, [clearCompleted]);
@@ -259,7 +260,7 @@ export default function DownloadsScreen() {
       <Stack.Screen options={{ headerShown: false }} />
       <View style={[styles.container, { backgroundColor: c.background }]}>
         <AppHeader
-          title={downloads.length > 0 ? `Downloads · ${formatBytes(totalStorage)}` : "Downloads"}
+          title={downloads.length > 0 ? `Offline Broadcasts · ${formatBytes(totalStorage)}` : "Offline Broadcasts"}
           onBack={() => router.back()}
           rightLabel={downloads.length > 0 ? {
             text: hasCompleted ? "Clear Done" : "Clear All",
@@ -280,7 +281,7 @@ export default function DownloadsScreen() {
               <View style={[styles.infoBar, { backgroundColor: c.card, borderBottomColor: c.border }]}>
                 <Feather name="info" size={14} color={c.mutedForeground} />
                 <Text style={[styles.infoText, { color: c.mutedForeground }]}>
-                  Downloads are available for offline playback. Only server-hosted videos can be downloaded.
+                  Saved recordings, not live broadcasts. Connect at least every 7 days to renew offline access.
                 </Text>
               </View>
             ) : null
@@ -289,10 +290,10 @@ export default function DownloadsScreen() {
             <View style={styles.empty}>
               <Feather name="download" size={48} color={c.mutedForeground} style={styles.emptyIcon} />
               <Text style={[styles.emptyTitle, { color: c.foreground }]}>
-                No downloads yet
+                {error ? "Offline library unavailable" : "No recordings saved"}
               </Text>
               <Text style={[styles.emptySubtitle, { color: c.mutedForeground }]}>
-                Download server-hosted videos to watch them offline. Open a sermon and tap the Download button in the player.
+                {error ?? "Save an authorized app-hosted broadcast recording while online. YouTube and live streams cannot be downloaded."}
               </Text>
               <Pressable
                 style={[styles.browseBtn, { backgroundColor: c.primary }]}

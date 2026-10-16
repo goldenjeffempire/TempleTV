@@ -16,6 +16,7 @@ const KNOWN_APP_PATH_PREFIXES = [
   "/history",
   "/watch-later",
   "/downloads",
+  "/offline-player",
   "/notifications",
   "/login",
   "/signup",

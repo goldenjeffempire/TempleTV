@@ -1,3 +1,4 @@
+/generated-artifacts/
 # EAS build ignore — mirrors .gitignore but explicitly KEEPS
 # google-services.json and GoogleService-Info.plist so EAS cloud
 # builds receive the Firebase config files.

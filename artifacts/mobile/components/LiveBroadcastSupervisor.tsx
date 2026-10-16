@@ -86,7 +86,8 @@ export function LiveBroadcastSupervisor() {
     let cancelled = false;
 
     // ── Helper: is the user already on the player screen? ────────────────────
-    const onPlayer = () => segmentsRef.current.includes("player" as never);
+    const onPlayer = () => segmentsRef.current.includes("player" as never) ||
+      segmentsRef.current.includes("offline-player" as never);
 
     // ── Helper: navigate to live player (debounced) ───────────────────────────
     // Uses safeNavPush (try/catch + 1 retry + Sentry telemetry) so that a
