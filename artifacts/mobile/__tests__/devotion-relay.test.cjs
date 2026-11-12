@@ -23,8 +23,10 @@ describe("fixed public devotion relay", () => {
     await relay({ method: "GET", url: "/temple-content/devotion?url=https://evil.test",
       headers: { authorization: "NOT_A_REAL_TOKEN", cookie: "fake=test" } }, res);
     assert.equal(called[0], "https://jctm.org.ng/api/devotion/daily");
-    assert.deepEqual(called[1].headers, { Accept: "application/json" });
+    assert.deepEqual(called[1].headers, { Accept: "application/json", "Cache-Control": "no-cache" });
+    assert.equal(called[1].cache, "no-store");
     assert.equal(res.status, 200);
+    assert.equal(res.headers["Cache-Control"], "no-store, max-age=0");
   });
   it("caches and coalesces requests without hammering the website", async () => {
     let calls = 0;
@@ -47,6 +49,28 @@ describe("fixed public devotion relay", () => {
     await relay({ method: "GET" }, res);
     assert.equal(JSON.parse(res.body).stale, true);
     assert.equal(JSON.parse(res.body).fetchedAt, 1_000_000);
+  });
+  it("shows a new publication without the previous five-minute delay", async () => {
+    let now = 1_000_000, title = "Earlier fixture", calls = 0;
+    const relay = createDevotionRelay({ now: () => now, fetcher: async () => {
+      calls++;
+      return new Response(JSON.stringify({ devotion: { title } }), { headers: { "Content-Type": "application/json" } });
+    } });
+    await relay({ method: "GET" }, reply());
+    title = "Latest official fixture"; now += 6_000;
+    const res = reply(); await relay({ method: "GET" }, res);
+    assert.equal(JSON.parse(res.body).devotion.title, title);
+    assert.equal(calls, 2);
+  });
+  it("revalidates at Lagos midnight even during the short deduplication window", async () => {
+    let now = Date.parse("2026-11-12T22:59:59Z"), calls = 0;
+    const relay = createDevotionRelay({ now: () => now, fetcher: async () => {
+      calls++;
+      return new Response('{"devotion":{"title":"Fixture"}}', { headers: { "Content-Type": "application/json" } });
+    } });
+    await relay({ method: "GET" }, reply());
+    now += 2_000; await relay({ method: "GET" }, reply());
+    assert.equal(calls, 2);
   });
   it("rejects mutations without contacting the publisher", async () => {
     const relay = createDevotionRelay({ fetcher: async () => { throw new Error("Must not fetch"); } });

@@ -83,11 +83,35 @@ function fixture(initial: string | null = null) {
     assert.equal((await f.repository.load()).devotion.title, "Newly published fixture");
     assert.equal(f.calls(), 2);
   });
+  it("revalidates a Home return after short deduplication, not after five minutes", async () => {
+    const f = fixture(); await f.repository.load();
+    f.advance(core.DEVOTION_DEDUPE_MS + 1);
+    f.respond({ devotion: { ...payload.devotion, title: "Updated official fixture" } });
+    assert.equal((await f.repository.load()).devotion.title, "Updated official fixture");
+    assert.equal(f.calls(), 2);
+  });
+  it("revalidates a restored saved copy even inside the deduplication window", async () => {
+    const f = fixture(); await f.repository.load();
+    const restarted = fixture(f.stored());
+    restarted.respond({ devotion: { ...payload.devotion, title: "Latest after restart" } });
+    assert.equal((await restarted.repository.load()).devotion.title, "Latest after restart");
+    assert.equal(restarted.calls(), 1);
+  });
+  it("does not hide a failed refresh by falsely marking the saved copy fresh", async () => {
+    const f = fixture(); await f.repository.load(); f.fail();
+    assert.equal((await f.repository.load(true)).stale, true);
+    assert.equal((await f.repository.load()).stale, true);
+  });
+  it("schedules a daily rollover check without relying on the device timezone", () => {
+    assert.equal(core.nextDevotionRefreshDelay(Date.parse("2026-11-12T12:00:00Z")), 30_000);
+    assert.equal(core.nextDevotionRefreshDelay(Date.parse("2026-11-12T22:59:58Z")), 2_100);
+    assert.equal(core.nextDevotionRefreshDelay(Date.parse("2026-11-12T22:59:59.999Z")), 1_000);
+  });
   it("refreshes across Lagos midnight even if the interval has not expired", async () => {
     const f = fixture();
-    f.setTime(Date.parse("2026-11-12T22:59:00Z"));
+    f.setTime(Date.parse("2026-11-12T22:59:59Z"));
     await f.repository.load();
-    f.advance(2 * 60_000);
+    f.advance(2_000);
     await f.repository.load();
     assert.equal(f.calls(), 2);
   });
@@ -147,5 +171,15 @@ function fixture(initial: string | null = null) {
     const result = await f.repository.load();
     assert.equal(result.fetchedAt, old);
     assert.equal(result.stale, true);
+  });
+  it("does not stack the relay and device deduplication windows", async () => {
+    const f = fixture();
+    const checkedAt = Date.parse("2026-11-12T07:59:56Z");
+    f.respond({ ...payload, stale: false, fetchedAt: checkedAt });
+    assert.equal((await f.repository.load()).fetchedAt, checkedAt);
+    f.advance(2_000);
+    f.respond({ devotion: { ...payload.devotion, title: "Latest official fixture" } });
+    assert.equal((await f.repository.load()).devotion.title, "Latest official fixture");
+    assert.equal(f.calls(), 2);
   });
 });

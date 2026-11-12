@@ -16,3 +16,11 @@ the observed daily response supplied neither. The public daily page is the
 valid fallback reading URL. Its API restricts browser origins, so browser access
 needs a fixed same-origin relay; native fetching should remain independent of
 the Temple TV backend's availability.
+
+The publisher advertises a 20-request-per-minute rate limit. Keep refreshes
+foreground-only, coalesce rapid focus events and retain an explicitly stale
+saved copy on source errors rather than pretending it was just refreshed.
+
+**Why:** "Always current" must mean revalidation against the actual publisher;
+stacked multi-minute caches can show the wrong daily entry, while unrestricted
+per-render requests can exhaust the publisher's limit.

@@ -4,7 +4,9 @@ export const DEVOTION_PAGE = `${DEVOTION_SITE}/devotion`;
 export const DEVOTION_API = `${DEVOTION_SITE}/api/devotion/daily`;
 export const DEVOTION_CACHE_KEY = "@temple_tv/public_devotion_v1";
 export const DEVOTION_QUERY_KEY = ["temple:daily-devotion:v1"] as const;
-export const DEVOTION_REFRESH_MS = 5 * 60 * 1000;
+export const DEVOTION_REFRESH_MS = 30_000;
+// Coalesce rapid navigation without suppressing real publication updates.
+export const DEVOTION_DEDUPE_MS = 5_000;
 
 export interface DailyDevotion {
   id: string;
@@ -113,6 +115,13 @@ function stationDay(now: number): string {
   return new Date(now + 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
+export function nextDevotionRefreshDelay(now: number): number {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const stationNow = now + 60 * 60 * 1000;
+  const untilMidnight = dayMs - ((stationNow % dayMs + dayMs) % dayMs);
+  return Math.max(1_000, Math.min(DEVOTION_REFRESH_MS, untilMidnight + 100));
+}
+
 /** Single-flight, persistent stale-if-error repository, independent of Temple API health. */
 export class DailyDevotionRepository {
   private cache: DevotionSnapshot | null = null;
@@ -145,8 +154,8 @@ export class DailyDevotionRepository {
   }
 
   private fresh(): boolean {
-    return !!this.cache && this.io.now() >= this.cache.fetchedAt &&
-      this.io.now() - this.cache.fetchedAt < DEVOTION_REFRESH_MS &&
+    return !!this.cache && !this.cache.stale && this.io.now() >= this.cache.fetchedAt &&
+      this.io.now() - this.cache.fetchedAt < DEVOTION_DEDUPE_MS &&
       stationDay(this.io.now()) === stationDay(this.cache.fetchedAt);
   }
 
@@ -167,7 +176,7 @@ export class DailyDevotionRepository {
         const relay = object(payload);
         const stale = relay?.stale === true;
         const timestamp = relay?.fetchedAt;
-        const fetchedAt = stale && typeof timestamp === "number" && timestamp > 0 && timestamp <= this.io.now()
+        const fetchedAt = typeof timestamp === "number" && timestamp > 0 && timestamp <= this.io.now()
           ? timestamp : this.io.now();
         const snapshot: DevotionSnapshot = { devotion, fetchedAt, stale,
           error: stale ? "The latest devotion could not be refreshed. Your saved copy is available." : null };
@@ -177,7 +186,10 @@ export class DailyDevotionRepository {
         return snapshot;
       } catch (error) {
         if (parentSignal?.aborted) throw Object.assign(new Error("Devotion request cancelled"), { name: "AbortError" });
-        if (this.cache) return { ...this.cache, stale: true, error: "The latest devotion could not be refreshed. Your saved copy is available." };
+        if (this.cache) {
+          this.cache = { ...this.cache, stale: true, error: "The latest devotion could not be refreshed. Your saved copy is available." };
+          return { ...this.cache };
+        }
         throw error instanceof Error ? error : new Error("The official devotion is temporarily unavailable.");
       } finally {
         clearTimeout(timeout);

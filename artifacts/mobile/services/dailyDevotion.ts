@@ -14,7 +14,8 @@ export const dailyDevotionRepository = new DailyDevotionRepository({
     // prevent access to today's devotion.
     const endpoint = Platform.OS === "web" ? "/mobile/temple-content/devotion" : DEVOTION_API;
     const response = await fetch(endpoint, {
-      signal, headers: { Accept: "application/json" }, credentials: "omit",
+      signal, cache: "no-store",
+      headers: { Accept: "application/json", "Cache-Control": "no-cache" }, credentials: "omit",
     });
     if (!response.ok) throw new Error(`The official devotion service returned HTTP ${response.status}.`);
     if (!response.headers.get("content-type")?.includes("application/json")) {

@@ -20,7 +20,10 @@
   the browser, with explicit retry/fallback on opening errors.
 - Persistent public-content cache survives network/source failures and app
   restarts. Requests are coalesced, bounded and timed out; refresh runs every
-  five minutes only while Home is focused and the app is active.
+  thirty seconds only while Home is focused and the app is active. It also
+  revalidates on Home entry, foreground return, network recovery and the Lagos
+  day boundary. A five-second deduplication window protects the publisher's
+  rate limit; browser responses are not cached.
 - No invented devotion, date, image, article link or sample content in runtime.
 - Accessibility/contrast/touch-control improvements across twenty supporting
   routes; see `mobile-ui-modernization-audit.md` for scope.
@@ -36,7 +39,7 @@
 ## Verified
 
 - TypeScript check passed.
-- Standard mobile test command passed: **262 tests, zero failures**. It includes
+- Standard mobile test command passed: **269 tests, zero failures**. It includes
   startup, navigation, playback-hook contracts, viewer tracking, offline
   recording/download models, devotion caching/failures/concurrency and shared
   reduced-motion lifecycle checks.

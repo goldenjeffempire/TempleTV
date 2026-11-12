@@ -10,12 +10,16 @@ function createDevotionRelay({ fetcher = fetch, now = Date.now } = {}) {
   let cached = null;
   let pending = null;
   async function latest() {
-    if (cached && now() - cached.fetchedAt < 300_000) return { ...cached, stale: false };
+    const checkedAt = now();
+    const stationDay = timestamp => new Date(timestamp + 3_600_000).toISOString().slice(0, 10);
+    if (cached && checkedAt >= cached.fetchedAt && checkedAt - cached.fetchedAt < 5_000 &&
+        stationDay(checkedAt) === stationDay(cached.fetchedAt)) return { ...cached, stale: false };
     if (pending) return pending;
     pending = (async () => {
       try {
         const response = await fetcher(SOURCE, {
-          headers: { Accept: "application/json" },
+          cache: "no-store",
+          headers: { Accept: "application/json", "Cache-Control": "no-cache" },
           signal: AbortSignal.timeout(10_000), redirect: "error",
         });
         if (!response.ok || !response.headers.get("content-type")?.includes("application/json")) {
@@ -63,7 +67,7 @@ function createDevotionRelay({ fetcher = fetch, now = Date.now } = {}) {
       const body = JSON.stringify(result);
       res.writeHead(200, {
         "Content-Type": "application/json; charset=utf-8",
-        "Cache-Control": result.stale ? "no-cache" : "public, max-age=60",
+        "Cache-Control": "no-store, max-age=0",
         "Content-Length": Buffer.byteLength(body),
         "X-Content-Type-Options": "nosniff",
       });

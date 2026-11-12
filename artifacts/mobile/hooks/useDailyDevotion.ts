@@ -4,7 +4,7 @@ import { useFocusEffect } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNetworkStatus } from "./useNetworkStatus";
 import { dailyDevotionRepository } from "@/services/dailyDevotion";
-import { DEVOTION_QUERY_KEY, DEVOTION_REFRESH_MS, type DevotionSnapshot } from "@/services/dailyDevotionCore";
+import { DEVOTION_QUERY_KEY, DEVOTION_REFRESH_MS, nextDevotionRefreshDelay, type DevotionSnapshot } from "@/services/dailyDevotionCore";
 
 export function useDailyDevotion() {
   const client = useQueryClient();
@@ -16,12 +16,20 @@ export function useDailyDevotion() {
   const reachable = isOnline || apiUnreachable === true;
   useFocusEffect(useCallback(() => {
     setFocused(true);
+    void client.invalidateQueries({ queryKey: DEVOTION_QUERY_KEY, exact: true }, { cancelRefetch: false });
     return () => setFocused(false);
-  }, []));
+  }, [client]));
   useEffect(() => {
-    const subscription = AppState.addEventListener("change", state => setForeground(state === "active"));
+    const subscription = AppState.addEventListener("change", state => {
+      setForeground(state === "active");
+      // Explicitly revalidate: Android may batch/suspend the intervening
+      // background state update, leaving enabled unchanged on resume.
+      if (state === "active" && focused && reachable) {
+        void client.invalidateQueries({ queryKey: DEVOTION_QUERY_KEY, exact: true }, { cancelRefetch: false });
+      }
+    });
     return () => subscription.remove();
-  }, []);
+  }, [client, focused, reachable]);
   useEffect(() => {
     let active = true;
     void dailyDevotionRepository.cached().then(saved => {
@@ -38,12 +46,21 @@ export function useDailyDevotion() {
     queryKey: DEVOTION_QUERY_KEY,
     enabled: foreground && focused && reachable,
     networkMode: "always",
-    staleTime: DEVOTION_REFRESH_MS,
+    // Never let React Query's old five-minute cache suppress a Home return.
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
     gcTime: 24 * 60 * 60 * 1000,
-    refetchInterval: foreground && focused && reachable ? DEVOTION_REFRESH_MS : false,
+    refetchInterval: foreground && focused && reachable ? () => nextDevotionRefreshDelay(Date.now()) : false,
     refetchIntervalInBackground: false,
     retry: 1,
   });
+  useEffect(() => {
+    if (foreground && focused && reachable) {
+      void client.invalidateQueries({ queryKey: DEVOTION_QUERY_KEY, exact: true }, { cancelRefetch: false });
+    }
+  }, [client, foreground, focused, reachable, isOnline]);
   const refresh = useCallback(async () => {
     if (manuallyRefreshing) return;
     setManuallyRefreshing(true); setManualError(null);
