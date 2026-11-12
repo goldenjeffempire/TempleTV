@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatDistanceToNow } from "date-fns";
+import { ContinuityNotice } from "@/components/control-room/continuity-notice";
 import { UploadThroughputWidget } from "@/components/upload/UploadThroughputWidget";
 
 interface AdminStats {
@@ -63,6 +64,8 @@ interface EngineHealthSummary {
   sequence: number;
   uptimeMs: number;
   hasCurrent: boolean;
+  hasOverride: boolean;
+  failoverActive: boolean;
   mode: string;
   itemCount: number;
   currentTitle: string | null;
@@ -130,7 +133,8 @@ export default function Dashboard() {
     void qc.invalidateQueries({ queryKey: ["admin-stats"] });
   });
 
-  const isLive = lastStatusPayload?.isLive ?? false;
+  // Lack of a validated frame is unknown, not evidence of an off-air station.
+  const isLive = lastStatusPayload?.isLive ?? null;
   const { data: viewerStats } = useViewerTracking();
   const viewerCount = viewerStats?.totalCurrent ?? null;
   const dbOk = readyz?.dependencies?.database === "ok";
@@ -146,15 +150,14 @@ export default function Dashboard() {
   return (
     <div className="max-w-7xl mx-auto">
       {/* Ministry header banner */}
-      <div className="px-4 sm:px-6 pt-6 pb-5 border-b border-border/60">
-        <div className="flex flex-col gap-0.5">
-          <p className="text-[11px] font-semibold tracking-[0.18em] uppercase text-muted-foreground/70">
-            Broadcasting System
-          </p>
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
+      <div className="px-4 sm:px-6 pt-7 pb-5 border-b border-border/60 tally-rule">
+        <div className="flex flex-col gap-1 pl-3">
+          <p className="eyebrow">Temple TV · Control Room</p>
+          <h1 className="font-display text-2xl sm:text-[2.1rem] font-semibold tracking-tight text-foreground leading-tight">
             Jesus Christ Temple Ministry
           </h1>
         </div>
+        <ContinuityNotice className="mt-4" />
       </div>
 
       <div className="p-4 sm:p-6 space-y-6 mt-2">
@@ -289,7 +292,7 @@ export default function Dashboard() {
           <CardContent className="space-y-3">
             <div className="flex items-center gap-2">
               <div className={`w-2.5 h-2.5 rounded-full ${isLive ? "bg-red-500 animate-pulse" : "bg-muted-foreground/30"}`} />
-              <span className="font-semibold text-sm">{isLive ? "ON AIR" : "OFF AIR"}</span>
+              <span className="font-semibold text-sm">{isLive === null ? "STATUS UNKNOWN" : isLive ? "ON AIR" : "OFF AIR"}</span>
               {sseState !== "connected" && (
                 <Badge variant="outline" className="text-[10px] text-muted-foreground/60 border-muted-foreground/25">
                   Stale
@@ -306,14 +309,14 @@ export default function Dashboard() {
             {engineHealth != null && (
               <div className={`rounded-md border px-2.5 py-2 space-y-1.5 ${engineHealth.deadAir ? "border-amber-300/60 bg-amber-50/60 dark:border-amber-700/50 dark:bg-amber-950/20" : engineHealth.stuck ? "border-red-300/60 bg-red-50/60 dark:border-red-700/50 dark:bg-red-950/20" : ""}`}>
                 <div className="flex items-center gap-2">
-                  <div className={`w-2 h-2 rounded-full shrink-0 ${engineHealth.hasCurrent ? "bg-emerald-500 animate-pulse" : engineHealth.deadAir ? "bg-amber-500" : "bg-muted-foreground/30"}`} />
+                  <div className={`w-2 h-2 rounded-full shrink-0 ${engineHealth.hasCurrent || engineHealth.hasOverride || engineHealth.failoverActive ? "bg-emerald-500 animate-pulse" : engineHealth.deadAir ? "bg-amber-500" : "bg-muted-foreground/30"}`} />
                   <div className="min-w-0 flex-1">
                     <span className={`text-xs font-medium ${engineHealth.deadAir ? "text-amber-700 dark:text-amber-300" : ""}`}>
                       {engineHealth.stuck
                         ? "Engine stuck — check Master Control"
                         : engineHealth.deadAir
                         ? "Dead air — content in queue"
-                        : engineHealth.hasCurrent
+                        : engineHealth.hasCurrent || engineHealth.hasOverride || engineHealth.failoverActive
                         ? "Broadcasting"
                         : engineHealth.offAirReason === "empty"
                         ? "Queue empty"

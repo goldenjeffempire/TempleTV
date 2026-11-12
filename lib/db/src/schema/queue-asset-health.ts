@@ -92,10 +92,13 @@ export const queueAssetHealthTable = pgTable("queue_asset_health", {
 export type QueueAssetHealth = typeof queueAssetHealthTable.$inferSelect;
 export type QueueAssetHealthState = "healthy" | "quarantined" | "repairing" | "approved" | "blocked";
 
+/** Includes historical terminal-block outcomes; do not erase repair history. */
+export const REPAIR_LOG_OUTCOMES = ["success", "failure", "pending", "skipped", "blocked"] as const;
+
 export interface RepairLogEntry {
   ts: string;
   actor: "system" | "operator";
   action: string;
   detail: string;
-  outcome: "success" | "failure" | "pending" | "skipped";
+  outcome: typeof REPAIR_LOG_OUTCOMES[number];
 }

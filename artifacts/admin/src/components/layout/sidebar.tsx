@@ -334,7 +334,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
             if (visibleItems.length === 0) return null;
             return (
               <div key={section.title}>
-                <p className="px-2 mb-1.5 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/40">
+                <p className="px-2 mb-1.5 font-mono text-[10px] font-medium uppercase tracking-[0.18em] text-sidebar-foreground/45">
                   {section.title}
                 </p>
                 <ul className="space-y-0.5">
@@ -344,21 +344,21 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
                         href={item.href}
                         onClick={onClose}
                         className={cn(
-                          "flex items-center gap-2.5 px-2 py-2 rounded-md text-sm transition-colors group",
+                          "relative flex items-center gap-2.5 px-2 py-2 rounded-md text-sm transition-colors group min-h-9 focus-visible:outline-2 focus-visible:outline-sidebar-ring",
                           isActive(item.href)
-                            ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+                            ? "bg-sidebar-accent text-sidebar-accent-foreground font-semibold before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-full before:bg-sidebar-primary"
                             : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
                         )}
                       >
                         <span className={cn(
                           "flex-shrink-0 transition-colors",
-                          isActive(item.href) ? "text-primary" : "text-sidebar-foreground/40 group-hover:text-sidebar-foreground/70",
+                          isActive(item.href) ? "text-sidebar-primary" : "text-sidebar-foreground/40 group-hover:text-sidebar-foreground/70",
                         )}>
                           {item.icon}
                         </span>
                         <span className="truncate flex-1">{item.label}</span>
                         {item.badge}
-                        {isActive(item.href) && <ChevronRight size={12} className="flex-shrink-0 text-primary" />}
+                        {isActive(item.href) && <ChevronRight size={12} className="flex-shrink-0 text-sidebar-primary" />}
                       </Link>
                     </li>
                   ))}

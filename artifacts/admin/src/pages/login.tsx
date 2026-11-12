@@ -175,7 +175,21 @@ export default function LoginPage() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center p-4">
+    <div className="min-h-[100dvh] bg-background grid lg:grid-cols-[1.1fr_1fr]">
+      <aside className="hidden lg:flex flex-col justify-between p-12 bg-sidebar text-sidebar-foreground relative overflow-hidden">
+        <p className="eyebrow !text-sidebar-foreground/60">Temple TV · Control Room</p>
+        <div className="space-y-5 max-w-md">
+          <h2 className="font-display text-4xl leading-[1.1] font-semibold">The service keeps airing. You keep it in order.</h2>
+          <p className="text-sm text-sidebar-foreground/70 leading-relaxed">
+            Sermons, live services and the queue are managed here. The audience broadcast runs on its own —
+            signing in or out of this panel never interrupts what viewers receive.
+          </p>
+        </div>
+        <p className="font-mono text-[11px] text-sidebar-foreground/50 flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full bg-sidebar-primary" aria-hidden /> JCTM Broadcasting System
+        </p>
+      </aside>
+      <div className="flex items-center justify-center p-4 sm:p-8">
       <div className="w-full max-w-sm space-y-6">
         {/* Brand */}
         <div className="flex flex-col items-center gap-3 text-center">
@@ -369,6 +383,7 @@ export default function LoginPage() {
           <Radio size={11} className="text-red-500" />
           JCTM Broadcasting System
         </p>
+      </div>
       </div>
     </div>
   );

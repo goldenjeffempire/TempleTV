@@ -48,6 +48,10 @@ export interface AdminLiveStatus {
 
 interface SSEContextValue {
   state: SSEConnectionState;
+  /** Last validated synchronization frame received by this browser. */
+  lastSyncAtMs: number | null;
+  /** Authenticated console connections on this API instance, not viewers. */
+  connectedAdministrators: number | null;
   subscribe: (event: string, handler: SSEEventHandler) => () => void;
   lastStatusPayload: AdminLiveStatus | null;
   recentActivity: SSEActivityEntry[];
@@ -132,7 +136,7 @@ const SSE_TOKEN_FETCH_TIMEOUT_MS = 15_000;
 const KNOWN_EVENTS = [
   "snapshot", "viewer-count", "status", "broadcast-current-updated",
   "broadcast-queue-updated", "broadcast-schedule-updated", "broadcast-control-updated",
-  "override-expired", "heartbeat", "stream-health", "live-failure-stats",
+  "override-expired", "heartbeat", "admin-presence", "broadcast-monitor-unavailable", "stream-health", "live-failure-stats",
   "videos-library-updated", "transcoding-update", "live-ingest-health",
   "live-ingest-recovered", "live-ingest-failover", "live-ingest-promoted",
   "live-ingest-stopped", "ops-alert", "yt-status", "live-reaction",
@@ -198,6 +202,8 @@ const KNOWN_EVENTS = [
 ];
 
 function summarize(event: string, data: unknown): string | null {
+  if (event === "admin-presence") return null;
+  if (event === "broadcast-monitor-unavailable") return "Broadcast runtime status unavailable";
   if (event === "heartbeat" || event === "stream-health" || event === "viewer-count" || event === "viewer-platform-breakdown" || event === "viewer-count-updated") return null;
   const d = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
   switch (event) {
@@ -363,6 +369,8 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
   const [lastStatusPayload, setLastStatusPayload] = useState<AdminLiveStatus | null>(null);
   const [recentActivity, setRecentActivity] = useState<SSEActivityEntry[]>([]);
   const [sessionExpired, setSessionExpired] = useState(false);
+  const [lastSyncAtMs, setLastSyncAtMs] = useState<number | null>(null);
+  const [connectedAdministrators, setConnectedAdministrators] = useState<number | null>(null);
 
   const esRef = useRef<EventSource | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -566,14 +574,32 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
             lastFrameAt.current = Date.now();
             let parsed: unknown = e.data;
             try { parsed = JSON.parse(e.data as string); } catch { /* keep raw string */ }
+            if (typeof parsed === "object" && parsed !== null) {
+              if (evt === "heartbeat" || evt === "admin-presence") {
+                const count = (parsed as { connectedAdministrators?: unknown }).connectedAdministrators;
+                if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) {
+                  setConnectedAdministrators(count);
+                }
+              }
+            }
+            if (evt === "broadcast-monitor-unavailable") {
+              setLastStatusPayload(null);
+            }
             // Only update structured listeners when the payload is actually an
             // object. Malformed JSON leaves `parsed` as the raw string literal —
             // passing that to setLastStatusPayload (typed as AdminLiveStatus)
             // would cause "cannot read property 'isLive' of string"-style crashes
             // in any consumer that destructures the value without nullish checks.
             if (evt === "snapshot" || evt === "status") {
-              if (typeof parsed === "object" && parsed !== null) {
+              if (typeof parsed === "object" && parsed !== null &&
+                  typeof (parsed as AdminLiveStatus).isLive === "boolean" &&
+                  typeof (parsed as AdminLiveStatus).ts === "number" &&
+                  Number.isFinite((parsed as AdminLiveStatus).ts)) {
+                setLastSyncAtMs(Date.now());
                 setLastStatusPayload(parsed as AdminLiveStatus);
+              } else {
+                pushActivity(evt, parsed);
+                return;
               }
               // Don't propagate raw string payloads to status listeners —
               // they cannot safely consume a string where an object is expected.
@@ -815,8 +841,9 @@ export function SSEProvider({ children }: { children: React.ReactNode }) {
   }, [connect]);
 
   const value = useMemo(
-    () => ({ state, subscribe, lastStatusPayload, recentActivity, forceReconnect, sessionExpired }),
-    [state, subscribe, lastStatusPayload, recentActivity, forceReconnect, sessionExpired],
+    () => ({ state, subscribe, lastStatusPayload, recentActivity, forceReconnect, sessionExpired, lastSyncAtMs,
+      connectedAdministrators: state === "connected" ? connectedAdministrators : null }),
+    [state, subscribe, lastStatusPayload, recentActivity, forceReconnect, sessionExpired, lastSyncAtMs, connectedAdministrators],
   );
 
   return <SSEContext.Provider value={value}>{children}</SSEContext.Provider>;

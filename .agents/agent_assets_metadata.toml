@@ -348,3 +348,17 @@ mtime_ms = 1792164722572
 storage_uri = "gcs://replit-rams-assets-picard/rams/assets/repl:bb7f1829-d496-4434-9565-f4608de16c46/d33848bc-b8f3-4797-aca7-3d7872f59ca5/ee4f54b8-b2dd-4e94-9ea3-ecaa91853997"
 storage_version_token = "1792164752501632"
 content_type = "text/html"
+
+[[outputs]]
+id = "tyJXgQMUwMspQ7wu9vbHm"
+uri = "file://docs/admin-continuity-validation.md"
+type = "text"
+title = "Admin and broadcast validation report"
+description = "Passed development lifecycle checks, build results, and remaining production release gates."
+logical_id = "3038fe7f-adf7-4a48-8a40-015e368af074"
+content_hash = "sha256:05fe85bd1016469ce261e0cd3d43330b7c544c46f185704952a52fe0c3e3ca28"
+size = 5345
+mtime_ms = 1794477293064
+storage_uri = "gcs://replit-rams-assets-picard/rams/assets/repl:bb7f1829-d496-4434-9565-f4608de16c46/3038fe7f-adf7-4a48-8a40-015e368af074/8ab97ce7-afe4-43da-840b-280cd95de508"
+storage_version_token = "1794477484767974"
+content_type = "text/markdown"

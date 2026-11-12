@@ -48,6 +48,7 @@ import { broadcastEngine } from "../broadcast/queue.engine.js";
 import { broadcastOrchestrator } from "../broadcast-v2/engine/broadcast-orchestrator.js";
 import { clearAllBadUrls, reEnableAllSuspended } from "../broadcast-v2/repository/queue.repo.js";
 import { adminEventBus } from "./admin-event-bus.js";
+import { createAdminBroadcastStatusReader } from "./broadcast-status-reader.js";
 import { verifyAccessToken } from "../auth/jwt.js";
 import { requireRole } from "../auth/rbac.js";
 import {
@@ -182,6 +183,10 @@ const openAdminSseCleanups = new Set<() => void>();
 // and schedule a fast reconnect — rather than waiting for their zombie
 // watchdog (45 s) to detect the dead socket after the server exits.
 const openAdminSseSends = new Set<(event: string, data: unknown) => void>();
+const readAdminBroadcastStatus = createAdminBroadcastStatusReader({
+  daemonUrl: env.BROADCAST_DAEMON_URL,
+  localSnapshot: () => ({ ...broadcastEngine.snapshot() }),
+});
 
 export function closeAllAdminSseSessions(): void {
   // 1. Notify all connected admin tabs so they reconnect proactively.
@@ -4232,7 +4237,15 @@ export async function adminOpsRoutes(app: FastifyInstance) {
 
       // Initial snapshot so the client UI can render immediately
       // without waiting for the first engine event.
-      send("snapshot", broadcastEngine.snapshot());
+      const sendAuthoritativeStatus = (event = "status") => {
+        void readAdminBroadcastStatus().then(status => {
+          if (reply.raw.destroyed || reply.raw.writableEnded) return;
+          if (status) send(event, status);
+          else send("broadcast-monitor-unavailable", { ts: Date.now() });
+        }).catch(err => req.log.warn({ err }, "[admin-sse] broadcast status read failed"));
+      };
+      sendAuthoritativeStatus("snapshot");
+      send("admin-presence", { connectedAdministrators: openAdminSseSends.size + 1, scope: "api-instance", ts: Date.now() });
       send("viewer-count", { count: broadcastEngine.getViewerCount() });
 
       // Push the current cached breakdown immediately (zero extra DB queries).
@@ -4253,6 +4266,7 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       _platformBreakdownListeners.add(onBreakdownUpdate);
 
       const onEvent = (e: { type: string; data: unknown }) => {
+        if (env.BROADCAST_DAEMON_URL && (e.type === "snapshot" || e.type === "status")) return;
         send(e.type, e.data);
       };
       broadcastEngine.on("event", onEvent);
@@ -4275,8 +4289,11 @@ export async function adminOpsRoutes(app: FastifyInstance) {
       // idle-timeout windows and do not silently drop the connection.
       // Client stale threshold remains 45 s (= 9 missed beats at 5 s).
       const heartbeat = setInterval(() => {
+        sendAuthoritativeStatus();
         try {
-          const ok = reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ ts: Date.now() })}\n\n`);
+          const ok = reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({
+            ts: Date.now(), connectedAdministrators: openAdminSseSends.size, scope: "api-instance",
+          })}\n\n`);
           if (ok) lastAdminSseWriteOkMs = Date.now();
         } catch {
           /* ignore — close handler will clean up */
