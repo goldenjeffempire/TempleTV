@@ -30,3 +30,14 @@ competing timelines or interrupt a legitimate broadcaster.
 interval, without changing sessions. Identify the owning runtime before any
 controlled handoff. Mark leadership transactions with service identity so future
 diagnosis does not rely on a generic API application name.
+
+Render can have separate services with the same display name, both receiving
+deployments from the same repository.
+
+**Why:** A replacement daemon remained blocked while another same-named service
+held leadership, and the API was configured to contact the blocked replacement.
+
+**How to apply:** Compare Render service IDs in GitHub deployment-status links,
+the lock owner's service identity, and the API's configured internal destination.
+Before changing the destination, verify the intended leader's readiness from the
+API service's private network. Do not treat a successful deployment as readiness.
