@@ -7,12 +7,11 @@
  *   3. Exports isDiskConstrained() so transcoder / faststart can abort pre-flight
  *      rather than starting a job that will exhaust the filesystem mid-encode.
  *
- * The watchdog is intentionally non-fatal: a statfs failure degrades to a warn
- * log and clears the constrained flag so jobs are not permanently blocked by a
- * momentary filesystem error.
+ * The watchdog is intentionally non-fatal: a statfs failure emits a warning
+ * and retains the last measured constraint until a successful sample.
  */
 
-import { statfs } from "node:fs/promises";
+import { statScratchFilesystem } from "./scratch-filesystem.js";
 import { logger } from "./logger.js";
 import { env } from "../config/env.js";
 import { storagePaths, sweepStaleTempDirs } from "./storage-paths.js";
@@ -68,7 +67,7 @@ export function getDiskWatchdogState(): DiskWatchdogState {
 
 async function sample(): Promise<void> {
   try {
-    const fs = await statfs(storagePaths.scratch);
+    const fs = await statScratchFilesystem(storagePaths.scratch);
     const { blocks: totalBlocks, bfree: freeBlocks, bsize: blockSize } = fs;
 
     if (totalBlocks === 0) return;
@@ -134,8 +133,8 @@ async function sample(): Promise<void> {
     }
   } catch (err) {
     // Non-fatal: the scratch dir may not exist yet on first boot.
-    // Clear constrained so jobs are not blocked by a transient fs error.
-    _constrained = false;
+    // Preserve the last measured constraint: an I/O failure is not evidence
+    // that a previously full partition became safe.
     logger.warn({ err, scratchPath: storagePaths.scratch }, "[disk-watchdog] statfs failed — skipping disk check");
   }
 }

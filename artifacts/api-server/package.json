@@ -1,6 +1,6 @@
 {
   "name": "@workspace/api-server",
-  "version": "1.0.32",
+  "version": "1.0.33",
   "private": true,
   "type": "module",
   "description": "Temple TV API — production-grade Fastify backend for Web, Mobile, Smart TV, and Admin Dashboard.",
@@ -15,7 +15,9 @@
     "test": "node --import tsx/esm --test tests/unit/chat-hub.test.ts tests/unit/chat-client-ticket.test.ts tests/unit/chat-reactions.test.ts tests/unit/ws-tickets.test.ts",
     "test:watch": "node --import tsx/esm --test --watch tests/unit/chat-hub.test.ts tests/unit/chat-client-ticket.test.ts tests/unit/chat-reactions.test.ts tests/unit/ws-tickets.test.ts",
     "openapi": "node --enable-source-maps --import ./dist/instrument.mjs ./dist/openapi.mjs",
-    "test:admin-continuity": "node --import tsx --test tests/unit/admin-broadcast-continuity.test.ts tests/unit/daemon-readiness.test.ts tests/unit/sse-client-lifetime.test.ts"
+    "test:admin-continuity": "node --import tsx --test tests/unit/admin-broadcast-continuity.test.ts tests/unit/daemon-readiness.test.ts tests/unit/sse-client-lifetime.test.ts",
+    "test:daemon-recovery": "node --import tsx --test tests/unit/daemon-recovery-hardening.test.ts tests/unit/daemon-leadership-postgres.test.ts tests/unit/daemon-readiness.test.ts",
+    "diagnose:broadcast": "node ../../scripts/diagnose-broadcast-daemon.mjs"
   },
   "dependencies": {
     "@fastify/compress": "^8.3.1",

@@ -376,3 +376,17 @@ mtime_ms = 1794478847404
 storage_uri = "gcs://replit-rams-assets-picard/rams/assets/repl:bb7f1829-d496-4434-9565-f4608de16c46/37c043f8-c92b-415d-9ecc-afe79ff4951a/a49db096-95b0-4237-b8b3-3de6e03adbf0"
 storage_version_token = "1794478955216566"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "fBnj3nsN6kUR_3gl_RqhV"
+uri = "file://docs/broadcast-daemon-recovery.md"
+type = "text"
+title = "Broadcast recovery fixes and production release gates"
+description = "Implemented fixes, passing development checks, active production leader finding, and safe recovery procedure."
+logical_id = "5821bf2b-d8c2-4c81-988b-3d692d72b609"
+content_hash = "sha256:54ebd324de3af2948ae2b1f9723cbca98e64ae4afe46770ea3ade608ba543133"
+size = 5946
+mtime_ms = 1794492164882
+storage_uri = "gcs://replit-rams-assets-picard/rams/assets/repl:bb7f1829-d496-4434-9565-f4608de16c46/5821bf2b-d8c2-4c81-988b-3d692d72b609/190090fa-9bea-4b44-b4c1-8e025a2952fe"
+storage_version_token = "1794492182032788"
+content_type = "text/markdown"

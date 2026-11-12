@@ -30,6 +30,8 @@ import { startDiskWatchdog, stopDiskWatchdog } from "./infrastructure/disk-watch
 import { schema } from "./infrastructure/db.js";
 import { hashPassword } from "./modules/auth/password.js";
 import { nanoid } from "nanoid";
+import { createDaemonStartupGuard, withDaemonDeadline } from "./infrastructure/daemon-startup-guard.js";
+import { installDaemonRuntimeGate } from "./modules/broadcast-v2/io/daemon-runtime-gate.js";
 
 
 /**
@@ -350,6 +352,11 @@ async function stopWorkers() {
  * never-resolving promise; process.exit() is called on SIGTERM/SIGINT.
  */
 async function runBroadcastDaemon(): Promise<never> {
+  const startupGuard = createDaemonStartupGuard((phase) => {
+    logger.fatal({ phase }, "[broadcast-daemon] startup deadline exceeded — exiting instead of remaining Live but unready");
+    // Exiting closes our own database socket; never unlock another backend.
+    process.exit(1);
+  });
   logger.info(
     {
       port: env.PORT,
@@ -368,6 +375,7 @@ async function runBroadcastDaemon(): Promise<never> {
     logger.error({ err }, "[broadcast-daemon] post-build boot failed (non-fatal)"),
   );
 
+  startupGuard.enter("http-listener");
   const { default: Fastify } = await import("fastify");
   const { default: wsPlugin } = await import("@fastify/websocket");
   const { default: sensiblePlugin } = await import("@fastify/sensible");
@@ -388,6 +396,9 @@ async function runBroadcastDaemon(): Promise<never> {
     serviceName: env.RENDER_SERVICE_NAME ?? null,
     instanceId: env.RENDER_INSTANCE_ID ?? null,
   } as const;
+  installDaemonRuntimeGate(daemonApp, () => ({
+    ready: daemonRuntimeReady, phase: startupGuard.phase(),
+  }));
 
   // ── Process health endpoint ───────────────────────────────────────────────
   // This endpoint becomes reachable BEFORE leadership acquisition. Render can
@@ -400,6 +411,7 @@ async function runBroadcastDaemon(): Promise<never> {
       status: "ok",
       mode: "broadcast",
       runtimeReady: daemonRuntimeReady,
+      startupPhase: startupGuard.phase(),
       runtime: runtimeIdentity,
       ts: Date.now(),
     }));
@@ -411,6 +423,7 @@ async function runBroadcastDaemon(): Promise<never> {
       status: daemonRuntimeReady ? "ready" : "starting",
       mode: "broadcast",
       runtimeReady: daemonRuntimeReady,
+      startupPhase: startupGuard.phase(),
       runtime: runtimeIdentity,
       ts: Date.now(),
     }));
@@ -477,7 +490,8 @@ async function runBroadcastDaemon(): Promise<never> {
   try {
     // Reserve one pool client and pin its server backend with an open transaction
     // for the entire daemon lifetime. No application queries use this client.
-    const lockClient = await pgPool.connect();
+    startupGuard.enter("leadership-connection");
+    const lockClient = await withDaemonDeadline(pgPool.connect(), "leadership connection");
     daemonLockClient = lockClient;
     lockClient.once("error", (err) => {
       logger.fatal(
@@ -486,18 +500,43 @@ async function runBroadcastDaemon(): Promise<never> {
       );
       process.kill(process.pid, "SIGTERM");
     });
-    await lockClient.query("BEGIN");
+    startupGuard.enter("leadership-transaction");
+    await withDaemonDeadline(lockClient.query("BEGIN"), "leadership BEGIN");
     daemonLockTransactionOpen = true;
+    // Poolers reject startup options; set the server limit inside the pinned
+    // transaction, and independently bound network waits on the client.
+    await withDaemonDeadline(
+      lockClient.query("SET LOCAL statement_timeout = '5s'"), "leadership statement timeout",
+    );
+    // pg_stat_activity must identify the actual leader service, not merely
+    // "temple-tv-api". Set it inside the pinned transaction for pooler safety.
+    await withDaemonDeadline(lockClient.query(
+      "SELECT set_config('application_name', $1, true)",
+      [`broadcast:${env.RENDER_SERVICE_NAME ?? "local"}:${process.pid}`.slice(0, 63)],
+    ), "leadership identity");
 
     let acquired = false;
     for (let attempt = 0; attempt <= LOCK_RETRY_DELAYS_MS.length; attempt++) {
-      const lockRes = await lockClient.query<{ acquired: boolean }>(
+      startupGuard.enter(`leadership-lock-attempt-${attempt + 1}`);
+      const lockRes = await withDaemonDeadline(lockClient.query<{ acquired: boolean }>(
         "SELECT pg_try_advisory_xact_lock($1::bigint) AS acquired",
         [DAEMON_ADVISORY_LOCK_ID],
-      );
+      ), "leadership lock");
       acquired = (lockRes.rows[0] as { acquired?: boolean } | undefined)?.acquired ?? false;
       if (acquired) break;
 
+      if (attempt === 0) {
+        const holders = await withDaemonDeadline(lockClient.query(
+          `SELECT l.pid, a.application_name, a.state, a.backend_start, a.xact_start
+           FROM pg_locks l LEFT JOIN pg_stat_activity a ON a.pid = l.pid
+           WHERE l.locktype = 'advisory' AND l.granted
+             AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+             AND l.classid = ($1::bigint >> 32)::oid
+             AND l.objid = ($1::bigint & 4294967295)::oid AND l.objsubid = 1`,
+          [DAEMON_ADVISORY_LOCK_ID],
+        ), "leadership owner diagnosis");
+        logger.warn({ holders: holders.rows }, "[broadcast-daemon] leadership lock owner — diagnostic only; no session terminated");
+      }
       const delay = LOCK_RETRY_DELAYS_MS[attempt];
       if (delay === undefined) break; // exhausted retries
 
@@ -513,13 +552,12 @@ async function runBroadcastDaemon(): Promise<never> {
         { lockId: DAEMON_ADVISORY_LOCK_ID },
         "[broadcast-daemon] another daemon instance holds the advisory lock and did not release it within the retry window — refusing to start",
       );
-      await lockClient.query("ROLLBACK").catch((err) => {
-        logger.warn({ err }, "[broadcast-daemon] leader-lock transaction rollback failed after acquisition timeout");
-      });
+      // Destroy our pinned connection; do not hang on ROLLBACK if the
+      // pooler/network has stopped answering.
       daemonLockTransactionOpen = false;
-      lockClient.release();
+      lockClient.release(true);
       daemonLockClient = null;
-      await daemonApp.close().catch(() => undefined);
+      await withDaemonDeadline(daemonApp.close(), "unready listener close").catch(() => undefined);
       process.exit(1);
     }
     logger.info(
@@ -530,10 +568,12 @@ async function runBroadcastDaemon(): Promise<never> {
     // Start ownership monitoring before any broadcast workers. Match the exact
     // bigint advisory-lock identity; checking for any advisory lock on this
     // backend can be fooled by an unrelated or legacy session-level lock.
+    let heartbeatInFlight = false;
     daemonLockHeartbeat = setInterval(() => {
       const client = daemonLockClient;
-      if (client === null) return;
-      void client.query<{ held: boolean }>(
+      if (client === null || heartbeatInFlight) return;
+      heartbeatInFlight = true;
+      void withDaemonDeadline(client.query<{ held: boolean }>(
         `SELECT EXISTS (
            SELECT 1
            FROM pg_locks
@@ -546,7 +586,7 @@ async function runBroadcastDaemon(): Promise<never> {
              AND objsubid = 1
          ) AS held`,
         [DAEMON_ADVISORY_LOCK_ID],
-      ).then((result) => {
+      ), "leadership heartbeat").then((result) => {
         const held = result.rows[0]?.held ?? false;
         if (!held) {
           logger.fatal(
@@ -561,26 +601,25 @@ async function runBroadcastDaemon(): Promise<never> {
           "[broadcast-daemon] leader-lock heartbeat failed — terminating",
         );
         process.kill(process.pid, "SIGTERM");
-      });
+      }).finally(() => { heartbeatInFlight = false; });
     }, LOCK_HEARTBEAT_MS);
     daemonLockHeartbeat.unref();
   } catch (err) {
     // Fail closed. Running without singleton ownership can produce two
     // independent timelines and corrupt the authoritative ON AIR state.
-    if (daemonLockClient !== null && daemonLockTransactionOpen) {
-      await daemonLockClient.query("ROLLBACK").catch(() => undefined);
-      daemonLockTransactionOpen = false;
-    }
-    daemonLockClient?.release();
+    daemonLockTransactionOpen = false;
+    daemonLockClient?.release(true);
     daemonLockClient = null;
     logger.fatal({ err }, "[broadcast-daemon] advisory lock check failed — refusing to start duplicate orchestrator");
-    await daemonApp.close().catch(() => undefined);
+    await withDaemonDeadline(daemonApp.close(), "failed startup listener close").catch(() => undefined);
     process.exit(1);
   }
 
   // ── Start broadcast engine + memory watchdog ──────────────────────────────
+  startupGuard.enter("broadcast-engine-start");
   await ensureBroadcastV2Started();
   daemonRuntimeReady = true;
+  startupGuard.complete();
   startMemoryWatchdog();
 
   logger.info(
@@ -597,7 +636,13 @@ async function runBroadcastDaemon(): Promise<never> {
   const daemonShutdown = async (signal: string, exitCode = 0): Promise<void> => {
     if (daemonShuttingDown) return;
     daemonShuttingDown = true;
+    const shutdownDeadline = setTimeout(() => {
+      logger.fatal("[broadcast-daemon] shutdown deadline exceeded — closing process and leadership socket");
+      process.exit(exitCode || 1);
+    }, 15_000);
+    shutdownDeadline.unref();
     daemonRuntimeReady = false;
+    startupGuard.enter("shutting-down");
     markShuttingDown();
     logger.info({ signal }, "[broadcast-daemon] graceful shutdown starting");
     if (daemonLockHeartbeat !== null) {
@@ -616,18 +661,20 @@ async function runBroadcastDaemon(): Promise<never> {
     if (daemonLockClient !== null) {
       try {
         if (daemonLockTransactionOpen) {
-          await daemonLockClient.query("ROLLBACK");
+          await withDaemonDeadline(daemonLockClient.query("ROLLBACK"), "shutdown ROLLBACK");
           daemonLockTransactionOpen = false;
         }
       } catch (err) {
         logger.warn({ err }, "[broadcast-daemon] leader-lock transaction rollback failed during shutdown");
       } finally {
-        daemonLockClient.release();
+        // Never return a possibly aborted/open leadership transaction to pool.
+        daemonLockClient.release(true);
         daemonLockClient = null;
       }
     }
     await closeDb().catch((err) => logger.warn({ err }, "[broadcast-daemon] closeDb failed"));
     logger.info("[broadcast-daemon] shutdown complete");
+    clearTimeout(shutdownDeadline);
     process.exit(exitCode);
   };
   process.on("SIGTERM", () => void daemonShutdown("SIGTERM"));

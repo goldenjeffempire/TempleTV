@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseDaemonOrigin } from "./daemon-origin.js";
 
 // When Replit's built-in PostgreSQL is provisioned it sets PGHOST, PGPORT,
 // PGUSER, PGPASSWORD and PGDATABASE as runtime-managed env vars. Prefer those
@@ -244,7 +245,14 @@ const Env = z.object({
    *
    * Leave unset to run the broadcast engine in-process (legacy behaviour).
    */
-  BROADCAST_DAEMON_URL: z.string().url().optional(),
+  BROADCAST_DAEMON_URL: z.string().transform((value, ctx) => {
+    try {
+      return parseDaemonOrigin(value);
+    } catch {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Expected an HTTP(S) origin or Render hostname:port" });
+      return z.NEVER;
+    }
+  }).optional(),
 
   /**
    * Render Blueprint `fromService` reference pair used to derive
@@ -981,7 +989,7 @@ function loadEnv(): AppEnv {
   // pair when it wasn't provided directly. See BROADCAST_DAEMON_HOST/PORT
   // comment above for why this can't be a static value in render.yaml.
   if (!data.BROADCAST_DAEMON_URL && data.BROADCAST_DAEMON_HOST && data.BROADCAST_DAEMON_PORT) {
-    data.BROADCAST_DAEMON_URL = `http://${data.BROADCAST_DAEMON_HOST}:${data.BROADCAST_DAEMON_PORT}`;
+    data.BROADCAST_DAEMON_URL = parseDaemonOrigin(`http://${data.BROADCAST_DAEMON_HOST}:${data.BROADCAST_DAEMON_PORT}`);
   }
 
   return data;

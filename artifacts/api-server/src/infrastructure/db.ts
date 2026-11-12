@@ -106,7 +106,7 @@ const pool = new Pool({
   max: env.DB_POOL_MAX,
   idleTimeoutMillis: env.DB_POOL_IDLE_TIMEOUT_MS,
   connectionTimeoutMillis: env.DB_POOL_CONNECT_TIMEOUT_MS,
-  application_name: "temple-tv-api",
+  application_name: env.RUN_MODE === "broadcast" ? "temple-tv-broadcast-daemon" : "temple-tv-api",
   ...(stmtTimeoutOption ? { options: stmtTimeoutOption } : {}),
 });
 
