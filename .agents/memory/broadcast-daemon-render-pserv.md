@@ -5,7 +5,7 @@ description: Documents the daemon/API split, fromService wiring pattern, and env
 
 ## The split
 
-The broadcast engine (`BroadcastOrchestrator`) runs as a separate Render **pserv** (`temple-tv-broadcast-daemon`, Starter plan $7/mo) so API rolling deploys never restart the broadcast engine.
+The broadcast engine runs as a separate paid Render private service so an API-only restart does not restart the broadcast engine. Verify current plan names and prices from Render rather than treating historical nicknames or prices as current.
 
 Before this split: `RUN_MODE=all` in the API process meant every `git push → API deploy` killed the orchestrator and restarted the current video from position 0 (~15–30 s dead air per deploy).
 
@@ -13,7 +13,7 @@ After the split:
 - Daemon: `RUN_MODE=broadcast`, `PORT=9000`. Owns the queue, all workers, SSE/WS frames.
 - API: `RUN_MODE=all` + `BROADCAST_DAEMON_URL` set → `ensureBroadcastV2Started()` is skipped (`main.ts:798`). All `/broadcast-v2` traffic proxied via `daemon-proxy.ts`.
 
-**Why:** Restarting only the API web service does not restart the private daemon. This is separate from the repository deployment-trigger policy below: every pushed main-branch commit currently triggers daemon deployment too.
+**Why:** Process separation alone does not prevent a deployment trigger from restarting both services. Administrative connectivity, API restarts, and deployment-trigger policy are separate failure boundaries.
 
 ## fromService wiring in render.yaml
 
@@ -51,13 +51,16 @@ if (!BROADCAST_DAEMON_URL && BROADCAST_DAEMON_HOST) {
 
 ## Daemon deployment trigger
 
-The repository Blueprint intentionally has no daemon `buildFilter`, so every `main` commit should redeploy the private service and prevent code drift between API and daemon.
+Do not couple unrelated admin-only releases to broadcast-runtime deployments.
+Deploy compatible API/daemon changes together through a planned rollout.
 
-**Why:** A stale daemon can keep serving an old health/runtime contract while the API deploys newer proxy code.
+**Why:** A broad deployment trigger can restart the authoritative runtime even
+though the admin application does not own that runtime. Conversely, an outdated
+daemon can serve a contract incompatible with newer API proxy code.
 
-**Operational status:** The no-filter policy is active in Render. A documentation-only commit under `.agents/` triggered API, daemon, admin, and TV deployments. An empty commit producing no deployment is not evidence of a stale Blueprint because it has no file diff for Render to build.
-
-**How to apply:** Assume every pushed `main` commit will restart the daemon. Bundle documentation-only repository changes with planned releases when possible instead of pushing them separately.
+**How to apply:** Check the current repository filters and the operator's actual
+Blueprint synchronization state before promising deployment independence.
+Changing a repository file does not prove Render has applied its trigger policy.
 
 ## Memory thresholds for daemon (Starter: 512 MiB)
 

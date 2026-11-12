@@ -362,3 +362,17 @@ mtime_ms = 1794477293064
 storage_uri = "gcs://replit-rams-assets-picard/rams/assets/repl:bb7f1829-d496-4434-9565-f4608de16c46/3038fe7f-adf7-4a48-8a40-015e368af074/8ab97ce7-afe4-43da-840b-280cd95de508"
 storage_version_token = "1794477484767974"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "AacIdvwxRMmVJOSmuQ06G"
+uri = "file://docs/hosting/render-always-on-review.md"
+type = "text"
+title = "Always-on Render hosting proposal"
+description = "Review-only API configuration, verified published pricing, capacity limits and safe rollout requirements."
+logical_id = "37c043f8-c92b-415d-9ecc-afe79ff4951a"
+content_hash = "sha256:9f35a644fd260662ec42acb3cc83e737d15f146961e5f844836cc47d28356805"
+size = 5978
+mtime_ms = 1794478847404
+storage_uri = "gcs://replit-rams-assets-picard/rams/assets/repl:bb7f1829-d496-4434-9565-f4608de16c46/37c043f8-c92b-415d-9ecc-afe79ff4951a/a49db096-95b0-4237-b8b3-3de6e03adbf0"
+storage_version_token = "1794478955216566"
+content_type = "text/markdown"
