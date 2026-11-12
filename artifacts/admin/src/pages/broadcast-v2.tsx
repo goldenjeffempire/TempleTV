@@ -1,4 +1,5 @@
 import { BroadcastPreviewV2 } from "@/playback/BroadcastPreviewV2";
+import { broadcastReadiness } from "@/lib/broadcast-readiness";
 import { PageHeader } from "@/components/shared/page-header";
 import { ContinuityNotice } from "@/components/control-room/continuity-notice";
 import { ControlRoomPresence } from "@/components/control-room/control-room-presence";
@@ -2647,6 +2648,10 @@ function BroadcastV2PageInner() {
 
 
   async function adminPost(path: string, body: Record<string, unknown> = {}) {
+    if (!runtimeStatus.ready) {
+      toast.error(runtimeStatus.message);
+      return;
+    }
     setBusy(path);
     try {
       await api.post(path, { ...body, idempotencyKey: safeRandomUUID() });
@@ -2699,14 +2704,14 @@ function BroadcastV2PageInner() {
   });
   const queueItems = queueData?.items ?? [];
 
-  // Engine health — polls every 30 s. SSE events (broadcast-queue-updated,
+  // Engine health — polls every 15 s independently of dashboard SSE.
   // transcoding-update) trigger immediate invalidation for real-time accuracy;
-  // the 30 s poll is a safety-net for any missed SSE frames.
-  const { data: engineHealth, isError: engineHealthError } = useQuery({
+  // The poll also detects daemon recovery when dashboard SSE remains healthy.
+  const { data: engineHealth, isError: engineHealthError, error: engineHealthFailure } = useQuery({
     queryKey: ["broadcast-v2-engine-health"],
     queryFn: () => api.get<EngineHealthResponse>("/broadcast-v2/health"),
     select: normalizeEngineHealth,
-    refetchInterval: sseGated60s,
+    refetchInterval: 15_000,
     staleTime: 25_000,
   });
 
@@ -2835,13 +2840,16 @@ function BroadcastV2PageInner() {
   // V2 live broadcast state — REST source of truth for the current/next/mode
   // snapshot at page scope. BroadcastPreviewV2 keeps its own WS transport only
   // while the preview panel is expanded. SSE push-invalidation (broadcast-queue-
-  // updated) keeps this fresh in real time; the 60 s fallback is a safety net.
-  const { data: v2LiveState } = useQuery({
+  // updated) keeps this fresh in real time; the 15 s poll detects daemon recovery.
+  const { data: v2LiveState, error: liveStateFailure } = useQuery({
     queryKey: ["broadcast-v2-live-state"],
     queryFn: () => api.get<{ state: V2Snapshot }>("/broadcast-v2/state"),
-    refetchInterval: sseGated60s,
+    refetchInterval: 15_000,
     staleTime: 8_000,
   });
+  const runtimeStatus = broadcastReadiness(
+    engineHealth?.boot.started, !!v2LiveState?.state, engineHealthFailure, liveStateFailure,
+  );
 
   // ── YouTube embed playback-error detection (admin preview) ───────────────
   // The admin broadcast console embeds the live YouTube override via an
@@ -4151,7 +4159,7 @@ function BroadcastV2PageInner() {
   const fullyConnected = sse.state === "connected";
   const partiallyConnected = sse.state !== "offline";
   const linkLabel = fullyConnected
-    ? "Live"
+    ? "Dashboard connected"
     : sse.state === "reconnecting" || sse.state === "connecting"
     ? "Reconnecting"
     : sse.state === "degraded"
@@ -4325,7 +4333,7 @@ function BroadcastV2PageInner() {
       label: "Transport connected",
       pass: fullyConnected,
       warn: partiallyConnected && !fullyConnected,
-      detail: linkLabel === "Live" ? "SSE connected" : linkLabel,
+      detail: fullyConnected ? "Dashboard SSE connected (not broadcast readiness)" : linkLabel,
     },
     {
       label: "HLS transcoding ready",
@@ -4400,7 +4408,7 @@ function BroadcastV2PageInner() {
               variant="outline"
               size="sm"
               className="gap-1.5"
-              disabled={!!busy}
+              disabled={!!busy || !runtimeStatus.ready}
               onClick={() => adminPost("/broadcast-v2/reload")}
               title="Re-enables all suspended items and reloads the queue from the database."
             >
@@ -4409,7 +4417,7 @@ function BroadcastV2PageInner() {
               ) : (
                 <RotateCw size={13} />
               )}
-              Restart Engine
+              Reload engine queue
             </Button>
             <Button
               variant="outline"
@@ -4564,7 +4572,7 @@ function BroadcastV2PageInner() {
         <Badge
           variant={engineHealth?.ok === false ? "destructive" : "outline"}
           className={engineHealth?.ok === false ? "gap-1" : undefined}
-          title={engineHealth?.ok === false ? "The broadcast engine is unhealthy. Check Engine Diagnostics and use Prepare HLS if items have no playable source." : undefined}
+          title={engineHealth?.ok === false ? "The broadcast engine is unhealthy. Check Engine Diagnostics. MP4 playback does not require HLS." : undefined}
         >
           {engineHealth?.ok === false && <AlertTriangle className="h-3 w-3" />}
           Mode: {server?.mode ?? engineHealth?.mode ?? "—"}
@@ -4588,9 +4596,8 @@ function BroadcastV2PageInner() {
               HLS ready
             </Badge>
           ) : (
-            <Badge variant="outline" className="gap-1 text-amber-600" title={`${pendingHlsCount} locally-hosted queue item${pendingHlsCount !== 1 ? "s" : ""} lack an HLS master playlist and will broadcast as raw MP4. Use "Prepare HLS" to queue transcoding.`}>
-              <AlertTriangle className="h-3 w-3" />
-              {pendingHlsCount} missing HLS
+            <Badge variant="outline" className="gap-1" title="These items have no optional HLS rendition. MP4 playback does not require HLS. This is not a source-integrity check.">
+              {pendingHlsCount} without optional HLS
             </Badge>
           )
         )}
@@ -4641,13 +4648,22 @@ function BroadcastV2PageInner() {
       {/* Rendered by OnAirStatusBar — a self-contained component with its own
           1-second timer. This prevents the 3000+ line parent from re-rendering
           every second just to update the progress bar and elapsed-time display. */}
-      <OnAirStatusBar
+      {!runtimeStatus.ready ? (
+        <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 space-y-2">
+          <p className="font-semibold">Broadcast status not confirmed</p>
+          <p className="text-sm">{runtimeStatus.message}</p>
+          <Button variant="outline" size="sm" onClick={() => {
+            void qc.invalidateQueries({ queryKey: ["broadcast-v2-engine-health"] });
+            void qc.invalidateQueries({ queryKey: ["broadcast-v2-live-state"] });
+          }}>Retry status check</Button>
+        </div>
+      ) : <OnAirStatusBar
         currentItem={server?.current}
         nextTitle={server?.next?.title ?? null}
         activeQueueCount={activeQueueCount}
         viewerCount={viewerStats?.totalCurrent ?? null}
         sequence={server?.sequence}
-      />
+      />}
 
       {/* Reconnecting strip */}
       {!fullyConnected && (
@@ -4672,8 +4688,8 @@ function BroadcastV2PageInner() {
         >
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="flex-1">
-            <span className="font-medium">Broadcast in recovery — {pendingHlsCount} queue item{pendingHlsCount !== 1 ? "s" : ""} have no playable source.</span>
-            {" "}HLS transcoding is not yet complete, so those items cannot air. Use{" "}
+            <span className="font-medium">Engine health needs attention.</span>
+            {" "}Missing HLS alone does not prevent MP4 playback. Check source availability and engine diagnostics first. Optional{" "}
             <button
               className="underline underline-offset-2 font-medium hover:opacity-80 transition-opacity"
               onClick={() => void prepareHls()}
@@ -4681,7 +4697,7 @@ function BroadcastV2PageInner() {
             >
               Prepare HLS
             </button>
-            {" "}to queue transcoding and restore normal broadcast automatically.
+            {" "}does not resolve daemon startup or leadership failures.
           </div>
         </div>
       )}
@@ -5033,7 +5049,11 @@ function BroadcastV2PageInner() {
           </CardHeader>
           {previewExpanded && (
             <CardContent className="pb-4">
-              <BroadcastPreviewV2 className="w-full aspect-video" />
+              {runtimeStatus.ready ? <BroadcastPreviewV2 className="w-full aspect-video" /> : (
+                <div role="status" className="w-full aspect-video grid place-items-center rounded-md bg-muted p-6 text-center text-sm">
+                  Preview paused until broadcast readiness is confirmed. See the status message above.
+                </div>
+              )}
               <p className="mt-2 text-[11px] text-muted-foreground">
                 Mirrors exactly what viewers see on TV, web, and mobile. Audio is muted by default — unmute with the volume button to monitor.
               </p>
@@ -5049,7 +5069,7 @@ function BroadcastV2PageInner() {
             <Button
               className="w-full"
               variant="outline"
-              disabled={!!busy}
+              disabled={!!busy || !runtimeStatus.ready}
               onClick={() => setShowSkipConfirm(true)}
             >
               <SkipForward className="mr-2 h-4 w-4" /> Skip current item
@@ -5057,7 +5077,7 @@ function BroadcastV2PageInner() {
             <Button
               className="w-full"
               variant="outline"
-              disabled={!!busy}
+              disabled={!!busy || !runtimeStatus.ready}
               onClick={() => setShowReloadConfirm(true)}
             >
               <RefreshCw className="mr-2 h-4 w-4" /> Reload from queue
@@ -5065,7 +5085,7 @@ function BroadcastV2PageInner() {
             <Button
               className="w-full"
               variant="destructive"
-              disabled={!!busy}
+              disabled={!!busy || !runtimeStatus.ready}
               onClick={() => setShowFailoverConfirm(true)}
             >
               <AlertTriangle className="mr-2 h-4 w-4" /> Force failover
@@ -5073,7 +5093,7 @@ function BroadcastV2PageInner() {
             <Button
               className="w-full"
               variant="secondary"
-              disabled={!!busy}
+              disabled={!!busy || !runtimeStatus.ready}
               onClick={() => setShowClearFailoverConfirm(true)}
             >
               Clear failover

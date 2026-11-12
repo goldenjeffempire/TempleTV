@@ -55,6 +55,7 @@ export class HttpError extends Error {
      * the header was absent or the response was not a 429.
      */
     public readonly retryAfterMs?: number,
+    public readonly startupPhase?: string,
   ) {
     super(message);
     this.name = "HttpError";
@@ -448,7 +449,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     if (res.status >= 500 || res.status === 408 || res.status === 429) {
       apiErrorBus.emit({ path, status: res.status, message: errMsg, ts: Date.now(), structured });
     }
-    throw new HttpError(res.status, errMsg, body.code as string | undefined, retryAfterMs);
+    throw new HttpError(res.status, errMsg, body.code as string | undefined, retryAfterMs,
+      typeof body.startupPhase === "string" ? body.startupPhase : undefined);
   }
 
   if (res.status === 204 || res.headers.get("content-length") === "0") {

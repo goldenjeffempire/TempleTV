@@ -191,7 +191,7 @@ function ConnectionStatus() {
   const { state } = useSSE();
 
   const config = {
-    connected:    { icon: <Wifi size={11} />,                                      label: "Live",         cls: "text-green-600 dark:text-green-400 bg-green-500/10 border-green-500/20" },
+    connected:    { icon: <Wifi size={11} />,                                      label: "Connected",    cls: "text-green-600 dark:text-green-400 bg-green-500/10 border-green-500/20" },
     connecting:   { icon: <Loader size={11} className="animate-spin" />,           label: "Connecting",   cls: "text-yellow-600 dark:text-yellow-400 bg-yellow-500/10 border-yellow-500/20" },
     reconnecting: { icon: <Loader size={11} className="animate-spin" />,           label: "Reconnecting", cls: "text-amber-600 dark:text-amber-400 bg-amber-500/10 border-amber-500/20" },
     degraded:     { icon: <SignalLow size={11} />,                                 label: "Degraded",     cls: "text-amber-600 dark:text-amber-400 bg-amber-500/10 border-amber-500/30" },
@@ -199,7 +199,7 @@ function ConnectionStatus() {
   }[state];
 
   const tooltip = {
-    connected:    "Real-time updates are live",
+    connected:    "Dashboard updates are connected. This does not confirm broadcast readiness.",
     connecting:   "Establishing real-time connection…",
     reconnecting: "Connection lost — attempting to reconnect",
     degraded:     "Server reachable but live-update stream unavailable — data updates via polling",
