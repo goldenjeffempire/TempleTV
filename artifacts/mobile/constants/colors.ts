@@ -3,7 +3,7 @@ const colors = {
     text: "#0A0014",
     tint: "#6A0DAD",
 
-    background: "#F8F5FF",
+    background: "#F7F3FB",
     foreground: "#0A0014",
 
     card: "rgba(106, 13, 173, 0.06)",
@@ -16,7 +16,7 @@ const colors = {
     secondaryForeground: "#4A0080",
 
     muted: "rgba(0, 0, 0, 0.05)",
-    mutedForeground: "rgba(0, 0, 0, 0.48)",
+    mutedForeground: "#5E5470",
 
     accent: "#9B30FF",
     accentForeground: "#FFFFFF",
@@ -30,6 +30,15 @@ const colors = {
     glow: "#9B30FF",
     liveRed: "#FF0040",
     surfaceGlass: "rgba(255, 255, 255, 0.85)",
+
+    // Sanctuary extensions — candlelight gold accent + solid surfaces
+    surface: "#FFFDF9",
+    gold: "#B7791F",
+    goldSoft: "rgba(183, 121, 31, 0.12)",
+    warningSurface: "#FBF0D9",
+    warningForeground: "#7A4A0C",
+    dangerSurface: "#FBE3E3",
+    dangerForeground: "#8E1D1D",
   },
 
   dark: {
@@ -49,7 +58,7 @@ const colors = {
     secondaryForeground: "#D4A0FF",
 
     muted: "rgba(255, 255, 255, 0.08)",
-    mutedForeground: "rgba(255, 255, 255, 0.50)",
+    mutedForeground: "rgba(240, 230, 255, 0.66)",
 
     accent: "#BB6BFF",
     accentForeground: "#FFFFFF",
@@ -63,6 +72,14 @@ const colors = {
     glow: "#BB6BFF",
     liveRed: "#FF0040",
     surfaceGlass: "rgba(20, 0, 40, 0.88)",
+
+    surface: "#1A0D29",
+    gold: "#E8B65A",
+    goldSoft: "rgba(232, 182, 90, 0.14)",
+    warningSurface: "rgba(232, 182, 90, 0.14)",
+    warningForeground: "#F2CF8C",
+    dangerSurface: "rgba(255, 85, 85, 0.14)",
+    dangerForeground: "#FFB3B3",
   },
 
   midnight: {
@@ -82,7 +99,7 @@ const colors = {
     secondaryForeground: "#D4A0FF",
 
     muted: "rgba(255, 255, 255, 0.08)",
-    mutedForeground: "rgba(255, 255, 255, 0.50)",
+    mutedForeground: "rgba(240, 230, 255, 0.66)",
 
     accent: "#BB6BFF",
     accentForeground: "#FFFFFF",
@@ -96,6 +113,14 @@ const colors = {
     glow: "#BB6BFF",
     liveRed: "#FF0040",
     surfaceGlass: "rgba(20, 0, 40, 0.88)",
+
+    surface: "#1A0D29",
+    gold: "#E8B65A",
+    goldSoft: "rgba(232, 182, 90, 0.14)",
+    warningSurface: "rgba(232, 182, 90, 0.14)",
+    warningForeground: "#F2CF8C",
+    dangerSurface: "rgba(255, 85, 85, 0.14)",
+    dangerForeground: "#FFB3B3",
   },
 
   radius: 16,

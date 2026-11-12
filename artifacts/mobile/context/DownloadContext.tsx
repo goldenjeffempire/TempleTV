@@ -2,9 +2,12 @@ import React, { createContext, useContext, ReactNode } from "react";
 import { useDownloads } from "@/hooks/useDownloads";
 import type { DownloadItem } from "@/services/downloadManager";
 import type { Sermon } from "@/types";
+import type { BroadcastPreparation } from "@/services/offlineBroadcastEngine";
 
 interface DownloadContextValue {
   downloads: DownloadItem[];
+  broadcastPreparation: BroadcastPreparation;
+  automaticTransfersAllowed: boolean;
   completed: DownloadItem[];
   active: DownloadItem[];
   failed: DownloadItem[];

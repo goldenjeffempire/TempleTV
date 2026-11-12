@@ -25,3 +25,13 @@ quiet logs as proof that telemetry initialization was harmless missed this.
 **How to apply:** When changing observability bootstrap or upgrading its SDKs,
 check provider ownership and actual startup work rather than disabling
 observability to make the process appear faster.
+
+Use file-based entrypoints for diagnostics that import logging/worker
+infrastructure rather than invoking Node with `--input-type=module`.
+
+**Why:** Worker threads inherit Node execution flags. The current logging
+worker starts from a file, for which Node rejects the inherited `--input-type`
+flag even when the parent legitimately received its script on standard input.
+
+**How to apply:** Run the diagnostic from an `.mjs` file with the appropriate
+loader; do not mistake this launcher failure for an application/database fault.

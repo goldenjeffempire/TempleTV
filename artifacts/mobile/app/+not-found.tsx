@@ -26,9 +26,11 @@ import React, { useEffect } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { Stack, usePathname } from "expo-router";
 import { safeNavReplace } from "@/lib/safeNavPush";
+import { useColors } from "@/hooks/useColors";
 
 export default function NotFoundScreen() {
   const pathname = usePathname();
+  const c = useColors();
 
   useEffect(() => {
     // Capture to Sentry so we know when +not-found fires (and for which path).
@@ -60,8 +62,8 @@ export default function NotFoundScreen() {
   return (
     <>
       <Stack.Screen options={{ headerShown: false, header: () => null, title: "", animation: "none" }} />
-      <View style={styles.root}>
-        <ActivityIndicator size="large" color="#6A0DAD" />
+      <View style={[styles.root, { backgroundColor: c.background }]} accessibilityLabel="Opening Temple TV">
+        <ActivityIndicator size="large" color={c.primary} />
       </View>
     </>
   );
@@ -72,6 +74,5 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F8F5FF",
   },
 });

@@ -103,7 +103,7 @@ export default function ForgotPasswordScreen() {
                   sent a link you can use to reset your password. The link expires in 30 minutes.
                 </Text>
 
-                <Pressable onPress={() => router.replace("/login")} style={styles.submitBtnOuter}>
+                <Pressable accessibilityRole="button" testID="forgot-back-to-login" onPress={() => router.replace("/login")} style={styles.submitBtnOuter}>
                   <LinearGradient
                     colors={["#7c3aed", "#6d28d9", "#5b21b6"]}
                     start={{ x: 0, y: 0 }}
@@ -114,7 +114,7 @@ export default function ForgotPasswordScreen() {
                   </LinearGradient>
                 </Pressable>
 
-                <Pressable
+                <Pressable accessibilityRole="button" testID="forgot-resend"
                   onPress={() => { setSent(false); setError(null); }}
                   style={styles.resendBtn}
                   hitSlop={8}
@@ -138,7 +138,7 @@ export default function ForgotPasswordScreen() {
                       value={email}
                       onChangeText={setEmail}
                       placeholder="you@example.com"
-                      placeholderTextColor="rgba(255,255,255,0.25)"
+                      placeholderTextColor="rgba(255,255,255,0.45)"
                       keyboardType="email-address"
                       autoCapitalize="none"
                       autoComplete="email"
@@ -154,7 +154,7 @@ export default function ForgotPasswordScreen() {
                     </View>
                   )}
 
-                  <Pressable onPress={handleSubmit} disabled={loading} style={[styles.submitBtnOuter, { marginTop: 28 }]}>
+                  <Pressable accessibilityRole="button" accessibilityState={{ disabled: loading, busy: loading }} testID="forgot-submit" onPress={handleSubmit} disabled={loading} style={[styles.submitBtnOuter, { marginTop: 28 }]}>
                     <LinearGradient
                       colors={["#7c3aed", "#6d28d9", "#5b21b6"]}
                       start={{ x: 0, y: 0 }}
@@ -170,7 +170,7 @@ export default function ForgotPasswordScreen() {
                   </Pressable>
                 </View>
 
-                <Pressable onPress={() => router.replace("/login")} style={styles.resendBtn} hitSlop={8}>
+                <Pressable accessibilityRole="button" testID="forgot-cancel" onPress={() => router.replace("/login")} style={styles.resendBtn} hitSlop={8}>
                   <Text style={styles.resendText}>Remembered it? Back to sign in</Text>
                 </Pressable>
               </>
@@ -224,8 +224,8 @@ const styles = StyleSheet.create({
   subtitleEmphasis: { color: "rgba(255,255,255,0.85)", fontFamily: "Inter_600SemiBold" },
   form: {},
   label: {
-    fontSize: 10, fontFamily: "Inter_600SemiBold",
-    color: "rgba(255,255,255,0.4)", letterSpacing: 1.2, marginBottom: 8,
+    fontSize: 11, fontFamily: "Inter_600SemiBold",
+    color: "rgba(255,255,255,0.62)", letterSpacing: 1.2, marginBottom: 8,
   },
   inputRow: {
     flexDirection: "row", alignItems: "center",

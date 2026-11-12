@@ -1,6 +1,6 @@
 {
   "name": "@workspace/mobile",
-  "version": "1.0.75",
+  "version": "1.0.77",
   "private": true,
   "packageManager": "pnpm@10.26.1",
   "main": "./index.ts",
@@ -30,7 +30,7 @@
     "release:rollback": "bash scripts/release-rollback.sh",
     "android:clean": "cd android && ./gradlew clean",
     "android:stop": "cd android && ./gradlew --stop",
-    "test": "node --import tsx/esm --test __tests__/startup.test.ts __tests__/hero-youtube-override.test.ts __tests__/open-player-navigation.test.ts __tests__/notifications-auth-fixes.test.ts __tests__/network-media-defects.test.ts __tests__/player-hook-safety.test.ts __tests__/viewer-tracking.test.ts"
+    "test": "node --import tsx --test __tests__/startup.test.ts __tests__/hero-youtube-override.test.ts __tests__/open-player-navigation.test.ts __tests__/notifications-auth-fixes.test.ts __tests__/network-media-defects.test.ts __tests__/player-hook-safety.test.ts __tests__/viewer-tracking.test.ts __tests__/offline-downloads.test.ts __tests__/automatic-broadcast.test.ts __tests__/daily-devotion.test.ts __tests__/devotion-relay.test.cjs __tests__/reduced-motion.test.ts __tests__/card-interactions.test.cjs"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
@@ -89,6 +89,7 @@
     "expo-clipboard": "~57.0.2",
     "expo-file-system": "~57.0.7",
     "expo-in-app-updates": "workspace:*",
+    "expo-network": "~57.0.2",
     "expo-notifications": "~57.0.22",
     "expo-pip-android": "workspace:*",
     "expo-secure-store": "~57.0.4",

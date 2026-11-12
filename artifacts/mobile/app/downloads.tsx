@@ -104,7 +104,7 @@ function DownloadRow({ item }: { item: DownloadItem }) {
           contentFit="cover"
         />
         {isCompleted && (
-          <Pressable style={styles.playOverlay} onPress={handlePlay} accessibilityLabel="Play downloaded video">
+          <Pressable accessibilityRole="button" style={styles.playOverlay} onPress={handlePlay} accessibilityLabel="Play downloaded video">
             <View style={[styles.playCircle, { backgroundColor: c.primary }]}>
               <Feather name="play" size={14} color="#fff" style={{ marginLeft: 2 }} />
             </View>
@@ -150,7 +150,7 @@ function DownloadRow({ item }: { item: DownloadItem }) {
       {/* Actions */}
       <View style={styles.actions}>
         {isActive && (
-          <Pressable
+          <Pressable accessibilityRole="button"
             onPress={() => { void pauseDownload(item.videoId).catch(showDownloadError); }}
             style={styles.actionBtn}
             accessibilityLabel="Pause download"
@@ -160,7 +160,7 @@ function DownloadRow({ item }: { item: DownloadItem }) {
           </Pressable>
         )}
         {isPaused && (
-          <Pressable
+          <Pressable accessibilityRole="button"
             onPress={() => { void resumeDownload(item.videoId).catch(showDownloadError); }}
             style={styles.actionBtn}
             accessibilityLabel="Resume download"
@@ -170,7 +170,7 @@ function DownloadRow({ item }: { item: DownloadItem }) {
           </Pressable>
         )}
         {isFailed && (
-          <Pressable
+          <Pressable accessibilityRole="button"
             onPress={() => { void retryDownload(item.videoId).catch(showDownloadError); }}
             style={styles.actionBtn}
             accessibilityLabel="Retry download"
@@ -180,7 +180,7 @@ function DownloadRow({ item }: { item: DownloadItem }) {
           </Pressable>
         )}
         {isCompleted && (
-          <Pressable
+          <Pressable accessibilityRole="button"
             onPress={handlePlay}
             style={styles.actionBtn}
             accessibilityLabel="Play video"
@@ -189,7 +189,7 @@ function DownloadRow({ item }: { item: DownloadItem }) {
             <Feather name="play-circle" size={20} color={c.primary} />
           </Pressable>
         )}
-        <Pressable
+        <Pressable accessibilityRole="button"
           onPress={isCompleted ? () => {
             Alert.alert(
               "Delete Download",
@@ -295,7 +295,7 @@ export default function DownloadsScreen() {
               <Text style={[styles.emptySubtitle, { color: c.mutedForeground }]}>
                 {error ?? "Save an authorized app-hosted broadcast recording while online. YouTube and live streams cannot be downloaded."}
               </Text>
-              <Pressable
+              <Pressable accessibilityRole="button" testID="downloads-browse"
                 style={[styles.browseBtn, { backgroundColor: c.primary }]}
                 onPress={() => router.replace("/(tabs)/library")}
               >
@@ -375,7 +375,7 @@ const styles = StyleSheet.create({
   progressFill: { height: "100%", borderRadius: 2 },
 
   actions: { flexDirection: "column", gap: 8, alignItems: "center" },
-  actionBtn: { padding: 4 },
+  actionBtn: { minHeight: 44, minWidth: 44, padding: 4, alignItems: "center", justifyContent: "center" },
 
   empty: {
     flex: 1,
@@ -388,7 +388,7 @@ const styles = StyleSheet.create({
   emptyIcon: { marginBottom: 8 },
   emptyTitle: { fontSize: 20, fontWeight: "700", textAlign: "center" },
   emptySubtitle: { fontSize: 14, textAlign: "center", lineHeight: 22 },
-  browseBtn: {
+  browseBtn: { minHeight: 44,
     marginTop: 8,
     paddingHorizontal: 24,
     paddingVertical: 12,

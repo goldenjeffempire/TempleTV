@@ -429,6 +429,7 @@ export function BroadcastPreviewV2({ className }: Props) {
   const { snapshot, connected, attach, forceRebind } = useV2Broadcast({
     baseUrl,
     attachHls,
+    observer: true,
     enableStallReport: false,
     getAuthToken: () => tokenStore.getAccess() || null,
   });

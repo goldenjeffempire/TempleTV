@@ -56,6 +56,7 @@ import { getBroadcastV2SseViewerCount } from "./sse.gateway.js";
 import { getExhaustionStatus } from "../engine/queue-exhaustion-monitor.js";
 import { getAutoRefillStatus } from "../engine/auto-queue-refill.js";
 import { getStorageStats } from "../../../infrastructure/storage.js";
+import { assetHealthRowSchema } from "../domain/asset-health.schemas.js";
 import { assetHealthRepo } from "../repository/asset-health.repo.js";
 import { queueSelfHealingWorker } from "../engine/queue-self-healing-worker.js";
 import { getDeadAirStats } from "../engine/dead-air-tracker.js";
@@ -3875,30 +3876,6 @@ const _rehydrateQS = z.object({ fromSequence: z.coerce.number().int().nonnegativ
   // These endpoints expose the persistent repair state machine for broadcast
   // queue items. Operators can view per-item repair state, trigger manual
   // approve / quarantine / reset actions, and kick off an on-demand repair run.
-
-  const assetHealthRowSchema = z.object({
-    id: z.string(),
-    queueItemId: z.string(),
-    videoId: z.string().nullable(),
-    state: z.enum(["healthy", "quarantined", "repairing", "approved", "blocked"]),
-    repairAttempts: z.number(),
-    lastRepairAt: z.string().nullable(),
-    nextRetryAt: z.string().nullable(),
-    lastErrorCode: z.string().nullable(),
-    lastError: z.string().nullable(),
-    suggestedFix: z.string().nullable(),
-    sourceHash: z.string().nullable(),
-    autoRepairPaused: z.boolean(),
-    repairLog: z.array(z.object({
-      ts: z.string(),
-      actor: z.enum(["system", "operator"]),
-      action: z.string(),
-      detail: z.string(),
-      outcome: z.enum(["success", "failure", "pending", "skipped"]),
-    })),
-    createdAt: z.string(),
-    updatedAt: z.string(),
-  });
 
   function serializeHealthRow(r: Awaited<ReturnType<typeof assetHealthRepo.getOrCreate>>) {
     return {

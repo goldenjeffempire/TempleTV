@@ -3,14 +3,17 @@ import { ThemeContext } from "@/context/ThemeContext";
 import colors from "@/constants/colors";
 
 type Palette = typeof colors.light;
+let cachedTimeZone: string | undefined;
 
 function getLocalHour() {
   return new Date().getHours();
 }
 
 function getTimeZone() {
+  if (cachedTimeZone) return cachedTimeZone;
   try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+    cachedTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return cachedTimeZone;
   } catch {
     return "Local time";
   }
@@ -31,9 +34,12 @@ export function useColors(): Palette & {
   const [hour, setHour] = useState(() => getLocalHour());
 
   useEffect(() => {
+    // ThemeProvider owns OS appearance changes. Once loaded, every card
+    // no longer needs its own minute timer for the startup-only fallback.
+    if (themeCtx?.isLoaded) return;
     const interval = setInterval(() => setHour(getLocalHour()), 60_000);
     return () => clearInterval(interval);
-  }, []);
+  }, [themeCtx?.isLoaded]);
 
   const timeZone = useMemo(() => getTimeZone(), []);
 

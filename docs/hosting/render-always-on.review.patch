@@ -1,0 +1,12 @@
+diff --git a/render.yaml b/render.yaml
+--- a/render.yaml
++++ b/render.yaml
+@@ -35,7 +35,7 @@
+   - type: web
+     name: temple-tv-api
+     runtime: node
+-    plan: free
++    plan: 0.5c-512mb
+     region: frankfurt
+     branch: main
+     rootDir: .

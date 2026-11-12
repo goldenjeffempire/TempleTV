@@ -48,6 +48,8 @@ export function configureMobileStorage(adapter: StorageAdapter): void {
 
 export interface TransportConfig {
   baseUrl: string;
+  /** Operator monitoring must never submit viewer-position telemetry. */
+  observer?: boolean;
   channel?: string;
   onPlayerEvent: (event: PlayerEvent) => void;
   onConnectionChange?: (connected: boolean) => void;
@@ -745,6 +747,7 @@ export class V2Transport {
 
   private startDriftReporter(): void {
     this.stopDriftReporter();
+    if (this.cfg.observer) return;
     this.driftReportTimer = setInterval(() => {
       if (this.stopped || !this.lastSnapshotForDrift) return;
       const { itemId, startsAtMs, durationSecs } = this.lastSnapshotForDrift;
@@ -764,6 +767,7 @@ export class V2Transport {
   }
 
   private sendDriftReport(itemId: string, positionMs: number): Promise<void> {
+    if (this.cfg.observer) return Promise.resolve();
     try {
       const url = `${this.cfg.baseUrl}/report-position`;
       const body = JSON.stringify({ itemId, positionMs });

@@ -171,4 +171,23 @@ const cpuCount = os.cpus().length;
 const defaultMaxWorkers = Math.max(1, Math.min(2, cpuCount));
 config.maxWorkers = Number(process.env.METRO_MAX_WORKERS ?? defaultMaxWorkers);
 
+// JCTM restricts browser CORS. Relay only its public daily endpoint; never
+// forward client credentials or accept an arbitrary upstream URL.
+const { isDevotionRequest, createDevotionRelay } = require("./server/devotion-relay");
+const { relayPreviewApi } = require("./server/api-preview-relay");
+const devotionRelay = createDevotionRelay();
+const priorEnhanceMiddleware = config.server?.enhanceMiddleware;
+config.server = {
+  ...config.server,
+  enhanceMiddleware(middleware, server) {
+    const fallback = priorEnhanceMiddleware ? priorEnhanceMiddleware(middleware, server) : middleware;
+    return (req, res, next) => {
+      if (isDevotionRequest(req)) { void devotionRelay(req, res); return; }
+      // Without this, Metro returns index.html for /api requests and the
+      // browser then fails its cross-origin production fallback.
+      if ((req.url || "").startsWith("/api/")) { relayPreviewApi(req, res); return; }
+      return fallback(req, res, next);
+    };
+  },
+};
 module.exports = config;

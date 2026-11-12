@@ -8,7 +8,8 @@ import {
 } from "@expo-google-fonts/inter";
 
 import { Feather } from "@expo/vector-icons";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { queryClient } from "@/lib/query-client";
 import Constants from "expo-constants";
 import { Stack, usePathname, useRootNavigationState, useSegments } from "expo-router";
 import { isNavPushActive, safeNavPush, safeNavReplace } from "@/lib/safeNavPush";
@@ -137,29 +138,6 @@ const _splashSafetyTimer = setTimeout(() => {
   SplashScreen.hideAsync().catch(() => {});
 }, 8000);
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: 2,
-      // 5-minute stale window — content changes infrequently enough that
-      // navigating between tabs does not need a fresh network round-trip.
-      staleTime: 5 * 60 * 1000,
-      // Keep data alive in the cache for 15 minutes. Mobile users frequently
-      // background the app and return; keeping query results avoids a cold
-      // paint on resume. SSE-driven invalidation handles real-time updates.
-      gcTime: 15 * 60 * 1000,
-      // App focus/resume events must NOT trigger automatic refetches on mobile.
-      // The AsyncStorage instant-paint cache and the SSE/WS live-sync pipeline
-      // already keep data fresh without noisy polling. Disable focus-based
-      // refetch to prevent the broadcast screen from stuttering when the app
-      // comes to the foreground mid-playback.
-      refetchOnWindowFocus: false,
-      // Reconnect refetch remains enabled: when the device regains a network
-      // connection after being offline, queries should refresh automatically.
-      refetchOnReconnect: true,
-    },
-  },
-});
 
 import { setAudioSessionPromise } from "@/lib/audio-session";
 import { markStartupPhase } from "@/lib/startupLifecycle";

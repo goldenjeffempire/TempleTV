@@ -61,6 +61,9 @@ import { RemoteImage } from "@/components/RemoteImage";
 import { useVideoPlayer, VideoView } from "expo-video";
 import type { VideoSource } from "expo-video";
 import { ANDROID_VIDEO_BUFFER_OPTIONS } from "@/lib/androidVideoBuffer";
+import { useDownloadContext } from "@/context/DownloadContext";
+import { downloadManager } from "@/services/downloadManager";
+import { mayLoadBroadcastBuffer } from "@/lib/broadcastDownloadPolicy";
 import * as Sentry from "@sentry/react-native";
 import { useV2BroadcastNative } from "@workspace/player-core/react-native";
 import type { MobileBufferState } from "@workspace/player-core/adapters/mobile";
@@ -205,6 +208,9 @@ interface BufferProps {
   suppressEvents?: boolean;
   fsmIsWaiting: boolean;
   onVideoReady?: () => void;
+  allowRemotePreload?: boolean;
+  handoff?: boolean;
+  localPath?: string | null;
 }
 
 const BroadcastBuffer = React.memo(function BroadcastBuffer({
@@ -216,6 +222,9 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
   suppressEvents = false,
   fsmIsWaiting = false,
   onVideoReady,
+  allowRemotePreload = true,
+  handoff = false,
+  localPath,
 }: BufferProps) {
   // ── Mount guard ─────────────────────────────────────────────────────────
   const isMountedRef = useRef(true);
@@ -226,7 +235,19 @@ const BroadcastBuffer = React.memo(function BroadcastBuffer({
     };
   }, []);
 
-  const url = sourceUrl(state, excludeYouTube);
+  // Reuse a verified complete file on the next source bind. Do not restart
+  // a playing remote source halfway through merely because caching finished.
+  const boundSource = useRef<{ revision: number; url: string | null }>({ revision: -1, url: null });
+  if (boundSource.current.revision !== state.bindRevision || !boundSource.current.url) {
+    boundSource.current = { revision: state.bindRevision, url: localPath ?? sourceUrl(state, excludeYouTube) };
+  }
+  const allowed = mayLoadBroadcastBuffer({
+    kind: state.item ? ("source" in state.item ? state.item.source.kind : state.item.kind) : undefined,
+    active: state.active,
+    local: boundSource.current.url?.startsWith("file://") === true,
+    preload: allowRemotePreload, required: handoff || fsmIsWaiting,
+  });
+  const url = !sourceUrl(state, excludeYouTube) ? null : allowed ? boundSource.current.url : null;
   const isHls = isHlsSource(state);
 
   // ── expo-video player — created ONCE for the lifetime of this component ──
@@ -1010,6 +1031,14 @@ export function V2PlayerContainer({
   isInPip,
 }: Props) {
   void _channelId;
+  const { automaticTransfersAllowed, downloads } = useDownloadContext();
+  const localBroadcastPath = (buffer: MobileBufferState) => {
+    const source = buffer.item;
+    if (!source || !("source" in source) || source.source.kind !== "mp4" || !source.videoId) return null;
+    const item = downloads.find(item => item.videoId === source.videoId);
+    return item?.offlinePolicy === "public-broadcast-recording" ?
+      downloadManager.getLocalPath(item.videoId) : null;
+  };
   const effectiveBaseUrl = useMidnightPrayersSwitch(baseUrl);
 
   // ── Hydration gate ────────────────────────────────────────────────────────
@@ -1453,6 +1482,9 @@ export function V2PlayerContainer({
 
       <BroadcastBuffer
         bufferId="A"
+        localPath={localBroadcastPath(buffers.A)}
+        allowRemotePreload={automaticTransfersAllowed}
+        handoff={snapshot.state === "HANDOFF"}
         state={buffers.A}
         reportBufferEvent={reportBufferEvent}
         forceMuted={muted}
@@ -1463,6 +1495,9 @@ export function V2PlayerContainer({
       />
       <BroadcastBuffer
         bufferId="B"
+        localPath={localBroadcastPath(buffers.B)}
+        allowRemotePreload={automaticTransfersAllowed}
+        handoff={snapshot.state === "HANDOFF"}
         state={buffers.B}
         reportBufferEvent={reportBufferEvent}
         forceMuted={muted}

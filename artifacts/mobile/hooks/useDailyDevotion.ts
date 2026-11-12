@@ -1,0 +1,83 @@
+import { useCallback, useEffect, useState } from "react";
+import { AppState } from "react-native";
+import { useFocusEffect } from "expo-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNetworkStatus } from "./useNetworkStatus";
+import { dailyDevotionRepository } from "@/services/dailyDevotion";
+import { DEVOTION_QUERY_KEY, DEVOTION_REFRESH_MS, nextDevotionRefreshDelay, type DevotionSnapshot } from "@/services/dailyDevotionCore";
+
+export function useDailyDevotion() {
+  const client = useQueryClient();
+  const { isOnline, apiUnreachable } = useNetworkStatus();
+  const [foreground, setForeground] = useState(AppState.currentState !== "background");
+  const [focused, setFocused] = useState(false);
+  const [manuallyRefreshing, setManuallyRefreshing] = useState(false);
+  const [manualError, setManualError] = useState<string | null>(null);
+  const reachable = isOnline || apiUnreachable === true;
+  useFocusEffect(useCallback(() => {
+    setFocused(true);
+    void client.invalidateQueries({ queryKey: DEVOTION_QUERY_KEY, exact: true }, { cancelRefetch: false });
+    return () => setFocused(false);
+  }, [client]));
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", state => {
+      setForeground(state === "active");
+      // Explicitly revalidate: Android may batch/suspend the intervening
+      // background state update, leaving enabled unchanged on resume.
+      if (state === "active" && focused && reachable) {
+        void client.invalidateQueries({ queryKey: DEVOTION_QUERY_KEY, exact: true }, { cancelRefetch: false });
+      }
+    });
+    return () => subscription.remove();
+  }, [client, focused, reachable]);
+  useEffect(() => {
+    let active = true;
+    void dailyDevotionRepository.cached().then(saved => {
+      if (!active || !saved) return;
+      const current = client.getQueryData<DevotionSnapshot>(DEVOTION_QUERY_KEY);
+      if (!current || current.fetchedAt < saved.fetchedAt) {
+        client.setQueryData(DEVOTION_QUERY_KEY, saved, { updatedAt: saved.fetchedAt });
+      }
+    });
+    return () => { active = false; };
+  }, [client]);
+
+  const query = useQuery<DevotionSnapshot>({
+    queryKey: DEVOTION_QUERY_KEY,
+    enabled: foreground && focused && reachable,
+    networkMode: "always",
+    // Never let React Query's old five-minute cache suppress a Home return.
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
+    gcTime: 24 * 60 * 60 * 1000,
+    refetchInterval: foreground && focused && reachable ? () => nextDevotionRefreshDelay(Date.now()) : false,
+    refetchIntervalInBackground: false,
+    retry: 1,
+  });
+  useEffect(() => {
+    if (foreground && focused && reachable) {
+      void client.invalidateQueries({ queryKey: DEVOTION_QUERY_KEY, exact: true }, { cancelRefetch: false });
+    }
+  }, [client, foreground, focused, reachable, isOnline]);
+  const refresh = useCallback(async () => {
+    if (manuallyRefreshing) return;
+    setManuallyRefreshing(true); setManualError(null);
+    try {
+      const snapshot = await dailyDevotionRepository.load(true);
+      client.setQueryData(DEVOTION_QUERY_KEY, snapshot, { updatedAt: snapshot.fetchedAt });
+    } catch (error) {
+      setManualError(error instanceof Error ? error.message : "The devotion could not be refreshed.");
+    } finally { setManuallyRefreshing(false); }
+  }, [client, manuallyRefreshing]);
+  return {
+    devotion: query.data?.devotion ?? null,
+    loading: !query.data && query.isFetching,
+    refreshing: manuallyRefreshing || (query.isFetching && !!query.data),
+    stale: !!query.data && (query.data.stale || !reachable || !!query.error ||
+      Date.now() - query.data.fetchedAt >= DEVOTION_REFRESH_MS),
+    error: manualError ?? query.data?.error ?? query.error?.message ?? null,
+    refresh,
+  };
+}

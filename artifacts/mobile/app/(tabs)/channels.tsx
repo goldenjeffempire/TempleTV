@@ -674,7 +674,7 @@ export default function ChannelsTab() {
         <Text style={[styles.errorDetail, { color: colors.mutedForeground }]}>
           {"We couldn't load the channels. Please check your internet connection and try again."}
         </Text>
-        <Pressable
+        <Pressable accessibilityRole="button" accessibilityLabel="Try loading channels again" accessibilityState={{ disabled: isRetrying || loading, busy: isRetrying }} testID="channels-retry"
           onPress={refetch}
           disabled={isRetrying || loading}
           style={[
@@ -875,7 +875,7 @@ const styles = StyleSheet.create({
   },
   emptyCardText: { flex: 1, fontSize: 13, lineHeight: 18 },
 
-  retryBtn: {
+  retryBtn: { minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     borderRadius: 8,
@@ -1014,7 +1014,7 @@ const styles = StyleSheet.create({
   },
   scheduleNowText: {
     color: "#fff",
-    fontSize: 9,
+    fontSize: 10,
     fontWeight: "800",
     letterSpacing: 0.5,
   },

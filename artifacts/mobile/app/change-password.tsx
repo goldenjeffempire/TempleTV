@@ -101,7 +101,7 @@ export default function ChangePasswordScreen() {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.headerRow}>
-          <Pressable onPress={() => router.back()} hitSlop={12}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Close" testID="change-password-close" onPress={() => router.back()} hitSlop={12}>
             <Feather name="x" size={22} color={c.mutedForeground} />
           </Pressable>
         </View>
@@ -129,7 +129,7 @@ export default function ChangePasswordScreen() {
                 maxLength={6}
               />
             </View>
-            <Pressable
+            <Pressable accessibilityRole="button" accessibilityLabel="Back to password fields"
               style={{ marginTop: 12 }}
               onPress={() => { setNeedsMfaCode(false); setMfaCode(""); }}
               hitSlop={8}
@@ -152,7 +152,7 @@ export default function ChangePasswordScreen() {
                 autoComplete="current-password"
                 textContentType="password"
               />
-              <Pressable onPress={() => setShowCurrent((v) => !v)} hitSlop={8}>
+              <Pressable accessibilityRole="button" accessibilityLabel={showCurrent ? "Hide current password" : "Show current password"} onPress={() => setShowCurrent((v) => !v)} hitSlop={8}>
                 <Feather name={showCurrent ? "eye-off" : "eye"} size={18} color={c.mutedForeground} />
               </Pressable>
             </View>
@@ -170,7 +170,7 @@ export default function ChangePasswordScreen() {
                 autoComplete="new-password"
                 textContentType="newPassword"
               />
-              <Pressable onPress={() => setShowNew((v) => !v)} hitSlop={8}>
+              <Pressable accessibilityRole="button" accessibilityLabel={showNew ? "Hide new password" : "Show new password"} onPress={() => setShowNew((v) => !v)} hitSlop={8}>
                 <Feather name={showNew ? "eye-off" : "eye"} size={18} color={c.mutedForeground} />
               </Pressable>
             </View>
@@ -188,14 +188,14 @@ export default function ChangePasswordScreen() {
                 autoComplete="new-password"
                 textContentType="newPassword"
               />
-              <Pressable onPress={() => setShowConfirm((v) => !v)} hitSlop={8}>
+              <Pressable accessibilityRole="button" accessibilityLabel={showConfirm ? "Hide confirmation password" : "Show confirmation password"} onPress={() => setShowConfirm((v) => !v)} hitSlop={8}>
                 <Feather name={showConfirm ? "eye-off" : "eye"} size={18} color={c.mutedForeground} />
               </Pressable>
             </View>
           </View>
         )}
 
-        <Pressable
+        <Pressable accessibilityRole="button" accessibilityState={{ disabled: loading, busy: loading }} testID="change-password-submit"
           style={[styles.submitBtn, { backgroundColor: c.primary, opacity: loading ? 0.7 : 1 }]}
           onPress={handleSubmit}
           disabled={loading}

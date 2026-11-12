@@ -114,7 +114,7 @@ export default function FavoritesScreen() {
           <Text style={[styles.emptyDesc, { color: c.mutedForeground }]}>
             Tap the heart icon on any sermon to save it here for quick access.
           </Text>
-          <Pressable
+          <Pressable accessibilityRole="button" testID="favorites-browse"
             onPress={() => router.push("/(tabs)/library")}
             style={[styles.browseBtn, { backgroundColor: c.primary }]}
           >
@@ -177,7 +177,7 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { fontSize: 20, lineHeight: LINE_HEIGHT.xxl, fontWeight: "700", textAlign: "center" },
   emptyDesc: { fontSize: 14, lineHeight: LINE_HEIGHT.base, textAlign: "center" },
-  browseBtn: {
+  browseBtn: { minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     gap: 8,

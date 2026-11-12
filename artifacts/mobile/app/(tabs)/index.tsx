@@ -37,7 +37,10 @@ import {
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
-import { Stack, useFocusEffect } from "expo-router";
+import { Stack, router, useFocusEffect } from "expo-router";
+import { DailyDevotionBanner } from "@/components/DailyDevotionBanner";
+import { PressableScale } from "@/components/PressableScale";
+import { MIN_TOUCH } from "@/constants/design";
 import { safeNavPush } from "@/lib/safeNavPush";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useColors } from "@/hooks/useColors";
@@ -142,7 +145,11 @@ function MinistryHeader({ topInset }: MinistryHeaderProps) {
         { paddingTop: topInset + 10, backgroundColor: c.background },
       ]}
     >
-      <Text style={[styles.ministryTitle, { color: c.foreground }]}>
+      <Text
+        style={[styles.ministryTitle, { color: c.foreground }]}
+        accessibilityRole="header"
+        maxFontSizeMultiplier={1.4}
+      >
         Jesus Christ Temple Ministry
       </Text>
       <View style={[styles.ministryDivider, { backgroundColor: c.primary }]} />
@@ -216,14 +223,11 @@ const NowPlayingMiniBar = React.memo(function NowPlayingMiniBar({
       ]}
       pointerEvents={visible ? "box-none" : "none"}
     >
-      <Pressable
-        onPress={handleOpen}
+      <View
         style={[
           styles.miniBar,
           { height: BAR_HEIGHT, backgroundColor: c.card, borderColor: c.border },
         ]}
-        accessibilityRole="button"
-        accessibilityLabel={`Now playing: ${title}. Tap to open player.`}
       >
         {/* Thumbnail */}
         {thumbUrl ? (
@@ -252,7 +256,13 @@ const NowPlayingMiniBar = React.memo(function NowPlayingMiniBar({
           </Text>
         </View>
 
-        {/* Controls: mute + open-player chevron */}
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={handleOpen}
+          accessibilityRole="button"
+          accessibilityLabel={`Now playing: ${title}. Tap to open player.`}
+        />
+        {/* Playback and mute are sibling controls, not nested buttons. */}
         <View style={styles.miniBarControls}>
           <Pressable
             onPress={(e) => { e.stopPropagation?.(); onMuteToggle(); }}
@@ -267,9 +277,11 @@ const NowPlayingMiniBar = React.memo(function NowPlayingMiniBar({
               color={c.foreground}
             />
           </Pressable>
-          <Feather name="chevron-up" size={18} color={c.mutedForeground} />
+          <Pressable onPress={handleOpen} style={styles.miniBarMuteBtn} hitSlop={10} accessibilityRole="button" accessibilityLabel="Open broadcast player">
+            <Feather name="chevron-up" size={18} color={c.mutedForeground} />
+          </Pressable>
         </View>
-      </Pressable>
+      </View>
     </Animated.View>
   );
 });
@@ -1005,6 +1017,74 @@ const ContinueWatchingRow = React.memo(function ContinueWatchingRow({
   );
 });
 
+// ─── Quick Access ─────────────────────────────────────────────────────────────
+// Real shortcuts to existing routes only. Tab destinations use router.navigate
+// (switches tab without stacking); stack screens use safeNavPush.
+
+type QuickItem = {
+  key: string;
+  label: string;
+  icon: React.ComponentProps<typeof Feather>["name"];
+  href: string;
+  tab?: boolean;
+};
+
+const QUICK_ITEMS: QuickItem[] = [
+  { key: "channels", label: "Channels", icon: "grid", href: "/channels", tab: true },
+  { key: "radio", label: "Radio", icon: "radio", href: "/radio", tab: true },
+  { key: "library", label: "Library", icon: "book-open", href: "/library", tab: true },
+  { key: "search", label: "Search", icon: "search", href: "/search" },
+  { key: "favorites", label: "Favorites", icon: "heart", href: "/favorites" },
+  { key: "give", label: "Give", icon: "gift", href: "/donate" },
+];
+
+function openQuick(item: QuickItem) {
+  if (item.tab) {
+    try {
+      router.navigate(item.href as never);
+      return;
+    } catch {
+      /* fall through to safeNavPush */
+    }
+  }
+  safeNavPush(item.href, {}, `home-quick-${item.key}`);
+}
+
+const QuickAccess = React.memo(function QuickAccess() {
+  const c = useColors();
+  const { width } = useWindowDimensions();
+  // 3 per row on phones, 6 in one row on wide screens / tablets.
+  const cols = width >= 720 ? 6 : 3;
+  const tileW = Math.floor((Math.min(width, 1100) - 32 - (cols - 1) * 10) / cols);
+  return (
+    <View style={styles.quickWrap}>
+      <SectionHeader title="Explore Temple TV" />
+      <View style={styles.quickGrid}>
+        {QUICK_ITEMS.map((item) => (
+          <PressableScale
+            key={item.key}
+            onPress={() => openQuick(item)}
+            testID={`home-quick-${item.key}`}
+            accessibilityRole="button"
+            accessibilityLabel={`Open ${item.label}`}
+            style={[
+              styles.quickTile,
+              { width: tileW, backgroundColor: c.surface, borderColor: c.border },
+            ]}
+          >
+            <View style={[styles.quickIcon, { backgroundColor: c.secondary }]}>
+              <Feather name={item.icon} size={18} color={c.primary} />
+            </View>
+            <Text style={[styles.quickLabel, { color: c.foreground }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
+              {item.label}
+            </Text>
+          </PressableScale>
+        ))}
+      </View>
+    </View>
+  );
+});
+
 // ─── Category Row ─────────────────────────────────────────────────────────────
 
 const CategoryRow = React.memo(function CategoryRow({
@@ -1134,24 +1214,34 @@ export default function WatchScreen() {
           onMuteToggle={handleMuteToggle}
         />
 
+        {/* Daily Devotion + quick access sit directly below the live hero so
+            broadcasting remains the first thing seen. */}
+        <View style={styles.devotionSlot}>
+          <DailyDevotionBanner />
+        </View>
+        <QuickAccess />
+
         {/* Stale cache banner — inside ScrollView so it never floats over video.
             Three states:
             1. isStale + refreshing:  "Showing cached content — refreshing…"
             2. isStale + failed:      "Couldn't refresh — showing saved content" + retry
             3. offline:               hidden (NetworkBanner already covers this) */}
         {isStale && !loading && networkConnected && (
-          <View style={[
-            styles.staleBanner,
-            refreshFailed && styles.staleBannerFailed,
-          ]}>
+          <View
+            accessibilityLiveRegion="polite"
+            style={[
+              styles.staleBanner,
+              { backgroundColor: refreshFailed ? c.dangerSurface : c.warningSurface },
+            ]}
+          >
             <Feather
               name={refreshFailed ? "wifi-off" : "clock"}
               size={11}
-              color={refreshFailed ? "#991b1b" : "#92400e"}
+              color={refreshFailed ? c.dangerForeground : c.warningForeground}
             />
             <Text style={[
               styles.staleBannerText,
-              refreshFailed && styles.staleBannerTextFailed,
+              { color: refreshFailed ? c.dangerForeground : c.warningForeground },
             ]}>
               {refreshFailed
                 ? "Couldn't refresh — showing saved content"
@@ -1160,11 +1250,12 @@ export default function WatchScreen() {
             {refreshFailed && (
               <Pressable
                 onPress={refetch}
-                hitSlop={8}
+                hitSlop={12}
+                testID="home-videos-stale-retry"
                 accessibilityRole="button"
                 accessibilityLabel="Retry loading videos"
               >
-                <Text style={styles.staleBannerRetry}>Retry</Text>
+                <Text style={[styles.staleBannerRetry, { color: c.dangerForeground }]}>Retry</Text>
               </Pressable>
             )}
           </View>
@@ -1182,9 +1273,12 @@ export default function WatchScreen() {
             </Text>
             <Pressable
               onPress={refetch}
-              style={[styles.retryBtn, { backgroundColor: c.primary }]}
+              testID="home-videos-retry"
+              accessibilityRole="button"
+              accessibilityLabel="Try loading videos again"
+              style={({ pressed }) => [styles.retryBtn, { backgroundColor: c.primary, opacity: pressed ? 0.85 : 1 }]}
             >
-              <Text style={styles.retryText}>Try Again</Text>
+              <Text style={[styles.retryText, { color: c.primaryForeground }]}>Try Again</Text>
             </Pressable>
           </View>
         )}
@@ -1316,16 +1410,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   ministryTitle: {
-    fontSize: 17,
-    fontWeight: "700",
-    letterSpacing: 0.4,
+    fontSize: 15,
+    fontFamily: "Inter_700Bold",
+    letterSpacing: 1.6,
     textAlign: "center",
     textTransform: "uppercase",
   },
   ministryDivider: {
     marginTop: 8,
-    width: 40,
-    height: 3,
+    width: 28,
+    height: 2,
     borderRadius: 2,
   },
 
@@ -1520,10 +1614,28 @@ const styles = StyleSheet.create({
   retryBtn: {
     marginTop: 8,
     paddingHorizontal: 24,
-    paddingVertical: 10,
-    borderRadius: 20,
+    minHeight: MIN_TOUCH,
+    justifyContent: "center",
+    borderRadius: 24,
   },
-  retryText: { color: "#fff", fontWeight: "600", fontSize: 14 },
+  retryText: { fontFamily: "Inter_600SemiBold", fontSize: 15 },
+
+  // ── Devotion + quick access ─────────────────────────────────────────────────
+  devotionSlot: { marginTop: 20 },
+  quickWrap: { marginTop: 24, gap: 12 },
+  quickGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, paddingHorizontal: 16 },
+  quickTile: {
+    minHeight: 84,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 6,
+  },
+  quickIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center" },
+  quickLabel: { fontFamily: "Inter_600SemiBold", fontSize: 13 },
 
   // ── Stale cache indicator ────────────────────────────────────────────────────
   staleBanner: {
@@ -1536,24 +1648,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 8,
-    backgroundColor: "#fef3c7",
   },
   staleBannerText: {
-    fontSize: 11,
-    fontWeight: "500",
-    color: "#92400e",
+    fontSize: 12,
+    fontFamily: "Inter_500Medium",
     flex: 1,
   },
-  staleBannerFailed: {
-    backgroundColor: "#fee2e2",
-  },
-  staleBannerTextFailed: {
-    color: "#991b1b",
-  },
   staleBannerRetry: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#dc2626",
+    fontSize: 12,
+    fontFamily: "Inter_700Bold",
     textDecorationLine: "underline",
   },
 

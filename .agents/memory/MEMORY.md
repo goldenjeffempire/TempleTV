@@ -154,3 +154,4 @@
 - [Managed GitHub pushes](github-managed-push.md) — native Git auth can fail while the connected App still has write access; preserve remote history and run pre-push checks.
 - [Raw SSE response headers](raw-sse-response-headers.md) — hijacked streams must preserve approved CORS headers; HTTP 200 without an Origin check does not prove browser compatibility.
 - [MP4 memory pressure](mp4-memory-pressure.md) — relief must target active storage reads, not obsolete HLS controls; bound transferred bytes, not just rows.
+- [Official Daily Devotion source](daily-devotion-source.md) — use the page's daily API, not generic RSS category matches; never invent images or individual reading URLs.

@@ -1,12 +1,26 @@
 ---
 name: Broadcast Daemon Architecture
-description: Two-process architecture for zero-downtime API deployments — daemon on port 9000 owns the broadcast engine, API proxies to it.
+description: Separate broadcast-clock ownership from API/admin lifecycles; verify media delivery independently.
 ---
 
 ## Rule
 The broadcast engine runs in a separate permanent process (RUN_MODE=broadcast, port 9000). The API server (port 8080) is a proxy-only client when BROADCAST_DAEMON_URL=http://127.0.0.1:9000 is set.
 
-**Why:** API restarts previously caused 5–30s broadcast gaps. With the daemon-proxy split, API restarts reconnect within milliseconds since the daemon never stops.
+**Why:** API restarts previously reset or interrupted the broadcast runtime. A separate daemon preserves the authoritative clock, but that alone does not establish uninterrupted media delivery or an unconditional recovery time.
+
+## Continuity acceptance
+
+Treat daemon-clock continuity and successful audience media playback as separate
+acceptance criteria. Administrative logout/tab close/network loss must not own
+the station lifecycle. Never infer continuous delivery merely because the daemon
+is healthy or its sequence advances.
+
+**Why:** The user requires broadcasts to remain independent of administrative
+sessions; uploaded-media requests may still share an API process that can fail.
+
+**How to apply:** Test administrative disconnections and process failures with
+an independent runtime observer, and separately verify actual player/media
+behavior. Report hosting, leadership-loss, and real-device gates explicitly.
 
 ## How to apply
 - Only restart "Start API" for deployments. The "Broadcast Daemon" must NOT be restarted during API deployments — that's the whole point.

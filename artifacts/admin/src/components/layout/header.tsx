@@ -55,10 +55,10 @@ function SSEIndicator() {
           {(state === "connecting" || state === "reconnecting") && <Loader size={12} className="animate-spin" />}
           {state === "degraded" && <Loader size={12} />}
           {state === "offline" && <WifiOff size={12} />}
-          <span className="hidden sm:inline capitalize">{state}</span>
+          <span className="hidden sm:inline capitalize">Dashboard {state}</span>
         </div>
       </TooltipTrigger>
-      <TooltipContent>Real-time connection: {state}</TooltipContent>
+      <TooltipContent className="max-w-[240px]">Dashboard live link: {state}. This reflects only this admin session — the audience broadcast runs independently.</TooltipContent>
     </Tooltip>
   );
 }
@@ -134,7 +134,7 @@ export function Header({ onMenuClick }: HeaderProps) {
   };
 
   return (
-    <header className="h-14 flex items-center gap-3 px-4 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 z-40 shrink-0">
+    <header className="h-14 flex items-center gap-2 sm:gap-3 px-3 sm:px-4 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 z-40 shrink-0">
       <Button
         variant="ghost"
         size="icon"
@@ -145,7 +145,10 @@ export function Header({ onMenuClick }: HeaderProps) {
         <Menu size={18} />
       </Button>
 
-      <h1 className="font-semibold text-sm flex-1 truncate">{title}</h1>
+      <div className="flex-1 min-w-0">
+        <p className="eyebrow hidden sm:block leading-none">Temple TV Admin</p>
+        <h1 className="font-display font-semibold text-[15px] sm:text-base truncate leading-tight">{title}</h1>
+      </div>
 
       <div className="flex items-center gap-2">
         <LivePill />

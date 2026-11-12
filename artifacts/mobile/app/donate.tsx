@@ -122,7 +122,7 @@ export default function DonateScreen() {
         <GlassCard style={styles.linksCard}>
           {GIVING_LINKS.map((link, i) => (
             <React.Fragment key={link.label}>
-              <Pressable
+              <Pressable accessibilityRole="link"
                 onPress={() => openLink(link.url)}
                 style={({ pressed }) => [styles.linkRow, { opacity: pressed ? 0.7 : 1 }]}
               >
@@ -149,7 +149,7 @@ export default function DonateScreen() {
           </View>
           <View style={[styles.nameStrip, { backgroundColor: c.secondary }]}>
             <Text style={[styles.accountKey, { color: c.mutedForeground }]}>Account Name</Text>
-            <Pressable
+            <Pressable accessibilityRole="button" accessibilityLabel="Copy account name"
               onPress={() => copyToClipboard("ngn-name", NGN_ACCOUNT_NAME)}
               style={({ pressed }) => [styles.copyTarget, { opacity: pressed ? 0.6 : 1 }]}
               hitSlop={6}
@@ -168,7 +168,7 @@ export default function DonateScreen() {
             const key = `ngn-${i}`;
             const copied = copiedKey === key;
             return (
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityHint="Copies the account number"
                 key={acc.bank}
                 onPress={() => copyToClipboard(key, acc.accountNo)}
                 style={({ pressed }) => [
@@ -205,7 +205,7 @@ export default function DonateScreen() {
           ].map((item, i, arr) => {
             const copied = copiedKey === item.key;
             return (
-              <Pressable
+              <Pressable accessibilityRole="button" accessibilityHint="Copies this detail"
                 key={item.key}
                 onPress={() => copyToClipboard(item.key, item.value)}
                 style={({ pressed }) => [
@@ -235,7 +235,7 @@ export default function DonateScreen() {
           your transfer so we can confirm your giving.
         </Text>
 
-        <Pressable
+        <Pressable accessibilityRole="link" accessibilityLabel="Email giving@jctm.org.ng" testID="donate-email"
           onPress={() => openLink("mailto:giving@jctm.org.ng")}
           style={({ pressed }) => [
             styles.contactBtn,
@@ -301,7 +301,7 @@ const styles = StyleSheet.create({
   tierDesc: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 2 },
   divider: { height: StyleSheet.hairlineWidth, marginLeft: 66 },
   linksCard: { marginBottom: 16, overflow: "hidden" },
-  linkRow: { flexDirection: "row", alignItems: "center", padding: 14, gap: 12 },
+  linkRow: { minHeight: 44, flexDirection: "row", alignItems: "center", padding: 14, gap: 12 },
   linkIcon: { width: 40, height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center" },
   linkLabel: { flex: 1, fontSize: 15, fontFamily: "Inter_500Medium" },
   accountCard: { padding: 0, marginBottom: 14, overflow: "hidden" },
@@ -320,7 +320,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 0,
   },
   copyTarget: { flexDirection: "row", alignItems: "center", gap: 6, flexShrink: 1 },
-  bankRow: {
+  bankRow: { minHeight: 44,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
@@ -330,7 +330,7 @@ const styles = StyleSheet.create({
   bankName: { fontSize: 14, fontFamily: "Inter_500Medium" },
   bankRight: { flexDirection: "row", alignItems: "center", gap: 10 },
   accountNumber: { fontSize: 14, fontFamily: "Inter_600SemiBold", letterSpacing: 0.4 },
-  usdRow: {
+  usdRow: { minHeight: 44,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
@@ -339,7 +339,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   accountNote: { fontSize: 12, fontFamily: "Inter_400Regular", marginTop: 4, marginBottom: 12, lineHeight: 17, paddingHorizontal: 4 },
-  contactBtn: {
+  contactBtn: { minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",

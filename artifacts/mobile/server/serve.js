@@ -10,6 +10,8 @@
  */
 
 const http = require("http");
+const { isDevotionRequest, createDevotionRelay } = require("./devotion-relay");
+const devotionRelay = createDevotionRelay();
 const fs = require("fs");
 const path = require("path");
 
@@ -131,6 +133,7 @@ const landingPageTemplate = fs.readFileSync(TEMPLATE_PATH, "utf-8");
 const appName = getAppName();
 
 const server = http.createServer((req, res) => {
+  if (isDevotionRequest(req)) { void devotionRelay(req, res); return; }
   const url = new URL(req.url || "/", `http://${req.headers.host}`);
   let pathname = url.pathname;
 

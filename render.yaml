@@ -190,9 +190,21 @@ services:
     autoDeploy: true
     pullRequestPreviewsEnabled: false
 
-    # Deliberately no buildFilter. The daemon is the playback authority and must
-    # never remain on an older commit while the API/admin deploy ahead of it.
-    # Render therefore redeploys this service for every main-branch commit.
+    # The broadcast authority must not restart for admin/mobile-only releases.
+    # Include ALL runtime/build dependencies so engine and schema changes still
+    # deploy together. Shared API-source changes intentionally still restart it.
+    buildFilter:
+      paths:
+        - artifacts/api-server/**
+        - lib/**
+        - patches/**
+        - .npmrc
+        - tsconfig*.json
+        - pnpm-lock.yaml
+        - pnpm-workspace.yaml
+        - package.json
+        - scripts/**
+        - render.yaml
     buildCommand: |
       bash ./scripts/render-install.sh && \
       pnpm --filter @workspace/api-server run build

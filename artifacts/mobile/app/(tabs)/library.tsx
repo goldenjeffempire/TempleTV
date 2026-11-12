@@ -112,7 +112,7 @@ const CategoryPill = React.memo(function CategoryPill({
 }) {
   const c = useColors();
   return (
-    <Pressable
+    <Pressable accessibilityRole="button" accessibilityState={{ selected: active }}
       onPress={onPress}
       style={[
         styles.pill,
@@ -148,7 +148,7 @@ const ModePill = React.memo(function ModePill({
 }) {
   const c = useColors();
   return (
-    <Pressable
+    <Pressable accessibilityRole="button" accessibilityState={{ selected: active }}
       onPress={onPress}
       style={[
         styles.modePill,
@@ -322,7 +322,7 @@ function SeriesCard({
 }) {
   const c = useColors();
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={onPress}
       style={[styles.seriesCard, { backgroundColor: c.card, borderColor: c.border }]}
     >
@@ -659,7 +659,7 @@ export default function LibraryScreen() {
                 ? "Loading…"
                 : `${total} ${total === 1 ? "video" : "videos"}`}
             </Text>
-            <Pressable
+            <Pressable accessibilityRole="button" accessibilityLabel="Sort videos" accessibilityState={{ expanded: showSort }} testID="library-sort"
               onPress={() => setShowSort((s) => !s)}
               style={[styles.sortBtn, { backgroundColor: c.card, borderColor: c.border }]}
             >
@@ -678,7 +678,7 @@ export default function LibraryScreen() {
               style={[styles.sortDropdown, { backgroundColor: c.card, borderColor: c.border }]}
             >
               {SORT_OPTIONS.map((opt) => (
-                <Pressable
+                <Pressable accessibilityRole="menuitem" accessibilityState={{ selected: sort === opt.value }}
                   key={opt.value}
                   onPress={() => { setSort(opt.value); setShowSort(false); }}
                   style={[
@@ -897,7 +897,7 @@ const styles = StyleSheet.create({
     paddingTop: 16,
     paddingBottom: 8,
   },
-  modePill: {
+  modePill: { minHeight: 40,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
@@ -929,7 +929,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     gap: 8,
   },
-  pill: {
+  pill: { minHeight: 40, justifyContent: "center", alignItems: "center",
     paddingHorizontal: 14,
     paddingVertical: 7,
     borderRadius: 20,
@@ -947,7 +947,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   count: { fontSize: 13 },
-  sortBtn: {
+  sortBtn: { minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
@@ -964,7 +964,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     marginBottom: 8,
   },
-  sortOption: {
+  sortOption: { minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,

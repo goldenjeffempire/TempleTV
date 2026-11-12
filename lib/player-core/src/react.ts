@@ -27,9 +27,12 @@ import { PlayerMachine, type IntentHandler } from "./machine.js";
 import { V2Transport } from "./transport.js";
 import { createWebAdapter, type WebAdapterHandle, type WebBuffer } from "./adapters/web.js";
 import type { PlayerSnapshot, V2Item, V2Override } from "./types.js";
+import { createNaturalEndNotifier } from "./natural-end-notifier.js";
 
 export interface UseV2BroadcastOptions {
   baseUrl: string;
+  /** Read-only monitoring: never report ends or stalls to the station runtime. */
+  observer?: boolean;
   attachHls?: (video: HTMLVideoElement, url: string) => () => void;
   /**
    * Optional external YouTube handler (e.g., an iframe overlay on TV/web).
@@ -321,7 +324,7 @@ function startJanitor(): void {
   (janitorInterval as unknown as { unref?: () => void }).unref?.();
 }
 
-function createSession(baseUrl: string): BroadcastSession {
+function createSession(baseUrl: string, observer = false): BroadcastSession {
   // `session` is declared with `let` so the machine's IntentHandler closure
   // can reference it before the object literal is fully constructed.
   let session!: BroadcastSession;
@@ -335,6 +338,7 @@ function createSession(baseUrl: string): BroadcastSession {
 
   const transport = new V2Transport({
     baseUrl,
+    observer,
     onPlayerEvent: (e) => machine.send(e),
     onConnectionChange: (c) => {
       session.connected = c;
@@ -361,54 +365,13 @@ function createSession(baseUrl: string): BroadcastSession {
   // UseV2BroadcastOptions.getAuthToken without re-creating this callback.
   const authGetterRef: { current: (() => string | null | undefined) | undefined } = { current: undefined };
 
-  machine.setNaturalEndCallback((itemId: string) => {
-    // Retry with backoff — the server MUST receive this signal or it keeps
-    // presenting the ended item as `current`, causing every client's 30 s
-    // post-natural-end guard to block the next item for up to half a minute.
-    // The endpoint is item-level idempotent, so repeated POSTs are safe.
-    //
-    // Guard: check transport.isStopped before each retry and before calling
-    // requestSnapshot().  Without this, sessions evicted by the janitor
-    // (machine.destroy() + transport.stop()) kept firing POST /natural-end
-    // and requestSnapshot() calls indefinitely — one stale setTimeout chain
-    // per natural video end that happened while the session was still alive.
-    // Retry delays reduced from [2 s, 4 s, 8 s] → [300 ms, 800 ms, 2 s].
-    // Rationale: when the POST is dropped (brief WS reconnect, cell-network
-    // blip), the server keeps showing the ended item as `current` until the
-    // signal arrives.  On a YouTube-only deploy with 1800 s placeholders
-    // this drift can persist for the full remaining slot duration. Faster
-    // retries cut the worst-case synchronisation gap from ~14 s to ~3 s
-    // while remaining safe (the endpoint is item-level idempotent).
-    const naturalEndRetryDelays = [300, 800, 2_000];
-    const doPost = (attempt: number): void => {
-      if (transport.isStopped) return;
-      const _nt = authGetterRef.current?.();
-      const _nh: Record<string, string> = { "Content-Type": "application/json" };
-      if (_nt) _nh["Authorization"] = `Bearer ${_nt}`;
-      void fetch(`${baseUrl}/natural-end`, {
-        method: "POST",
-        headers: _nh,
-        body: JSON.stringify({ itemId }),
-        signal: AbortSignal.timeout(8_000),
-      }).catch(() => {
-        if (transport.isStopped) return;
-        if (attempt < naturalEndRetryDelays.length) {
-          setTimeout(() => doPost(attempt + 1), naturalEndRetryDelays[attempt]);
-        } else {
-          // All retries exhausted — fetch a fresh snapshot so the machine
-          // can evaluate the server's current state immediately and clear
-          // the 30 s guard as soon as the server finally advances on its
-          // own drift-poll tick (≤ 30 s from the slot expiry).
-          // Guard: isStopped check mirrors the pre-POST check at the top of
-          // doPost() — without this, sessions evicted by the janitor fire
-          // requestSnapshot() on a stopped transport, generating a live REST
-          // fetch that then attaches a new frame handler to a dead session.
-          if (!transport.isStopped) transport.requestSnapshot();
-        }
-      });
-    };
-    doPost(0);
-  });
+  machine.setNaturalEndCallback(createNaturalEndNotifier({
+    baseUrl,
+    observer,
+    isActive: () => !transport.isStopped && session.adapter !== null && session.snapshotListeners.size > 0,
+    getAuthToken: () => authGetterRef.current?.(),
+    requestSnapshot: () => transport.requestSnapshot(),
+  }));
 
   const machineUnsub = machine.subscribe((snap) => {
     session.snapshot = snap;
@@ -572,7 +535,7 @@ function replayStateToAdapter(snap: PlayerSnapshot, adapter: IntentHandler, cloc
 // ── React hook ──────────────────────────────────────────────────────────────
 
 export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResult {
-  const { baseUrl, attachHls, attachYouTube, enabled = true, enableStallReport = true, getAuthToken } = opts;
+  const { baseUrl, attachHls, attachYouTube, enabled = true, enableStallReport = true, observer = false, getAuthToken } = opts;
 
   // Keep latest option values in a ref so callbacks don't need to be
   // recreated when they change.
@@ -587,17 +550,18 @@ export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResul
   // Get or lazily create the singleton session for this baseUrl.
   const session = useMemo<BroadcastSession | null>(() => {
     if (!enabled) return null;
-    let entry = sessions.get(baseUrl);
+    const sessionKey = `${baseUrl.replace(/\/+$/, "")}#${observer ? "observer" : "viewer"}`;
+    let entry = sessions.get(sessionKey);
     if (!entry) {
-      entry = { session: createSession(baseUrl), lastIdleAtMs: null };
-      sessions.set(baseUrl, entry);
+      entry = { session: createSession(baseUrl, observer), lastIdleAtMs: null };
+      sessions.set(sessionKey, entry);
       startJanitor();
     } else {
       // Re-entering with active hook — cancel any pending eviction.
       entry.lastIdleAtMs = null;
     }
     return entry.session;
-  }, [baseUrl, enabled]);
+  }, [baseUrl, enabled, observer]);
 
   const [snapshot, setSnapshot] = useState<PlayerSnapshot>(
     () => session?.snapshot ?? INITIAL_SNAPSHOT,
@@ -663,7 +627,7 @@ export function useV2Broadcast(opts: UseV2BroadcastOptions): UseV2BroadcastResul
   // that `enableStallReport` can differ between hook instances (admin preview
   // uses false; viewer surfaces use true) sharing the same baseUrl.
   useEffect(() => {
-    if (!session || !enableStallReport) return;
+    if (!session || observer || !enableStallReport) return;
     let lastReportedId: string | null = null;
     const onSnap = (s: PlayerSnapshot) => {
       if (s.state !== "SKIP_PENDING") return;

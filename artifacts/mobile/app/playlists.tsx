@@ -126,7 +126,7 @@ export default function PlaylistsScreen() {
           <Feather name="alert-circle" size={40} color={c.mutedForeground} />
           <Text style={[styles.errorTitle, { color: c.foreground }]}>Failed to load</Text>
           <Text style={[styles.errorDesc, { color: c.mutedForeground }]}>{error}</Text>
-          <Pressable onPress={refetch} style={[styles.retryBtn, { backgroundColor: c.primary }]}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Try loading playlists again" testID="playlists-retry" onPress={refetch} style={[styles.retryBtn, { backgroundColor: c.primary }]}>
             <Text style={styles.retryText}>Try Again</Text>
           </Pressable>
         </View>
@@ -196,7 +196,7 @@ const styles = StyleSheet.create({
   loadingText: { fontSize: 14 },
   errorTitle: { fontSize: 18, fontWeight: "700", textAlign: "center" },
   errorDesc: { fontSize: 14, textAlign: "center", lineHeight: 20 },
-  retryBtn: {
+  retryBtn: { minHeight: 44,
     paddingHorizontal: 28,
     paddingVertical: 12,
     borderRadius: 20,

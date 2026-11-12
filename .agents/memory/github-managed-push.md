@@ -5,6 +5,15 @@ description: Recovering from native Git authentication failures without handling
 
 Native Git HTTPS authentication and the connected GitHub App can have different authorization states. A failed native push does not establish that the connected integration cannot write.
 
+Preserve the trailing newline in the commit message when recreating a native
+Git commit through GitHub's Git Objects API.
+
+**Why:** GitHub did not add the native Git message's final newline; identical
+trees, identities and timestamps still produced different commit SHAs.
+
+**How to apply:** Read the raw commit message without trimming it and compare
+the returned commit SHA before publishing a branch reference.
+
 **Why:** Native Git rejected its credentials while the connected GitHub App retained repository write access.
 
 **How to apply:** Check the existing connected integration before requesting reconnection. If using its Git object API, preserve the current remote parent, verify the created tree matches the tested local tree, and update the branch with `force: false`. Run the repository's pre-push validation explicitly, since API writes do not execute local Git hooks. Never retrieve or display credentials.

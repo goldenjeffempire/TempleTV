@@ -391,27 +391,31 @@ export default function SearchScreen() {
                 </Pressable>
               </View>
               {recent.map((q) => (
-                <Pressable
+                <View
                   key={q}
-                  onPress={() => applyRecent(q)}
-                  style={[styles.recentRow, { borderBottomColor: c.border }]}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Search for ${q}`}
+                  style={[styles.recentRow, { borderBottomColor: c.border, paddingVertical: 0 }]}
                 >
+                  <Pressable
+                    onPress={() => applyRecent(q)}
+                    style={{ flex: 1, minHeight: 48, flexDirection: "row", alignItems: "center", gap: 12 }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Search for ${q}`}
+                  >
                   <Feather name="clock" size={15} color={c.mutedForeground} />
                   <Text style={[styles.recentText, { color: c.foreground }]} numberOfLines={1}>
                     {q}
                   </Text>
+                  </Pressable>
                   <Pressable
                     onPress={() => deleteRecent(q)}
                     hitSlop={16}
-                    style={styles.recentDelete}
+                    style={[styles.recentDelete, { minWidth: 48, minHeight: 48, alignItems: "center", justifyContent: "center" }]}
                     accessibilityRole="button"
                     accessibilityLabel={`Remove ${q} from recent searches`}
                   >
                     <Feather name="x" size={14} color={c.mutedForeground} />
                   </Pressable>
-                </Pressable>
+                </View>
               ))}
             </>
           )}

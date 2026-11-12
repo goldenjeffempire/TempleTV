@@ -21,3 +21,9 @@ rewrite production Metro imports solely to work around the partial Node loader.
 
 **Why:** The ESM-only hook resolves the suite but does not register the CommonJS
 resolver used by its transitive local dependencies.
+
+Keep awaited dynamic imports inside an async `describe` callback or a `before`
+hook, not at the file's top level.
+
+**Why:** These tests are transformed to CommonJS; top-level `await` fails during
+transformation even when dynamic `.js` import resolution is correct.

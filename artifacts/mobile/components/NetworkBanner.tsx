@@ -53,7 +53,9 @@ export function NetworkBanner({ visible, recovered = false, message }: NetworkBa
         { backgroundColor: bgColor, transform: [{ translateY: slideAnim }], pointerEvents: "none" },
       ]}
       accessibilityRole="alert"
-      accessibilityLiveRegion={recovered ? "polite" : "assertive"}
+      accessibilityElementsHidden={!shouldShow}
+      importantForAccessibility={shouldShow ? "auto" : "no-hide-descendants"}
+      accessibilityLiveRegion={!shouldShow ? "none" : recovered ? "polite" : "assertive"}
       accessibilityLabel={label}
     >
       <View style={[styles.iconWrap, { backgroundColor: iconBg }]}>

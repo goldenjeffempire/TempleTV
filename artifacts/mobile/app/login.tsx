@@ -85,13 +85,13 @@ function AnimatedInput({
       <Feather
         name={icon}
         size={17}
-        color={focused ? "#a78bfa" : "rgba(255,255,255,0.35)"}
+        color={focused ? "#a78bfa" : "rgba(255,255,255,0.6)"}
         style={styles.inputIcon}
       />
       <TextInput
         style={styles.input}
         placeholder={placeholder}
-        placeholderTextColor="rgba(255,255,255,0.25)"
+        placeholderTextColor="rgba(255,255,255,0.45)"
         value={value}
         onChangeText={onChangeText}
         secureTextEntry={secureTextEntry}
@@ -312,7 +312,7 @@ export default function LoginScreen() {
                         <Feather
                           name={showPassword ? "eye-off" : "eye"}
                           size={17}
-                          color="rgba(255,255,255,0.35)"
+                          color="rgba(255,255,255,0.6)"
                         />
                       </Pressable>
                     }
@@ -326,7 +326,7 @@ export default function LoginScreen() {
                   )}
 
                   <Animated.View style={[{ transform: [{ scale: btnScale }] }, { marginTop: 28 }]}>
-                    <Pressable
+                    <Pressable accessibilityRole="button" accessibilityState={{ disabled: loading, busy: loading }} testID="login-submit"
                       onPress={handleLogin}
                       disabled={loading}
                       style={({ pressed }: { pressed: boolean }) => [styles.submitBtnOuter, { opacity: pressed ? 0.88 : 1 }]}
@@ -350,7 +350,7 @@ export default function LoginScreen() {
                   </Animated.View>
                 </View>
 
-                <Pressable
+                <Pressable accessibilityRole="button" testID="login-forgot"
                   onPress={() => router.push("/forgot-password" as never)}
                   style={styles.forgotBtn}
                   hitSlop={8}
@@ -364,7 +364,7 @@ export default function LoginScreen() {
                   <View style={styles.dividerRule} />
                 </View>
 
-                <Pressable
+                <Pressable accessibilityRole="button" testID="login-signup"
                   onPress={() => router.replace("/signup")}
                   style={({ pressed }: { pressed: boolean }) => [styles.signupBtn, { opacity: pressed ? 0.7 : 1 }]}
                 >
@@ -405,7 +405,7 @@ export default function LoginScreen() {
                   )}
 
                   <Animated.View style={[{ transform: [{ scale: btnScale }] }, { marginTop: 28 }]}>
-                    <Pressable
+                    <Pressable accessibilityRole="button" accessibilityState={{ disabled: loading || totpCode.length < 6, busy: loading }} testID="login-mfa-submit"
                       onPress={handleMfaSubmit}
                       disabled={loading || totpCode.length < 6}
                       style={({ pressed }: { pressed: boolean }) => [styles.submitBtnOuter, { opacity: (pressed || totpCode.length < 6) ? 0.6 : 1 }]}
@@ -429,7 +429,7 @@ export default function LoginScreen() {
                   </Animated.View>
                 </View>
 
-                <Pressable
+                <Pressable accessibilityRole="button" testID="login-mfa-back"
                   onPress={() => { setPhase("credentials"); setError(null); setTotpCode(""); }}
                   style={styles.forgotBtn}
                   hitSlop={8}
@@ -505,9 +505,9 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   label: {
-    fontSize: 10,
+    fontSize: 11,
     fontFamily: "Inter_600SemiBold",
-    color: "rgba(255,255,255,0.35)",
+    color: "rgba(255,255,255,0.6)",
     letterSpacing: 1.2,
     marginBottom: 8,
   },
@@ -564,7 +564,7 @@ const styles = StyleSheet.create({
   forgotText: {
     fontSize: 13,
     fontFamily: "Inter_400Regular",
-    color: "rgba(255,255,255,0.35)",
+    color: "rgba(255,255,255,0.6)",
     textDecorationLine: "underline",
   },
   divider: {
@@ -583,7 +583,7 @@ const styles = StyleSheet.create({
   signupText: {
     fontSize: 14,
     fontFamily: "Inter_400Regular",
-    color: "rgba(255,255,255,0.4)",
+    color: "rgba(255,255,255,0.62)",
   },
   signupLink: {
     fontFamily: "Inter_600SemiBold",

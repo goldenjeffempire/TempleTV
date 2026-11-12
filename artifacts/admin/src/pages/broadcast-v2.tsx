@@ -1,5 +1,7 @@
 import { BroadcastPreviewV2 } from "@/playback/BroadcastPreviewV2";
 import { PageHeader } from "@/components/shared/page-header";
+import { ContinuityNotice } from "@/components/control-room/continuity-notice";
+import { ControlRoomPresence } from "@/components/control-room/control-room-presence";
 import { ErrorBoundary } from "@/components/shared/error-boundary";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -478,7 +480,7 @@ interface RepairLogEntry {
   actor: "system" | "operator";
   action: string;
   detail: string;
-  outcome: "success" | "failure" | "pending" | "skipped";
+  outcome: "success" | "failure" | "pending" | "skipped" | "blocked";
 }
 
 interface AssetHealthItem {
@@ -4450,6 +4452,10 @@ function BroadcastV2PageInner() {
           </div>
         }
       />
+      <div className="grid gap-3 lg:grid-cols-[1fr_minmax(280px,360px)] items-stretch">
+        <ContinuityNotice />
+        <ControlRoomPresence />
+      </div>
 
       {/* Launch Checklist dialog */}
       <Dialog open={showChecklist} onOpenChange={setShowChecklist}>
@@ -8031,10 +8037,10 @@ function AssetHealthPanel({
                           <span className={[
                             "shrink-0 font-medium tabular-nums mt-px",
                             entry.outcome === "success" ? "text-green-600" :
-                            entry.outcome === "failure" ? "text-red-500" :
+                            entry.outcome === "failure" || entry.outcome === "blocked" ? "text-red-500" :
                             entry.outcome === "pending" ? "text-amber-500" : "text-muted-foreground",
                           ].join(" ")}>
-                            {entry.outcome === "success" ? "✓" : entry.outcome === "failure" ? "✗" : entry.outcome === "pending" ? "⋯" : "–"}
+                            {entry.outcome === "success" ? "✓" : entry.outcome === "failure" || entry.outcome === "blocked" ? "✗" : entry.outcome === "pending" ? "⋯" : "–"}
                           </span>
                           <div className="min-w-0 flex-1">
                             <span className="font-medium">{entry.action}</span>
