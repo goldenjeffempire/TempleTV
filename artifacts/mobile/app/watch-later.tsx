@@ -112,7 +112,7 @@ export default function WatchLaterScreen() {
               <Text style={[styles.emptySubtitle, { color: c.mutedForeground }]}>
                 Tap the bookmark icon on any video to save it for later
               </Text>
-              <Pressable
+              <Pressable accessibilityRole="button" testID="watch-later-browse"
                 style={[styles.browseBtn, { backgroundColor: c.primary }]}
                 onPress={() => router.replace("/(tabs)/library")}
               >
@@ -129,7 +129,7 @@ export default function WatchLaterScreen() {
                   variant="horizontal"
                 />
               </View>
-              <Pressable
+              <Pressable accessibilityRole="button"
                 onPress={() => handleRemove(item)}
                 style={[styles.removeBtn, { backgroundColor: c.card }]}
                 accessibilityLabel={`Remove ${item.title} from watch later`}
@@ -173,7 +173,7 @@ const styles = StyleSheet.create({
   emptyIcon: { marginBottom: 8 },
   emptyTitle: { fontSize: 20, fontWeight: "700", textAlign: "center" },
   emptySubtitle: { fontSize: 14, textAlign: "center", lineHeight: 22 },
-  browseBtn: {
+  browseBtn: { minHeight: 44,
     marginTop: 8,
     paddingHorizontal: 24,
     paddingVertical: 12,

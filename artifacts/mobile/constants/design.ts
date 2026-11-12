@@ -158,3 +158,9 @@ export const VERTICAL_RHYTHM = {
   /** Hero component bottom margin before the first content section */
   heroBelowGap: SPACING.xl,
 } as const;
+
+/** Minimum accessible touch target (Android Material 48dp / iOS HIG 44pt). */
+export const MIN_TOUCH = 48;
+
+/** Official Temple TV / JCTM devotion page — fallback for the devotion CTA. */
+export const OFFICIAL_DEVOTION_URL = "https://jctm.org.ng/devotion";

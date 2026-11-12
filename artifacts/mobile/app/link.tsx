@@ -100,7 +100,7 @@ export default function LinkTvScreen() {
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.headerRow}>
-          <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Close" testID="link-close" onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
             <Feather name="x" size={22} color={c.foreground} />
           </Pressable>
         </View>
@@ -123,7 +123,7 @@ export default function LinkTvScreen() {
             <Text style={[styles.successSub, { color: c.mutedForeground }]}>
               You can return to your TV — it will switch to your account in a few seconds.
             </Text>
-            <Pressable
+            <Pressable accessibilityRole="button" testID="link-done"
               onPress={() => router.replace("/(tabs)/channels")}
               style={[styles.primaryBtn, { backgroundColor: c.primary, marginTop: 18 }]}
             >
@@ -152,7 +152,7 @@ export default function LinkTvScreen() {
               editable={!submitting}
             />
 
-            <Pressable
+            <Pressable accessibilityRole="button" accessibilityLabel="Link TV" testID="link-submit"
               onPress={handleSubmit}
               disabled={submitting || raw.length !== 8}
               style={({ pressed }) => [

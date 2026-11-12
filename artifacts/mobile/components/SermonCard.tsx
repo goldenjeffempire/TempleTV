@@ -72,12 +72,7 @@ export const SermonCard = memo(function SermonCard({
 
   if (variant === "horizontal") {
     return (
-      <Pressable
-        onPress={handlePress}
-        style={({ pressed }) => [{ opacity: pressed ? 0.8 : 1, transform: [{ scale: pressed ? 0.98 : 1 }] }]}
-        accessibilityRole="button"
-        accessibilityLabel={`Play ${sermon.title}${sermon.preacher ? ` by ${sermon.preacher}` : ""}`}
-      >
+      <View>
         <GlassCard style={styles.horizontalCard}>
           <View style={styles.horizontalThumbWrap}>
             <SmartImage uri={sermon.thumbnailUrl} style={styles.horizontalThumb} />
@@ -115,6 +110,13 @@ export const SermonCard = memo(function SermonCard({
               </View>
             </View>
           </View>
+          {/* Playback and sharing are siblings, never nested interactive buttons. */}
+          <Pressable
+            onPress={handlePress}
+            accessibilityRole="button"
+            accessibilityLabel={`Play ${sermon.title}${sermon.preacher ? ` by ${sermon.preacher}` : ""}`}
+            style={({ pressed }) => [StyleSheet.absoluteFill, { right: 60, backgroundColor: pressed ? c.primary + "12" : "transparent" }]}
+          />
           <Pressable
             onPress={handleShare}
             hitSlop={8}
@@ -125,7 +127,7 @@ export const SermonCard = memo(function SermonCard({
             <Feather name="share-2" size={16} color={c.mutedForeground} />
           </Pressable>
         </GlassCard>
-      </Pressable>
+      </View>
     );
   }
 
@@ -252,8 +254,10 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   shareBtn: {
-    paddingLeft: 8,
-    paddingVertical: 4,
+    width: 48,
+    height: 48,
+    alignItems: "center",
+    justifyContent: "center",
     alignSelf: "center",
     flexShrink: 0,
   },

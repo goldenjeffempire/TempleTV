@@ -86,16 +86,11 @@ export const VideoCard = React.memo(function VideoCard({
 
   if (horizontal) {
     return (
-      <Pressable
-        onPress={onPress}
-        onLongPress={onLongPressAction}
-        style={({ pressed }) => [
+      <View
+        style={[
           styles.horzContainer,
           { backgroundColor: c.card, borderBottomColor: c.border },
-          pressed && { opacity: 0.75 },
         ]}
-        accessibilityRole="button"
-        accessibilityLabel={`Play ${sermon.title}`}
       >
         {/* Thumbnail */}
         <View style={[styles.horzThumbWrap, { width: horzThumbW, height: horzThumbH }]}>
@@ -153,10 +148,19 @@ export const VideoCard = React.memo(function VideoCard({
           </View>
         </View>
 
+        <Pressable
+          style={({ pressed }) => [StyleSheet.absoluteFill, { backgroundColor: pressed ? c.primary + "12" : "transparent" }]}
+          onPress={onPress}
+          onLongPress={onLongPressAction}
+          accessibilityRole="button"
+          accessibilityLabel={`Play ${sermon.title}${sermon.preacher ? `, ${sermon.preacher}` : ""}${sermon.duration ? `, ${sermon.duration}` : ""}`}
+          testID={`video-card-${sermon.id}`}
+        />
         {onLongPressAction ? (
           <Pressable
             onPress={onLongPressAction}
-            hitSlop={8}
+            hitSlop={12}
+            accessibilityRole="button"
             accessibilityLabel="More options"
             style={styles.horzActionBtn}
           >
@@ -169,22 +173,17 @@ export const VideoCard = React.memo(function VideoCard({
         ) : (
           <Feather name="chevron-right" size={16} color={c.mutedForeground} style={{ alignSelf: "center" }} />
         )}
-      </Pressable>
+      </View>
     );
   }
 
   // ── Vertical (card) layout ────────────────────────────────────────────────
   return (
-    <Pressable
-      onPress={onPress}
-      onLongPress={onLongPressAction}
-      style={({ pressed }) => [
+    <View
+      style={[
         styles.cardContainer,
         { backgroundColor: c.card, borderColor: c.border, width: cardWidth },
-        pressed && { opacity: 0.75 },
       ]}
-      accessibilityRole="button"
-      accessibilityLabel={`Play ${sermon.title}`}
     >
       {/* Thumbnail — responsive 16:9 */}
       <View style={[styles.cardThumbWrap, { height: thumbHeight }]}>
@@ -194,6 +193,7 @@ export const VideoCard = React.memo(function VideoCard({
           style={styles.cardThumb}
           contentFit="cover"
           contentPosition="top"
+          cachePolicy="memory-disk"
           transition={150}
         />
         {(sermon.youtubeLiveStatus || showLiveBadge) && (
@@ -216,21 +216,6 @@ export const VideoCard = React.memo(function VideoCard({
               <Feather name="play" size={14} color="#fff" style={{ marginLeft: 2 }} />
             </View>
           </View>
-        )}
-        {/* Action button overlay — top-right corner */}
-        {onLongPressAction && (
-          <Pressable
-            onPress={(e) => { e.stopPropagation(); onLongPressAction(); }}
-            hitSlop={8}
-            accessibilityLabel="More options"
-            style={[styles.cardActionBtn, { backgroundColor: "rgba(0,0,0,0.55)" }]}
-          >
-            <Feather
-              name={actionIcon as React.ComponentProps<typeof Feather>["name"]}
-              size={14}
-              color={actionActive ? "#fff" : "rgba(255,255,255,0.85)"}
-            />
-          </Pressable>
         )}
       </View>
 
@@ -265,7 +250,26 @@ export const VideoCard = React.memo(function VideoCard({
           )}
         </View>
       </View>
-    </Pressable>
+      <Pressable
+        style={({ pressed }) => [StyleSheet.absoluteFill, { backgroundColor: pressed ? c.primary + "12" : "transparent" }]}
+        onPress={onPress}
+        onLongPress={onLongPressAction}
+        accessibilityRole="button"
+        accessibilityLabel={`Play ${sermon.title}${sermon.preacher ? `, ${sermon.preacher}` : ""}${sermon.duration ? `, ${sermon.duration}` : ""}`}
+        testID={`video-card-${sermon.id}`}
+      />
+      {onLongPressAction && (
+        <Pressable
+          onPress={onLongPressAction}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="More options"
+          style={[styles.cardActionBtn, { backgroundColor: "rgba(0,0,0,0.55)" }]}
+        >
+          <Feather name={actionIcon as React.ComponentProps<typeof Feather>["name"]} size={16} color={actionActive ? "#fff" : "rgba(255,255,255,0.85)"} />
+        </Pressable>
+      )}
+    </View>
   );
 });
 
@@ -288,13 +292,13 @@ const styles = StyleSheet.create({
   },
   horzThumb: { width: "100%", height: "100%" },
   horzDetails: { flex: 1, gap: 4, minWidth: 0 },
-  horzTitle: { fontSize: 14, fontWeight: "600", lineHeight: 20 },
-  horzPreacher: { fontSize: 12 },
+  horzTitle: { fontSize: 15, fontFamily: "Inter_600SemiBold", lineHeight: 21 },
+  horzPreacher: { fontSize: 13, fontFamily: "Inter_400Regular" },
   horzMeta: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 2 },
 
   // ── Vertical (card) layout — width set dynamically per-render ─────────────
   cardContainer: {
-    borderRadius: 12,
+    borderRadius: 14,
     overflow: "hidden",
     borderWidth: StyleSheet.hairlineWidth,
     // width injected at render time from getCardWidth(screenWidth)
@@ -320,22 +324,25 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: "rgba(255,255,255,0.7)",
   },
-  cardDetails: { padding: 10, gap: 4 },
-  cardTitle: { fontSize: 13, fontWeight: "600", lineHeight: 18 },
-  cardPreacher: { fontSize: 11 },
+  cardDetails: { padding: 11, gap: 4 },
+  cardTitle: { fontSize: 14, fontFamily: "Inter_600SemiBold", lineHeight: 19 },
+  cardPreacher: { fontSize: 12, fontFamily: "Inter_400Regular" },
   cardMeta: { flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 2 },
 
   horzActionBtn: {
-    paddingHorizontal: 8,
+    width: 48,
+    height: 48,
+    alignItems: "center",
+    justifyContent: "center",
     alignSelf: "center",
   },
   cardActionBtn: {
     position: "absolute",
     top: 6,
     right: 6,
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     alignItems: "center",
     justifyContent: "center",
   },

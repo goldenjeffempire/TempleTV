@@ -26,7 +26,7 @@ export function SectionHeader({ title, subtitle }: SectionHeaderProps) {
           the muted-foreground tone for secondary metadata. */}
       <View style={[styles.accent, { backgroundColor: c.primary }]} />
       <View style={styles.text}>
-        <Text style={[styles.title, { color: c.foreground }]}>{title}</Text>
+        <Text style={[styles.title, { color: c.foreground }]} accessibilityRole="header">{title}</Text>
         {subtitle && (
           <Text style={[styles.subtitle, { color: c.mutedForeground }]}>
             {subtitle}
@@ -45,15 +45,15 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   accent: {
-    width: 4,
-    height: 22,
+    width: 3,
+    height: 20,
     borderRadius: 2,
   },
   text: {
     flex: 1,
   },
   title: {
-    fontSize: 20,
+    fontSize: 19,
     lineHeight: LINE_HEIGHT.xl,
     fontFamily: "Inter_700Bold",
     letterSpacing: -0.2,

@@ -131,7 +131,7 @@ function ContactRow({ item }: { item: ContactItem }) {
   const isInteractive = !!item.onPress;
 
   return (
-    <Pressable
+    <Pressable accessibilityRole="button"
       onPress={
         item.onPress
           ? () => {
@@ -197,7 +197,7 @@ export default function ContactScreen() {
         {/* ── Church Address ── */}
         <SectionTitle title="CHURCH ADDRESS" />
         <GlassCard style={styles.card}>
-          <Pressable
+          <Pressable accessibilityRole="button" accessibilityLabel="Open church location in maps" testID="contact-open-maps"
             onPress={() => {
               void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
               openMaps();

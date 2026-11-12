@@ -101,7 +101,7 @@ export default function ResetPasswordScreen() {
                 <Text style={styles.subtitle}>
                   Your password has been changed. All other devices were signed out for safety.
                 </Text>
-                <Pressable onPress={() => router.replace("/login")} style={[styles.submitBtnOuter, { marginTop: 12 }]}>
+                <Pressable accessibilityRole="button" testID="reset-back-to-login" onPress={() => router.replace("/login")} style={[styles.submitBtnOuter, { marginTop: 12 }]}>
                   <LinearGradient
                     colors={["#7c3aed", "#6d28d9", "#5b21b6"]}
                     start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
@@ -125,14 +125,14 @@ export default function ResetPasswordScreen() {
                       value={password}
                       onChangeText={setPassword}
                       placeholder="At least 8 characters"
-                      placeholderTextColor="rgba(255,255,255,0.25)"
+                      placeholderTextColor="rgba(255,255,255,0.45)"
                       secureTextEntry={!showPassword}
                       autoComplete="new-password"
                       textContentType="newPassword"
                       returnKeyType="next"
                     />
-                    <Pressable onPress={() => setShowPassword((v) => !v)} hitSlop={8}>
-                      <Feather name={showPassword ? "eye-off" : "eye"} size={17} color="rgba(255,255,255,0.4)" />
+                    <Pressable accessibilityRole="button" accessibilityLabel={showPassword ? "Hide password" : "Show password"} onPress={() => setShowPassword((v) => !v)} hitSlop={8}>
+                      <Feather name={showPassword ? "eye-off" : "eye"} size={17} color="rgba(255,255,255,0.62)" />
                     </Pressable>
                   </View>
 
@@ -144,7 +144,7 @@ export default function ResetPasswordScreen() {
                       value={confirm}
                       onChangeText={setConfirm}
                       placeholder="Repeat your new password"
-                      placeholderTextColor="rgba(255,255,255,0.25)"
+                      placeholderTextColor="rgba(255,255,255,0.45)"
                       secureTextEntry={!showPassword}
                       autoComplete="new-password"
                       textContentType="newPassword"
@@ -160,7 +160,7 @@ export default function ResetPasswordScreen() {
                     </View>
                   )}
 
-                  <Pressable onPress={handleSubmit} disabled={loading} style={[styles.submitBtnOuter, { marginTop: 28 }]}>
+                  <Pressable accessibilityRole="button" accessibilityState={{ disabled: loading, busy: loading }} testID="reset-submit" onPress={handleSubmit} disabled={loading} style={[styles.submitBtnOuter, { marginTop: 28 }]}>
                     <LinearGradient
                       colors={["#7c3aed", "#6d28d9", "#5b21b6"]}
                       start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}
@@ -171,7 +171,7 @@ export default function ResetPasswordScreen() {
                   </Pressable>
                 </View>
 
-                <Pressable onPress={() => router.replace("/login")} style={styles.cancelBtn} hitSlop={8}>
+                <Pressable accessibilityRole="button" testID="reset-cancel" onPress={() => router.replace("/login")} style={styles.cancelBtn} hitSlop={8}>
                   <Text style={styles.cancelText}>Cancel</Text>
                 </Pressable>
               </>
@@ -206,7 +206,7 @@ const styles = StyleSheet.create({
     lineHeight: 21, marginBottom: 28,
   },
   form: {},
-  label: { fontSize: 10, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.4)", letterSpacing: 1.2, marginBottom: 8 },
+  label: { fontSize: 11, fontFamily: "Inter_600SemiBold", color: "rgba(255,255,255,0.62)", letterSpacing: 1.2, marginBottom: 8 },
   inputRow: {
     flexDirection: "row", alignItems: "center",
     borderWidth: 1, borderColor: "rgba(255,255,255,0.12)",
